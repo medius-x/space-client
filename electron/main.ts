@@ -49,7 +49,7 @@ async function createWindow(): Promise<void> {
     title: "space",
     backgroundColor: "#1e1f22",
     webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
+      preload: path.join(__dirname, "..", "preload", "preload.js"),
       contextIsolation: true, // default on modern Electron — pinned explicitly
       sandbox: true, // default — pinned explicitly
       nodeIntegration: false,
@@ -91,7 +91,15 @@ async function createWindow(): Promise<void> {
   });
 
   mainWindow.webContents.openDevTools({ mode: "bottom" });
-  await mainWindow.loadFile(path.join(__dirname, "..", "static", "index.html"));
+  // electron-vite convention: in `dev` the renderer must load the VITE DEV SERVER
+  // (passed via ELECTRON_RENDERER_URL) — that is where HMR lives. Loading the built
+  // out/renderer bundle in dev silently kills hot reload (caught in the M0 smoke).
+  const devServerUrl = process.env.ELECTRON_RENDERER_URL;
+  if (devServerUrl) {
+    await mainWindow.loadURL(devServerUrl);
+  } else {
+    await mainWindow.loadFile(path.join(__dirname, "..", "renderer", "index.html"));
+  }
 }
 
 app.whenReady().then(() => {

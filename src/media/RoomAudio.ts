@@ -1,6 +1,6 @@
-import { LEVEL_POLL_MS } from "./config";
-import { log } from "./logging";
-import { floatRms, isSpeaking, rmsToDbfs, speakingLevel } from "./core/audio-math";
+import { LEVEL_POLL_MS } from "../config";
+import { log } from "../logging";
+import { floatRms, isSpeaking, rmsToDbfs, speakingLevel } from "../core/audio-math";
 
 /**
  * Remote-audio plumbing for the spike. Two lessons baked in from the live smokes:

@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <!-- Dev-permissive CSP: vite HMR (localhost ws) + the local server stack. Tightened per-origin at packaging (M7). -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:* ws://localhost:*; media-src mediastream: blob: 'self' http://localhost:*; img-src 'self' data: blob:">
+  <title>space</title>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="./main.tsx"></script>
+</body>
+</html>

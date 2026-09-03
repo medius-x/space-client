@@ -271,7 +271,6 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   flex-direction: column;
   gap: 10px;
 }
-body:not(.diag-open) .diagnostics { display: none; }
 
 .diag-title {
   font-weight: 700;
@@ -311,4 +310,4 @@ body:not(.diag-open) .diagnostics { display: none; }
   font-size: 12px;
   padding: 4px 10px;
 }
-body:not(.diag-open) .diag-toggle { right: 12px; }
+.diag-toggle { right: 12px; }

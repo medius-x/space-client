@@ -5,6 +5,7 @@
     "moduleResolution": "bundler",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["node"],
+    "jsx": "react-jsx",
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
@@ -13,5 +14,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["electron/**/*.ts", "src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
+  "include": ["electron/**/*.ts", "src/**/*.ts", "src/**/*.tsx", "test/**/*.ts", "vitest.config.ts", "electron.vite.config.ts"]
 }
