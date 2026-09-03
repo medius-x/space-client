@@ -1,42 +1,43 @@
 import { Emitter } from "../domain/lib/store";
 import { log } from "../logging";
-import { LocalTokenStorage, type TokenStorage } from "../core/auth";
+import { MemoryTokenStorage } from "../core/auth";
 import { RestClient } from "../core/rest";
-import { StompClient } from "../core/stomp";
 import { JanusClient } from "../core/janus";
 import { SfuSession, RoomVanishedError, type MediaSource } from "../core/sfu";
 import { extractAudioFmtpLines } from "../core/sdp";
 import { stereoVerdict } from "../core/audio-math";
 import { RoomAudio } from "../media/RoomAudio";
+import {
+  ConnectionDirectory,
+  EXPIRED_MARKER,
+  normalizeHostUrl,
+} from "../domain/session/connection-record";
+import { ConnectionSession, type SessionHooks } from "../domain/session/connection-session";
 import type {
   Channel,
   FeedInfo,
-  PresenceEvent,
   RemoteTrackKind,
   RoomInfo,
-  UserSummary,
-  VoiceMemberEvent,
   VoiceRoomState,
 } from "../types";
 
 /**
  * The application runtime — a MODULE SINGLETON, deliberately outside the React tree:
  * Fast Refresh only reloads components, so editing UI code never tears down WebRTC,
- * STOMP sessions or the audio graph (edits to this file cost a full reload — same as
- * the spike's esbuild loop). This is the M0 port of the spike's src/main.ts; M1 splits
- * it into ConnectionSession + stores.
+ * STOMP sessions or the audio graph. M1 splits the per-connection world into
+ * ConnectionSession (domain); what remains here is the app shell: the connection
+ * directory, the ONE active session binding, and the voice room plumbing.
  */
 
 export interface AppState {
   screen: "login" | "main";
   loginError: string | null;
   loginBusy: boolean;
+  loginPrefill: { url: string; username: string } | null;
   ownUsername: string | null;
   baseUrl: string;
-  channels: Channel[];
-  users: UserSummary[];
-  presence: ReadonlySet<string>;
-  voiceMembers: ReadonlyMap<number, ReadonlySet<string>>;
+  /** Active TEXT channel (the chat pane); null = nothing selected yet. */
+  activeChannelId: number | null;
   activeVoiceChannelId: number | null;
   voiceState: VoiceRoomState;
   stateDetail: string | null;
@@ -55,12 +56,10 @@ class AppStore extends Emitter {
     screen: "login",
     loginError: null,
     loginBusy: false,
+    loginPrefill: null,
     ownUsername: null,
     baseUrl: "",
-    channels: [],
-    users: [],
-    presence: new Set<string>(),
-    voiceMembers: new Map<number, ReadonlySet<string>>(),
+    activeChannelId: null,
     activeVoiceChannelId: null,
     voiceState: "idle",
     stateDetail: null,
@@ -93,11 +92,23 @@ class AppStore extends Emitter {
 
 export const appStore = new AppStore();
 export const roomAudio = new RoomAudio();
-const tokenStorage: TokenStorage = new LocalTokenStorage();
+export const connectionDirectory = new ConnectionDirectory();
 
-/** Live session objects — created at login, torn down at expiry/logout. */
-let restClient: RestClient | null = null;
-let stompClient: StompClient | null = null;
+/** The single active session (v1). Login flow and the rail re-point it. */
+let activeSession: ConnectionSession | null = null;
+
+class SessionBinding extends Emitter {
+  getSnapshot = (): ConnectionSession | null => activeSession;
+
+  set(next: ConnectionSession | null): void {
+    activeSession = next;
+    this.emit();
+  }
+}
+
+export const sessionBinding = new SessionBinding();
+
+/** Live voice-session objects — owned here, not per ConnectionSession (M4 moves them). */
 let janusClient: JanusClient | null = null;
 let sfuSession: SfuSession | null = null;
 let localDisplayStream: MediaStream | null = null;
@@ -119,14 +130,6 @@ export const voiceView = {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function toWsUrl(baseUrl: string): string {
-  return baseUrl.replace(/^http/, "ws") + "/ws";
-}
-
-function persistedGain(kind: "voice" | "share", username: string): number {
-  return Number(localStorage.getItem(`space.vol.${kind}.${username}`) ?? 100) / 100;
 }
 
 // ---------------------------------------------------------------------------
@@ -158,72 +161,81 @@ export async function runDisplayMediaSelfTest(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Session (login → REST → STOMP)
+// Session lifecycle: bootstrap → login/resume → open → teardown
 // ---------------------------------------------------------------------------
+
+const sessionHooks: SessionHooks = {
+  onSessionExpired: (recordId) => {
+    log.warn("app", `session expired (record ${recordId}) — back to login`);
+    void teardownSession();
+    appStore.patch({ screen: "login", loginError: "Session expired — log in again" });
+  },
+  onStompState: (state) => appStore.patch({ stompState: state }),
+  onStompConnected: () => {
+    const channelId = appStore.getSnapshot().activeVoiceChannelId;
+    if (channelId !== null) {
+      activeSession?.stomp.send("/app/voice.join", { channelId });
+    }
+  },
+  onChannelGone: (channelId) => {
+    if (appStore.getSnapshot().activeChannelId === channelId) {
+      pickFallbackTextChannel();
+    }
+    if (appStore.getSnapshot().activeVoiceChannelId === channelId) {
+      void leaveVoice();
+    }
+  },
+  onChannelsChanged: () => {
+    ensureActiveChannelExists();
+  },
+};
+
+/** App entry: load the directory, auto-resume the most recently used connection. */
+export async function bootstrapApp(): Promise<void> {
+  await connectionDirectory.loadAll();
+  const newest = connectionDirectory.getSnapshot()[0];
+  if (newest && newest.refreshToken !== "" && newest.token !== EXPIRED_MARKER) {
+    try {
+      await openSession(newest.id);
+      log.info("app", `auto-resumed ${newest.username} @ ${newest.hostUrl}`);
+    } catch (error) {
+      log.info("app", `auto-resume failed (${errorMessage(error)}) — login screen`);
+    }
+  }
+}
+
 export async function startSession(baseUrl: string, mode: "login" | "register", username: string, password: string): Promise<void> {
-  const client = new RestClient({
-    baseUrl,
-    tokenStorage,
-    onSessionExpired: () => {
-      log.warn("app", "session expired — back to login");
-      void teardownSession();
-      appStore.patch({ screen: "login", loginError: "Session expired — log in again" });
-    },
-  });
+  const normalized = normalizeHostUrl(baseUrl);
   appStore.patch({ loginBusy: true, loginError: null });
   try {
+    // Login through a THROWAWAY storage, then move the tokens into the record — the
+    // session's own RestClient is built on the record afterwards.
+    const bootstrapStorage = new MemoryTokenStorage();
+    const loginClient = new RestClient({ baseUrl: normalized, tokenStorage: bootstrapStorage });
     if (mode === "login") {
-      await client.login(username, password);
+      await loginClient.login(username, password);
     } else {
-      await client.register(username, password);
+      await loginClient.register(username, password);
     }
-    const [channels, users, presence, voiceMembers] = await Promise.all([
-      client.getChannels(),
-      client.getUsers(),
-      client.getPresence(),
-      client.getVoiceMembers(),
-    ]);
-
-    restClient = client;
-    const stomp = new StompClient({
-      url: toWsUrl(baseUrl),
-      getAccessToken: () => tokenStorage.load()?.token ?? "",
-      handlers: {
-        onLost: (reason) => {
-          log.warn("app", `STOMP lost: ${reason} (auto-reconnecting)`);
-          appStore.patch({ stompState: "lost" });
-        },
-        onConnected: () => {
-          appStore.patch({ stompState: "connected" });
-          const channelId = appStore.getSnapshot().activeVoiceChannelId;
-          if (channelId !== null) {
-            stomp.send("/app/voice.join", { channelId });
-          }
-        },
-      },
-    });
-    stompClient = stomp;
-    appStore.patch({ stompState: "connecting" });
-    await stomp.connect();
-    stomp.subscribe("/topic/presence", (raw) => applyPresenceEvent(JSON.parse(raw) as PresenceEvent));
-    stomp.subscribe("/topic/voice", (raw) => applyVoiceEvent(JSON.parse(raw) as VoiceMemberEvent));
-
-    roomAudio.setSpeakingHandler((username_, speaking) => {
-      voiceView.onSpeaking(username_, speaking);
-    });
-    roomAudio.startLevelPolling();
-
-    appStore.patch({
-      screen: "main",
-      baseUrl,
-      ownUsername: username,
-      channels,
-      users,
-      presence: new Set(presence),
-      voiceMembers: new Map(voiceMembers.map((entry) => [entry.channelId, new Set(entry.usernames)])),
-    });
-    await roomAudio.resume();
-    log.info("app", `session up: ${username} @ ${baseUrl} (${channels.length} channels)`);
+    const tokens = bootstrapStorage.load();
+    if (!tokens) {
+      throw new Error("login returned no tokens");
+    }
+    const existing = connectionDirectory.getSnapshot().find(
+      (record) => record.hostUrl === normalized && record.username === username,
+    );
+    let recordId: string;
+    if (existing) {
+      // Re-login of a saved server: rotate the record's token family in place.
+      const previous = existing.refreshToken !== ""
+        ? { token: existing.token, refreshToken: existing.refreshToken, expiresAt: existing.expiresAt }
+        : null;
+      await connectionDirectory.applyTokens(existing.id, tokens, previous);
+      recordId = existing.id;
+    } else {
+      recordId = (await connectionDirectory.create({ hostUrl: normalized, username, tokens })).id;
+    }
+    await openSession(recordId);
   } catch (error) {
     appStore.patch({ loginError: errorMessage(error) });
   } finally {
@@ -231,15 +243,84 @@ export async function startSession(baseUrl: string, mode: "login" | "register", 
   }
 }
 
+/** Rail click on another record: switch (resume) or re-login when the family is dead. */
+export async function switchConnection(recordId: string): Promise<void> {
+  if (appStore.getSnapshot().loginBusy) {
+    return;
+  }
+  const record = connectionDirectory.get(recordId);
+  if (!record || activeSession?.recordId === recordId) {
+    return;
+  }
+  appStore.patch({ loginBusy: true, loginError: null });
+  try {
+    await openSession(recordId);
+  } catch (error) {
+    appStore.patch({
+      screen: "login",
+      loginError: errorMessage(error),
+      loginPrefill: { url: record.hostUrl, username: record.username },
+    });
+  } finally {
+    appStore.patch({ loginBusy: false });
+  }
+}
+
+export async function removeConnection(recordId: string): Promise<void> {
+  if (activeSession?.recordId === recordId) {
+    await teardownSession();
+    appStore.patch({ screen: "login" });
+  }
+  await connectionDirectory.remove(recordId);
+}
+
+/** "+" on the rail: login screen with an empty form (the live session stays alive). */
+export function beginAddServer(): void {
+  appStore.patch({ screen: "login", loginError: null, loginPrefill: null });
+}
+
+async function openSession(recordId: string): Promise<void> {
+  await teardownSession();
+  const record = connectionDirectory.get(recordId);
+  if (!record) {
+    return;
+  }
+  const session = new ConnectionSession({ directory: connectionDirectory, recordId, hooks: sessionHooks });
+  activeSession = session;
+  sessionBinding.set(session);
+  try {
+    await session.start();
+    appStore.patch({
+      screen: "main",
+      loginError: null,
+      loginPrefill: null,
+      ownUsername: record.username,
+      baseUrl: record.hostUrl,
+    });
+    restoreLastChannel(session);
+    roomAudio.setSpeakingHandler((username, speaking) => {
+      voiceView.onSpeaking(username, speaking);
+    });
+    roomAudio.startLevelPolling();
+    await roomAudio.resume();
+  } catch (error) {
+    await teardownSession();
+    throw error;
+  }
+}
+
 export async function teardownSession(): Promise<void> {
   await teardownVoice();
   roomAudio.stopLevelPolling();
   roomAudio.detachOwnMic();
-  stompClient?.disconnect();
-  stompClient = null;
-  restClient = null;
+  activeSession?.dispose();
+  activeSession = null;
+  sessionBinding.set(null);
   appStore.patch({
     stompState: "off",
+    screen: "login",
+    ownUsername: null,
+    activeChannelId: null,
     activeVoiceChannelId: null,
     voiceState: "idle",
     stateDetail: null,
@@ -250,34 +331,69 @@ export async function teardownSession(): Promise<void> {
   });
 }
 
-function applyPresenceEvent(event: PresenceEvent): void {
-  const presence = new Set(appStore.getSnapshot().presence);
-  if (event.status === "ONLINE") {
-    presence.add(event.username);
-  } else {
-    presence.delete(event.username);
+// ---------------------------------------------------------------------------
+// Active text channel (lastChannel persistence)
+// ---------------------------------------------------------------------------
+
+export function setActiveChannel(channelId: number): void {
+  const session = activeSession;
+  if (!session) {
+    return;
   }
-  appStore.patch({ presence });
+  appStore.patch({ activeChannelId: channelId });
+  void session.loadHistory(channelId).catch((error: unknown) => {
+    log.warn("chat", `history load failed: ${errorMessage(error)}`);
+  });
+  void connectionDirectory.update(session.recordId, { lastChannelId: channelId });
 }
 
-function applyVoiceEvent(event: VoiceMemberEvent): void {
-  const voiceMembers = new Map(appStore.getSnapshot().voiceMembers);
-  const current = new Set(voiceMembers.get(event.channelId) ?? []);
-  if (event.status === "JOINED") {
-    current.add(event.username);
+function restoreLastChannel(session: ConnectionSession): void {
+  const record = connectionDirectory.get(session.recordId);
+  const textChannels = session.channelStore.getSnapshot().filter((channel) => channel.type === "TEXT");
+  const preferred = record?.lastChannelId != null
+    ? textChannels.find((channel) => channel.id === record.lastChannelId)
+    : undefined;
+  const chosen = preferred ?? textChannels[0] ?? null;
+  if (chosen) {
+    setActiveChannel(chosen.id);
   } else {
-    current.delete(event.username);
+    appStore.patch({ activeChannelId: null });
   }
-  voiceMembers.set(event.channelId, current);
-  appStore.patch({ voiceMembers });
-  log.info("voice", `${event.username} ${event.status.toLowerCase()} channel #${event.channelId}`);
+}
+
+function ensureActiveChannelExists(): void {
+  const session = activeSession;
+  if (!session) {
+    return;
+  }
+  const current = appStore.getSnapshot().activeChannelId;
+  const stillThere = current !== null && session.channelStore.get(current) !== null;
+  if (!stillThere) {
+    pickFallbackTextChannel();
+  }
+}
+
+function pickFallbackTextChannel(): void {
+  const session = activeSession;
+  if (!session) {
+    appStore.patch({ activeChannelId: null });
+    return;
+  }
+  const fallback = session.channelStore.getSnapshot().find((channel) => channel.type === "TEXT") ?? null;
+  if (fallback) {
+    setActiveChannel(fallback.id);
+  } else {
+    appStore.patch({ activeChannelId: null });
+    void connectionDirectory.update(session.recordId, { lastChannelId: null });
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Voice session (room → Janus → SFU)
 // ---------------------------------------------------------------------------
 export async function joinVoice(channel: Channel): Promise<void> {
-  if (!restClient) {
+  const session = activeSession;
+  if (!session) {
     return;
   }
   await teardownVoice();
@@ -285,12 +401,12 @@ export async function joinVoice(channel: Channel): Promise<void> {
 
   let room: RoomInfo;
   try {
-    room = await restClient.getRoom(channel.id);
+    room = await session.rest.getRoom(channel.id);
   } catch (error) {
     appStore.patch({ voiceState: "failed", stateDetail: errorMessage(error) });
     return;
   }
-  stompClient?.send("/app/voice.join", { channelId: channel.id });
+  session.stomp.send("/app/voice.join", { channelId: channel.id });
 
   janusSessionLostFired = false;
   const janus = new JanusClient({
@@ -317,7 +433,7 @@ export async function joinVoice(channel: Channel): Promise<void> {
 
   try {
     const publisherHandleId = await janus.open();
-    const session = new SfuSession({
+    const sfu = new SfuSession({
       room,
       username: appStore.getSnapshot().ownUsername ?? "user",
       janus,
@@ -338,9 +454,9 @@ export async function joinVoice(channel: Channel): Promise<void> {
         },
       },
     });
-    sfuSession = session;
-    await session.start();
-    const mic = session.getMicTrack();
+    sfuSession = sfu;
+    await sfu.start();
+    const mic = sfu.getMicTrack();
     if (mic) {
       roomAudio.attachOwnMic(appStore.getSnapshot().ownUsername ?? "you", mic);
     }
@@ -348,7 +464,7 @@ export async function joinVoice(channel: Channel): Promise<void> {
   } catch (error) {
     appStore.patch({ voiceState: "failed", stateDetail: errorMessage(error) });
     await teardownVoice();
-    stompClient?.send("/app/voice.leave", { channelId: channel.id });
+    activeSession?.stomp.send("/app/voice.leave", { channelId: channel.id });
   }
 }
 
@@ -379,7 +495,7 @@ export async function leaveVoice(): Promise<void> {
   const channelId = appStore.getSnapshot().activeVoiceChannelId;
   await teardownVoice();
   if (channelId !== null) {
-    stompClient?.send("/app/voice.leave", { channelId });
+    activeSession?.stomp.send("/app/voice.leave", { channelId });
   }
   appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", participants: [], viewingFeedId: null, viewingUsername: null });
 }
@@ -456,14 +572,29 @@ export function toggleTestTone(channel: "left" | "right"): void {
   appStore.patch({ testToneChannel: roomAudio.getTestToneChannel() });
 }
 
+/** Per-user gains now live in the CONNECTION RECORD (per-server, survives re-login). */
+export function persistedGain(kind: "voice" | "share", username: string): number {
+  const record = activeSession ? connectionDirectory.get(activeSession.recordId) : null;
+  if (!record) {
+    return 1;
+  }
+  const volumes = kind === "voice" ? record.voiceVolumes : record.shareVolumes;
+  const stored = volumes[username];
+  return typeof stored === "number" && Number.isFinite(stored) ? stored : 1;
+}
+
 export function setVoiceVolume(username: string, gain: number): void {
   roomAudio.setVoiceVolume(username, gain);
-  localStorage.setItem(`space.vol.voice.${username}`, String(Math.round(gain * 100)));
+  if (activeSession) {
+    connectionDirectory.setVolume(activeSession.recordId, "voice", username, gain);
+  }
 }
 
 export function setShareVolume(username: string, gain: number): void {
   roomAudio.setShareVolume(username, gain);
-  localStorage.setItem(`space.vol.share.${username}`, String(Math.round(gain * 100)));
+  if (activeSession) {
+    connectionDirectory.setVolume(activeSession.recordId, "share", username, gain);
+  }
 }
 
 export function setViewingFeed(feedId: number | null): void {

@@ -4,6 +4,7 @@ import {
   appStore,
   joinVoice,
   leaveVoice,
+  persistedGain,
   roomAudio,
   setShareVolume,
   setVoiceVolume,
@@ -12,6 +13,7 @@ import {
   toggleTestTone,
   voiceView,
 } from "../runtime";
+import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { FeedInfo } from "../../types";
 
 const VOICE_STATE_LABEL: Record<string, string> = {
@@ -28,7 +30,7 @@ const VOICE_STATE_LABEL: Record<string, string> = {
  * rings and meters update via refs on the 10 Hz audio poll — no React re-render per
  * frame (a re-render would rip the range sliders out from under the cursor).
  */
-export function VoiceRoom(): React.JSX.Element {
+export function VoiceRoom({ session }: { session: ConnectionSession }): React.JSX.Element {
   const voiceState = useStore(appStore, (state) => state.voiceState);
   const stateDetail = useStore(appStore, (state) => state.stateDetail);
   const participants = useStore(appStore, (state) => state.participants);
@@ -112,7 +114,7 @@ export function VoiceRoom(): React.JSX.Element {
         <label>voice</label>
         <input
           type="range" min={0} max={200}
-          defaultValue={localStorage.getItem(`space.vol.voice.${username}`) ?? "100"}
+          defaultValue={String(Math.round(persistedGain("voice", username) * 100))}
           onChange={(event) => setVoiceVolume(username, event.currentTarget.valueAsNumber / 100)}
         />
         <span className="level-meter" ref={setMeterRef(username, "voice")}>—</span>
@@ -121,7 +123,7 @@ export function VoiceRoom(): React.JSX.Element {
         <label>share</label>
         <input
           type="range" min={0} max={200}
-          defaultValue={localStorage.getItem(`space.vol.share.${username}`) ?? "100"}
+          defaultValue={String(Math.round(persistedGain("share", username) * 100))}
           onChange={(event) => setShareVolume(username, event.currentTarget.valueAsNumber / 100)}
         />
         <span className="level-meter" ref={setMeterRef(username, "share")}>—</span>
@@ -169,9 +171,9 @@ export function VoiceRoom(): React.JSX.Element {
 }
 
 /** Re-join button for the failed/reconnecting states (the ladder itself lands in M4). */
-export function VoiceRejoinBar(): React.JSX.Element | null {
+export function VoiceRejoinBar({ session }: { session: ConnectionSession }): React.JSX.Element | null {
   const voiceState = useStore(appStore, (state) => state.voiceState);
-  const channels = useStore(appStore, (state) => state.channels);
+  const channels = useStore(session.channelStore, (channels) => channels);
   const activeChannelId = useStore(appStore, (state) => state.activeVoiceChannelId);
   if (voiceState !== "failed" && voiceState !== "reconnecting") {
     return null;

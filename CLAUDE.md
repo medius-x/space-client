@@ -27,12 +27,45 @@ Electron + TypeScript **спайк-клиент** OAK-сервера. Цель �
 Физическая грабля смоука: наушники на столе + микрофон гарнитуры вплотную к «уху» =
 акустическая петля, моргает MONO (оба канала громкие). Убрать микрофон от динамика.
 
-## Текущее состояние: M0 (React-шелл поверх ядра спайка)
+## Текущее состояние: M1 (ConnectionSession + каналы + чат-ядро)
 
 Полная перепись oak-клиента (план: goofy-leaping-sutton.md). M0 готов: electron-vite +
 React 19, стор-паттерн Emitter+useSyncExternalStore, runtime-синглтон вне React-дерева
 (HMR не роняет голос), голоc/шар/оракул перенесены без потерь, старый vanilla-UI удалён.
-Вехи M1–M7 в трекере задач. React запрещён вне src/renderer (test/architecture.test.ts).
+React запрещён вне src/renderer (test/architecture.test.ts).
+
+M1 (код готов, смоук пройден, ждёт коммита): KV-хранилище (JSON-файлы в userData,
+per-key лок в main, операции get/set/merge/rotate-tokens/delete/keys); записи
+подключений `connection:{uuid}` — порт ServerConnection (токены/lastChannelId/
+громкости/cachedServerName); `ConnectionSession` — rest+stomp+сторы на подключение
+(Channel/Message/Roster/Permission) + роутинг STOMP-топиков; ServerRail
+(переключение/забыть сервер, авто-resume последнего при старте); чат:
+история+группировка+композер (**Enter=send, Ctrl+Enter ИЛИ Shift+Enter=newline** —
+контракт oak; swap-настройка «Ctrl+Enter sends» — M7); create/rename/delete каналов
+live; клиентский гейтинг прав как в oak: композер скрыт без SEND_MESSAGES канала
+(`GET /api/channels/{id}/permissions/me`), «+» и ПКМ-меню каналов — только с
+MANAGE_CHANNELS (`GET /api/users/me/permissions`); громкости переехали из
+localStorage в запись (коалесированный флэш 800 мс). Голос не тронут.
+
+### Wire-контракты чата (ground truth, выжато из oak-server)
+
+- `GET /api/channels/{id}/messages?limit=&beforeId=` — старые первыми; limit дефолт 50,
+  кап 200. MessageResponse: автор ПЛОСКИЙ (authorId/authorUsername), attachments/
+  mentions/reactions НИКОГДА null (пустые массивы), createdAt — ISO-строка.
+- `POST /api/channels/{id}/messages` → 201 + созданное сообщение; STOMP-echo того же id
+  приходит ВСЕМ, включая отправителя → дедуп по id (MessageStore.applyLive).
+- Каналы: `POST /api/channels {name, type|null→TEXT}`; rename = **PATCH
+  `/api/channels/{id}/name` {name}** (голый PATCH /{id} — маршрут group-DM!);
+  `DELETE /api/channels/{id}` → 204.
+- Топики: `/topic/channels` (ChannelResponse, создание) · `/topic/channels.deleted`
+  (bare Long) · `/topic/channels.changed` (bare Long — ПИНГ без данных после КАЖДОЙ
+  мутации оверрайдов и rename → единственно правильная реакция — diff-refetch) ·
+  `/topic/server` (ServerProfileResponse) · сообщения канала: **`/topic/channel.{id}`**
+  (ТОЧКА-разделитель; .edited/.deleted/.reactions — суффиксы для M2). Подписка на ВСЕ
+  текст-каналы сразу, не только активный.
+- `GET /api/server` → {id, name, avatarKey, avatarUrl, connectionHost, connectionPort}.
+- Presigned-URL аттачей переподписуются на каждый fetch — identity только по `key`
+  (для M3; в DTO поле thumbnailUrl с обычной орфографией — проверить на M3).
 
 ## Bootstrap для Java-разработчика (мапа maven → npm)
 
@@ -76,17 +109,25 @@ npm run typecheck  # строгий TS
 
 ## Структура
 
-- `electron/` — main-процесс (окно, display-media handler, security) и preload.
-- `static/` — index.html + styles.css (палитра перенесена из oak-client, `--sp-*`).
-- `src/core/` — протокольные модули, framework-agnostic, переживают полную перепись:
-  `rest.ts` (Bearer + single-flight refresh), `stomp.ts` (STOMP 1.2 поверх raw WS),
-  `janus.ts` (REST long-poll), `janus-events.ts` (типизированные события videoroom),
-  `sdp.ts` (стерео-мунж), `classifier.ts` (mindex-классификация, slot↔stream mid),
-  `sfu.ts` (publisher+subscriber), `audio-math.ts` (чистая математика).
-- `src/audio.ts` — WebAudio-граф: per-user GainNode (голос/шар раздельно), speaking,
-  стерео-оракул (ChannelSplitter → AnalyserL/R ДО гейна), тест-тон 440L/660R.
-- `src/ui/` — vanilla DOM; `src/main.ts` — композиционный корень.
-- `test/` — vitest; все импурные модули принимают fake-и (`test/mocks/`).
+- `electron/` — main-процесс (окно, display-media handler, KV-хранилище, security) и preload.
+- `src/core/` — протокольные модули, framework-agnostic: `rest.ts` (Bearer +
+  single-flight refresh + чат/каналы/профиль), `stomp.ts` (STOMP 1.2 поверх raw WS),
+  `janus.ts` (REST long-poll), `janus-events.ts`, `sdp.ts` (стерео-мунж),
+  `classifier.ts`, `sfu.ts` (publisher+subscriber), `audio-math.ts`, `auth.ts`
+  (TokenStorage: local / memory / record-backed).
+- `src/domain/` — React-FREE логика (архитектурный тест запрещает react вне renderer):
+  `lib/store.ts` (Emitter), `persistence/kv-client.ts` (renderer-обёртка KV с
+  memory-fallback), `session/connection-record.ts` (запись подключения + директория +
+  RecordTokenStorage с CAS-ротацией), `session/connection-session.ts` (стек на
+  подключение: rest+stomp+сторы+топики), `stores/` (ChannelStore/MessageStore/
+  RosterStore), `logic/message-grouping.ts` (чистая группировка).
+- `src/media/RoomAudio.ts` — WebAudio-граф: `<audio>`-плейаут per-feed + параллельный
+  анализ, per-user GainNode (голос/шар раздельно), speaking, стерео-оракул, тест-тон.
+- `src/renderer/` — React: `runtime.ts` (синглтон вне React-дерева: appStore,
+  connectionDirectory, sessionBinding, голос), компоненты (ServerRail/Sidebar/ChatPane/
+  VoiceRoom/Diagnostics/ContextMenu/Modal/LoginScreen/MainScreen), `styles/global.css`.
+- `test/` — vitest (node-env): core + domain; все импурные модули принимают fake-и
+  (`test/mocks/`).
 
 ## Wire-контракт (ground truth, не отклоняться)
 

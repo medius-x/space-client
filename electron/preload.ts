@@ -15,3 +15,25 @@ contextBridge.exposeInMainWorld("spaceLog", {
     ipcRenderer.send("space-log", line);
   },
 });
+
+/** KV persistence bridge: declarative mutations executed under the main-process lock. */
+contextBridge.exposeInMainWorld("spaceKv", {
+  get(key: string): Promise<unknown> {
+    return ipcRenderer.invoke("space-kv:get", key);
+  },
+  set(key: string, value: unknown): Promise<unknown> {
+    return ipcRenderer.invoke("space-kv:set", key, value);
+  },
+  merge(key: string, partial: Record<string, unknown>): Promise<unknown> {
+    return ipcRenderer.invoke("space-kv:merge", key, partial);
+  },
+  rotateTokens(key: string, expectedRefreshToken: string, tokens: { token: string; refreshToken: string; expiresAt: number }): Promise<unknown> {
+    return ipcRenderer.invoke("space-kv:rotate-tokens", key, expectedRefreshToken, tokens);
+  },
+  delete(key: string): Promise<unknown> {
+    return ipcRenderer.invoke("space-kv:delete", key);
+  },
+  keys(prefix: string): Promise<unknown> {
+    return ipcRenderer.invoke("space-kv:keys", prefix);
+  },
+});

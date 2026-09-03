@@ -7,10 +7,12 @@ export interface AuthTokens {
   expiresAt: number;
 }
 
+export type ChannelType = "TEXT" | "VOICE" | "DM" | "GROUP_DM";
+
 export interface Channel {
   id: number;
   name: string;
-  type: "TEXT" | "VOICE" | "DM" | "GROUP_DM";
+  type: ChannelType;
   createdAt: string;
   locked: boolean;
 }
@@ -20,6 +22,109 @@ export interface UserSummary {
   username: string;
   avatarKey: string | null;
   avatarUrl: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Messages (GET/POST /api/channels/{id}/messages — MessageResponse verbatim)
+// ---------------------------------------------------------------------------
+
+/**
+ * `url` is a presigned GET that the server RE-SIGNS on every fetch — it is never a
+ * stable identity. `key` is. (Attachment rendering itself arrives in M3.)
+ */
+export interface Attachment {
+  fileName: string;
+  url: string;
+  key: string;
+  thumbnailKey: string | null;
+  thumbnailUrl: string | null;
+  durationMillis: number | null;
+}
+
+/** M2 surface — carried verbatim so the wire type never needs re-touching. */
+export interface MentionInfo {
+  type: "USER" | "ROLE" | "EVERYONE" | "HERE";
+  id: number | null;
+  name: string;
+  start: number;
+  end: number;
+}
+
+export interface ReactionSummary {
+  reaction: string;
+  count: number;
+  userIds: number[];
+  usernames: string[];
+}
+
+export interface ReplyInfo {
+  messageId: number;
+  authorId: number;
+  authorUsername: string;
+  preview: string;
+  createdAt: string;
+  deleted: boolean;
+  forward: ForwardInfo | null;
+  reply: ReplyInfo | null; // null = depth-5 cutoff
+}
+
+export interface ForwardInfo {
+  serverName: string;
+  channelName: string;
+  authorId: number;
+  authorUsername: string;
+  createdAt: string;
+  trusted: boolean;
+  reply: ReplyInfo | null;
+}
+
+export interface Message {
+  id: number;
+  channelId: number;
+  authorId: number;
+  authorUsername: string;
+  /** May be empty for attachment-only messages. */
+  content: string;
+  /** ISO-8601 UTC string. */
+  createdAt: string;
+  attachments: Attachment[];
+  mentions: MentionInfo[];
+  editedAt: string | null;
+  reactions: ReactionSummary[];
+  reply: ReplyInfo | null;
+  forward: ForwardInfo | null;
+}
+
+// ---------------------------------------------------------------------------
+// Server profile (GET /api/server)
+// ---------------------------------------------------------------------------
+
+export interface ServerProfile {
+  id: number;
+  name: string;
+  avatarKey: string | null;
+  avatarUrl: string | null;
+  connectionHost: string | null;
+  connectionPort: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// RBAC viewer permissions (M1: UI gating only — the server 403 stays the authority)
+// ---------------------------------------------------------------------------
+
+/** GET /api/users/me/permissions — server-wide; owner gets every name listed. */
+export interface MyPermissions {
+  permissions: string[];
+  owner: boolean;
+}
+
+export const MANAGE_CHANNELS_PERMISSION = "MANAGE_CHANNELS";
+export const SEND_MESSAGES_PERMISSION = "SEND_MESSAGES";
+
+/** GET /api/channels/{id}/permissions/me — override-aware, per channel. */
+export interface ChannelMyPermissions {
+  sendMessages: boolean;
+  attachFiles: boolean;
 }
 
 /** GET /api/channels/{id}/room — the server creates the room; roomId == channelId. */

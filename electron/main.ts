@@ -42,6 +42,107 @@ ipcMain.on("space-log", (_event, line: unknown) => {
 });
 appendLog("--- space started (main) ---");
 
+// KV store: atomic JSON files in userData. set() with an UPDATER runs the
+// read-modify-write under a per-key lock IN THIS PROCESS — token rotation and UI
+// writes (lastChannel/prefs/volume flushes) can never clobber each other (the
+// lost-update bug the Java client had to learn the hard way).
+const kvLocks = new Map<string, Promise<unknown>>();
+
+function kvPath(key: string): string {
+  const safe = key.replace(/[^a-z0-9-_.]/gi, "_");
+  return path.join(app.getPath("userData"), `${safe}.json`);
+}
+
+function kvRead(key: string): unknown {
+  try {
+    const raw = fs.readFileSync(kvPath(key), "utf8");
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+ipcMain.handle("space-kv:get", (_event, key: unknown) => {
+  return typeof key === "string" ? kvRead(key) : null;
+});
+
+/** All mutations run serialized per key (functions cannot cross IPC — hence the
+ *  declarative op kinds; compare-and-swap covers token rotation races). */
+async function kvMutate(key: string, apply: (current: unknown) => unknown): Promise<unknown> {
+  const previous = kvLocks.get(key) ?? Promise.resolve();
+  const job = previous.then(() => {
+    const next = apply(kvRead(key));
+    try {
+      fs.writeFileSync(kvPath(key), JSON.stringify(next ?? null, null, 2));
+    } catch (error) {
+      appendLog(`[kv] write ${key} failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return next;
+  });
+  kvLocks.set(key, job.catch(() => undefined));
+  return job;
+}
+
+ipcMain.handle("space-kv:set", (_event, key: unknown, value: unknown) => {
+  return typeof key === "string" ? kvMutate(key, () => value) : null;
+});
+
+/** Delete also runs under the per-key lock — a concurrent merge cannot resurrect the file. */
+async function kvDelete(key: string): Promise<null> {
+  const previous = kvLocks.get(key) ?? Promise.resolve();
+  const job = previous.then(() => {
+    try {
+      fs.unlinkSync(kvPath(key));
+    } catch {
+      // already gone — delete is idempotent
+    }
+    return null;
+  });
+  kvLocks.set(key, job.catch(() => undefined));
+  return job;
+}
+
+ipcMain.handle("space-kv:delete", (_event, key: unknown) => {
+  return typeof key === "string" ? kvDelete(key) : null;
+});
+
+// Returns SANITIZED key names (filename minus .json). Callers that stick to
+// sanitize-stable ids (uuid) can slice their prefix off verbatim.
+ipcMain.handle("space-kv:keys", (_event, prefix: unknown) => {
+  if (typeof prefix !== "string") {
+    return [];
+  }
+  try {
+    return fs
+      .readdirSync(app.getPath("userData"))
+      .filter((name) => name.startsWith(prefix) && name.endsWith(".json"))
+      .map((name) => name.slice(0, -".json".length));
+  } catch {
+    return [];
+  }
+});
+
+ipcMain.handle("space-kv:merge", (_event, key: unknown, partial: unknown) => {
+  if (typeof key !== "string" || typeof partial !== "object" || partial === null) {
+    return null;
+  }
+  return kvMutate(key, (current) => ({ ...(current as object ?? {}), ...(partial as object) }));
+});
+
+ipcMain.handle("space-kv:rotate-tokens", (_event, key: unknown, expectedRefreshToken: unknown, tokens: unknown) => {
+  if (typeof key !== "string") {
+    return null;
+  }
+  return kvMutate(key, (current) => {
+    const record = (current ?? {}) as Record<string, unknown>;
+    if (record.refreshToken !== expectedRefreshToken && typeof record.refreshToken === "string") {
+      appendLog(`[kv] token rotation LOST the race for ${key} — keeping the newer record`);
+      return record; // another rotation already won; drop ours
+    }
+    return { ...record, ...(tokens as object) };
+  });
+});
+
 async function createWindow(): Promise<void> {
   const mainWindow = new BrowserWindow({
     width: 1280,

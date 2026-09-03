@@ -7,7 +7,12 @@ import type { AuthTokens } from "../types";
  */
 export interface TokenStorage {
   load(): AuthTokens | null;
-  save(tokens: AuthTokens): void;
+  /**
+   * `previous` carries the tokens being replaced, when known — a durable storage can
+   * use it for compare-and-swap on rotation (two parallel refreshes of the same family
+   * must not clobber each other). May return a promise (disk-backed storages).
+   */
+  save(tokens: AuthTokens, previous?: AuthTokens | null): void | Promise<void>;
   clear(): void;
 }
 

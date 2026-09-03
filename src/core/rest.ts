@@ -1,4 +1,4 @@
-import type { AuthTokens, Channel, RoomInfo, UserSummary } from "../types";
+import type { AuthTokens, Channel, ChannelMyPermissions, ChannelType, Message, MyPermissions, RoomInfo, ServerProfile, UserSummary } from "../types";
 import type { TokenStorage } from "./auth";
 import { log } from "../logging";
 
@@ -63,7 +63,7 @@ export class RestClient {
       body: JSON.stringify({ username, password }),
       authenticated: false,
     });
-    this.saveTokens(auth);
+    await this.saveTokens(auth, null);
     log.info("rest", `logged in (token expires in ${auth.expiresIn}s)`);
   }
 
@@ -99,18 +99,80 @@ export class RestClient {
     return this.request<RoomInfo>(`/api/channels/${channelId}/room`, { method: "GET" });
   }
 
+  // ---------------------------------------------------------------------------
+  // Chat + channels + server profile (M1)
+  // ---------------------------------------------------------------------------
+
+  /** History page, OLDEST FIRST (the server reverses its DESC page query). */
+  async getMessages(channelId: number, beforeId?: number, limit?: number): Promise<Message[]> {
+    const params = new URLSearchParams();
+    if (limit !== undefined) {
+      params.set("limit", String(limit));
+    }
+    if (beforeId !== undefined) {
+      params.set("beforeId", String(beforeId));
+    }
+    const query = params.toString();
+    return this.request<Message[]>(`/api/channels/${channelId}/messages${query ? `?${query}` : ""}`, { method: "GET" });
+  }
+
+  /** 201 + the created message; the STOMP echo of the same id arrives too — dedup upstream. */
+  async sendMessage(channelId: number, request: {
+    content: string | null;
+    attachments?: { key: string; fileName: string; thumbnailKey?: string | null; durationMillis?: number | null }[];
+    replyToId?: number | null;
+  }): Promise<Message> {
+    return this.request<Message>(`/api/channels/${channelId}/messages`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  }
+
+  async createChannel(request: { name: string; type?: ChannelType | null }): Promise<Channel> {
+    return this.request<Channel>("/api/channels", {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  }
+
+  /** Rename is PATCH /name — the bare PATCH /{id} route belongs to group-DM rename. */
+  async renameChannel(channelId: number, name: string): Promise<Channel> {
+    return this.request<Channel>(`/api/channels/${channelId}/name`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  async deleteChannel(channelId: number): Promise<void> {
+    await this.request<unknown>(`/api/channels/${channelId}`, { method: "DELETE" });
+  }
+
+  async getServerProfile(): Promise<ServerProfile> {
+    return this.request<ServerProfile>("/api/server", { method: "GET" });
+  }
+
+  /** Server-wide viewer permissions + OWNER flag (for UI gating). */
+  async getMyPermissions(): Promise<MyPermissions> {
+    return this.request<MyPermissions>("/api/users/me/permissions", { method: "GET" });
+  }
+
+  /** Override-aware SEND_MESSAGES / ATTACH_FILES on one channel — gates the composer. */
+  async getChannelMyPermissions(channelId: number): Promise<ChannelMyPermissions> {
+    return this.request<ChannelMyPermissions>(`/api/channels/${channelId}/permissions/me`, { method: "GET" });
+  }
+
   logout(): void {
     this.tokenStorage.clear();
   }
 
   // ---------------------------------------------------------------------------
 
-  private saveTokens(auth: AuthResponse): void {
-    this.tokenStorage.save({
+  private async saveTokens(auth: AuthResponse, previous: AuthTokens | null): Promise<void> {
+    await this.tokenStorage.save({
       token: auth.token,
       refreshToken: auth.refreshToken,
       expiresAt: Date.now() + auth.expiresIn * 1000,
-    });
+    }, previous);
   }
 
   private async refreshOnce(): Promise<void> {
@@ -139,7 +201,7 @@ export class RestClient {
       throw new ApiError(response.status, "Session expired");
     }
     const auth = (await response.json()) as AuthResponse;
-    this.saveTokens(auth);
+    await this.saveTokens(auth, tokens);
     log.info("rest", "token refreshed");
   }
 

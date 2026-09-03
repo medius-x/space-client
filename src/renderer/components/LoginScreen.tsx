@@ -1,13 +1,15 @@
 import { useState } from "react";
 import { useStore } from "../hooks/useStore";
-import { appStore, startSession } from "../runtime";
+import { appStore, sessionBinding, startSession } from "../runtime";
 import { DEFAULT_REST_BASE_URL } from "../../config";
 
 export function LoginScreen(): React.JSX.Element {
   const error = useStore(appStore, (state) => state.loginError);
   const busy = useStore(appStore, (state) => state.loginBusy);
-  const [serverUrl, setServerUrl] = useState(DEFAULT_REST_BASE_URL);
-  const [username, setUsername] = useState("");
+  const prefill = useStore(appStore, (state) => state.loginPrefill);
+  const sessionAlive = useStore(sessionBinding, (current) => current !== null);
+  const [serverUrl, setServerUrl] = useState(prefill?.url ?? DEFAULT_REST_BASE_URL);
+  const [username, setUsername] = useState(prefill?.username ?? "");
   const [password, setPassword] = useState("");
 
   const submit = (mode: "login" | "register") => {
@@ -39,6 +41,11 @@ export function LoginScreen(): React.JSX.Element {
         <button className="ghost" disabled={busy} onClick={() => submit("register")}>
           Register
         </button>
+        {sessionAlive ? (
+          <button className="ghost" disabled={busy} onClick={() => appStore.patch({ screen: "main", loginError: null })}>
+            ← Back to the app
+          </button>
+        ) : null}
       </div>
     </div>
   );
