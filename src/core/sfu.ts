@@ -1,0 +1,703 @@
+import { log } from "../logging";
+import type { FeedInfo, RemoteTrackKind, RoomInfo } from "../types";
+import type { JanusClient, JanusJsep } from "./janus";
+import { isBadPin, isRoomVanished, type VideoroomEvent } from "./janus-events";
+import {
+  classifyFeed,
+  diffSubscriptions,
+  SlotMidTranslator,
+  streamKey,
+  wantedStreams,
+  type StreamRef,
+} from "./classifier";
+import { extractAudioFmtpLines, mungeStereoIntoAnswerIfOfferHasIt, mungeStereoIntoOffer } from "./sdp";
+
+/**
+ * Publisher + subscriber orchestration against the videoroom SFU — the distilled
+ * semantics of the Java SfuService, minus its audio engine (Chromium owns that):
+ *
+ *  - EMPTY RTCConfiguration (host candidates; the Janus gateway is local).
+ *  - VANILLA ICE: the initial offer/answer waits for icegatheringcomplete so the
+ *    candidates are baked into the SDP; renegotiations on a connected PC send
+ *    immediately (BUNDLE never re-fires gathering).
+ *  - onnegotiationneeded is a HARD no-op on the publisher PC — Janus's recvonly
+ *    answer mismatches our sendrecv offer and would loop renegotiations, growing a
+ *    video m-line per round. Offers are explicit and serialized by a busy-guard.
+ *  - The subscriber join is DEFERRED until at least one wanted stream exists (an
+ *    empty streams array is rejected 429 and poisons the handle permanently).
+ *  - Track routing goes through SlotMidTranslator (slot mid ≠ stream mid); video
+ *    tracks fall back to the FIFO of pending video subscriptions when the slot is
+ *    unknown (stale after slot reuse).
+ */
+
+export interface SfuCallbacks {
+  /** Full participants snapshot (UI re-render trigger). */
+  onParticipants(feeds: FeedInfo[]): void;
+  onRemoteTrack(feedId: number, username: string, kind: RemoteTrackKind, track: MediaStreamTrack): void;
+  onRemoteTrackEnded(feedId: number, username: string, kind: RemoteTrackKind): void;
+  onState(state: "connecting" | "live" | "reconnecting" | "failed", detail?: string): void;
+  /** Transport-level fatality; 426 (room vanished) is signalled via RoomVanishedError. */
+  onError(error: Error): void;
+}
+
+export class RoomVanishedError extends Error {
+  constructor() {
+    super("janus room vanished (426)");
+    this.name = "RoomVanishedError";
+  }
+}
+
+export class BadPinError extends Error {
+  constructor() {
+    super("janus room rejected the pin (433)");
+    this.name = "BadPinError";
+  }
+}
+
+/** Seam for tests: media acquisition lives behind this, production binds navigator. */
+export interface MediaSource {
+  getUserMedia(constraints: MediaStreamConstraints): Promise<MediaStream>;
+}
+
+export interface SfuSessionOptions {
+  room: RoomInfo;
+  username: string;
+  janus: JanusClient;
+  /** The publisher videoroom handle id from janus.open(). */
+  publisherHandleId: number;
+  mediaSource: MediaSource;
+  peerConnectionImpl?: typeof RTCPeerConnection;
+  callbacks: SfuCallbacks;
+}
+
+const ICE_GATHERING_TIMEOUT_MS = 2_000;
+
+/** Compact audio-fmtp summary for the log (the stereo evidence trail). */
+function fmtpSummary(sdp: string): string {
+  const lines = extractAudioFmtpLines(sdp);
+  if (lines.length === 0) {
+    return "(no audio m-lines)";
+  }
+  return lines.map((line) => `m${line.mindex}${line.mid ? `(${line.mid})` : ""}: ${line.fmtp ?? "no-fmtp"}`).join(" | ");
+}
+
+export class SfuSession {
+  private readonly room: RoomInfo;
+  private readonly username: string;
+  private readonly janus: JanusClient;
+  private readonly publisherHandleId: number;
+  private readonly mediaSource: MediaSource;
+  private readonly createPeerConnection: () => RTCPeerConnection;
+  private readonly callbacks: SfuCallbacks;
+
+  private publisherPc: RTCPeerConnection | null = null;
+  private micTrack: MediaStreamTrack | null = null;
+  private micSender: RTCRtpSender | null = null;
+  private screenVideoSender: RTCRtpSender | null = null;
+  private shareAudioSender: RTCRtpSender | null = null;
+  private shareAudioTrackId: string | null = null;
+  private closed = false;
+  private publisherIceReady = false;
+  private publisherOfferBusy = false;
+  private publisherOfferQueued = false;
+
+  private subscriberHandleId: number | null = null;
+  private subscriberPc: RTCPeerConnection | null = null;
+  private subscriberJoined = false;
+  private subscriberIceReady = false;
+  private subscriberAnswerBusy = false;
+  /** Single-slot stash: an offer arriving mid-answer is drained next, latest wins. */
+  private pendingSubscriberOffer: JanusJsep | null = null;
+  private readonly subscribedKeys = new Set<string>();
+  private readonly feeds = new Map<number, FeedInfo>();
+  private readonly translator = new SlotMidTranslator();
+  /** FIFO of video stream-mids awaiting a track (slot mids go stale after reuse). */
+  private readonly pendingVideoSubscriptions: { feedId: number; mid: string }[] = [];
+  private readonly viewedFeedIds = new Set<number>();
+  private lastSubscriberOfferSdp: string | null = null;
+
+  constructor(options: SfuSessionOptions) {
+    this.room = options.room;
+    this.username = options.username;
+    this.janus = options.janus;
+    this.publisherHandleId = options.publisherHandleId;
+    this.mediaSource = options.mediaSource;
+    this.createPeerConnection = () => new (options.peerConnectionImpl ?? RTCPeerConnection)();
+    this.callbacks = options.callbacks;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Publisher
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Mic up + join + publish. The mic rides m-line 0 (addTrack order fixes mindex —
+   * share-audio classification on the subscriber side depends on it).
+   */
+  async start(): Promise<void> {
+    this.callbacks.onState("connecting");
+    let micStream: MediaStream;
+    try {
+      micStream = await this.mediaSource.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+    } catch (error: unknown) {
+      this.callbacks.onState("failed", "microphone unavailable");
+      throw error instanceof Error ? error : new Error(String(error));
+    }
+    if (this.closed) {
+      for (const track of micStream.getTracks()) {
+        track.stop();
+      }
+      return;
+    }
+    this.micTrack = micStream.getAudioTracks()[0] ?? null;
+
+    const publisher = this.createPeerConnection();
+    this.publisherPc = publisher;
+    // CRITICAL no-op: renegotiations are explicit (start/startShare/stopShare) — see class doc.
+    publisher.onnegotiationneeded = () => undefined;
+    publisher.onicecandidate = () => undefined; // vanilla ICE — candidates stay in the SDP
+    publisher.onconnectionstatechange = () => {
+      if (publisher.connectionState === "connected") {
+        this.publisherIceReady = true;
+        this.callbacks.onState("live");
+      } else if (publisher.connectionState === "failed") {
+        this.callbacks.onState("failed", "publisher connection failed");
+      }
+    };
+    if (this.micTrack) {
+      this.micSender = publisher.addTrack(this.micTrack, new MediaStream([this.micTrack]));
+    }
+
+    const joinBody: Record<string, unknown> = {
+      request: "join",
+      room: this.room.roomId,
+      ptype: "publisher",
+      display: this.username,
+    };
+    if (this.room.pin) {
+      joinBody.pin = this.room.pin;
+    }
+    const joinResult = await this.janus.send(this.publisherHandleId, joinBody);
+    this.assertNoVideoroomError(joinResult.data, "publisher join");
+
+    await this.renegotiatePublisher();
+    log.info("sfu", `publisher live (mic=${this.micTrack ? "on" : "NONE"})`);
+  }
+
+  /** A/B APM probe (phase 9): swap the mic track without touching m-lines. */
+  async replaceMicTrack(track: MediaStreamTrack | null): Promise<void> {
+    if (this.micSender) {
+      await this.micSender.replaceTrack(track);
+    }
+    this.micTrack = track;
+  }
+
+  getMicTrack(): MediaStreamTrack | null {
+    return this.micTrack;
+  }
+
+  setMicEnabled(enabled: boolean): void {
+    if (this.micTrack) {
+      this.micTrack.enabled = enabled;
+    }
+  }
+
+  /**
+   * Screen share: video FIRST, then share audio — the m-line order [mic, screen,
+   * shareAudio] is the classification contract. Renegotiates once.
+   */
+  async startShare(displayStream: MediaStream): Promise<void> {
+    const videoTrack = displayStream.getVideoTracks()[0];
+    const audioTrack = displayStream.getAudioTracks()[0] ?? null;
+    if (!videoTrack || !this.publisherPc) {
+      throw new Error("share needs a video track and a live publisher");
+    }
+    this.screenVideoSender = this.publisherPc.addTrack(videoTrack, new MediaStream([videoTrack]));
+    if (audioTrack) {
+      this.shareAudioSender = this.publisherPc.addTrack(audioTrack, new MediaStream([audioTrack]));
+      this.shareAudioTrackId = audioTrack.id;
+      // The stereo killer: Opus intensity-stereo quantizes the side channel to zero at
+      // low bitrates (live smoke: Δ collapsed 16.5 dB → 0.4 dB). Janus never echoes
+      // maxaveragebitrate, so SendParameters.maxBitrate is the ONLY lever — raise the
+      // share-audio ceiling well past voice-grade.
+      await this.raiseSenderBitrate(this.shareAudioSender, 256_000);
+    }
+    log.info("sfu", `share started (audio=${audioTrack ? audioTrack.id : "none"}, audio bitrate ceiling 256 kbps)`);
+    await this.renegotiatePublisher();
+  }
+
+  /** Best-effort maxBitrate raise on a sender (encodings may be absent pre-negotiation). */
+  private async raiseSenderBitrate(sender: RTCRtpSender, maxBitrate: number): Promise<void> {
+    try {
+      const parameters = sender.getParameters();
+      if (!parameters.encodings || parameters.encodings.length === 0) {
+        parameters.encodings = [{}];
+      }
+      parameters.encodings[0]!.maxBitrate = maxBitrate;
+      await sender.setParameters(parameters);
+      log.info("sfu", `sender bitrate ceiling → ${maxBitrate} bps`);
+    } catch (error: unknown) {
+      log.warn("sfu", `bitrate raise failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async stopShare(): Promise<void> {
+    if (!this.publisherPc) {
+      return;
+    }
+    if (this.screenVideoSender) {
+      this.publisherPc.removeTrack(this.screenVideoSender);
+      this.screenVideoSender = null;
+    }
+    if (this.shareAudioSender) {
+      this.publisherPc.removeTrack(this.shareAudioSender);
+      this.shareAudioSender = null;
+    }
+    this.shareAudioTrackId = null;
+    await this.renegotiatePublisher();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Subscriber
+  // ---------------------------------------------------------------------------
+
+  /** Which remote feed's screen we are watching (drives wanted-streams deltas). */
+  setViewingFeed(feedId: number | null): void {
+    this.viewedFeedIds.clear();
+    if (feedId !== null) {
+      this.viewedFeedIds.add(feedId);
+    }
+    void this.syncSubscriptions();
+  }
+
+  /** Entry point for Janus events routed from main (joined/event/attached/updated). */
+  handleEvent(event: VideoroomEvent): void {
+    if (this.closed) {
+      return;
+    }
+    switch (event.kind) {
+      case "joined":
+      case "event": {
+        if (event.publishers) {
+          for (const entry of event.publishers) {
+            this.recordFeed(entry);
+          }
+        }
+        if (event.kind === "event") {
+          if (event.unpublished !== undefined) {
+            this.removeFeed(event.unpublished);
+          }
+          if (event.leaving !== undefined) {
+            this.removeFeed(event.leaving);
+          }
+        }
+        if (event.publishers?.length || (event.kind === "event" && (event.unpublished !== undefined || event.leaving !== undefined))) {
+          this.callbacks.onParticipants([...this.feeds.values()]);
+        }
+        void this.syncSubscriptions();
+        break;
+      }
+      case "attached":
+      case "updated":
+        for (const stream of event.streams) {
+          this.translator.onAttached(stream.slotMid, stream.feedId, stream.streamMid);
+        }
+        break;
+      case "error":
+        if (isRoomVanished(event)) {
+          this.callbacks.onError(new RoomVanishedError());
+        } else if (isBadPin(event)) {
+          this.callbacks.onError(new BadPinError());
+        } else {
+          this.callbacks.onError(new Error(`videoroom error ${event.errorCode}: ${event.errorMessage}`));
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
+  /** Subscriber offers arrive through the janus client's onJsep (join/subscribe answers
+   *  included). Serialized by a busy-guard with a single-slot stash — latest wins. */
+  async handleSubscriberOffer(jsep: JanusJsep): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+    if (this.subscriberAnswerBusy) {
+      this.pendingSubscriberOffer = jsep;
+      return;
+    }
+    this.subscriberAnswerBusy = true;
+    try {
+      let current: JanusJsep | null = jsep;
+      while (current !== null && !this.closed) {
+        this.lastSubscriberOfferSdp = current.sdp;
+        log.info("sdp", `WIRE offer fmtp (janus→us): ${fmtpSummary(current.sdp)}`);
+        const subscriber = this.subscriberPc ?? this.createSubscriber();
+        await subscriber.setRemoteDescription({ type: "offer", sdp: current.sdp });
+        const answer = await subscriber.createAnswer();
+        const mungedSdp = mungeStereoIntoAnswerIfOfferHasIt(answer.sdp ?? "", current.sdp);
+        await subscriber.setLocalDescription({ type: "answer", sdp: mungedSdp });
+        if (!this.subscriberIceReady) {
+          await this.waitForGathering(subscriber);
+          this.subscriberIceReady = true;
+        }
+        const localDescription = subscriber.localDescription;
+        if (!localDescription || this.subscriberHandleId === null) {
+          return;
+        }
+        await this.janus.send(this.subscriberHandleId, { request: "start" }, {
+          type: "answer",
+          sdp: localDescription.sdp ?? "",
+        });
+        current = this.pendingSubscriberOffer;
+        this.pendingSubscriberOffer = null;
+      }
+    } catch (error: unknown) {
+      log.error("sfu", `subscriber answer failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      this.subscriberAnswerBusy = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+
+  async close(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    this.callbacks.onState("reconnecting", "leaving");
+    for (const [feedId, feed] of this.feeds) {
+      this.teardownFeedTracks(feedId, feed.display);
+    }
+    this.feeds.clear();
+    this.translator.clear();
+    try {
+      this.publisherPc?.close();
+    } catch {
+      // already closed
+    }
+    try {
+      this.subscriberPc?.close();
+    } catch {
+      // already closed
+    }
+    this.publisherPc = null;
+    this.subscriberPc = null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Internals
+  // ---------------------------------------------------------------------------
+
+  private recordFeed(feed: FeedInfo): void {
+    const previous = this.feeds.get(feed.feedId);
+    log.info("sfu",
+      `feed ${feed.feedId} "${feed.display}" streams=[${feed.streams
+        .map((stream) => `${stream.type}:${stream.mid}/m${stream.mindex}${stream.disabled ? "!" : ""}`)
+        .join(" ")}]${previous ? " (update)" : ""}`);
+    // A stopped share announces itself as a DISABLED stream on a known mid — translate
+    // that into track teardown (Janus may otherwise keep the m-line a=inactive forever).
+    if (previous) {
+      const classificationBefore = classifyFeed(previous);
+      const classificationAfter = classifyFeed(feed);
+      for (const mid of classificationBefore.videoMids) {
+        if (!classificationAfter.videoMids.includes(mid) && previous.streams.find((stream) => stream.mid === mid)?.disabled) {
+          this.callbacks.onRemoteTrackEnded(feed.feedId, feed.display, "video");
+        }
+      }
+      for (const mid of classificationBefore.shareAudioMids) {
+        if (!classificationAfter.shareAudioMids.includes(mid)) {
+          this.callbacks.onRemoteTrackEnded(feed.feedId, feed.display, "share");
+        }
+      }
+    }
+    this.feeds.set(feed.feedId, feed);
+  }
+
+  private removeFeed(feedId: number): void {
+    const feed = this.feeds.get(feedId);
+    if (!feed) {
+      return;
+    }
+    this.teardownFeedTracks(feedId, feed.display);
+    this.feeds.delete(feedId);
+    this.translator.forgetFeed(feedId);
+    this.viewedFeedIds.delete(feedId);
+    for (let index = this.pendingVideoSubscriptions.length - 1; index >= 0; index--) {
+      if (this.pendingVideoSubscriptions[index]?.feedId === feedId) {
+        this.pendingVideoSubscriptions.splice(index, 1);
+      }
+    }
+    for (const key of [...this.subscribedKeys]) {
+      if (key.startsWith(`${feedId}:`)) {
+        this.subscribedKeys.delete(key);
+      }
+    }
+  }
+
+  private teardownFeedTracks(feedId: number, username: string): void {
+    const feed = this.feeds.get(feedId);
+    if (!feed) {
+      return;
+    }
+    const classification = classifyFeed(feed);
+    if (classification.voiceMid !== undefined) {
+      this.callbacks.onRemoteTrackEnded(feedId, username, "voice");
+    }
+    for (const _mid of classification.shareAudioMids) {
+      this.callbacks.onRemoteTrackEnded(feedId, username, "share");
+    }
+    for (const _mid of classification.videoMids) {
+      this.callbacks.onRemoteTrackEnded(feedId, username, "video");
+    }
+  }
+
+  /** The wanted-streams pump: deferred join, then subscribe/unsubscribe deltas.
+   *  OWN feed is excluded — this Janus config echoes our own publisher back to us
+   *  (live smoke: every client built a voice chain for its own username). */
+  private async syncSubscriptions(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+    const others = [...this.feeds.values()].filter((feed) => feed.display !== this.username);
+    const wanted = wantedStreams(others, this.viewedFeedIds);
+    if (wanted.length === 0) {
+      return; // never join with an empty streams array (429 poisons the handle)
+    }
+    try {
+      if (!this.subscriberJoined) {
+        this.subscriberHandleId = await this.janus.attach("janus.plugin.videoroom");
+        this.createSubscriber();
+        const joinBody: Record<string, unknown> = {
+          request: "join",
+          ptype: "subscriber",
+          room: this.room.roomId,
+          streams: wanted.map((ref) => ({ feed: ref.feed, mid: ref.mid })),
+          autoupdate: false,
+        };
+        if (this.room.pin) {
+          joinBody.pin = this.room.pin;
+        }
+        await this.janus.send(this.subscriberHandleId, joinBody);
+        this.subscriberJoined = true;
+        for (const ref of wanted) {
+          this.subscribedKeys.add(streamKey(ref));
+          if (this.isVideoMid(ref)) {
+            this.pendingVideoSubscriptions.push({ feedId: ref.feed, mid: ref.mid });
+          }
+        }
+        log.info("sfu", `subscriber joined with ${wanted.length} streams`);
+        return;
+      }
+      const diff = diffSubscriptions(this.subscribedKeys, wanted);
+      if (diff.subscribe.length === 0 && diff.unsubscribe.length === 0) {
+        return;
+      }
+      for (const ref of diff.subscribe) {
+        this.subscribedKeys.add(streamKey(ref));
+        if (this.isVideoMid(ref)) {
+          this.pendingVideoSubscriptions.push({ feedId: ref.feed, mid: ref.mid });
+        }
+      }
+      for (const ref of diff.unsubscribe) {
+        this.subscribedKeys.delete(streamKey(ref));
+      }
+      if (diff.subscribe.length > 0) {
+        await this.janus.send(this.subscriberHandleId!, { request: "subscribe", streams: diff.subscribe.map((ref) => ({ feed: ref.feed, mid: ref.mid })) });
+      }
+      if (diff.unsubscribe.length > 0) {
+        await this.janus.send(this.subscriberHandleId!, { request: "unsubscribe", streams: diff.unsubscribe.map((ref) => ({ feed: ref.feed, mid: ref.mid })) });
+      }
+      log.info("sfu", `subscriptions +${diff.subscribe.length}/-${diff.unsubscribe.length}`);
+    } catch (error: unknown) {
+      log.error("sfu", `subscription sync failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private isVideoMid(ref: StreamRef): boolean {
+    const feed = this.feeds.get(ref.feed);
+    return feed !== undefined && classifyFeed(feed).videoMids.includes(ref.mid);
+  }
+
+  private createSubscriber(): RTCPeerConnection {
+    if (this.subscriberPc) {
+      return this.subscriberPc;
+    }
+    const subscriber = this.createPeerConnection();
+    this.subscriberPc = subscriber;
+    subscriber.onnegotiationneeded = () => undefined; // Janus is the offerer here
+    subscriber.onicecandidate = () => undefined;
+    subscriber.ontrack = (event: RTCTrackEvent) => this.routeRemoteTrack(event);
+    return subscriber;
+  }
+
+  /** Slot mid → stream mid → classification → callback. The ONLY track-routing truth. */
+  private routeRemoteTrack(event: RTCTrackEvent): void {
+    const slotMid = event.transceiver.mid ?? "";
+    const resolved = this.translator.resolve(slotMid);
+    if (!resolved) {
+      log.warn("sfu", `track on unknown slot mid ${slotMid} — dropped (no attached event yet?)`);
+      return;
+    }
+    const feedId = resolved.feedId;
+    const feed = this.feeds.get(feedId);
+    if (!feed) {
+      log.warn("sfu", `track for unknown feed ${feedId}`);
+      return;
+    }
+    const classification = classifyFeed(feed);
+    const streamMid = resolved.streamMid;
+    const track = event.track;
+    if (classification.voiceMid === streamMid) {
+      this.callbacks.onRemoteTrack(feedId, feed.display, "voice", track);
+      return;
+    }
+    if (classification.shareAudioMids.includes(streamMid)) {
+      this.callbacks.onRemoteTrack(feedId, feed.display, "share", track);
+      return;
+    }
+    if (classification.videoMids.includes(streamMid)) {
+      this.callbacks.onRemoteTrack(feedId, feed.display, "video", track);
+      return;
+    }
+    // Stale slot mid reuse: bind the video track to the OLDEST pending video sub.
+    const pendingIndex = this.pendingVideoSubscriptions.findIndex((entry) => entry.feedId === feedId);
+    if (pendingIndex !== -1) {
+      this.pendingVideoSubscriptions.splice(pendingIndex, 1);
+      this.callbacks.onRemoteTrack(feedId, feed.display, "video", track);
+      return;
+    }
+    log.warn("sfu", `unclassified track on slot ${slotMid} (stream ${streamMid}, feed ${feedId})`);
+  }
+
+  /** Explicit, serialized publisher offers (busy-guard; latest-wins re-run). */
+  private async renegotiatePublisher(): Promise<void> {
+    if (this.publisherOfferBusy) {
+      this.publisherOfferQueued = true;
+      return;
+    }
+    this.publisherOfferBusy = true;
+    try {
+      do {
+        this.publisherOfferQueued = false;
+        await this.publishOnce();
+      } while (this.publisherOfferQueued && !this.closed);
+    } finally {
+      this.publisherOfferBusy = false;
+    }
+  }
+
+  private async publishOnce(): Promise<void> {
+    const publisher = this.publisherPc;
+    if (!publisher || this.closed) {
+      return;
+    }
+    const offer = await publisher.createOffer();
+    let sdp = offer.sdp ?? "";
+    if (this.shareAudioTrackId) {
+      sdp = mungeStereoIntoOffer(sdp, this.shareAudioTrackId);
+    }
+    await publisher.setLocalDescription({ type: "offer", sdp });
+    if (!this.publisherIceReady) {
+      await this.waitForGathering(publisher);
+      this.publisherIceReady = true;
+    }
+    const localDescription = publisher.localDescription;
+    if (!localDescription) {
+      throw new Error("publisher localDescription missing");
+    }
+    if (this.shareAudioTrackId) {
+      log.info("sdp", `SENT offer fmtp: ${fmtpSummary(localDescription.sdp ?? "")}`);
+    }
+    const answer = await this.janus.send(this.publisherHandleId,
+      { request: "configure", audio: true, video: true },
+      { type: "offer", sdp: localDescription.sdp ?? "" });
+    this.assertNoVideoroomError(answer.data, "publish");
+    if (answer.jsep) {
+      await publisher.setRemoteDescription({ type: answer.jsep.type as RTCSdpType, sdp: answer.jsep.sdp });
+      if (this.shareAudioTrackId) {
+        log.info("sdp", `JANUS answer fmtp: ${fmtpSummary(answer.jsep.sdp)}`);
+      }
+    }
+  }
+
+  /** Vanilla ICE: wait until candidates are IN the SDP (bounded — 2 s cap). */
+  private waitForGathering(pc: RTCPeerConnection): Promise<void> {
+    if (pc.iceGatheringState === "complete") {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      const finish = () => {
+        pc.removeEventListener("icegatheringstatechange", onChange);
+        clearTimeout(timer);
+        resolve();
+      };
+      const onChange = () => {
+        if (pc.iceGatheringState === "complete") {
+          finish();
+        }
+      };
+      const timer = setTimeout(finish, ICE_GATHERING_TIMEOUT_MS);
+      pc.addEventListener("icegatheringstatechange", onChange);
+    });
+  }
+
+  private assertNoVideoroomError(data: unknown, what: string): void {
+    if (data !== null && typeof data === "object" && "error_code" in (data as Record<string, unknown>)) {
+      const record = data as { error_code: number; error?: string };
+      log.error("sfu", `${what} rejected: ${record.error_code} ${record.error ?? ""}`);
+      if (record.error_code === 426) {
+        throw new RoomVanishedError();
+      }
+      if (record.error_code === 433) {
+        throw new BadPinError();
+      }
+      throw new Error(`videoroom ${what} failed: ${record.error_code}`);
+    }
+  }
+
+  /** Diagnostics surface. */
+  getLastSubscriberOfferSdp(): string | null {
+    return this.lastSubscriberOfferSdp;
+  }
+
+  getPublisherLocalSdp(): string | null {
+    return this.publisherPc?.localDescription?.sdp ?? null;
+  }
+
+  /** Wire-level oracle: inbound audio RTP levels/bytes from the subscriber PC.
+   *  Distinguishes "RTP flows but playout is dead" from "no RTP at all". */
+  async getInboundAudioLine(): Promise<string> {
+    if (!this.subscriberPc) {
+      return "—";
+    }
+    try {
+      const report = await this.subscriberPc.getStats();
+      const parts: string[] = [];
+      report.forEach((stat) => {
+        if (stat.type !== "inbound-rtp" || stat.kind !== "audio") {
+          return;
+        }
+        const record = stat as unknown as Record<string, unknown>;
+        const audioLevel = typeof record.audioLevel === "number" ? record.audioLevel.toFixed(3) : "?";
+        const bytes = typeof record.bytesReceived === "number" ? record.bytesReceived : 0;
+        parts.push(`lvl=${audioLevel} bytes=${bytes}`);
+      });
+      return parts.length > 0 ? parts.join(" | ") : "no inbound audio";
+    } catch {
+      return "stats error";
+    }
+  }
+
+  getSubscribedCount(): number {
+    return this.subscribedKeys.size;
+  }
+}

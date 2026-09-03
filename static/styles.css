@@ -1,0 +1,314 @@
+/*
+ * Space spike theme.
+ *
+ * The palette is ported verbatim from the oak-client JavaFX theme (style.css layer 1,
+ * -oak-* lookup variables) — same Discord-like dark look, now as web CSS custom
+ * properties. Spacing/radius values are the spike's own; only the colors are canon.
+ */
+:root {
+  /* Surfaces, darkest → lightest. */
+  --sp-darkest: #1e1f22;   /* caption bar, sidebar */
+  --sp-surface: #2b2d31;   /* panels, cards */
+  --sp-pane: #313338;      /* content pane */
+  --sp-input: #383a40;     /* text inputs, composer */
+  --sp-control: #4e5058;   /* default grey button */
+  --sp-hover: #35373c;     /* row hover */
+  --sp-selected: #404249;  /* row selected */
+
+  /* Text. */
+  --sp-text: #f2f3f5;
+  --sp-text-muted: #b5bac1;
+  --sp-text-dim: #80848e;
+
+  /* Accents. */
+  --sp-accent: #5865f2;    /* blurple */
+  --sp-red: #da373c;
+  --sp-red-dark: #b3282c;
+  --sp-green: #23a55a;     /* online / speaking */
+  --sp-yellow: #f0b232;    /* reconnecting */
+  --sp-link: #00a8fc;
+
+  font-family: "Open Sans", "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--sp-darkest);
+  color: var(--sp-text);
+  height: 100vh;
+  overflow: hidden;
+}
+
+#app { height: 100vh; display: flex; flex-direction: column; }
+
+/* ===== Layout shells ===== */
+
+.login-screen {
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.login-card {
+  background: var(--sp-surface);
+  border-radius: 8px;
+  padding: 32px;
+  width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.login-title { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
+
+.main-shell { display: flex; height: 100vh; }
+
+.sidebar {
+  width: 240px;
+  background: var(--sp-darkest);
+  padding: 12px 8px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.sidebar-section-title {
+  color: var(--sp-text-dim);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 12px 8px 4px;
+}
+
+.channel-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  color: var(--sp-text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.channel-row:hover { background: var(--sp-hover); color: var(--sp-text); }
+.channel-row.active { background: var(--sp-selected); color: var(--sp-text); }
+.channel-row.locked { opacity: 0.5; cursor: not-allowed; }
+.channel-row .member-list { margin-left: 18px; }
+
+.member-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px 3px 26px;
+  color: var(--sp-text-muted);
+  font-size: 13px;
+}
+
+.presence-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--sp-text-dim);
+  flex-shrink: 0;
+}
+.presence-dot.online { background: var(--sp-green); }
+
+.content {
+  flex: 1;
+  background: var(--sp-pane);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.content-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--sp-darkest);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.content-body { flex: 1; overflow-y: auto; padding: 16px; }
+
+/* ===== Voice room ===== */
+
+.voice-status {
+  padding: 8px 16px;
+  font-size: 13px;
+  color: var(--sp-text-muted);
+  background: var(--sp-surface);
+  flex-shrink: 0;
+}
+.voice-status.live { color: var(--sp-green); }
+.voice-status.connecting { color: var(--sp-yellow); }
+.voice-status.failed { color: var(--sp-red); }
+
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.tile {
+  background: var(--sp-surface);
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 2px solid transparent;
+}
+.tile.speaking { border-color: var(--sp-green); }
+.tile.self { border-color: var(--sp-control); }
+
+.tile-head { display: flex; align-items: center; gap: 8px; }
+.tile-avatar {
+  width: 36px; height: 36px; border-radius: 50%;
+  background: var(--sp-accent);
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; color: var(--sp-text);
+}
+.tile-name { font-weight: 600; }
+.tile-badges { margin-left: auto; display: flex; gap: 4px; font-size: 11px; color: var(--sp-text-dim); }
+
+.tile-controls { display: flex; align-items: center; gap: 8px; }
+.tile-controls label { color: var(--sp-text-dim); font-size: 12px; white-space: nowrap; }
+
+input[type="range"] { flex: 1; accent-color: var(--sp-accent); }
+
+.level-meter {
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  color: var(--sp-text-muted);
+  min-width: 70px;
+  text-align: right;
+}
+
+.room-toolbar {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--sp-darkest);
+  flex-shrink: 0;
+  align-items: center;
+}
+
+/* ===== Buttons & inputs ===== */
+
+button {
+  background: var(--sp-control);
+  color: var(--sp-text);
+  border: none;
+  border-radius: 4px;
+  padding: 8px 14px;
+  font-size: 14px;
+  cursor: pointer;
+  font-family: inherit;
+}
+button:hover { background: var(--sp-selected); }
+button.primary { background: var(--sp-accent); color: #fff; }
+button.primary:hover { filter: brightness(1.1); }
+button.danger { background: var(--sp-red); }
+button.danger:hover { background: var(--sp-red-dark); }
+button.ghost { background: transparent; color: var(--sp-text-muted); }
+button.ghost:hover { background: var(--sp-hover); color: var(--sp-text); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.on { background: var(--sp-green); color: #fff; }
+
+input[type="text"], input[type="password"], input[type="url"] {
+  background: var(--sp-darkest);
+  border: 1px solid var(--sp-control);
+  border-radius: 4px;
+  color: var(--sp-text);
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  width: 100%;
+}
+input:focus { outline: none; border-color: var(--sp-accent); }
+
+.error-line { color: var(--sp-red); font-size: 13px; min-height: 18px; }
+
+/* ===== Share viewer ===== */
+
+.share-panel {
+  background: var(--sp-surface);
+  border-radius: 8px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.share-panel video {
+  width: 100%;
+  border-radius: 4px;
+  background: #000;
+  max-height: 55vh;
+}
+.share-panel-head { display: flex; align-items: center; gap: 8px; padding: 0 4px; }
+
+/* ===== Diagnostics ===== */
+
+.diagnostics {
+  position: fixed;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 420px;
+  background: rgba(30, 31, 34, 0.97);
+  border-left: 1px solid var(--sp-control);
+  padding: 12px;
+  overflow-y: auto;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+body:not(.diag-open) .diagnostics { display: none; }
+
+.diag-title {
+  font-weight: 700;
+  color: var(--sp-text-muted);
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+}
+
+.diag-kv { display: flex; justify-content: space-between; gap: 8px; }
+.diag-kv .key { color: var(--sp-text-dim); }
+.diag-kv .value { color: var(--sp-text-muted); text-align: right; word-break: break-all; }
+
+.diag-verdict { font-size: 14px; font-weight: 700; text-align: center; padding: 6px; border-radius: 4px; }
+.diag-verdict.pass { background: var(--sp-green); color: #fff; }
+.diag-verdict.mono { background: var(--sp-yellow); color: #000; }
+.diag-verdict.silent { background: var(--sp-control); color: var(--sp-text); }
+
+.diag-log {
+  background: #000;
+  border-radius: 4px;
+  padding: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--sp-text-muted);
+  flex: 1;
+  min-height: 80px;
+}
+
+.diag-toggle {
+  position: fixed;
+  right: 12px;
+  top: 12px;
+  z-index: 11;
+  font-size: 12px;
+  padding: 4px 10px;
+}
+body:not(.diag-open) .diag-toggle { right: 12px; }

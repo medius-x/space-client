@@ -1,0 +1,26 @@
+{
+  "name": "space-client",
+  "version": "0.1.0",
+  "description": "Space — Electron/TypeScript spike client for the OAK server (stereo + per-user volume validation)",
+  "private": true,
+  "main": "dist/main.js",
+  "type": "commonjs",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build:main": "esbuild electron/main.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/main.js",
+    "build:preload": "esbuild electron/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/preload.js",
+    "build:renderer": "esbuild src/main.ts --bundle --format=iife --outfile=dist/renderer.js",
+    "build": "npm run build:main && npm run build:preload && npm run build:renderer",
+    "start": "npm run build && electron .",
+    "start2": "npm run build && electron . --space-instance=b",
+    "test": "vitest run",
+    "watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "electron": "^44.1.1",
+    "esbuild": "^0.28.0",
+    "typescript": "~5.9.0",
+    "vitest": "^4.1.0"
+  }
+}
