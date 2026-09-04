@@ -88,9 +88,18 @@ const NOT_IMPLEMENTED: ReadonlySet<string> = new Set([
   "ADD_REACTIONS", "SPEAK", "USE_VAD", "PRIORITY_SPEAKER", "STREAM", "REQUEST_TO_SPEAK",
 ]);
 
-const ROLE_PALETTE: readonly number[] = [
-  0xff5865f2, 0xffeb459e, 0xfff47b67, 0xfff0b232, 0xff2dc770, 0xff23a55a,
-  0xff00a8fc, 0xff3ba55c, 0xff9b59b6, 0xffe91e63, 0xffe67e22, 0xff99aab5,
+/**
+ * oak's EXACT role palette (ServerSettingsWindow.presetColors): 11 hues
+ * {0,30,50,90,130,165,190,220,260,300,330} + a grey column, bright row
+ * hsb(h,.78,.95) over muted hsb(h,.58,.60) — 12 columns × 2 rows, swatch 28px.
+ */
+const ROLE_PALETTE_TOP: readonly number[] = [
+  0xfff23535, 0xfff29435, 0xfff2d335, 0xff94f235, 0xff35f255, 0xff35f2c3,
+  0xff35d3f2, 0xff3574f2, 0xff7435f2, 0xfff235f2, 0xfff23594, 0xffd9d9d9,
+];
+const ROLE_PALETTE_BOTTOM: readonly number[] = [
+  0xff994040, 0xff996d40, 0xff998a40, 0xff6d9940, 0xff40994f, 0xff409983,
+  0xff408a99, 0xff405e99, 0xff5e4099, 0xff994099, 0xff99406d, 0xff808080,
 ];
 
 function argbToHex(argb: number): string {
@@ -397,18 +406,34 @@ function RoleAppearance({ session, role }: { session: ConnectionSession; role: R
       <div className="settings-field">
         <span>Color</span>
         <div className="role-palette">
-          {ROLE_PALETTE.map((preset) => (
-            <button
-              key={preset}
-              className={"swatch" + (color === preset ? " chosen" : "")}
-              style={{ background: argbIntToCss(preset) }}
-              disabled={builtin}
-              onClick={() => {
-                setColor(preset);
-                setCustomHex(argbToHex(preset));
-              }}
-            />
-          ))}
+          <div className="role-palette-row">
+            {ROLE_PALETTE_TOP.map((preset) => (
+              <button
+                key={`top-${preset}`}
+                className={"swatch" + (color === preset ? " chosen" : "")}
+                style={{ background: argbIntToCss(preset) }}
+                disabled={builtin}
+                onClick={() => {
+                  setColor(preset);
+                  setCustomHex(argbToHex(preset));
+                }}
+              />
+            ))}
+          </div>
+          <div className="role-palette-row">
+            {ROLE_PALETTE_BOTTOM.map((preset) => (
+              <button
+                key={`bottom-${preset}`}
+                className={"swatch" + (color === preset ? " chosen" : "")}
+                style={{ background: argbIntToCss(preset) }}
+                disabled={builtin}
+                onClick={() => {
+                  setColor(preset);
+                  setCustomHex(argbToHex(preset));
+                }}
+              />
+            ))}
+          </div>
           <button
             className={"swatch default" + (color === null ? " chosen" : "")}
             title="No color (default)"
@@ -730,7 +755,9 @@ function ChannelsSection({ session }: { session: ConnectionSession }): React.JSX
         {list.map((channel) => (
           <div key={channel.id} className={"roles-row" + (channel.id === selected?.id ? " active" : "")}
             onClick={() => setSelectedId(channel.id)}>
-            <span>{channel.type === "VOICE" ? "🔊" : "#"} {channel.name}{channel.locked ? " 🔒" : ""}</span>
+            <span className={"icon channel-glyph " + (channel.type === "VOICE" ? "mdi-volume-high" : "mdi-pound")} />
+            <span className="role-name">{channel.name}</span>
+            {channel.locked ? <span className="icon mdi-lock" style={{ fontSize: 12, color: "var(--sp-text-dim)" }} /> : null}
           </div>
         ))}
       </div>
@@ -750,7 +777,7 @@ function ChannelEditor({ session, channel }: { session: ConnectionSession; chann
   return (
     <div className="role-editor-inner">
       <div className="role-editor-head">
-        <span className="role-editor-name">{channel.type === "VOICE" ? "🔊" : "#"} {channel.name}</span>
+        <span className="role-editor-name"><span className={"icon " + (channel.type === "VOICE" ? "mdi-volume-high" : "mdi-pound")} style={{ fontSize: 16, color: "var(--sp-text-dim)" }} /> {channel.name}</span>
       </div>
       <div className="friends-tabs">
         <button className={"friends-tab" + (tab === "permissions" ? " active" : "")} onClick={() => setTab("permissions")}>Permissions</button>

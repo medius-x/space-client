@@ -29,6 +29,55 @@ Electron + TypeScript **спайк-клиент** OAK-сервера. Цель �
 
 ## Текущее состояние: M7 (RBAC-UI, настройки)
 
+**UI-полиш к oak-парити (раунд 2, весь визуальный слой):** **шрифты/иконки** — Open
+Sans TTF + **MaterialDesignIcons.ttf ВЫРЕЗАН ИЗ ikonli-materialdesign-pack-12.1.0
+jar'а в .m2** (тот же шрифт v1.7.22, что рендерит oak; `styles/icons.css` —
+@font-face + по классу `.icon.mdi-<name>`; кодпоинты сняты javap-дампом enum'а
+MaterialDesign; 6 имён, отсутствующих в 1.7.22, = алиасы подмен oak Icons.java
+(cog→settings, trash-can→delete, monitor-share→cast-connected, shield-account→
+shield), а **headphones-off — inline SVG** с path'ом из oak Icons.java
+(`components/MdiSvg.tsx`, triangle-wave тоже там). Эмодзи-глифы заменены на MDI
+по всему UI: каналы (#/🔊/🔒), композер «+», рейл (home/plus), user-bar (⚙/👤),
+voice/call тумблеры — 30×30 иконочные (mic/-off, headphones-off, video/-off,
+cast-connected, phone-hangup), марки мьюта (11px, self-жёлтый/mod-красный),
+share-пикер, friends. **Каркас** — ростер ПЕРЕЕХАЛ из сайдбара в ОТДЕЛЬНУЮ
+правую колонку `MembersPane` 190px #2b2d31 (oak members-pane; скрыт в dmMode и
+под звонком), сайдбар 220px #2b2d31, рейл #1e1f22 с белой ПИЛЮЛЕЙ 4×24 у
+активного сервера + squircle-морф hover, аватар 36 + presence-точка ПОВЕРХ
+аватара (10px, бордер #2b2d31), фолбэк-аватар — цвет детерминированной палитры
+(`logic/user-palette.ts`, djb2 % 12, ЕЁ ЖЕ красится ник автора в чате — как oak),
+заголовки секций = pane-title (12px bold #b5bac1, НЕ uppercase), voice-строки
+участников с аватарами 20. **Чат** — шапка с divider #4e5058, hover строки
+#35373c, время «Today at HH:mm/Yesterday/MMM d» (`formatHeaderStamp`),
+(edited) #949ba4 11px, NEW-divider ЖЁЛТЫЙ, реакции без бордеров (mine
+rgba(88,101,242,.30)), цитаты radius 4 0 0 4 + blurple-полоса, композер =
+КАРТОЧКА #383a40 radius 8 c «+» (файл-пикер!) и прозрачной textarea 13px до 10
+строк, без Send. **Тосты** — 280px #1e1f22, mention 2px blurple-рамка, body в
+1 строку, новые СВЕРХУ + плашка «Hide all». **Прочее** — кнопки primary hover
+#4752c4, модалы radius 10 + рамка #383a40, контекст-меню radius 8 строки 12px
+#dbdee1 hover #35373c, overlay-скроллбары (12px, rgba(255,255,255,.08)→.18 по
+hover), плитки голоса/звонка — ПОСТОЯННАЯ рамка 2px #4e5058 (speaking только
+красит), user-bar карточка #383a40 44px. Нативная ОС-рамка окна ОСТАВЛЕНА
+сознательно (oak'овый borderless-хром = потеря Aero Snap; вопрос открыт).
+**РЕСТРУКТУРИЗАЦИЯ ЛЭАУТА под oak-модель (после юзер-ревью, главный раунд):**
+каркас = `.left-section` [рейл 72 + каналы 220] + `.left-overlay` — НИЖНЯЯ
+КАРТОЧКА-ОВЕРЛЕЙ ПОВЕРХ ОБОИХ колонок (absolute, отступы 8): [voiceBar
+`#313338` radius 8 8 0 0, только при живом голосе] над [userBar `#383a40`
+(0 0 8 8 / 8 без голоса)] — в voiceBar СТАТУС-строка (клик = toggleRoomView:
+room view = СВАП чат-зоны на плитки, `roomViewOpen` в appStore, гасится на
+канал/DM/settings/teardown голоса) + кнопки 30×30: mute/deafen/**NS
+(TriangleWaveIcon = APM-тумблер)**/camera/share/leave; userBar = аватар+ник+
+**цветной статус STOMP** (Connected/Reconnecting/Lost/Offline)+⚙ ЕДИНСТВЕННАЯ
+кнопка (аватар-редактор ПЕРЕЕХАЛ в Settings → General = AvatarEditor, бывший
+ProfileModal; 👤 из user-bar УДАЛЁН). VoiceRoom.tsx РАЗДЕЛЁН: VoiceMarks +
+VoiceBar (левая карточка) + RoomView (чат-зона: шапка «← имя канала · N in
+room · M screens» + плитки + share-panel; тон-кнопки L/R УДАЛЕНЫ из UI —
+теперь ТОЛЬКО в Diagnostics). Ростер MembersPane 190px СПРАВА от чата
+(content = row; скрыт в dmMode/звонке/room view — починено «внизу под
+чатом»: раньше .content был column и ростер падал вниз). MainScreen владеет
+всем лэйаутом (ServerRail перенесён из App). Tone L/R и getDisplayMedia-тест
+— в скрытой diag-панели (Ctrl+Shift+D). Гейт 191/191.
+
 M6 закрыт и закоммичен (`088df95`). M7 (код готов, ждёт смоука; electron-builder —
 после смоука): **ServerSettings** (ПКМ по серверу в рейле, гейт canManageAnySettings
 = MANAGE_ROLES||MANAGE_MEMBERS||KICK||BAN||MANAGE_CHANNELS; in-app экран поверх

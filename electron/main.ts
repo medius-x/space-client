@@ -252,6 +252,17 @@ ipcMain.handle("space-kv:rotate-tokens", (_event, key: unknown, expectedRefreshT
 
 let pendingCaptureGrant: { sourceId: string; withAudio: boolean } | null = null;
 
+/** Caption-bar window controls (borderless chrome, oak parity). */
+ipcMain.on("space-window:minimize", () => mainWindowRef?.minimize());
+ipcMain.on("space-window:maximize", () => {
+  if (mainWindowRef?.isMaximized()) {
+    mainWindowRef.unmaximize();
+  } else {
+    mainWindowRef?.maximize();
+  }
+});
+ipcMain.on("space-window:close", () => mainWindowRef?.close());
+
 ipcMain.handle("space-capture:sources", async () => {
   try {
     const sources = await desktopCapturer.getSources({
@@ -339,9 +350,10 @@ ipcMain.on("popout:frame", (_event, dataUrl: unknown) => {
 
 async function createWindow(): Promise<void> {
   const mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 840,
+    width: 1080,
+    height: 693,
     title: "space",
+    frame: false, // oak's borderless chrome — the renderer draws the caption bar
     backgroundColor: "#1e1f22",
     webPreferences: {
       preload: path.join(__dirname, "..", "preload", "preload.js"),
@@ -353,6 +365,9 @@ async function createWindow(): Promise<void> {
       backgroundThrottling: false,
     },
   });
+  // The caption's maximize glyph flips on restore (oak's ▢↔❐).
+  mainWindow.on("maximize", () => mainWindow.webContents.send("space-window:maximized", true));
+  mainWindow.on("unmaximize", () => mainWindow.webContents.send("space-window:maximized", false));
 
   // Security: this spike never navigates anywhere except its own local page.
   mainWindowRef = mainWindow;
@@ -392,7 +407,11 @@ async function createWindow(): Promise<void> {
       });
   });
 
-  mainWindow.webContents.openDevTools({ mode: "bottom" });
+  // DevTools are OPT-IN (SPACE_DEVTOOLS=1 npm run dev) — the default window must
+  // look exactly like what a user ships with (live M7 polish round).
+  if (process.env.SPACE_DEVTOOLS === "1") {
+    mainWindow.webContents.openDevTools({ mode: "bottom" });
+  }
   // electron-vite convention: in `dev` the renderer must load the VITE DEV SERVER
   // (passed via ELECTRON_RENDERER_URL) — that is where HMR lives. Loading the built
   // out/renderer bundle in dev silently kills hot reload (caught in the M0 smoke).

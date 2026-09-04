@@ -1,32 +1,49 @@
 /*
- * Space spike theme.
+ * Space theme — oak-client pixel parity (M7 polish round).
  *
- * The palette is ported verbatim from the oak-client JavaFX theme (style.css layer 1,
- * -oak-* lookup variables) — same Discord-like dark look, now as web CSS custom
- * properties. Spacing/radius values are the spike's own; only the colors are canon.
+ * Palette + spacing/radius tokens lifted from oak-client's style.css (-oak-*
+ * lookups) and the inline literals the JavaFX code pins (see CLAUDE.md "M7"):
+ * column widths, header heights, badge geometry, hover/selected pairs.
  */
+@font-face {
+  font-family: "Open Sans";
+  src: url("fonts/OpenSans-Regular.ttf") format("truetype");
+  font-weight: 400;
+}
+@font-face {
+  font-family: "Open Sans";
+  src: url("fonts/OpenSans-Bold.ttf") format("truetype");
+  font-weight: 700;
+}
+
 :root {
   /* Surfaces, darkest → lightest. */
-  --sp-darkest: #1e1f22;   /* caption bar, sidebar */
-  --sp-surface: #2b2d31;   /* panels, cards */
-  --sp-pane: #313338;      /* content pane */
-  --sp-input: #383a40;     /* text inputs, composer */
-  --sp-control: #4e5058;   /* default grey button */
+  --sp-darkest: #1e1f22;   /* server rail, toasts, darkest chrome */
+  --sp-surface: #2b2d31;   /* window, channel column, cards, popups */
+  --sp-pane: #313338;      /* content pane, settings content */
+  --sp-input: #383a40;     /* text inputs, composer card, user-bar card */
+  --sp-control: #4e5058;   /* default grey button, dividers under headers */
   --sp-hover: #35373c;     /* row hover */
   --sp-selected: #404249;  /* row selected */
+  --sp-card-hover: #2e3035;/* hover for buttons ON --sp-input cards (oak literal) */
 
   /* Text. */
   --sp-text: #f2f3f5;
   --sp-text-muted: #b5bac1;
   --sp-text-dim: #80848e;
+  --sp-text-popup: #dbdee1; /* popup row text (oak literal) */
 
   /* Accents. */
   --sp-accent: #5865f2;    /* blurple */
+  --sp-accent-hover: #4752c4;
   --sp-red: #da373c;
   --sp-red-dark: #b3282c;
   --sp-green: #23a55a;     /* online / speaking */
-  --sp-yellow: #f0b232;    /* reconnecting */
+  --sp-yellow: #f0b232;    /* reconnecting / NEW divider */
   --sp-link: #00a8fc;
+  --sp-link-hover: #4ab8ff;
+  --sp-mention-text: #b1b9f9;
+  --sp-flash: #3c3f8c;     /* selection-mode / jump flash */
 
   font-family: "Open Sans", "Segoe UI", system-ui, sans-serif;
   font-size: 14px;
@@ -67,49 +84,55 @@ body {
 .main-shell { display: flex; height: 100vh; }
 
 .sidebar {
-  width: 240px;
-  background: var(--sp-darkest);
-  padding: 12px 8px;
+  width: 220px;
+  background: var(--sp-surface);
+  padding: 12px;
   overflow-y: auto;
   flex-shrink: 0;
 }
 
-.sidebar-section-title {
-  color: var(--sp-text-dim);
-  font-size: 11px;
+/* oak's .pane-title — the column/section caption: bold muted, no uppercasing. */
+.sidebar-section-title,
+.pane-title {
+  color: var(--sp-text-muted);
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  padding: 12px 8px 4px;
+  padding: 8px 8px 4px;
 }
 
 .channel-row {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 8px;
+  padding: 4px 8px;
   border-radius: 4px;
   color: var(--sp-text-muted);
   cursor: pointer;
   user-select: none;
+  font-size: 13px;
 }
 
 .channel-row:hover { background: var(--sp-hover); color: var(--sp-text); }
 .channel-row.active { background: var(--sp-selected); color: var(--sp-text); }
+.channel-row.active.voice-live { color: var(--sp-green); }
 .channel-row.locked { opacity: 0.5; cursor: not-allowed; }
 .channel-row .member-list { margin-left: 18px; }
+
+.channel-hash { font-size: 16px; color: var(--sp-text-dim); }
 
 .member-row {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 8px 3px 26px;
+  padding: 4px 8px;
+  border-radius: 4px;
   color: var(--sp-text-muted);
   font-size: 13px;
 }
+.member-row:hover { background: var(--sp-hover); }
 
 .presence-dot {
-  width: 8px; height: 8px; border-radius: 50%;
+  width: 10px; height: 10px; border-radius: 50%;
   background: var(--sp-text-dim);
   flex-shrink: 0;
 }
@@ -156,14 +179,14 @@ body {
 .tile {
   background: var(--sp-surface);
   border-radius: 8px;
-  padding: 16px;
+  padding: 8px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  border: 2px solid transparent;
+  border: 2px solid var(--sp-control); /* constant frame — speaking only recolors */
+  max-width: 280px;
 }
 .tile.speaking { border-color: var(--sp-green); }
-.tile.self { border-color: var(--sp-control); }
 
 .tile-head { display: flex; align-items: center; gap: 8px; }
 .tile-avatar {
@@ -211,7 +234,7 @@ button {
 }
 button:hover { background: var(--sp-selected); }
 button.primary { background: var(--sp-accent); color: #fff; }
-button.primary:hover { filter: brightness(1.1); }
+button.primary:hover { background: var(--sp-accent-hover); }
 button.danger { background: var(--sp-red); }
 button.danger:hover { background: var(--sp-red-dark); }
 button.ghost { background: transparent; color: var(--sp-text-muted); }
@@ -322,18 +345,21 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 .server-rail {
   width: 72px;
   flex-shrink: 0;
-  background: #16171a; /* one step below --sp-darkest, the rail owns the darkest tone */
+  background: var(--sp-darkest);
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  padding: 12px 0;
+  padding: 8px 0 12px;
   overflow-y: auto;
 }
 
+/* Row wrapper: 72×56 like oak's ServerNode; the icon morphs circle→squircle. */
 .rail-icon {
+  position: relative;
   width: 48px;
   height: 48px;
+  margin: 4px 0;
   border-radius: 50%;
   background: var(--sp-surface);
   display: flex;
@@ -345,11 +371,26 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   cursor: pointer;
   user-select: none;
   flex-shrink: 0;
-  overflow: hidden;
+  overflow: visible;
+  transition: border-radius 0.12s ease, background 0.12s ease;
 }
-.rail-icon:hover { border-radius: 16px; background: var(--sp-selected); }
-.rail-icon.active { border-radius: 16px; background: var(--sp-accent); }
+.rail-icon:hover { border-radius: 16px; background: var(--sp-accent); }
+.rail-icon.active { border-radius: 16px; }
+/* oak's selection pill: white 4×24 bar hugging the rail's left edge. */
+.rail-icon.active::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 4px;
+  height: 24px;
+  border-radius: 2px;
+  background: var(--sp-text);
+}
 .rail-icon.expired { color: var(--sp-text-dim); }
+.rail-icon.home { font-size: 22px; }
+.rail-icon.home.active { background: var(--sp-green); }
 .rail-icon.add {
   background: transparent;
   color: var(--sp-green);
@@ -357,16 +398,31 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   border: 2px dashed var(--sp-control);
 }
 .rail-icon.add:hover { background: var(--sp-green); color: #fff; border-style: solid; }
+.rail-separator { width: 32px; height: 2px; background: var(--sp-control); border-radius: 1px; flex-shrink: 0; }
+.rail-badge {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  background: var(--sp-red);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 10px;
+  padding: 1px 5px;
+  min-width: 16px;
+  text-align: center;
+  border: 2px solid var(--sp-darkest);
+}
 
 /* ===== Context menu (M1) ===== */
 
 .context-menu {
   position: fixed;
   z-index: 50;
-  background: #2b2d31;
+  background: var(--sp-surface);
   border: 1px solid var(--sp-control);
-  border-radius: 4px;
-  padding: 6px 0;
+  border-radius: 8px;
+  padding: 4px 6px;
   min-width: 180px;
   display: flex;
   flex-direction: column;
@@ -375,14 +431,13 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 .context-menu-item {
   background: transparent;
   text-align: left;
-  border-radius: 2px;
-  padding: 6px 10px;
-  margin: 0 4px;
-  font-size: 13px;
-  color: var(--sp-text);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--sp-text-popup);
 }
-.context-menu-item:hover { background: var(--sp-accent); }
-.context-menu-item.danger:hover { background: var(--sp-red); }
+.context-menu-item:hover { background: var(--sp-hover); }
+.context-menu-item.danger:hover { background: var(--sp-red); color: #fff; }
 
 /* ===== Modal (M1) ===== */
 
@@ -397,8 +452,9 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 }
 .modal-card {
   background: var(--sp-surface);
-  border-radius: 8px;
-  padding: 24px;
+  border: 1px solid var(--sp-input);
+  border-radius: 10px;
+  padding: 20px;
   width: 440px;
   display: flex;
   flex-direction: column;
@@ -447,9 +503,11 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   text-align: center;
 }
 .chat-header {
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--sp-darkest);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--sp-control);
   font-weight: 700;
+  color: var(--sp-text-muted);
+  font-size: 13px;
   flex-shrink: 0;
   display: flex;
   gap: 6px;
@@ -457,17 +515,16 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 }
 .chat-error { color: var(--sp-red); font-size: 12px; padding: 4px 16px 0; }
 
-.message-list { flex: 1; overflow-y: auto; padding: 16px; }
-.message-row { display: flex; gap: 12px; padding: 2px 8px; margin: 0 -8px; border-radius: 4px; }
-.message-row:hover { background: rgba(0, 0, 0, 0.08); }
+.message-list { flex: 1; overflow-y: auto; padding: 16px 16px 8px; }
+.message-row { display: flex; gap: 6px; padding: 2px 0; border-radius: 4px; }
+.message-row:hover { background: var(--sp-hover); }
 .message-row.head { margin-top: 12px; }
 .message-avatar {
   width: 40px;
   height: 40px;
   border-radius: 50%;
   flex-shrink: 0;
-  background: var(--sp-accent);
-  color: var(--sp-text);
+  color: #fff;
   font-weight: 700;
   display: flex;
   align-items: center;
@@ -482,12 +539,12 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   padding-top: 4px;
 }
 .message-row:hover .message-gutter { color: var(--sp-text-dim); }
-.message-body { min-width: 0; flex: 1; }
-.message-meta { display: flex; gap: 8px; align-items: baseline; }
-.message-author { font-weight: 600; }
-.message-time { color: var(--sp-text-dim); font-size: 11px; }
+.message-body { min-width: 0; flex: 1; font-size: 13px; }
+.message-meta { display: flex; gap: 6px; align-items: baseline; }
+.message-author { font-weight: 700; }
+.message-time { color: var(--sp-text-muted); font-size: 11px; }
 .message-content { color: var(--sp-text); white-space: pre-wrap; overflow-wrap: break-word; }
-.message-edited { color: var(--sp-text-dim); font-size: 10px; margin-left: 6px; }
+.message-edited { color: #949ba4; font-size: 11px; margin-left: 6px; }
 .message-attachments { color: var(--sp-link); font-size: 13px; margin-top: 2px; }
 
 .error-boundary {
@@ -532,7 +589,7 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   display: flex;
   align-items: center;
   gap: 8px;
-  color: var(--sp-red);
+  color: var(--sp-yellow);
   font-size: 11px;
   font-weight: 700;
   margin: 8px 0 2px;
@@ -541,11 +598,11 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 .new-messages-divider::after {
   content: "";
   flex: 1;
-  border-top: 1px solid var(--sp-red);
+  border-top: 1px solid var(--sp-yellow);
 }
 
 .message-content .mention {
-  color: #b1b9f9;
+  color: var(--sp-mention-text);
   background: rgba(88, 101, 242, 0.2);
   border-radius: 3px;
   padding: 0 2px;
@@ -555,46 +612,51 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 .quote-card {
   background: var(--sp-surface);
   border-left: 3px solid var(--sp-accent);
-  border-radius: 4px;
+  border-radius: 4px 0 0 4px;
   padding: 4px 8px;
   margin: 2px 0 4px;
-  font-size: 13px;
+  font-size: 12px;
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
   align-items: baseline;
   cursor: pointer;
 }
-.quote-card .quote-author { font-weight: 600; color: var(--sp-text-muted); }
+.quote-card .quote-author { font-weight: 700; color: var(--sp-text); }
 .quote-card .quote-preview { color: var(--sp-text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.quote-card .quote-forward { color: var(--sp-text-dim); font-size: 11px; }
+.quote-card .quote-forward { color: var(--sp-text-dim); font-size: 11px; font-weight: 700; }
 .quote-card.deleted { font-style: italic; color: var(--sp-text-dim); cursor: default; }
 
 .forward-card {
   background: var(--sp-surface);
   border-left: 3px solid var(--sp-yellow);
-  border-radius: 4px;
+  border-radius: 4px 0 0 4px;
   padding: 4px 8px;
   margin: 2px 0 4px;
-  font-size: 13px;
+  font-size: 12px;
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
   align-items: baseline;
 }
-.forward-card .quote-meta { color: var(--sp-text-dim); font-size: 11px; }
+.forward-card .quote-meta { color: var(--sp-text-dim); font-size: 11px; font-weight: 700; }
 
-.reactions-row { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+.reactions-row { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; padding: 2px 0 0; }
 .reaction-chip {
   background: var(--sp-surface);
-  border: 1px solid var(--sp-control);
+  border: none;
   border-radius: 8px;
-  padding: 2px 8px;
-  font-size: 13px;
-  color: var(--sp-text-muted);
+  padding: 2px 6px;
+  font-size: 12px;
+  color: var(--sp-text-popup);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
 }
-.reaction-chip:hover { border-color: var(--sp-text-dim); }
-.reaction-chip.mine { border-color: var(--sp-accent); background: rgba(88, 101, 242, 0.15); color: var(--sp-text); }
+.reaction-chip:hover { background: var(--sp-hover); }
+.reaction-chip.mine { background: rgba(88, 101, 242, 0.30); color: var(--sp-mention-text); }
+.reaction-chip.mine:hover { background: rgba(88, 101, 242, 0.45); }
 
 .emoji-picker {
   position: fixed;
@@ -911,17 +973,22 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 .member-row { gap: 8px; }
 .member-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* oak's user-bar: an #383a40 card (44px) floating at the column's bottom. */
 .user-bar {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-top: 12px;
-  padding: 8px;
+  min-height: 44px;
+  padding: 6px 6px 6px 8px;
   border-radius: 8px;
-  background: var(--sp-surface);
+  background: var(--sp-input);
+  flex-shrink: 0;
 }
-.user-bar .member-name { flex: 1; color: var(--sp-text); font-weight: 600; }
+.user-bar .member-name { flex: 1; color: var(--sp-text); font-weight: 700; font-size: 13px; }
 .user-bar-button { padding: 4px 8px; }
+.user-bar-button:hover { background: var(--sp-card-hover); }
+.user-bar-button .icon { font-size: 16px; }
 
 .profile-head { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px 0; }
 .profile-name { font-size: 18px; font-weight: 700; }
@@ -946,22 +1013,23 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   cursor: nwse-resize;
 }
 
-/* Toasts */
+/* Toasts — oak's NotificationToast: 280px cards on #1e1f22, blurple frame on mention. */
 .toast-stack {
   position: fixed;
-  right: 16px;
-  bottom: 16px;
+  right: 8px;
+  bottom: 8px;
   z-index: 60;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  width: 300px;
+  gap: 6px;
+  align-items: flex-end;
 }
 .toast-card {
-  background: #2b2d31;
+  width: 280px;
+  background: var(--sp-darkest);
   border: 1px solid var(--sp-control);
   border-radius: 8px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   cursor: pointer;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
   display: flex;
@@ -969,33 +1037,67 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   gap: 2px;
   animation: toast-in 0.15s ease-out;
 }
+.toast-card.mention { border-width: 2px; border-color: var(--sp-accent); }
+.toast-hide-all {
+  background: var(--sp-darkest);
+  border: 1px solid var(--sp-control);
+  border-radius: 6px;
+  color: var(--sp-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 12px;
+}
+.toast-hide-all:hover { color: var(--sp-text); }
 @keyframes toast-in {
   from { transform: translateY(8px); opacity: 0; }
   to { transform: translateY(0); opacity: 1; }
 }
 .toast-header { color: var(--sp-text-dim); font-size: 11px; }
-.toast-author { font-weight: 700; font-size: 14px; }
+.toast-author { color: var(--sp-text); font-weight: 700; font-size: 12px; }
 .toast-body {
   color: var(--sp-text-muted);
-  font-size: 13px;
+  font-size: 12px;
   overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
-.composer textarea {
-  width: 100%;
+/* oak's composer: ONE #383a40 card (radius 8) with a 32×32 "+" and a bare
+   transparent textarea growing up to 10 rows — no Send button. */
+.composer-card {
   background: var(--sp-input);
-  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 6px 6px 6px 8px;
+  min-height: 44px;
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+}
+.composer-attach {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--sp-text-muted);
+  font-size: 16px;
+  padding: 0;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.composer-attach:hover { background: var(--sp-card-hover); color: var(--sp-text); }
+.composer-attach:disabled { opacity: 0.4; }
+.composer textarea {
+  flex: 1;
+  background: transparent;
+  border: none;
   border-radius: 8px;
   color: var(--sp-text);
-  padding: 12px 14px;
-  font-size: 14px;
+  padding: 7px 6px;
+  font-size: 13px;
   font-family: inherit;
   resize: none;
   outline: none;
 }
-.composer textarea:focus { border-color: var(--sp-accent); }
+.composer textarea::placeholder { color: var(--sp-text-dim); }
 .composer-foot { display: flex; justify-content: space-between; padding: 4px 4px 0; gap: 12px; }
 .composer-hint { color: var(--sp-text-dim); font-size: 11px; white-space: nowrap; }
 
@@ -1003,12 +1105,14 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 
 .voice-status.reconnecting { color: var(--sp-yellow); }
 
-.voice-marks { display: inline-flex; gap: 2px; align-items: center; }
-.voice-mark { font-size: 12px; line-height: 1; }
-.voice-mark-self { filter: sepia(1) saturate(4) hue-rotate(-15deg); } /* yellow tint */
-.voice-mark-mod { filter: sepia(1) saturate(8) hue-rotate(-45deg); } /* red tint */
+/* Mute/deafen marks: MDI glyphs, colored by origin (SELF yellow, MOD red). */
+.voice-marks { display: inline-flex; gap: 4px; align-items: center; flex-shrink: 0; }
+.voice-mark { display: inline-flex; width: 20px; height: 20px; align-items: center; justify-content: center; }
+.voice-mark-self { color: var(--sp-yellow); }
+.voice-mark-mod { color: var(--sp-red); }
 
 .room-toolbar .voice-toggle { min-width: 96px; }
+.room-toolbar .voice-toggle.icon-button { min-width: 30px; }
 .room-toolbar .voice-toggle.on { background: var(--sp-red); color: #fff; }
 
 .camera-preview {
@@ -1113,18 +1217,19 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   flex: 1;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: 8px;
   padding: 16px;
   min-height: 0;
 }
+/* oak's ParticipantTile: constant 2px #4e5058 frame — speaking only recolors it. */
 .call-tile {
   background: var(--sp-surface);
-  border: 2px solid transparent;
+  border: 2px solid var(--sp-control);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px;
+  padding: 8px;
   min-height: 0;
 }
 .call-tile.self { border-color: var(--sp-control); }
@@ -1135,7 +1240,7 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   min-height: 0;
   width: 100%;
   border-radius: 6px;
-  background: #000;
+  background: var(--sp-darkest);
   object-fit: contain;
 }
 .call-tile-placeholder {
@@ -1437,3 +1542,280 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
   color: var(--sp-text-muted);
 }
 .mention-row:hover, .mention-row.chosen { background: var(--sp-selected); color: var(--sp-text); }
+
+/* ===== M7 oak-parity: avatar presence overlay, members pane, scrollbars ===== */
+
+.avatar-wrap { position: relative; display: inline-flex; flex-shrink: 0; }
+.avatar-presence {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--sp-text-dim);
+  border: 1.5px solid var(--sp-surface);
+}
+.avatar-presence.online { background: var(--sp-green); }
+
+/* The roster is its OWN column beside the chat (oak's members-pane). */
+.members-pane {
+  width: 190px;
+  flex-shrink: 0;
+  background: var(--sp-surface);
+  overflow-y: auto;
+  padding: 12px 8px;
+}
+.chat-stack { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+
+/* oak-style overlay scrollbars: thin, translucent, visible on container hover. */
+.sidebar::-webkit-scrollbar,
+.members-pane::-webkit-scrollbar,
+.message-list::-webkit-scrollbar,
+.virtual-list::-webkit-scrollbar,
+.settings-body::-webkit-scrollbar,
+.roles-list::-webkit-scrollbar,
+.user-settings-body::-webkit-scrollbar,
+.friend-picker-list::-webkit-scrollbar {
+  width: 12px;
+}
+.sidebar::-webkit-scrollbar-thumb,
+.members-pane::-webkit-scrollbar-thumb,
+.message-list::-webkit-scrollbar-thumb,
+.virtual-list::-webkit-scrollbar-thumb,
+.settings-body::-webkit-scrollbar-thumb,
+.roles-list::-webkit-scrollbar-thumb,
+.user-settings-body::-webkit-scrollbar-thumb,
+.friend-picker-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.sidebar:hover::-webkit-scrollbar-thumb,
+.members-pane:hover::-webkit-scrollbar-thumb,
+.message-list:hover::-webkit-scrollbar-thumb,
+.virtual-list:hover::-webkit-scrollbar-thumb,
+.settings-body:hover::-webkit-scrollbar-thumb,
+.roles-list:hover::-webkit-scrollbar-thumb,
+.user-settings-body:hover::-webkit-scrollbar-thumb,
+.friend-picker-list:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  background-clip: padding-box;
+}
+.sidebar::-webkit-scrollbar-track,
+.members-pane::-webkit-scrollbar-track,
+.message-list::-webkit-scrollbar-track,
+.virtual-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Channel glyphs + voice member rows (oak's ChannelNode). */
+.channel-glyph { font-size: 16px; color: var(--sp-text-dim); flex-shrink: 0; width: 18px; }
+.channel-row.active .channel-glyph { color: inherit; }
+.channel-row.active.voice-live .channel-glyph { color: var(--sp-green); }
+.voice-member-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0 2px 24px;
+  color: var(--sp-text-muted);
+  font-size: 13px;
+}
+.voice-member-row .member-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* oak's 30×30 icon voice toggles. */
+.icon-button { width: 30px; height: 30px; padding: 0; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; }
+
+/* ===== oak left-section: two columns + the voice/user overlay card ===== */
+
+.main-shell { display: flex; height: 100vh; }
+.app-frame { height: 100vh; }
+
+.left-section {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+}
+.left-columns { display: flex; min-width: 0; }
+/* Clearance so the scroll content never hides under the overlay card. */
+.left-columns .sidebar { padding-bottom: 88px; }
+.left-overlay {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none; /* the card children re-enable; gaps stay click-through */
+  z-index: 5;
+}
+.left-overlay > * { pointer-events: auto; }
+
+/* The voice section of the card (#313338, top corners rounded when stacked). */
+.voice-bar {
+  background: var(--sp-pane);
+  border-radius: 8px 8px 0 0;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.voice-bar + .user-bar { border-radius: 0 0 8px 8px; }
+.voice-bar-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 4px;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  cursor: pointer;
+}
+.voice-bar-info:hover { background: var(--sp-hover); }
+.voice-bar-status { font-size: 12px; font-weight: 700; }
+.voice-bar-status.live { color: var(--sp-green); }
+.voice-bar-status.connecting, .voice-bar-status.reconnecting { color: var(--sp-yellow); }
+.voice-bar-status.failed { color: var(--sp-red); }
+.voice-bar-details {
+  flex: 1;
+  font-size: 11px;
+  color: var(--sp-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.voice-bar-open { font-size: 16px; color: var(--sp-text-dim); }
+.voice-bar-buttons { display: flex; gap: 8px; }
+.voice-bar-buttons .leave { background: var(--sp-red); }
+.voice-bar-buttons .leave:hover { background: var(--sp-red-dark); }
+
+/* The user bar — lower half of the card (#383a40, full rounding when alone). */
+.user-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px 6px 6px 8px;
+  border-radius: 8px;
+  background: var(--sp-input);
+}
+.user-bar-text { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.user-bar-name { color: var(--sp-text); font-weight: 700; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-bar-status { font-size: 11px; color: var(--sp-text-dim); }
+.user-bar-status.connected { color: var(--sp-green); }
+.user-bar-status.connecting { color: var(--sp-yellow); }
+.user-bar-status.lost { color: var(--sp-red); }
+.user-bar-button { padding: 4px 8px; flex-shrink: 0; }
+.user-bar-button:hover { background: var(--sp-card-hover); }
+
+/* The room view (chat-area swap): header + scrollable tiles. */
+.room-view { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+.room-view-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--sp-control);
+  flex-shrink: 0;
+}
+.room-view-sub { font-size: 12px; color: var(--sp-text-muted); }
+.room-view-body { flex: 1; overflow-y: auto; padding: 16px; }
+.tile-grid { gap: 8px; }
+
+/* The chat content area is a ROW: chat (or its swaps) + the members column. */
+.content { display: flex; flex-direction: row; }
+.content > .chat-pane,
+.content > .friends-pane,
+.content > .settings-screen,
+.content > .call-pane,
+.content > .room-view { flex: 1; min-width: 0; }
+
+.diag-row { display: flex; gap: 8px; }
+
+/* oak's role palette: 12×2 grid of 28px swatches (bright row over muted row), gap 6. */
+.role-palette { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.role-palette-row { display: grid; grid-template-columns: repeat(12, 28px); gap: 6px; }
+.swatch { width: 28px; height: 28px; border-radius: 4px; border: 2px solid transparent; padding: 0; }
+.swatch.chosen { border-color: #fff; }
+
+/* Modal chrome: title row with the close button pinned top-right (oak idiom). */
+.modal-titlebar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.modal-close {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--sp-text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.modal-close:hover { background: var(--sp-red); color: #fff; }
+
+/* ===== oak's borderless caption (32px, brand + 46×32 window buttons) ===== */
+.caption-bar {
+  height: 32px;
+  flex-shrink: 0;
+  background: var(--sp-darkest);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  -webkit-app-region: drag;
+  user-select: none;
+}
+.caption-brand { font-size: 13px; font-weight: 700; color: var(--sp-text); padding: 0 12px; }
+.caption-buttons { display: flex; height: 100%; -webkit-app-region: no-drag; }
+.caption-button {
+  width: 46px;
+  height: 32px;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--sp-text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.caption-button:hover { background: var(--sp-hover); color: var(--sp-text); }
+.caption-button.close:hover { background: var(--sp-red); color: #fff; }
+.app-frame { flex: 1; min-height: 0; display: flex; }
+.app-frame > * { flex: 1; }
+
+/* oak's channel column: the server name header (full-bleed, divider below). */
+.sidebar-server-header {
+  color: var(--sp-text);
+  font-size: 15px;
+  margin: -4px -12px 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--sp-control);
+}
+
+/* oak's message hover cluster: [forward][react][reply] 20×20 at the row's top-right. */
+.message-row { position: relative; }
+.message-hover-buttons {
+  position: absolute;
+  top: -10px;
+  right: 4px;
+  display: none;
+  gap: 4px;
+  background: var(--sp-surface);
+  border: 1px solid var(--sp-control);
+  border-radius: 4px;
+  padding: 2px;
+  z-index: 2;
+}
+.message-row:hover .message-hover-buttons { display: flex; }
+.hover-button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--sp-text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.hover-button:hover { background: var(--sp-control); color: var(--sp-text); }

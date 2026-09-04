@@ -24,6 +24,8 @@ import {
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import { Modal } from "./Modal";
 import { SharePickerModal } from "./SharePickerModal";
+import { HeadphonesOffIcon, TriangleWaveIcon } from "./MdiSvg";
+import { settingsStore } from "../runtime";
 
 function formatSeconds(total: number): string {
   const minutes = Math.floor(total / 60);
@@ -45,6 +47,7 @@ export function CallPane({ session }: { session: ConnectionSession }): React.JSX
   const callSharing = useStore(appStore, (state) => state.callSharing);
   const peerMicOn = useStore(appStore, (state) => state.peerMicOn);
   const peerDeafenedOn = useStore(appStore, (state) => state.peerDeafenedOn);
+  const apmEnabled = useStore(settingsStore, (settings) => settings.apmEnabled);
   const peerCameraOn = useStore(appStore, (state) => state.peerCameraOn);
   const peerScreenOn = useStore(appStore, (state) => state.peerScreenOn);
   const ownUsername = session.username();
@@ -121,8 +124,16 @@ export function CallPane({ session }: { session: ConnectionSession }): React.JSX
         <div className={"call-tile self" + (micOn ? "" : " mic-off")}>
           <div className="call-tile-head">
             <span className="call-tile-name">{ownUsername} (you)</span>
-            {!micOn ? <span className="voice-mark voice-mark-self" title="Your mic is muted">🔇</span> : null}
-            {deafened ? <span className="voice-mark voice-mark-self" title="You are deafened">🎧</span> : null}
+            {!micOn ? (
+              <span className="voice-mark voice-mark-self" title="Your mic is muted">
+                <span className="icon mdi-microphone-off" style={{ fontSize: 11 }} />
+              </span>
+            ) : null}
+            {deafened ? (
+              <span className="voice-mark voice-mark-self" title="You are deafened">
+                <HeadphonesOffIcon size={11} />
+              </span>
+            ) : null}
           </div>
           {callCameraOn || callSharing ? (
             <video ref={cameraVideoRef} className="call-tile-video" autoPlay playsInline muted />
@@ -133,8 +144,16 @@ export function CallPane({ session }: { session: ConnectionSession }): React.JSX
         <div className={"call-tile peer" + (peerMicOn ? "" : " mic-off")}>
           <div className="call-tile-head">
             <span className="call-tile-name">{callPeer ?? "?"}</span>
-            {!peerMicOn ? <span className="voice-mark voice-mark-self" title="Peer muted their mic">🔇</span> : null}
-            {peerDeafenedOn ? <span className="voice-mark voice-mark-self" title="Peer deafened themselves">🎧</span> : null}
+            {!peerMicOn ? (
+              <span className="voice-mark voice-mark-self" title="Peer muted their mic">
+                <span className="icon mdi-microphone-off" style={{ fontSize: 11 }} />
+              </span>
+            ) : null}
+            {peerDeafenedOn ? (
+              <span className="voice-mark voice-mark-self" title="Peer deafened themselves">
+                <HeadphonesOffIcon size={11} />
+              </span>
+            ) : null}
           </div>
           {peerTileMedia ? (
             <video ref={peerVideoRef} className="call-tile-video" autoPlay playsInline />
@@ -163,33 +182,46 @@ export function CallPane({ session }: { session: ConnectionSession }): React.JSX
       </div>
       <div className="room-toolbar">
         <button
-          className={"voice-toggle" + (micOn ? "" : " on")}
+          className={"voice-toggle icon-button" + (micOn ? "" : " on")}
+          title={micOn ? "Mute" : "Unmute"}
           onClick={() => {
             toggleCallMic();
             setMicOn(isCallMicEnabled());
           }}
         >
-          {micOn ? "🎤 Mute" : "🔇 Muted"}
+          <span className={"icon " + (micOn ? "mdi-microphone" : "mdi-microphone-off")} style={{ fontSize: 16 }} />
         </button>
         <button
-          className={"voice-toggle" + (deafened ? " on" : "")}
+          className={"voice-toggle icon-button" + (deafened ? " on" : "")}
+          title={deafened ? "Undeafen" : "Deafen"}
           onClick={() => {
             toggleCallDeafen(); // deafen gates the mic too — both badges may flip
             setDeafened(roomAudio.isDeafened());
             setMicOn(isCallMicEnabled());
           }}
         >
-          {deafened ? "🎧 Deafened" : "🎧 Deafen"}
+          <HeadphonesOffIcon size={16} />
         </button>
-        <button className={"voice-toggle" + (callCameraOn ? " on" : "")} onClick={() => void toggleCallCamera()}>
-          {callCameraOn ? "📷 Camera off" : "📷 Camera"}
+        <button className={"voice-toggle icon-button" + (callCameraOn ? " on" : "")} title={callCameraOn ? "Camera off" : "Camera"} onClick={() => void toggleCallCamera()}>
+          <span className={"icon " + (callCameraOn ? "mdi-video" : "mdi-video-off")} style={{ fontSize: 16 }} />
         </button>
-        {callSharing ? (
-          <button className="on" onClick={() => void stopCallShare()}>Stop sharing</button>
-        ) : (
-          <button onClick={() => setPickerOpen(true)}>Share screen…</button>
-        )}
-        <button className="danger" onClick={hangUpCall}>Hang up</button>
+        <button
+          className={"voice-toggle icon-button" + (apmEnabled ? "" : " on")}
+          title={apmEnabled ? "Noise suppression: on — click to disable" : "Noise suppression: off — click to enable"}
+          onClick={() => settingsStore.apply({ apmEnabled: !apmEnabled })}
+        >
+          <TriangleWaveIcon size={16} />
+        </button>
+        <button
+          className={"voice-toggle icon-button" + (callSharing ? " on" : "")}
+          title={callSharing ? "Stop sharing" : "Share screen"}
+          onClick={() => (callSharing ? void stopCallShare() : setPickerOpen(true))}
+        >
+          <span className="icon mdi-cast-connected" style={{ fontSize: 16 }} />
+        </button>
+        <button className="danger icon-button" title="Hang up" onClick={hangUpCall}>
+          <span className="icon mdi-phone-hangup" style={{ fontSize: 16 }} />
+        </button>
       </div>
       {pickerOpen ? <SharePickerModal onClose={() => setPickerOpen(false)} onTarget={onPick} /> : null}
     </div>

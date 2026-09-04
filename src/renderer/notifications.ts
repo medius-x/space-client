@@ -39,6 +39,8 @@ export interface ToastPayload {
   channelName: string;
   body: string;
   onClick?: () => void;
+  /** Draws the 2px blurple frame (oak's mention toast). */
+  mention?: boolean;
 }
 
 class NotificationHub {
@@ -68,8 +70,9 @@ class NotificationHub {
     onClick?: () => void,
     forceMention = false,
   ): void {
+    const effectiveMention = forceMention || messageMentionsUserDirect(message.mentions, ownUsername);
     const action = decideNotification({
-      mention: forceMention || messageMentionsUserDirect(message.mentions, ownUsername),
+      mention: effectiveMention,
       everyoneHere: messageHasEveryoneHere(message.mentions),
       windowFocused,
       inOpenChannel,
@@ -86,6 +89,7 @@ class NotificationHub {
       channelName,
       body: (message.content?.length ?? 0) > 0 ? message.content! : "(attachment)",
       onClick,
+      mention: action === "toast-sound" && effectiveMention,
     });
     if (action === "toast-sound") {
       this.playBell();
@@ -97,12 +101,13 @@ class NotificationHub {
 
   showToast(payload: ToastPayload): void {
     const stack = this.ensureStack();
-    const cap = this.toastConfig.maxToasts();
-    while (stack.children.length >= cap) {
-      stack.firstElementChild?.remove();
+    // Cards only (the Hide-all chip sits at the top of the stack, oak layout).
+    const cards = [...stack.children].filter((child) => child.classList.contains("toast-card"));
+    while (cards.length >= this.toastConfig.maxToasts()) {
+      cards.shift()?.remove();
     }
     const card = document.createElement("div");
-    card.className = "toast-card";
+    card.className = "toast-card" + (payload.mention === true ? " mention" : "");
     const header = document.createElement("div");
     header.className = "toast-header";
     header.textContent = payload.channelName;
@@ -117,8 +122,27 @@ class NotificationHub {
       payload.onClick?.();
       card.remove();
     });
-    stack.appendChild(card);
+    // Newest on top — right under the Hide-all chip.
+    stack.insertBefore(card, this.hideAllChip(stack).nextSibling);
     window.setTimeout(() => card.remove(), this.toastConfig.dismissSeconds() * 1000);
+  }
+
+  /** The stack's persistent "Hide all" chip (created on first use). */
+  private hideAllChip(stack: HTMLDivElement): HTMLElement {
+    const existing = stack.querySelector<HTMLElement>(".toast-hide-all");
+    if (existing !== null) {
+      return existing;
+    }
+    const chip = document.createElement("button");
+    chip.className = "toast-hide-all";
+    chip.textContent = "Hide all";
+    chip.addEventListener("click", () => {
+      for (const card of [...stack.querySelectorAll(".toast-card")]) {
+        card.remove();
+      }
+    });
+    stack.prepend(chip);
+    return chip;
   }
 
   showSystem(author: string, channelName: string, body: string | null): void {

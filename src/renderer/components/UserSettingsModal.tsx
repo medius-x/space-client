@@ -13,17 +13,19 @@ import {
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import { CHANGE_NICKNAME_PERMISSION } from "../../types";
 import { Modal } from "./Modal";
+import { AvatarEditor } from "./ProfileModal";
 
 /**
- * User settings (M7): five sections — Account (password/username mutations with
- * token rotation), Appearance, Notifications (global + per-server overrides),
- * Voice (APM), Connections (read-only). Instant-apply everywhere: every control
- * writes through to the settings store / the connection record immediately.
+ * User settings (M7): six sections — General (avatar), Account (password/username
+ * mutations with token rotation), Appearance, Notifications (global + per-server
+ * overrides), Voice (APM), Connections (read-only). Instant-apply everywhere:
+ * every control writes through to the settings store / the record immediately.
  */
 
-type Section = "account" | "appearance" | "notifications" | "voice" | "connections";
+type Section = "general" | "account" | "appearance" | "notifications" | "voice" | "connections";
 
 const SECTIONS: { key: Section; label: string }[] = [
+  { key: "general", label: "General" },
   { key: "account", label: "Account" },
   { key: "appearance", label: "Appearance" },
   { key: "notifications", label: "Notifications" },
@@ -32,7 +34,7 @@ const SECTIONS: { key: Section; label: string }[] = [
 ];
 
 export function UserSettingsModal({ session }: { session: ConnectionSession }): React.JSX.Element {
-  const [section, setSection] = useState<Section>("account");
+  const [section, setSection] = useState<Section>("general");
   return (
     <Modal title="User Settings" onClose={toggleUserSettings} wide>
       <div className="user-settings">
@@ -48,6 +50,7 @@ export function UserSettingsModal({ session }: { session: ConnectionSession }): 
           ))}
         </div>
         <div className="user-settings-body">
+          {section === "general" ? <AvatarEditor session={session} /> : null}
           {section === "account" ? <AccountSection session={session} /> : null}
           {section === "appearance" ? <AppearanceSection session={session} /> : null}
           {section === "notifications" ? <NotificationsSection session={session} /> : null}

@@ -27,6 +27,11 @@ export interface WindowBridge {
   onFrame(callback: (dataUrl: string) => void): void;
   /** The main window's "the pop-out was closed" signal. */
   onClosed(callback: () => void): void;
+  /* Caption-bar controls of the borderless main window (oak chrome). */
+  minimize(): void;
+  toggleMaximize(): void;
+  close(): void;
+  onMaximizedChange(callback: (maximized: boolean) => void): void;
 }
 
 declare global {

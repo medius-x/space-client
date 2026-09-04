@@ -80,6 +80,8 @@ export interface AppState {
   testToneChannel: "left" | "right" | null;
   viewingFeedId: number | null;
   viewingUsername: string | null;
+  /** The voice ROOM VIEW occupies the chat area (oak: swap-in by clicking the voice bar). */
+  roomViewOpen: boolean;
   diagOpen: boolean;
   stompState: "off" | "connecting" | "connected" | "lost";
   /** Server settings screen (in-app, replaces the content area) — M7. */
@@ -122,7 +124,8 @@ class AppStore extends Emitter {
     testToneChannel: null,
     viewingFeedId: null,
     viewingUsername: null,
-    diagOpen: true,
+    roomViewOpen: false,
+    diagOpen: false,
     stompState: "off",
     serverSettingsOpen: false,
     serverSettingsSection: "overview",
@@ -514,7 +517,7 @@ export function setActiveChannel(channelId: number): void {
   if (!session) {
     return;
   }
-  appStore.patch({ activeChannelId: channelId, dmMode: false, activeDmId: null });
+  appStore.patch({ activeChannelId: channelId, dmMode: false, activeDmId: null, roomViewOpen: false });
   void session.loadHistory(channelId)
     .then(() => ackActiveChannel())
     .catch((error: unknown) => {
@@ -560,7 +563,7 @@ export function openServerSettings(): void {
   if (!canManageServerSettings(session)) {
     return;
   }
-  appStore.patch({ serverSettingsOpen: true });
+  appStore.patch({ serverSettingsOpen: true, roomViewOpen: false });
 }
 
 export function setServerSettingsSection(section: AppState["serverSettingsSection"]): void {
@@ -645,13 +648,19 @@ export function setFriendsTab(tab: FriendsTab): void {
   appStore.patch({ dmMode: true, activeDmId: null, friendsTab: tab });
 }
 
+/** oak's room-view toggle: clicking the voice bar swaps the chat area to the
+ *  participant tiles and back — voice itself NEVER leaves the left card. */
+export function toggleRoomView(): void {
+  appStore.patch({ roomViewOpen: !appStore.getSnapshot().roomViewOpen });
+}
+
 /** Open one DM chat (the row click / the toast click / the friends "Message" button). */
 export function openDm(channelId: number): void {
   const session = activeSession;
   if (!session) {
     return;
   }
-  appStore.patch({ dmMode: true, activeDmId: channelId });
+  appStore.patch({ dmMode: true, activeDmId: channelId, roomViewOpen: false });
   void session.loadHistory(channelId)
     .then(() => ackActiveChannel())
     .catch((error: unknown) => {
@@ -1014,7 +1023,7 @@ async function detachVoiceAfterLoss(reason: string): Promise<void> {
     activeSession?.stomp.send("/app/voice.leave", { channelId });
   }
   resetVoiceCompliance();
-  appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", stateDetail: null, participants: [], viewingFeedId: null, viewingUsername: null });
+  appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", stateDetail: null, participants: [], viewingFeedId: null, viewingUsername: null, roomViewOpen: false });
   if (hadSession) {
     notifications.playKnock("leave");
     notifications.showToast({ title: "Voice", channelName: "Connection lost", body: `You were disconnected from the room — ${reason}.` });
@@ -1069,7 +1078,7 @@ export async function leaveVoice(): Promise<void> {
     activeSession?.stomp.send("/app/voice.leave", { channelId });
   }
   resetVoiceCompliance();
-  appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", stateDetail: null, participants: [], viewingFeedId: null, viewingUsername: null });
+  appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", stateDetail: null, participants: [], viewingFeedId: null, viewingUsername: null, roomViewOpen: false });
   if (hadSession) {
     notifications.playKnock("leave");
   }

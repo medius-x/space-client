@@ -1,8 +1,8 @@
 import { useStore } from "./hooks/useStore";
 import { appStore, sessionBinding } from "./runtime";
+import { CaptionBar } from "./components/CaptionBar";
 import { LoginScreen } from "./components/LoginScreen";
 import { MainScreen } from "./components/MainScreen";
-import { ServerRail } from "./components/ServerRail";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 
 export function App(): React.JSX.Element {
@@ -11,9 +11,9 @@ export function App(): React.JSX.Element {
   const main = screen === "main" && session !== null;
   return (
     <ErrorBoundary>
-      <div className="app-frame">
-        <ServerRail activeRecordId={session?.recordId ?? null} session={session} />
-        <div className="app-body">
+      <div id="app">
+        <CaptionBar />
+        <div className="app-frame">
           {main && session ? <MainScreen session={session} /> : <LoginScreen />}
         </div>
       </div>

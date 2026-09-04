@@ -69,7 +69,7 @@ export function ServerRail({ activeRecordId, session }: {
           {(record.cachedServerName ?? record.hostUrl.replace(/^https?:\/\//, "")).charAt(0).toUpperCase() || "?"}
         </div>
       ))}
-      <div className="rail-icon add" title="Add a server" onClick={beginAddServer}>+</div>
+      <div className="rail-icon add" title="Add a server" onClick={beginAddServer}><span className="icon mdi-plus" style={{ fontSize: 24 }} /></div>
       {menu !== null ? (
         <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />
       ) : null}
@@ -92,7 +92,7 @@ function HomeRailButton({ session }: { session: ConnectionSession }): React.JSX.
       title="Direct messages"
       onClick={toggleHomeMode}
     >
-      ⌂
+      <span className="icon mdi-home" style={{ fontSize: 24 }} />
       {dmUnread > 0 ? <span className="rail-badge">{dmUnread > 99 ? "99+" : dmUnread}</span> : null}
     </div>
   );

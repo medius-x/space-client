@@ -2,7 +2,6 @@ import { useRef, useState } from "react";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import { Avatar } from "./Avatar";
 import { AvatarCropDialog } from "./AvatarCropDialog";
-import { Modal } from "./Modal";
 
 const ORIGINAL_MAX_SIDE = 2048;
 
@@ -24,10 +23,12 @@ async function downscaleToPngBlob(file: File, maxSide: number): Promise<Blob> {
   });
 }
 
-export function ProfileModal({ session, onClose }: {
-  session: ConnectionSession;
-  onClose(): void;
-}): React.JSX.Element {
+/**
+ * The avatar editor (oak's Settings → General): two-phase upload with an
+ * interactive crop, re-crop from the stored original, remove. Lives INSIDE the
+ * user settings — the user bar carries only the gear.
+ */
+export function AvatarEditor({ session }: { session: ConnectionSession }): React.JSX.Element {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [cropSourceUrl, setCropSourceUrl] = useState<string | null>(null);
   const [sourceOwned, setSourceOwned] = useState(false); // blob: URLs we must revoke
@@ -130,10 +131,11 @@ export function ProfileModal({ session, onClose }: {
   };
 
   return (
-    <Modal title="Profile" onClose={onClose}>
+    <div>
       <div className="profile-head">
-        <Avatar session={session} username={session.username()} size={72} />
+        <Avatar session={session} username={session.username()} size={96} />
         <div className="profile-name">{session.username()}</div>
+        {busy ? <div className="settings-hint">Working…</div> : null}
       </div>
       <div className="modal-actions profile-actions">
         <button className="primary" disabled={busy} onClick={pickFile}>Change avatar…</button>
@@ -145,8 +147,7 @@ export function ProfileModal({ session, onClose }: {
       {cropSourceUrl !== null ? (
         <AvatarCropDialog imageSourceUrl={cropSourceUrl} onApply={(blob) => void applyCrop(blob)} onClose={closeCrop} />
       ) : null}
-      {busy ? <div className="modal-note">Working…</div> : null}
-      <div className="modal-note">The avatar updates live for everyone.</div>
-    </Modal>
+      <div className="settings-hint">The avatar updates live for everyone.</div>
+    </div>
   );
 }

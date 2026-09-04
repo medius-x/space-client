@@ -74,9 +74,9 @@ export function SharePickerModal({ onTarget, onClose }: {
   return (
     <Modal title="Share your screen" onClose={onClose}>
       <div className="modal-row picker-tabs">
-        <button className={"kind-choice" + (tab === "screen" ? " chosen" : "")} onClick={() => { setTab("screen"); setSelected(null); }}>🖥 Screens</button>
-        <button className={"kind-choice" + (tab === "window" ? " chosen" : "")} onClick={() => { setTab("window"); setSelected(null); }}>🪟 Windows</button>
-        <button className={"kind-choice" + (tab === "camera" ? " chosen" : "")} onClick={() => { setTab("camera"); setSelected(null); }}>📷 Camera</button>
+        <button className={"kind-choice" + (tab === "screen" ? " chosen" : "")} onClick={() => { setTab("screen"); setSelected(null); }}><span className="icon mdi-monitor" style={{ fontSize: 16 }} /> Screens</button>
+        <button className={"kind-choice" + (tab === "window" ? " chosen" : "")} onClick={() => { setTab("window"); setSelected(null); }}><span className="icon mdi-application" style={{ fontSize: 16 }} /> Windows</button>
+        <button className={"kind-choice" + (tab === "camera" ? " chosen" : "")} onClick={() => { setTab("camera"); setSelected(null); }}><span className="icon mdi-video" style={{ fontSize: 16 }} /> Camera</button>
       </div>
       <div className="error-line">{error ?? ""}</div>
       {tab === "camera" ? (
@@ -88,7 +88,7 @@ export function SharePickerModal({ onTarget, onClose }: {
               className={"picker-row" + (selected === camera.deviceId ? " chosen" : "")}
               onClick={() => setSelected(camera.deviceId)}
             >
-              📷 {camera.label}
+              <span className="icon mdi-video" style={{ fontSize: 16 }} /> {camera.label}
             </div>
           ))}
         </div>
@@ -105,7 +105,7 @@ export function SharePickerModal({ onTarget, onClose }: {
               <div className="picker-thumb">
                 {source.thumbnailDataUrl !== null
                   ? <img src={source.thumbnailDataUrl} alt={source.name} draggable={false} />
-                  : <span className="picker-thumb-placeholder">{source.kind === "screen" ? "🖥" : "🪟"}</span>}
+                  : <span className="picker-thumb-placeholder">{source.kind === "screen" ? <span className="icon mdi-monitor" style={{ fontSize: 24 }} /> : <span className="icon mdi-application" style={{ fontSize: 24 }} />}</span>}
               </div>
               <div className="picker-name">{source.name}</div>
             </div>

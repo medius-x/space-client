@@ -67,7 +67,8 @@ contextBridge.exposeInMainWorld("spaceCapture", {
   },
 });
 
-/** Share pop-out bridge (M4): the MAIN window sends frames, both ends get lifecycle. */
+/** Share pop-out bridge (M4) + the caption-bar controls of the borderless main
+ *  window (oak chrome): min/max/close and the maximize-glyph flip. */
 contextBridge.exposeInMainWorld("spaceWindow", {
   openPopout(): Promise<unknown> {
     return ipcRenderer.invoke("space-window:popout");
@@ -84,5 +85,21 @@ contextBridge.exposeInMainWorld("spaceWindow", {
   },
   onClosed(callback: () => void): void {
     ipcRenderer.on("popout:closed", () => callback());
+  },
+  minimize(): void {
+    ipcRenderer.send("space-window:minimize");
+  },
+  toggleMaximize(): void {
+    ipcRenderer.send("space-window:maximize");
+  },
+  close(): void {
+    ipcRenderer.send("space-window:close");
+  },
+  onMaximizedChange(callback: (maximized: boolean) => void): void {
+    ipcRenderer.on("space-window:maximized", (_event, maximized: unknown) => {
+      if (typeof maximized === "boolean") {
+        callback(maximized);
+      }
+    });
   },
 });

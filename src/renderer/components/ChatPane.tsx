@@ -7,9 +7,10 @@ import type { ConnectionSession } from "../../domain/session/connection-session"
 import { HISTORY_PAGE } from "../../domain/session/connection-session";
 import { RestClient } from "../../core/rest";
 import { log } from "../../logging";
-import { computeGroupStarts, formatTimeOfDay, toEpochMs, type GroupableMessage } from "../../domain/logic/message-grouping";
+import { computeGroupStarts, formatHeaderStamp, formatTimeOfDay, toEpochMs, type GroupableMessage } from "../../domain/logic/message-grouping";
 import { segmentMessageContent } from "../../domain/logic/mention-segmenter";
 import { dmDisplayName } from "../../domain/logic/dm-display";
+import { paletteColor } from "../../domain/logic/user-palette";
 import type { Channel, ChannelMyPermissions, DmChannel, ForwardInfo, Message, ReplyInfo } from "../../types";
 import { REACTION_CATALOG, REACTION_GLYPH_BY_SLUG } from "../../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
@@ -216,7 +217,10 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
       }}
     >
       <div className="chat-header">
-        <span className="channel-hash">{chatTitlePrefix}</span> {viewChannel.name}
+        {dm === null
+          ? <span className="icon mdi-pound" style={{ fontSize: 16, color: "var(--sp-text-dim)" }} />
+          : <span className="channel-hash">@</span>}
+        {" "}{viewChannel.name}
         {selectionMode ? (
           <div className="selection-bar">
             <span>{selection.size} selected</span>
@@ -550,6 +554,7 @@ function MessageList(props: MessageListProps): React.JSX.Element {
             actions={wiredActions}
             setEditing={props.setEditing}
             onMenu={props.onMenu}
+            onPicker={props.onPicker}
           />
         </>
       )}
@@ -572,6 +577,7 @@ interface MessageRowProps {
   actions: ChatActions;
   setEditing(message: Message | null): void;
   onMenu(state: { message: Message; x: number; y: number }): void;
+  onPicker(state: { message: Message; x: number; y: number }): void;
 }
 
 function MessageRow(props: MessageRowProps): React.JSX.Element {
@@ -610,6 +616,42 @@ function MessageRow(props: MessageRowProps): React.JSX.Element {
         }
       }}
     >
+      {/* oak's hover cluster: [forward][react][reply] 20×20 at the row's top-right. */}
+      {!actions.selectionMode ? (
+        <div className="message-hover-buttons">
+          <button
+            className="hover-button"
+            title="Forward"
+            onClick={(event) => {
+              event.stopPropagation();
+              actions.beginForward([message]);
+            }}
+          >
+            <span className="icon mdi-forward" style={{ fontSize: 13 }} />
+          </button>
+          <button
+            className="hover-button"
+            title="Add reaction"
+            onClick={(event) => {
+              event.stopPropagation();
+              const rect = event.currentTarget.getBoundingClientRect();
+              props.onPicker({ message, x: rect.left, y: rect.bottom + 4 });
+            }}
+          >
+            <span className="icon mdi-emoticon" style={{ fontSize: 13 }} />
+          </button>
+          <button
+            className="hover-button"
+            title="Reply"
+            onClick={(event) => {
+              event.stopPropagation();
+              actions.setReplyTo(message);
+            }}
+          >
+            <span className="icon mdi-reply" style={{ fontSize: 13 }} />
+          </button>
+        </div>
+      ) : null}
       {startsGroup ? (
         <Avatar session={session} username={message.authorUsername} size={40} />
       ) : (
@@ -618,8 +660,8 @@ function MessageRow(props: MessageRowProps): React.JSX.Element {
       <div className="message-body">
         {startsGroup ? (
           <div className="message-meta">
-            <span className="message-author">{message.authorUsername}</span>
-            <span className="message-time">{formatTimeOfDay(toEpochMs(message.createdAt))}</span>
+            <span className="message-author" style={{ color: paletteColor(message.authorUsername) }}>{message.authorUsername}</span>
+            <span className="message-time">{formatHeaderStamp(toEpochMs(message.createdAt), Date.now())}</span>
           </div>
         ) : null}
         {message.forward !== null ? <ForwardCard forward={message.forward} /> : null}
@@ -726,6 +768,7 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onPaste
   const [error, setError] = useState<string | null>(null);
   const [mentionQuery, setMentionQuery] = useState<{ token: string; caret: number } | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const users = useStore(session.rosterStore, (state) => state.users);
   const ownUsername = useStore(appStore, (state) => state.ownUsername);
   const ctrlEnterSends = useStore(settingsStore, (settings) => settings.ctrlEnterSends);
@@ -794,22 +837,39 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onPaste
           ))}
         </div>
       ) : null}
-      <textarea
-        value={text}
-        rows={Math.min(4, Math.max(1, text.split("\n").length))}
-        placeholder={placeholder}
-        onChange={(event) => {
-          setText(event.target.value);
-          updateMentionQuery(event.target.value, event.target.selectionStart);
-        }}
-        onPaste={(event) => {
-          const files = [...event.clipboardData.files];
-          if (attachEnabled && files.length > 0) {
-            event.preventDefault();
-            onPaste(files);
-          }
-        }}
-        onKeyDown={(event) => {
+      <div className="composer-card">
+        <button
+          className="composer-attach"
+          title={attachEnabled ? "Attach files" : "Attaching is disabled here"}
+          disabled={!attachEnabled}
+          onClick={() => fileInputRef.current?.click()}
+        ><span className="icon mdi-plus" style={{ fontSize: 16 }} /></button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          style={{ display: "none" }}
+          onChange={(event) => {
+            onPaste([...event.target.files ?? []]);
+            event.target.value = ""; // allow picking the same file twice
+          }}
+        />
+        <textarea
+          value={text}
+          rows={Math.min(10, Math.max(1, text.split("\n").length))}
+          placeholder={placeholder}
+          onChange={(event) => {
+            setText(event.target.value);
+            updateMentionQuery(event.target.value, event.target.selectionStart);
+          }}
+          onPaste={(event) => {
+            const files = [...event.clipboardData.files];
+            if (attachEnabled && files.length > 0) {
+              event.preventDefault();
+              onPaste(files);
+            }
+          }}
+          onKeyDown={(event) => {
           if (mentionQuery !== null && mentionCandidates.length > 0) {
             if (event.key === "ArrowDown") {
               event.preventDefault();
@@ -850,7 +910,8 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onPaste
             setText(textarea.value);
           }
         }}
-      />
+        />
+      </div>
       <div className="composer-foot">
         <span className="composer-hint">
           {ctrlEnterSends

@@ -4,6 +4,7 @@ import { App } from "./App";
 import { PopoutScreen } from "./components/PopoutScreen";
 import { bootstrapApp } from "./runtime";
 import "./styles/global.css";
+import "./styles/icons.css";
 
 const container = document.querySelector<HTMLElement>("#root");
 if (!container) {
