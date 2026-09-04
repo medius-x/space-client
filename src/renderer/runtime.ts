@@ -16,6 +16,7 @@ import {
 } from "../domain/session/connection-record";
 import { ConnectionSession, type SessionHooks } from "../domain/session/connection-session";
 import { MAX_VOICE_REJOIN_ATTEMPTS, rejoinDelayMs, rejoinExhausted } from "../domain/logic/rejoin-ladder";
+import { dmDisplayName } from "../domain/logic/dm-display";
 import { notifications } from "./notifications";
 import { virtualScrollTelemetry } from "./scroll-telemetry";
 import type {
@@ -38,6 +39,8 @@ import type {
  * directory, the ONE active session binding, and the voice room plumbing.
  */
 
+export type FriendsTab = "ALL" | "ONLINE" | "PENDING" | "BLOCKED" | "ADD_FRIEND";
+
 export interface AppState {
   screen: "login" | "main";
   loginError: string | null;
@@ -47,6 +50,11 @@ export interface AppState {
   baseUrl: string;
   /** Active TEXT channel (the chat pane); null = nothing selected yet. */
   activeChannelId: number | null;
+  /** Home mode: the sidebar shows the DM list, the content shows Friends or a DM chat. */
+  dmMode: boolean;
+  /** The open DM inside dmMode; null = the Friends pane. Kept SEPARATE from activeChannelId (the server channel survives a Home round-trip). */
+  activeDmId: number | null;
+  friendsTab: FriendsTab;
   activeVoiceChannelId: number | null;
   voiceState: VoiceRoomState;
   stateDetail: string | null;
@@ -84,6 +92,9 @@ class AppStore extends Emitter {
     ownUsername: null,
     baseUrl: "",
     activeChannelId: null,
+    dmMode: false,
+    activeDmId: null,
+    friendsTab: "ALL",
     activeVoiceChannelId: null,
     voiceState: "idle",
     stateDetail: null,
@@ -246,19 +257,35 @@ const sessionHooks: SessionHooks = {
     if (!session || state.ownUsername === null) {
       return;
     }
-    const inOpenChannel = state.activeChannelId === message.channelId;
+    const dm = session.socialStore.getDm(message.channelId);
+    const channel = dm === null ? session.channelStore.get(message.channelId) : null;
+    if (dm === null && channel === null) {
+      return; // a channel we closed/left — a frame still in flight after the unsubscribe
+    }
+    const inOpenChannel = (dm !== null
+      ? state.dmMode && state.activeDmId === message.channelId
+      : state.activeChannelId === message.channelId);
     const windowFocused = document.hasFocus();
-    session.readStateStore.bumpLive(message, state.ownUsername, inOpenChannel, windowFocused);
+    // DM rule: EVERY direct message is a mention equivalent (oak parity) — the
+    // badge is red and the bell rings even without an @.
+    session.readStateStore.bumpLive(message, state.ownUsername, inOpenChannel, windowFocused, dm !== null);
+    if (dm !== null) {
+      session.socialStore.updateDmLastMessage(message); // float the row + refresh the preview
+    }
     if (inOpenChannel && windowFocused) {
       return;
     }
-    const channel = session.channelStore.get(message.channelId);
+    const channelName = dm !== null
+      ? dmDisplayName(dm, state.ownUsername)
+      : channel !== null ? `#${channel.name}` : `#${message.channelId}`;
     notifications.handleMessage(
       message,
       state.ownUsername,
-      channel ? `#${channel.name}` : `#${message.channelId}`,
+      channelName,
       windowFocused,
       inOpenChannel,
+      dm !== null,
+      dm !== null ? () => openDm(dm.id) : undefined,
     );
   },
   onOwnVoiceControlState: (state) => {
@@ -277,6 +304,22 @@ const sessionHooks: SessionHooks = {
     notifications.showToast({ title: "Voice", channelName: byUsername, body: "You were kicked from the voice channel." });
   },
   onCallSignal: (signal) => handleCallSignal(signal),
+  onDmClosed: (channelId) => {
+    if (appStore.getSnapshot().activeDmId === channelId) {
+      appStore.patch({ activeDmId: null }); // back to the Friends pane
+    }
+  },
+  onMemberKicked: (event) => {
+    // Tokens survive a kick (only a BAN kills them at the REST layer) — dropping
+    // to the login screen keeps the record one click away, oak's ErrorDialog parity.
+    const reason = event.banned
+      ? `You were banned by ${event.by}. A moderator must unban you before reconnecting.`
+      : `You were removed from the server by ${event.by}. Click the server again to reconnect.`;
+    void teardownSession().finally(() => {
+      appStore.patch({ loginError: reason });
+      notifications.showToast({ title: event.banned ? "Banned" : "Removed from server", channelName: event.by, body: reason });
+    });
+  },
 };
 
 /** App entry: load the directory, auto-resume the most recently used connection. */
@@ -411,6 +454,9 @@ export async function teardownSession(): Promise<void> {
     screen: "login",
     ownUsername: null,
     activeChannelId: null,
+    dmMode: false,
+    activeDmId: null,
+    friendsTab: "ALL",
     activeVoiceChannelId: null,
     voiceState: "idle",
     stateDetail: null,
@@ -432,13 +478,58 @@ export function setActiveChannel(channelId: number): void {
   if (!session) {
     return;
   }
-  appStore.patch({ activeChannelId: channelId });
+  appStore.patch({ activeChannelId: channelId, dmMode: false, activeDmId: null });
   void session.loadHistory(channelId)
     .then(() => ackActiveChannel())
     .catch((error: unknown) => {
       log.warn("chat", `history load failed: ${errorMessage(error)}`);
     });
   void connectionDirectory.update(session.recordId, { lastChannelId: channelId });
+}
+
+// ---------------------------------------------------------------------------
+// Home mode (friends + DMs)
+// ---------------------------------------------------------------------------
+
+/** The Home button: toggle between the server view and the DM/friends view. */
+export function toggleHomeMode(): void {
+  const next = !appStore.getSnapshot().dmMode;
+  appStore.patch({ dmMode: next, activeDmId: next ? appStore.getSnapshot().activeDmId : null });
+}
+
+/** Clicking the ACTIVE server icon while in Home = go back to the server view. */
+export function exitHomeMode(): void {
+  if (appStore.getSnapshot().dmMode) {
+    appStore.patch({ dmMode: false, activeDmId: null });
+  }
+}
+
+export function setFriendsTab(tab: FriendsTab): void {
+  appStore.patch({ dmMode: true, activeDmId: null, friendsTab: tab });
+}
+
+/** Open one DM chat (the row click / the toast click / the friends "Message" button). */
+export function openDm(channelId: number): void {
+  const session = activeSession;
+  if (!session) {
+    return;
+  }
+  appStore.patch({ dmMode: true, activeDmId: channelId });
+  void session.loadHistory(channelId)
+    .then(() => ackActiveChannel())
+    .catch((error: unknown) => {
+      log.warn("chat", `history load failed: ${errorMessage(error)}`);
+    });
+}
+
+/** Friends "Message": get-or-create the 1:1 DM, then open it. */
+export async function openDmWithUser(userId: number): Promise<void> {
+  const session = activeSession;
+  if (!session) {
+    return;
+  }
+  const dm = await session.openDmWith(userId);
+  openDm(dm.id);
 }
 
 /** Perf-gate helper: fill the ACTIVE channel's list locally with synthetic messages. */
@@ -474,20 +565,21 @@ export function seedSyntheticMessages(count: number): void {
   log.info("perf", `seeded ${count} synthetic messages into channel #${channelId} — scroll it`);
 }
 
-/** Ack the open channel up to its newest loaded message (divider dismisses with it). */
+/** Ack the open chat (server channel OR DM) up to its newest loaded message. */
 export function ackActiveChannel(): void {
   const session = activeSession;
-  const channelId = appStore.getSnapshot().activeChannelId;
+  const appState = appStore.getSnapshot();
+  const channelId = appState.dmMode ? appState.activeDmId : appState.activeChannelId;
   if (!session || channelId === null) {
     return;
   }
   const messages = session.messageStore.listFor(channelId);
   const lastId = messages.length > 0 ? messages[messages.length - 1]!.id : null;
-  const state = session.readStateStore.get(channelId);
-  if (lastId === null && state.unreadCount === 0) {
+  const readState = session.readStateStore.get(channelId);
+  if (lastId === null && readState.unreadCount === 0) {
     return;
   }
-  if (lastId !== null && state.lastReadMessageId === lastId && state.unreadCount === 0) {
+  if (lastId !== null && readState.lastReadMessageId === lastId && readState.unreadCount === 0) {
     return;
   }
   session.ackChannelRead(channelId, lastId);

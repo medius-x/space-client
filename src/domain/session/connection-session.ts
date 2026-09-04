@@ -5,10 +5,14 @@ import type {
   CallIceCandidate,
   CallSignalType,
   Channel,
+  DmChannel,
+  DmChannelEvent,
   IncomingCallSignal,
+  MemberKickEvent,
   Message,
   PresenceEvent,
   ReactionEvent,
+  Relationship,
   ServerProfile,
   UserSummary,
   VoiceControlCommand,
@@ -18,10 +22,13 @@ import type {
 } from "../../types";
 import { ChannelStore } from "../stores/ChannelStore";
 import { MessageStore } from "../stores/MessageStore";
+import { MemberStore } from "../stores/MemberStore";
 import { PermissionStore } from "../stores/PermissionStore";
 import { ReadStateStore } from "../stores/ReadStateStore";
 import { RosterStore } from "../stores/RosterStore";
+import { SocialStore } from "../stores/SocialStore";
 import { VoiceControlStore } from "../stores/VoiceControlStore";
+import { CoalescingRefresher } from "../lib/refresher";
 import { AttachmentCache } from "../../media/attachment-cache";
 import { PlaybackService } from "../../media/playback";
 import { generateVideoPreview } from "../../media/video-thumbnail";
@@ -47,6 +54,10 @@ export interface SessionHooks {
   onVoiceKicked(byUsername: string): void;
   /** A relayed 1:1 call signal (RING/ACCEPT/OFFER/ICE/…) — the runtime owns the call machine. */
   onCallSignal(signal: IncomingCallSignal): void;
+  /** A DM vanished (closed everywhere or left by me) — the runtime re-homes the open chat. */
+  onDmClosed(channelId: number): void;
+  /** /user/queue/member.kick — the SERVER removed me: the runtime tears the session down. */
+  onMemberKicked(event: MemberKickEvent): void;
 }
 
 export interface ConnectionSessionOptions {
@@ -79,11 +90,19 @@ export class ConnectionSession {
   readonly channelStore = new ChannelStore();
   readonly messageStore = new MessageStore();
   readonly rosterStore = new RosterStore();
+  readonly memberStore = new MemberStore();
+  readonly socialStore = new SocialStore();
   readonly permissionStore = new PermissionStore();
   readonly readStateStore = new ReadStateStore();
   readonly voiceControlStore = new VoiceControlStore();
   readonly attachmentCache = new AttachmentCache(() => (this.disposed ? null : this.rest));
   readonly playback = new PlaybackService();
+  /**
+   * Relationship/DM lists are event→refetch fed (oak's pattern), coalesced so a
+   * burst of pushes never runs parallel fetches that could land out of order.
+   */
+  private readonly socialRefresh = new CoalescingRefresher(() => this.doRefreshSocial());
+  private readonly memberRefresh = new CoalescingRefresher(() => this.doRefreshMembers());
 
   private readonly directory: ConnectionDirectory;
   private readonly hooks: SessionHooks;
@@ -191,6 +210,14 @@ export class ConnectionSession {
       .catch((error: unknown) => {
         log.warn("session", `voice members snapshot failed: ${error instanceof Error ? error.message : String(error)}`);
       });
+
+    // Same race guard for the social layer: /user/queue/relationships and
+    // dm.channels fire on the server the moment they change — a snapshot taken
+    // before the SUBSCRIBE frame lands would miss every change in the window.
+    // The refreshers run post-subscribe, so the only events in flight ride the
+    // coalescing queue and re-run afterwards.
+    this.socialRefresh.request();
+    this.memberRefresh.request();
 
     log.info("session", `connection up: ${this.username()} @ ${this.hostUrl()} (${channels.length} channels)`);
   }
@@ -393,6 +420,133 @@ export class ConnectionSession {
   }
 
   // ---------------------------------------------------------------------------
+  // Social layer: friends, DMs, member moderation (M6)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Self-performed relationship mutations get NO push back to the actor — every
+   * action therefore ends with an explicit refresh (coalesced with any pushes
+   * that did arrive).
+   */
+  async sendFriendRequest(username: string): Promise<Relationship> {
+    const relationship = await this.rest.addFriend(username);
+    this.socialRefresh.request();
+    return relationship;
+  }
+
+  async acceptFriendRequest(userId: number): Promise<void> {
+    await this.rest.acceptFriend(userId);
+    this.socialRefresh.request();
+  }
+
+  /** Cancel / decline / unfriend — one idempotent endpoint. */
+  async removeFriend(userId: number): Promise<void> {
+    await this.rest.removeFriend(userId);
+    this.socialRefresh.request();
+  }
+
+  async blockUser(username: string): Promise<void> {
+    await this.rest.blockUser(username);
+    this.socialRefresh.request();
+  }
+
+  async unblockUser(userId: number): Promise<void> {
+    await this.rest.unblockUser(userId);
+    this.socialRefresh.request();
+  }
+
+  /** Open (get-or-create) a 1:1 DM; the row lands locally — no push comes to the caller. */
+  async openDmWith(recipientId: number): Promise<DmChannel> {
+    const dm = await this.rest.createDm(recipientId);
+    this.socialStore.mergeDm(dm);
+    this.syncDmSubscriptions();
+    return dm;
+  }
+
+  async createGroupDm(participantIds: number[]): Promise<DmChannel> {
+    const dm = await this.rest.createGroupDm(participantIds, null);
+    this.socialStore.mergeDm(dm);
+    this.syncDmSubscriptions();
+    return dm;
+  }
+
+  async renameDm(channelId: number, name: string): Promise<DmChannel> {
+    const dm = await this.rest.renameDm(channelId, name);
+    this.socialStore.mergeDm(dm);
+    return dm;
+  }
+
+  async addDmParticipant(channelId: number, userId: number): Promise<DmChannel> {
+    const dm = await this.rest.addDmParticipant(channelId, userId);
+    this.socialStore.mergeDm(dm);
+    return dm;
+  }
+
+  /**
+   * Leave a group / be removed: the REMOVED member gets no event — drop the row
+   * locally right away (the remaining participants refresh via their pushes).
+   */
+  async removeDmParticipant(channelId: number, userId: number): Promise<void> {
+    await this.rest.removeDmParticipant(channelId, userId);
+    if (userId === this.selfUserId()) {
+      this.forgetDm(channelId);
+    }
+  }
+
+  async closeDm(channelId: number): Promise<void> {
+    await this.rest.closeDm(channelId);
+    this.forgetDm(channelId); // local drop even if the CLOSED push never reaches us
+  }
+
+  /** Local half of a DM vanishing (closed/removed) — mirrors forgetChannel. */
+  private forgetDm(channelId: number): void {
+    this.socialStore.applyDmClosed(channelId);
+    this.messageStore.dropChannel(channelId);
+    this.readStateStore.dropChannel(channelId);
+    this.subscribedChannelIds.delete(channelId);
+    this.hooks.onDmClosed(channelId);
+  }
+
+  async kickMember(userId: number): Promise<void> {
+    await this.rest.kickMember(userId);
+  }
+
+  async banMember(userId: number): Promise<void> {
+    await this.rest.banMember(userId);
+  }
+
+  private async doRefreshSocial(): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
+    const [relationships, dms] = await Promise.all([
+      this.rest.getRelationships(),
+      this.rest.getDmChannels(),
+    ]);
+    if (this.disposed) {
+      return;
+    }
+    this.socialStore.setRelationships(relationships);
+    this.socialStore.setDms(dms);
+    this.syncDmSubscriptions();
+  }
+
+  private async doRefreshMembers(): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
+    const [members, roles] = await Promise.all([
+      this.rest.getMembers(),
+      this.rest.getRoles(),
+    ]);
+    if (this.disposed) {
+      return;
+    }
+    this.memberStore.setMembers(members);
+    this.memberStore.setRoles(roles);
+  }
+
+  // ---------------------------------------------------------------------------
   // STOMP topic wiring
   // ---------------------------------------------------------------------------
 
@@ -430,6 +584,47 @@ export class ConnectionSession {
     this.stomp.subscribe("/user/queue/call.signal", (raw) => {
       this.hooks.onCallSignal(JSON.parse(raw) as IncomingCallSignal);
     });
+    // Social layer: every event is a REFRESH trigger (oak reacts to relationship
+    // pushes with a plain refetch — no per-type branching). CLOSED is additionally
+    // forgotten locally so the UI drops the row even if the refresh is slow/fails;
+    // CREATED is merged from the push payload IMMEDIATELY — waiting for the
+    // refetch round-trip would lose the first message of a re-created DM
+    // (close DM → Message again: the sender posts right after the 200).
+    this.stomp.subscribe("/user/queue/relationships", () => {
+      this.socialRefresh.request();
+    });
+    this.stomp.subscribe("/user/queue/dm.channels", (raw) => {
+      const event = JSON.parse(raw) as DmChannelEvent;
+      if (event.type === "CLOSED") {
+        this.forgetDm(event.channelId);
+      } else if (event.type === "CREATED") {
+        this.socialStore.mergeDm({
+          id: event.channelId,
+          type: event.channelType,
+          name: event.name,
+          ownerId: event.ownerId,
+          participants: event.participants,
+          lastMessageId: null,
+          lastMessageAt: null,
+          lastMessagePreview: null,
+          lastMessageAuthorName: null,
+        });
+        this.syncDmSubscriptions();
+      }
+      this.socialRefresh.request();
+    });
+    // Member/role changes arrive as contentless pings — refetch both snapshots.
+    this.stomp.subscribe("/topic/members", () => {
+      this.memberRefresh.request();
+    });
+    this.stomp.subscribe("/topic/roles", () => {
+      this.memberRefresh.request();
+    });
+    this.stomp.subscribe("/user/queue/member.kick", (raw) => {
+      const event = JSON.parse(raw) as MemberKickEvent;
+      log.warn("session", `${event.banned ? "banned" : "kicked"} by ${event.by} — tearing down`);
+      this.hooks.onMemberKicked(event);
+    });
     this.stomp.subscribe("/topic/server", (raw) => {
       const profile = JSON.parse(raw) as ServerProfile;
       void this.directory.update(this.recordId, { cachedServerName: profile.name });
@@ -456,28 +651,46 @@ export class ConnectionSession {
   /** Subscribe the message-topic family of every TEXT channel (subscribe-all, VOICE excluded). */
   private syncChannelSubscriptions(): void {
     for (const channel of this.channelStore.getSnapshot()) {
-      if (channel.type !== "TEXT" || this.subscribedChannelIds.has(channel.id)) {
-        continue;
+      if (channel.type === "TEXT") {
+        this.ensureChannelTopicFamily(channel.id);
       }
-      this.subscribedChannelIds.add(channel.id);
-      const destination = `/topic/channel.${channel.id}`;
-      this.stomp.subscribe(destination, (raw) => {
-        const message = JSON.parse(raw) as Message;
-        if (this.messageStore.applyLive(message)) {
-          this.hooks.onLiveMessage(message);
-        }
-      });
-      this.stomp.subscribe(`${destination}.edited`, (raw) => {
-        this.messageStore.applyEdited(JSON.parse(raw) as Message);
-      });
-      this.stomp.subscribe(`${destination}.deleted`, (raw) => {
-        this.messageStore.applyDeleted(channel.id, JSON.parse(raw) as number);
-      });
-      this.stomp.subscribe(`${destination}.reactions`, (raw) => {
-        const event = JSON.parse(raw) as ReactionEvent;
-        this.messageStore.applyReactions(channel.id, event.messageId, event.reactions);
-      });
     }
+  }
+
+  /** Same for DMs — the topic family is IDENTICAL, the server gates it by participation. */
+  private syncDmSubscriptions(): void {
+    for (const dm of this.socialStore.getSnapshot().dms) {
+      this.ensureChannelTopicFamily(dm.id);
+    }
+  }
+
+  private ensureChannelTopicFamily(channelId: number): void {
+    if (this.subscribedChannelIds.has(channelId)) {
+      return;
+    }
+    this.subscribedChannelIds.add(channelId);
+    const destination = `/topic/channel.${channelId}`;
+    this.stomp.subscribe(destination, (raw) => {
+      const message = JSON.parse(raw) as Message;
+      const inserted = this.messageStore.applyLive(message);
+      // Rows dropped because the channel history was NEVER LOADED still count:
+      // the unread badge, the toast and the DM preview must fire for a fresh DM
+      // or a never-opened channel. "Dropped + loaded" stays silent — that is
+      // the sender's own REST echo arriving over STOMP.
+      if (inserted || !this.messageStore.isLoaded(message.channelId)) {
+        this.hooks.onLiveMessage(message);
+      }
+    });
+    this.stomp.subscribe(`${destination}.edited`, (raw) => {
+      this.messageStore.applyEdited(JSON.parse(raw) as Message);
+    });
+    this.stomp.subscribe(`${destination}.deleted`, (raw) => {
+      this.messageStore.applyDeleted(channelId, JSON.parse(raw) as number);
+    });
+    this.stomp.subscribe(`${destination}.reactions`, (raw) => {
+      const event = JSON.parse(raw) as ReactionEvent;
+      this.messageStore.applyReactions(channelId, event.messageId, event.reactions);
+    });
   }
 
   private async refetchChannels(): Promise<void> {

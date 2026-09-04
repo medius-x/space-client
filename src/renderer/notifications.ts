@@ -36,9 +36,10 @@ class NotificationHub {
   /** The CURRENT burst's master gain — stopRingback cuts it instead of letting it play out. */
   private ringbackGain: GainNode | null = null;
 
-  /** The full decision path for one live message. */
-  handleMessage(message: Message, ownUsername: string, channelName: string, windowFocused: boolean, inOpenChannel: boolean): void {
-    const mention = messageMentionsUser(message.mentions, ownUsername);
+  /** The full decision path for one live message. forceMention = the DM rule
+   *  (every direct message counts as a mention); onClick routes the toast click. */
+  handleMessage(message: Message, ownUsername: string, channelName: string, windowFocused: boolean, inOpenChannel: boolean, forceMention = false, onClick?: () => void): void {
+    const mention = forceMention || messageMentionsUser(message.mentions, ownUsername);
     const action = decideNotification({ mention, windowFocused, inOpenChannel });
     if (action === "none") {
       return;
@@ -47,6 +48,7 @@ class NotificationHub {
       title: message.authorUsername,
       channelName,
       body: (message.content?.length ?? 0) > 0 ? message.content! : "(attachment)",
+      onClick,
     });
     if (action === "toast-sound") {
       this.playBell();

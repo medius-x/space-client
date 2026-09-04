@@ -12,7 +12,7 @@ export function App(): React.JSX.Element {
   return (
     <ErrorBoundary>
       <div className="app-frame">
-        <ServerRail activeRecordId={session?.recordId ?? null} />
+        <ServerRail activeRecordId={session?.recordId ?? null} session={session} />
         <div className="app-body">
           {main && session ? <MainScreen session={session} /> : <LoginScreen />}
         </div>

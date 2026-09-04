@@ -144,6 +144,8 @@ export interface MyPermissions {
 
 export const MANAGE_CHANNELS_PERMISSION = "MANAGE_CHANNELS";
 export const SEND_MESSAGES_PERMISSION = "SEND_MESSAGES";
+export const KICK_MEMBERS_PERMISSION = "KICK_MEMBERS";
+export const BAN_MEMBERS_PERMISSION = "BAN_MEMBERS";
 
 /** GET /api/channels/{id}/permissions/me — override-aware, per channel. */
 export interface ChannelMyPermissions {
@@ -321,4 +323,105 @@ export interface CallConfig {
 export interface FeedLevels {
   voiceDbfs: number | null;
   shareDbfs: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// Social layer (M6): friends, DMs, member roster with roles
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/users/me/relationships. The server already folds direction into the
+ * type from the CALLER's point of view — PENDING where I am the source becomes
+ * PENDING_OUTGOING, where I am the target PENDING_INCOMING.
+ */
+export type RelationshipType = "FRIEND" | "BLOCKED" | "PENDING_INCOMING" | "PENDING_OUTGOING";
+
+export interface Relationship {
+  userId: number;
+  username: string;
+  type: RelationshipType;
+  avatarKey: string | null;
+  avatarUrl: string | null;
+}
+
+/** /user/queue/relationships push — plain string type, always the OTHER side. */
+export type RelationshipEventType =
+  | "FRIEND_REQUEST"
+  | "FRIEND_ACCEPTED"
+  | "FRIEND_REMOVED"
+  | "BLOCKED"
+  | "UNBLOCKED";
+
+export interface RelationshipEvent {
+  type: RelationshipEventType;
+  userId: number;
+  username: string;
+}
+
+/**
+ * GET /api/channels/dm row. DM channels NEVER appear in GET /api/channels.
+ * `name` is "" for 1:1 (never null); ownerId null for 1:1; the server sorts
+ * the list by lastMessageAt DESC (nulls last), then id DESC.
+ */
+export interface DmChannel {
+  id: number;
+  type: "DM" | "GROUP_DM";
+  name: string;
+  ownerId: number | null;
+  participants: UserSummary[];
+  lastMessageId: number | null;
+  lastMessageAt: string | null;
+  lastMessagePreview: string | null;
+  lastMessageAuthorName: string | null;
+}
+
+/** /user/queue/dm.channels push — full participant roster, no lastMessage fields. */
+export type DmChannelEventType =
+  | "CREATED"
+  | "PARTICIPANT_ADDED"
+  | "PARTICIPANT_REMOVED"
+  | "RENAMED"
+  | "CLOSED";
+
+export interface DmChannelEvent {
+  type: DmChannelEventType;
+  channelId: number;
+  channelType: "DM" | "GROUP_DM";
+  name: string;
+  ownerId: number | null;
+  participants: UserSummary[];
+}
+
+/** GET /api/members row (banned members only appear in GET /api/members/bans). */
+export interface ServerMember {
+  userId: number;
+  username: string;
+  avatarUrl: string | null;
+  roleIds: number[];
+  owner: boolean;
+  banned: boolean;
+}
+
+/** GET /api/roles row — position DESC (highest first), color is ARGB int, nullable. */
+export interface Role {
+  id: number;
+  name: string;
+  color: number | null;
+  position: number;
+  permissions: string[];
+  mentionable: boolean;
+  hoist: boolean;
+  kind: "EVERYONE" | "OWNER" | "CUSTOM";
+}
+
+/** /topic/members broadcast — contentless refetch ping (oak reacts with a refetch). */
+export interface MemberEvent {
+  type: "rolesChanged" | "kicked" | "banned";
+  userId: number;
+}
+
+/** /user/queue/member.kick push to the VICTIM — the client disconnects itself. */
+export interface MemberKickEvent {
+  by: string;
+  banned: boolean;
 }

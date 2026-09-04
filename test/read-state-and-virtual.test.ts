@@ -56,8 +56,10 @@ describe("ReadStateStore", () => {
     store.ack(1, 18);
     expect(store.get(1)).toEqual({ unreadCount: 0, mentionCount: 0, lastReadMessageId: 18 });
 
-    // Unrelated channel — nothing to count against (never seeded/acked).
-    expect(store.bumpLive(message(50, 9), "alice", false, false)).toBe(false);
+    // A channel never seeded (a DM created after the read-states snapshot) seeds
+    // itself from zero — the first unread message still counts (live M6 smoke).
+    expect(store.bumpLive(message(50, 9), "alice", false, false)).toBe(true);
+    expect(store.get(9)).toEqual({ unreadCount: 1, mentionCount: 0, lastReadMessageId: null });
   });
 
   it("emits only on real changes", () => {
@@ -67,6 +69,17 @@ describe("ReadStateStore", () => {
     store.subscribe(listener);
     store.ack(1, 3); // already read at 3 — no-op
     expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("DM rule: forceMention bumps the red counter even without an @ (mention-equivalent)", () => {
+    const store = new ReadStateStore();
+    store.applySnapshot([{ channelId: 7, unreadCount: 0, mentionCount: 0, lastReadMessageId: 3, lastMessageId: 3 }]);
+    store.bumpLive(message(4, 7), "alice", false, false, true); // DM, no mention inside
+    expect(store.get(7)).toEqual({ unreadCount: 1, mentionCount: 1, lastReadMessageId: 3 });
+    // Same message in a normal channel stays grey (no @, no force flag).
+    store.applySnapshot([{ channelId: 8, unreadCount: 0, mentionCount: 0, lastReadMessageId: 3, lastMessageId: 3 }]);
+    store.bumpLive(message(4, 8), "alice", false, false, false);
+    expect(store.get(8).mentionCount).toBe(0);
   });
 });
 

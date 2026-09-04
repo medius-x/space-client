@@ -7,11 +7,15 @@ import type {
   ChannelMyPermissions,
   ChannelReadState,
   ChannelType,
+  DmChannel,
   ForwardMessageRequest,
   Message,
   MyPermissions,
   ReactionSummary,
+  Relationship,
+  Role,
   RoomInfo,
+  ServerMember,
   ServerProfile,
   UserResponse,
   UserSummary,
@@ -315,6 +319,108 @@ export class RestClient {
   /** Override-aware SEND_MESSAGES / ATTACH_FILES on one channel — gates the composer. */
   async getChannelMyPermissions(channelId: number): Promise<ChannelMyPermissions> {
     return this.request<ChannelMyPermissions>(`/api/channels/${channelId}/permissions/me`, { method: "GET" });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Social layer: friends, blocks, DMs, member roster (M6)
+  // ---------------------------------------------------------------------------
+
+  /** The caller-view relationship list (direction already folded into the type). */
+  async getRelationships(): Promise<Relationship[]> {
+    return this.request<Relationship[]>("/api/users/me/relationships", { method: "GET" });
+  }
+
+  /** 201; mutual pending auto-accepts into FRIEND on the server. */
+  async addFriend(username: string): Promise<Relationship> {
+    return this.request<Relationship>("/api/users/me/friends", {
+      method: "POST",
+      body: JSON.stringify({ username }),
+    });
+  }
+
+  async acceptFriend(userId: number): Promise<Relationship> {
+    return this.request<Relationship>(`/api/users/me/friends/${userId}`, { method: "PUT" });
+  }
+
+  /** One endpoint for cancel/decline/unfriend — idempotent, 204. */
+  async removeFriend(userId: number): Promise<void> {
+    await this.request<unknown>(`/api/users/me/friends/${userId}`, { method: "DELETE" });
+  }
+
+  async blockUser(username: string): Promise<Relationship> {
+    return this.request<Relationship>("/api/users/me/blocks", {
+      method: "POST",
+      body: JSON.stringify({ username }),
+    });
+  }
+
+  async unblockUser(userId: number): Promise<void> {
+    await this.request<unknown>(`/api/users/me/blocks/${userId}`, { method: "DELETE" });
+  }
+
+  /** The DM list — DM/GROUP_DM never appear in GET /api/channels. */
+  async getDmChannels(): Promise<DmChannel[]> {
+    return this.request<DmChannel[]>("/api/channels/dm", { method: "GET" });
+  }
+
+  /** Get-or-create a 1:1 DM — always 200, duplicates are impossible (dmKey unique). */
+  async createDm(recipientId: number): Promise<DmChannel> {
+    return this.request<DmChannel>("/api/channels/dm", {
+      method: "POST",
+      body: JSON.stringify({ recipientId }),
+    });
+  }
+
+  /** participantIds 2..9 → the group ends up 3..10 including the creator. */
+  async createGroupDm(participantIds: number[], name: string | null): Promise<DmChannel> {
+    return this.request<DmChannel>("/api/channels/group-dm", {
+      method: "POST",
+      body: JSON.stringify({ participantIds, name }),
+    });
+  }
+
+  /** Group rename — the BARE PATCH /api/channels/{id} route (server channels use /name). */
+  async renameDm(channelId: number, name: string): Promise<DmChannel> {
+    return this.request<DmChannel>(`/api/channels/${channelId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  async addDmParticipant(channelId: number, userId: number): Promise<DmChannel> {
+    return this.request<DmChannel>(`/api/channels/${channelId}/participants`, {
+      method: "POST",
+      body: JSON.stringify({ userId }),
+    });
+  }
+
+  /** Self = leave; removing someone else = owner-only (checked server-side). */
+  async removeDmParticipant(channelId: number, userId: number): Promise<void> {
+    await this.request<unknown>(`/api/channels/${channelId}/participants/${userId}`, { method: "DELETE" });
+  }
+
+  async closeDm(channelId: number): Promise<void> {
+    await this.request<unknown>(`/api/channels/dm/${channelId}`, { method: "DELETE" });
+  }
+
+  async getMembers(): Promise<ServerMember[]> {
+    return this.request<ServerMember[]>("/api/members", { method: "GET" });
+  }
+
+  async getRoles(): Promise<Role[]> {
+    return this.request<Role[]>("/api/roles", { method: "GET" });
+  }
+
+  async kickMember(userId: number): Promise<void> {
+    await this.request<unknown>(`/api/members/${userId}/kick`, { method: "POST" });
+  }
+
+  async banMember(userId: number): Promise<void> {
+    await this.request<unknown>(`/api/members/${userId}/ban`, { method: "POST" });
+  }
+
+  async unbanMember(userId: number): Promise<void> {
+    await this.request<unknown>(`/api/members/${userId}/ban`, { method: "DELETE" });
   }
 
   logout(): void {

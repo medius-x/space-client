@@ -9,7 +9,8 @@ import { RestClient } from "../../core/rest";
 import { log } from "../../logging";
 import { computeGroupStarts, formatTimeOfDay, toEpochMs, type GroupableMessage } from "../../domain/logic/message-grouping";
 import { segmentMessageContent } from "../../domain/logic/mention-segmenter";
-import type { Channel, ForwardInfo, Message, ReplyInfo } from "../../types";
+import { dmDisplayName } from "../../domain/logic/dm-display";
+import type { Channel, ChannelMyPermissions, DmChannel, ForwardInfo, Message, ReplyInfo } from "../../types";
 import { REACTION_CATALOG, REACTION_GLYPH_BY_SLUG } from "../../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { Modal } from "./Modal";
@@ -67,12 +68,33 @@ interface ChatActions {
   toggleSelected(messageId: number): void;
 }
 
+/** DMs are always fully writable — participants need no permission bits (oak parity). */
+const DM_CHANNEL_PERMISSIONS: ChannelMyPermissions = { sendMessages: true, attachFiles: true };
+
+/** Channel-shaped view over a DM row — the chat surface is channel-agnostic. */
+function dmViewChannel(dm: DmChannel, selfUsername: string): Channel {
+  return {
+    id: dm.id,
+    name: dmDisplayName(dm, selfUsername),
+    type: dm.type,
+    createdAt: "",
+    locked: false,
+  };
+}
+
 export function ChatPane({ session }: { session: ConnectionSession }): React.JSX.Element {
   const channels = useStore(session.channelStore, (channels) => channels);
   const activeChannelId = useStore(appStore, (state) => state.activeChannelId);
-  const messages = useStore(session.messageStore, (store) => store.listFor(activeChannelId ?? -1));
+  const dmMode = useStore(appStore, (state) => state.dmMode);
+  const activeDmId = useStore(appStore, (state) => state.activeDmId);
+  const ownUsername = useStore(appStore, (state) => state.ownUsername) ?? session.username();
+  const dm = useStore(session.socialStore, (state) =>
+    dmMode && activeDmId !== null ? state.dms.find((entry) => entry.id === activeDmId) ?? null : null,
+  );
+  const activeChatId = dm !== null ? dm.id : activeChannelId;
+  const messages = useStore(session.messageStore, (store) => store.listFor(activeChatId ?? -1));
   const channelPermissions = useStore(session.permissionStore, (state) =>
-    activeChannelId === null ? null : state.channels.get(activeChannelId) ?? null,
+    activeChatId === null || dm !== null ? null : state.channels.get(activeChatId) ?? null,
   );
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
@@ -87,7 +109,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
   const [dragOver, setDragOver] = useState(false);
 
   useEffect(() => {
-    if (activeChannelId === null) {
+    if (activeChatId === null) {
       return;
     }
     setHistoryError(null);
@@ -97,13 +119,15 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
     setSelection(new Set());
     setStaged([]);
     session.playback.stop(); // one sound at a time — leaving the channel silences it
-    session.loadHistory(activeChannelId).catch((error: unknown) => {
+    session.loadHistory(activeChatId).catch((error: unknown) => {
       setHistoryError(error instanceof Error ? error.message : String(error));
     });
-    session.ensureChannelPermissions(activeChannelId).catch((error: unknown) => {
-      log.warn("chat", `permission check failed: ${error instanceof Error ? error.message : String(error)}`);
-    });
-  }, [activeChannelId, session]);
+    if (dm === null) {
+      session.ensureChannelPermissions(activeChatId).catch((error: unknown) => {
+        log.warn("chat", `permission check failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
+  }, [activeChatId, dm, session]);
 
   const addStagedFiles = (fileList: readonly File[]) => {
     if (channelPermissions?.attachFiles === false) {
@@ -134,16 +158,21 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
     return () => window.removeEventListener("focus", onWindowFocus);
   }, []);
 
-  const channel = activeChannelId !== null
+  const channel = activeChannelId !== null && dm === null
     ? channels.find((entry) => entry.id === activeChannelId) ?? null
     : null;
+  // DM rows render through a Channel-shaped adapter — MessageList and the composer
+  // stay channel-agnostic (message/history/ack APIs are shared with DMs on the wire).
+  const viewChannel = dm !== null ? dmViewChannel(dm, ownUsername) : channel;
+  const permissions = dm !== null ? DM_CHANNEL_PERMISSIONS : channelPermissions;
+  const chatTitlePrefix = dm !== null && dm.type === "DM" ? "@" : "#";
 
   const exitSelection = () => {
     setSelectionMode(false);
     setSelection(new Set());
   };
 
-  if (channel === null) {
+  if (viewChannel === null) {
     return (
       <div className="chat-pane">
         <div className="chat-empty">No text channel — pick one in the sidebar or create it with +.</div>
@@ -187,7 +216,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
       }}
     >
       <div className="chat-header">
-        <span className="channel-hash">#</span> {channel.name}
+        <span className="channel-hash">{chatTitlePrefix}</span> {viewChannel.name}
         {selectionMode ? (
           <div className="selection-bar">
             <span>{selection.size} selected</span>
@@ -196,7 +225,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
             <button className="danger" disabled={selection.size === 0}
               onClick={() => {
                 for (const messageId of selection) {
-                  void session.deleteMessage(channel.id, messageId).catch((error: unknown) => {
+                  void session.deleteMessage(viewChannel.id, messageId).catch((error: unknown) => {
                     log.warn("chat", `bulk delete failed: ${error instanceof Error ? error.message : String(error)}`);
                   });
                 }
@@ -210,7 +239,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
       <NowPlayingBar session={session} />
       <MessageList
         session={session}
-        channel={channel}
+        channel={viewChannel}
         messages={messages}
         actions={actions}
         editing={editing}
@@ -238,19 +267,19 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
           ))}
         </div>
       ) : null}
-      {channelPermissions === null ? (
+      {permissions === null ? (
         <div className="composer-gate">…</div>
-      ) : channelPermissions.sendMessages ? (
+      ) : permissions.sendMessages ? (
         <Composer
-          placeholder={`Message #${channel.name}${channelPermissions.attachFiles ? " — paste or drop files to attach" : ""}`}
-          attachEnabled={channelPermissions.attachFiles}
+          placeholder={`Message ${chatTitlePrefix}${viewChannel.name}${permissions.attachFiles ? " — paste or drop files to attach" : ""}`}
+          attachEnabled={permissions.attachFiles}
           allowEmptySend={staged.length > 0}
           onPaste={(files) => addStagedFiles(files)}
           onSend={(content) => {
             const files = staged.map((entry) => entry.file);
             const promise = files.length > 0
-              ? session.sendMessageWithFiles(channel.id, files, content.length > 0 ? content : null, replyTo?.id)
-              : session.sendMessage(channel.id, content, replyTo?.id);
+              ? session.sendMessageWithFiles(viewChannel.id, files, content.length > 0 ? content : null, replyTo?.id)
+              : session.sendMessage(viewChannel.id, content, replyTo?.id);
             const clearing = promise.then(() => {
               setStaged([]);
             });
@@ -283,7 +312,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
             return (
               <button key={entry.slug} className="emoji-choice"
                 onClick={() => {
-                  void session.toggleReaction(channel.id, picker.message.id, entry.slug, mine).catch(() => undefined);
+                  void session.toggleReaction(viewChannel.id, picker.message.id, entry.slug, mine).catch(() => undefined);
                   setPicker(null);
                 }}>
                 {entry.glyph}
@@ -293,7 +322,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
         </div>
       ) : null}
       {forwardQueue !== null ? (
-        <ForwardDialog session={session} source={forwardQueue} sourceChannel={channel} onClose={() => setForwardQueue(null)} />
+        <ForwardDialog session={session} source={forwardQueue} sourceChannel={viewChannel} onClose={() => setForwardQueue(null)} />
       ) : null}
       {deleteTarget !== null ? (
         <Modal title="Delete message?" onClose={() => setDeleteTarget(null)}>
@@ -301,7 +330,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
           <div className="modal-actions">
             <button className="ghost" onClick={() => setDeleteTarget(null)}>Cancel</button>
             <button className="danger" onClick={() => {
-              void session.deleteMessage(channel.id, deleteTarget.id).catch(() => undefined);
+              void session.deleteMessage(viewChannel.id, deleteTarget.id).catch(() => undefined);
               setDeleteTarget(null);
             }}>Delete</button>
           </div>

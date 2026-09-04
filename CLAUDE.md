@@ -27,9 +27,81 @@ Electron + TypeScript **спайк-клиент** OAK-сервера. Цель �
 Физическая грабля смоука: наушники на столе + микрофон гарнитуры вплотную к «уху» =
 акустическая петля, моргает MONO (оба канала громкие). Убрать микрофон от динамика.
 
-## Текущее состояние: M5 (P2P-звонки)
+## Текущее состояние: M6 (социальный слой)
 
-M4 закрыт и закоммичен (`eb59ddc`). M5 (код готов, ждёт смоука): **сигналинг** —
+M5 закрыт и закоммичен (`b14b2a6`). M6 (код готов, ждёт смоука): **друзья** —
+`GET /api/users/me/relationships` (типы `FRIEND|BLOCKED|PENDING_INCOMING|
+PENDING_OUTGOING` — сервер сам сворачивает направление в caller-view); запрос
+`POST /friends {username}` (взаимный pending авто-акцептится в FRIEND), accept =
+`PUT /friends/{id}`, cancel/decline/unfriend — ОДИН идемпотентный `DELETE
+/friends/{id}`; блок `POST/DELETE /blocks`. Пуш `/user/queue/relationships`
+(5 типов) — oak-паттерн: ЛЮБОЕ событие = refetch (без ветвления по типам);
+актор своих мутаций в пуше не получает → каждая мутация сама зовёт refresh.
+**Коалесирование** (`lib/refresher.ts` CoalescingRefresher): событие в полёте
+снапшота не параллелит fetch, а переигрывается после — иначе медленный снапшот
+прилетает ПОСЛЕ свежего refetch и воскрешает старые строки (класс presence-гонки,
+применённый к спискам). Снапшоты соцслоя берутся ПОСЛЕ подписок (та же
+антигонка, что presence). **DM**: `GET /api/channels/dm` (в `/api/channels` DM
+НЕ входят!); 1:1 = `POST /api/channels/dm {recipientId}` (get-or-create, всегда
+200, дублей нет); группа = `POST /api/channels/group-dm` (итог 3–10 участников,
+создатель = owner); rename группы = **голый `PATCH /api/channels/{id}`** (серверные
+каналы — PATCH `/{id}/name`!); add/remove участника = `POST/DELETE /{id}/participants
+[/{userId}]` (remove self = leave; **ушедшему событие НЕ приходит** → локальный
+forget); close = `DELETE /api/channels/dm/{id}` (1:1 — любой, группа — owner;
+удаляет канал и сообщения ДЛЯ ВСЕХ). Пуш `/user/queue/dm.channels` (CREATED/
+PARTICIPANT_ADDED/PARTICIPANT_REMOVED/RENAMED/CLOSED) — тоже refetch; CLOSED
+дополнительно локально забывается сразу. Сообщения/read-states DM — те же общие
+`/api/channels/{id}/...` + `/topic/channel.{id}` (интерсептор гейтит по участию).
+**DM-unread = mention-эквивалент** (`bumpLive(..., forceMention)`, oak-правило):
+каждое DM-сообщение красит бейдж красным и звенит колокольчиком; тост кликабелен
+в открытый DM; Home-бейдж = сумма DM-unread (красный). **UI**: Home-кнопка ⌂ в
+рейле (dmMode; активный серверный канал ПЕРЕЖИВАЕТ заход в Home — activeDmId
+отдельно от activeChannelId); сайдбар в dmMode = Friends-строка + DM-лист
+(`lastMessageAt desc`, live-флот через `updateDmLastMessage` — правка старого
+сообщения строку НЕ поднимает, guard `shouldRefreshPreview`); FriendsPane: табы
+All/Online/Pending(in/out секции)/Blocked + Add Friend; ChatPane канало-агностичен
+через Channel-shaped адаптер DM (`dmViewChannel`), композер в DM всегда открыт
+(гейтов прав нет), заголовок `@peer`. **Ростер**: `GET /api/members` (roleIds +
+owner) + `GET /api/roles` (color = ARGB int nullable — **отрицательные значения
+норма**, decode `argbIntToCss`; position, hoist) — эффективный цвет/hoist клиент
+считает сам (`logic/roster-grouping.ts`, чистая): hoist-бакеты по ВЫСШЕЙ
+hoist-роли (kind OWNER не hoistит, owner-юзель всегда в общем Online), группы по
+position desc, потом Online, потом Offline (hoist на офлайне НЕ действует);
+внутри self-first + алфавит; цвет ника = высшая роль С цветом. `/topic/members` +
+`/topic/roles` = contentless ping → коалесированный refetch обоих. 👑 owner-бейдж
+в ростере — парити-плюс (у oak его не было; бан-бейджи — M7 Server Settings).
+**Модерация**: ПКМ ростера Kick/Ban (гейты KICK/BAN_MEMBERS + клиентский
+canActOn-хинт: owner иммунен, иначе strict >, unknown → allow; сервер
+перепроверяет) + confirm-модалы; жертве `/user/queue/member.kick {by, banned}`
+→ teardown сессии + логин-скрин с причиной (токены при kick живы — реклик
+сервера работает). **Блокировка**: клиент НИЧЕГО не скрывает (сервер
+enforcement'ит: blockedEitherDirection гейтит friend и DM) — только вкладка
+Blocked + Block/Unblock. Аватары друзей/DM-участников — через `override`-проп
+Avatar (они могут не быть в ростере сервера).
+
+**Смоук-фиксы M6 (2 живых бага):** (1) **«Нет ни бейджа, ни тоста на DM-сообщение,
+пока сам не откроешь DM»** — ДВА корня. Первый: `MessageStore.applyLive` дропает
+live-строки каналов с НЕзагруженной историей, а топик-подписка звала
+`onLiveMessage` ТОЛЬКО при успешной вставке → неоткрытый DM вообще не порождал
+ни бейджа, ни тоста, ни флоат-превью (это и давнишний скрытый недочёт M1 для
+НИКОГДА не открывавшихся серверных каналов). Теперь: `onLiveMessage` вызывается
+и для «дроп-потому-что-не-загружен» (`inserted || !isLoaded`); молчит только
+«дроп-при-загруженном» = собственное echo отправителя. Второй: `bumpLive`
+no-op'ил при отсутствии seeded-записи read-state — а у DM, созданного ПОСЛЕ
+стартового снимка read-states, записи нет → сид из нуля при первом сообщении.
+(2) **«Close DM → Message → сообщение не доходит»** — гонка подписки: close
+снимает DM-подписку получателя, повторное создание шлёт CREATED → но подписка
+ставилась только по завершении асинхронного refetch, а первое сообщение летит
+быстрее и терялось. Теперь CREATED мержится из САМОГО пуша (payload несёт все
+поля) + немедленная syncDmSubscriptions; refetch остаётся для свежести.
+Дополнительно: onLiveMessage игнорит кадры каналов, которых уже нет локально
+(закрытый DM — кадр в полёте после отписки). (3) **«Клик на сервер не выводит
+из Home»** — клик по иконке АКТИВНОГО сервера упирался в same-record guard и
+ничего не делал; теперь это явный «назад на сервер» (exitHomeMode).
+
+## M5 (закрыт, b14b2a6): P2P-звонки
+
+M4 закрыт и закоммичен (`eb59ddc`). M5: **сигналинг** —
 `/app/call.signal` → сервер релеит адресно в `/user/queue/call.signal`, штампует
 `from`; `CallSignal{type, to, sdp?, candidate?}`, типы RING/ACCEPT/REJECT/HANGUP/
 OFFER/ANSWER/ICE (+UI-статусы CAM/MIC/SCREEN_ON|OFF — сервер релеит как есть);
@@ -331,6 +403,13 @@ handle), классификация share-аудио по mindex, два про�
   DOM/WebAudio-обвязка вокруг них тонкая.
 
 ## Грабли, уже пойманные здесь
+
+- **Живой краш M6 «UI crashed: Maximum update depth exceeded»**: getSnapshot,
+  собирающий литеральный объект на каждый вызов (или селектор с filter/map),
+  РВАНУЛ useSyncExternalStore в бесконечный ре-рендер — контракт: селектор
+  возвращает ТОЖДЕСТВЕННУЮ ссылку, пока стор не мутировал. Сеттеры всех сторов
+  пересоздают снапшот-объект; производные массивы (filter/sort) — ТОЛЬКО в
+  useMemo компонента, никогда в селекторе.
 
 - **NUL-литералы в исходниках**: не писать `"\u0000"` в JS/TS-строках (коллапсируется
   в реальный байт, grep считает файл бинарным) — использовать `String.fromCharCode(0)`.

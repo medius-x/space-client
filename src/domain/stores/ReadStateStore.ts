@@ -35,16 +35,16 @@ export class ReadStateStore extends Emitter {
     this.rebuild();
   }
 
-  /** A live message landed; returns true when the receiving channel's counters moved. */
-  bumpLive(message: Message, ownUsername: string, channelOpen: boolean, windowFocused: boolean): boolean {
-    const state = this.states.get(message.channelId);
-    if (state === undefined) {
-      return false; // channel never acked/seeded — nothing to count against
-    }
+  /** A live message landed; returns true when the receiving channel's counters moved.
+   *  forceMention = the DM rule: every direct message counts as a mention (oak parity).
+   *  A channel with no seeded row (a DM created after the read-states snapshot)
+   *  seeds itself from zero — the first unread message must still count. */
+  bumpLive(message: Message, ownUsername: string, channelOpen: boolean, windowFocused: boolean, forceMention = false): boolean {
     if (channelOpen && windowFocused) {
       return false; // the user is watching — not unread
     }
-    const mention = messageMentionsUser(message.mentions, ownUsername);
+    const state = this.states.get(message.channelId) ?? { unreadCount: 0, mentionCount: 0, lastReadMessageId: null };
+    const mention = forceMention || messageMentionsUser(message.mentions, ownUsername);
     this.states.set(message.channelId, {
       ...state,
       unreadCount: state.unreadCount + 1,
