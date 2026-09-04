@@ -56,3 +56,33 @@ contextBridge.exposeInMainWorld("spaceMedia", {
     return ipcRenderer.invoke("space-file:save", fileName, bytes);
   },
 });
+
+/** Capture-picker bridge (M4): desktop sources with previews + the grant hint. */
+contextBridge.exposeInMainWorld("spaceCapture", {
+  sources(): Promise<unknown> {
+    return ipcRenderer.invoke("space-capture:sources");
+  },
+  select(sourceId: string, withAudio: boolean): Promise<unknown> {
+    return ipcRenderer.invoke("space-capture:select", sourceId, withAudio);
+  },
+});
+
+/** Share pop-out bridge (M4): the MAIN window sends frames, both ends get lifecycle. */
+contextBridge.exposeInMainWorld("spaceWindow", {
+  openPopout(): Promise<unknown> {
+    return ipcRenderer.invoke("space-window:popout");
+  },
+  sendFrame(dataUrl: string): void {
+    ipcRenderer.send("popout:frame", dataUrl);
+  },
+  onFrame(callback: (dataUrl: string) => void): void {
+    ipcRenderer.on("popout:frame", (_event, dataUrl: unknown) => {
+      if (typeof dataUrl === "string") {
+        callback(dataUrl);
+      }
+    });
+  },
+  onClosed(callback: () => void): void {
+    ipcRenderer.on("popout:closed", () => callback());
+  },
+});

@@ -33,6 +33,8 @@ interface VoiceChain {
   analysisSource: MediaStreamAudioSourceNode;
   buffer: Float32Array<ArrayBuffer>;
   level: number;
+  /** The user-set volume; element.volume is this OR 0 while deafened. */
+  volume: number;
 }
 
 interface ShareChain {
@@ -43,12 +45,13 @@ interface ShareChain {
   analyserRight: AnalyserNode;
   left: Float32Array<ArrayBuffer>;
   right: Float32Array<ArrayBuffer>;
+  volume: number;
 }
 
-function playbackElement(track: MediaStreamTrack, initialVolume: number): HTMLAudioElement {
+function playbackElement(track: MediaStreamTrack, initialVolume: number, deafened: boolean): HTMLAudioElement {
   const element = new Audio();
   element.autoplay = true;
-  element.volume = Math.min(1, Math.max(0, initialVolume));
+  element.volume = deafened ? 0 : Math.min(1, Math.max(0, initialVolume));
   element.srcObject = new MediaStream([track]);
   void element.play().catch(() => undefined);
   return element;
@@ -63,6 +66,8 @@ export class RoomAudio {
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private testTone: { left: OscillatorNode; right: OscillatorNode; merger: ChannelMergerNode } | null = null;
   private testToneChannel: "left" | "right" | null = null;
+  /** Deafen compliance — silences every playback element, volumes restored on undeafen. */
+  private deafened = false;
   private ownMic: {
     username: string;
     source: MediaStreamAudioSourceNode;
@@ -99,7 +104,7 @@ export class RoomAudio {
   attachVoiceTrack(feedId: number, username: string, track: MediaStreamTrack, volume: number): void {
     this.detachFeed(feedId);
     const context = this.ensureContext();
-    const element = playbackElement(track, volume);
+    const element = playbackElement(track, volume, this.deafened);
     const analysisSource = context.createMediaStreamSource(new MediaStream([track]));
     const analyser = context.createAnalyser();
     analyser.fftSize = 512;
@@ -111,6 +116,7 @@ export class RoomAudio {
       analysisSource,
       buffer: new Float32Array(analyser.fftSize),
       level: 0,
+      volume,
     });
     log.info("audio", `voice chain attached: feed ${feedId} "${username}" (element playout @ ${element.volume.toFixed(2)})`);
   }
@@ -118,7 +124,7 @@ export class RoomAudio {
   attachShareTrack(feedId: number, username: string, track: MediaStreamTrack, volume: number): void {
     this.detachFeed(feedId);
     const context = this.ensureContext();
-    const element = playbackElement(track, volume);
+    const element = playbackElement(track, volume, this.deafened);
     const analysisSource = context.createMediaStreamSource(new MediaStream([track]));
     const splitter = context.createChannelSplitter(2);
     const analyserLeft = context.createAnalyser();
@@ -136,6 +142,7 @@ export class RoomAudio {
       analyserRight,
       left: new Float32Array(analyserLeft.fftSize),
       right: new Float32Array(analyserRight.fftSize),
+      volume,
     });
     log.info("audio", `share chain attached: feed ${feedId} "${username}" (element playout, track channels=${track.getSettings().channelCount ?? "?"})`);
   }
@@ -186,7 +193,8 @@ export class RoomAudio {
   setVoiceVolume(username: string, gain: number): void {
     for (const chain of this.voiceChains.values()) {
       if (chain.username === username) {
-        chain.element.volume = Math.min(1, Math.max(0, gain));
+        chain.volume = gain;
+        this.applyChainVolume(chain.element, gain);
       }
     }
   }
@@ -194,9 +202,33 @@ export class RoomAudio {
   setShareVolume(username: string, gain: number): void {
     for (const chain of this.shareChains.values()) {
       if (chain.username === username) {
-        chain.element.volume = Math.min(1, Math.max(0, gain));
+        chain.volume = gain;
+        this.applyChainVolume(chain.element, gain);
       }
     }
+  }
+
+  private applyChainVolume(element: HTMLAudioElement, volume: number): void {
+    element.volume = this.deafened ? 0 : Math.min(1, Math.max(0, volume));
+  }
+
+  /** Deafen compliance: everything goes silent, per-chain volumes come back on undeafen. */
+  setDeafened(deafened: boolean): void {
+    if (deafened === this.deafened) {
+      return;
+    }
+    this.deafened = deafened;
+    for (const chain of this.voiceChains.values()) {
+      this.applyChainVolume(chain.element, chain.volume);
+    }
+    for (const chain of this.shareChains.values()) {
+      this.applyChainVolume(chain.element, chain.volume);
+    }
+    log.info("audio", `deafen ${deafened ? "ON — playout silenced" : "OFF — volumes restored"}`);
+  }
+
+  isDeafened(): boolean {
+    return this.deafened;
   }
 
   setSpeakingHandler(handler: (username: string, speaking: boolean) => void): void {
@@ -355,6 +387,7 @@ export class RoomAudio {
     this.stopStereoTestTone();
     this.detachOwnMic();
     this.detachAll();
+    this.deafened = false; // deafen is room state — a fresh session starts hearing
     void this.context?.close().catch(() => undefined);
     this.context = null;
   }

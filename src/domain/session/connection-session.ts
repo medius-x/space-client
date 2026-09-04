@@ -1,12 +1,24 @@
 import { log } from "../../logging";
 import { RestClient } from "../../core/rest";
 import { StompClient } from "../../core/stomp";
-import type { Channel, Message, PresenceEvent, ReactionEvent, ServerProfile, UserSummary, VoiceMemberEvent } from "../../types";
+import type {
+  Channel,
+  Message,
+  PresenceEvent,
+  ReactionEvent,
+  ServerProfile,
+  UserSummary,
+  VoiceControlCommand,
+  VoiceControlEvent,
+  VoiceControlState,
+  VoiceMemberEvent,
+} from "../../types";
 import { ChannelStore } from "../stores/ChannelStore";
 import { MessageStore } from "../stores/MessageStore";
 import { PermissionStore } from "../stores/PermissionStore";
 import { ReadStateStore } from "../stores/ReadStateStore";
 import { RosterStore } from "../stores/RosterStore";
+import { VoiceControlStore } from "../stores/VoiceControlStore";
 import { AttachmentCache } from "../../media/attachment-cache";
 import { PlaybackService } from "../../media/playback";
 import { generateVideoPreview } from "../../media/video-thumbnail";
@@ -26,6 +38,10 @@ export interface SessionHooks {
   onChannelsChanged(): void;
   /** A live message actually INSERTED into a loaded channel (echo-deduped). */
   onLiveMessage(message: Message): void;
+  /** /topic/voice.state for the LOGGED-IN user — the runtime applies mic/deafen compliance. */
+  onOwnVoiceControlState(state: VoiceControlState): void;
+  /** /user/queue/voice.control type=KICKED — the runtime tears the voice session down. */
+  onVoiceKicked(byUsername: string): void;
 }
 
 export interface ConnectionSessionOptions {
@@ -60,6 +76,7 @@ export class ConnectionSession {
   readonly rosterStore = new RosterStore();
   readonly permissionStore = new PermissionStore();
   readonly readStateStore = new ReadStateStore();
+  readonly voiceControlStore = new VoiceControlStore();
   readonly attachmentCache = new AttachmentCache(() => (this.disposed ? null : this.rest));
   readonly playback = new PlaybackService();
 
@@ -323,6 +340,24 @@ export class ConnectionSession {
   }
 
   // ---------------------------------------------------------------------------
+  // Voice control (self toggles + moderation)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * One send path for every voice-control command. The server routes self-targets
+   * without a permission check; moderator targets are re-checked server-side (the
+   * client's permission gating is a UI hint, never the authority).
+   */
+  sendVoiceControl(destination: "/app/voice.mute" | "/app/voice.deafen" | "/app/voice.kick", channelId: number, targetUsername: string, flags: { muted?: boolean; deafened?: boolean }): void {
+    this.stomp.send(destination, {
+      channelId,
+      targetUsername,
+      muted: flags.muted ?? null,
+      deafened: flags.deafened ?? null,
+    } satisfies VoiceControlCommand);
+  }
+
+  // ---------------------------------------------------------------------------
   // STOMP topic wiring
   // ---------------------------------------------------------------------------
 
@@ -337,7 +372,25 @@ export class ConnectionSession {
     this.stomp.subscribe("/topic/voice", (raw) => {
       const event = JSON.parse(raw) as VoiceMemberEvent;
       this.rosterStore.applyVoiceEvent(event);
+      if (event.status === "LEFT") {
+        // Their rows vanish; moderator marks survive server-side and re-publish on re-entry.
+        this.voiceControlStore.clearUser(event.username);
+      }
       log.info("voice", `${event.username} ${event.status.toLowerCase()} channel #${event.channelId}`);
+    });
+    this.stomp.subscribe("/topic/voice.state", (raw) => {
+      const state = JSON.parse(raw) as VoiceControlState;
+      this.voiceControlStore.applyState(state);
+      if (state.username === this.username()) {
+        this.hooks.onOwnVoiceControlState(state);
+      }
+    });
+    this.stomp.subscribe("/user/queue/voice.control", (raw) => {
+      const event = JSON.parse(raw) as VoiceControlEvent;
+      if (event.type === "KICKED") {
+        log.warn("voice", `kicked from channel #${event.channelId} by ${event.byUsername}`);
+        this.hooks.onVoiceKicked(event.byUsername);
+      }
     });
     this.stomp.subscribe("/topic/server", (raw) => {
       const profile = JSON.parse(raw) as ServerProfile;

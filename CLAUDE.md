@@ -27,7 +27,57 @@ Electron + TypeScript **спайк-клиент** OAK-сервера. Цель �
 Физическая грабля смоука: наушники на столе + микрофон гарнитуры вплотную к «уху» =
 акустическая петля, моргает MONO (оба канала громкие). Убрать микрофон от динамика.
 
-## Текущее состояние: M3 (вложения и медиа)
+## Текущее состояние: M4 (голос-парити)
+
+M3 закрыт и закоммичен (`7321b95`). M4 (код готов, ждёт смоука): **self mute/deafen +
+модерация** — `/app/voice.mute|deafen|kick` с `VoiceControlCommand{channelId,
+targetUsername, muted?, deafened?}`; self-ветка (target == сам) права не требует,
+сервер держит 4 множества-origin (selfMuted/modMuted/selfDeafened/modDeafened) и
+шлёт `/topic/voice.state` с 8 полями (muted/deafened = UNION — комплаенс; origin
+флаги ЯВНО — union∖self неоднозначен при обоих true). Клиент: `VoiceControlStore`
+(per-connection, origin-флаги verbatim), комплаенс в runtime: `voiceCompliance`
+(ЖИВЁТ ВНЕ SfuSession — переживает rejoin, пере-мьютит свежие треки): мик по union,
+share-аудио ТОЛЬКО по modMuted (self-mute музыку не глушит — Discord), deafen =
+`RoomAudio.setDeafened` (цепи хранят целевую громкость, element.volume 0↔target).
+Тумблеры читают ТОЛЬКО self-флаги (свой анмьют не снимает модераторский). KICKED =
+`/user/queue/voice.control` → leaveVoice + тост. Модерация: ПКМ «⋯» на тайле
+(Server mute/deafen/kick, гейты MUTE_MEMBERS/DEAFEN_MEMBERS/MOVE_MEMBERS,
+иерархию проверяет сервер — клиентский гейт только hint). Марки 🔇/🎧 жёлтый
+self / красный mod (mod побеждает) в тайлах и сайдбаре; очистка на LEFT (mod-метки
+переживают ревход сервером и репаблишатся пушем). **Камера**: `SfuSession.
+startCamera/stopCamera` (второй video m-line, взаимное исключение с шаром — один
+исходящий видео-слот, oak-модель; у зрителей камера = видео-фид с Watch-семантикой,
+селективная подписка), своё превью `<video muted>` в тайле. **Пикер шара**
+`SharePickerModal`: вкладки Screens/Windows (IPC `space-capture:sources` —
+desktopCapturer с превью 320×180) / Camera (enumerateDevices, без превью v1);
+выбор экрана → IPC `space-capture:select(id, withAudio)` → ГРАНТ через
+`setDisplayMediaRequestHandler` с pendingGrant (renderer-Constraints
+chromeMediaSourceId ненадёжны при живом хендлере — хендлер остаётся единственной
+точкой гранта, pending потребляется одним грантом); loopback-аудио ТОЛЬКО у целых
+экранов (окна/камера — video-only). **Pop-out просмотрщик шара**: IPC
+`space-window:popout` — второй BrowserWindow (#popout в hash), MediaStream не
+переходит между контекстами рендерера → главное окно качает JPEG-кадры
+(canvas ≤1280, q0.75, ~12 fps, IPC `popout:frame`), закрытие → `popout:closed`.
+**Rejoin-лестница** (runtime): onSessionLost/live-426 → teardown + попытки
+1/2/4/8/8 с (`logic/rejoin-ladder.ts`), кап 5 → полный выход + voice.leave + тост
++ leave-стук; join-time 426 = ОДИН ретрай через свежий /room; отмена на всех
+осознанных выходах; комплаенс пере-применяется после reconnect. **Звуки входа/выхода**
+WebAudio-стук «тук … тук» 150→210 Hz (join) / 210→150 (leave), нота 35 мс, пауза
+80 мс, атака 3 мс, τ=20 мс (`logic/knock-sound.ts` + `notifications.playKnock`),
+join — только после успешного sfu.start, leave/giveUp — уходившему. Списки
+голосовых в сайдбаре уже жили с M1 (voiceMembers) — теперь с марками.
+
+**Смоук-фикс M4 (тишина при подключении, лечилась переподключением):** у
+subscriber-PC НЕ отслеживался connectionState — ICE-failure входящего тракта
+умирал МОЛЧА (все строки лога здоровы: цепь attached, подписки есть). Теперь
+`onconnectionstatechange` на subscriber: 'failed' → `SubscriberTransportError` →
+runtime пускает REJOIN-ЛЕСТНИЦУ (ровно то, что юзер делал руками); 'connected'
+трассируется в лог; состояние видно в diag-строке `sub conn`. Транзиентный
+'disconnected' сознательно игнорируется (oak-урок: краткие моргания лечит сам
+libwebrtc). Дроп-гипотеза (ontrack раньше attached-события) НЕ подтвердилась
+логами — «track on unknown slot mid» не встретился ни разу.
+
+## M3 (закрыт, 7321b95): вложения и медиа
 
 M2 закрыт и закоммичен (`893b3f6`). M3 (код готов, ждёт смоука): **аплоад 2-фазный**
 (`POST /api/attachments {fileName}` → `{key, uploadUrl}` → голый PUT в MinIO с

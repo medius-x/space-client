@@ -1,4 +1,5 @@
 import { decideNotification, messageMentionsUser } from "../domain/logic/notification-decider";
+import { knockSchedule } from "../domain/logic/knock-sound";
 import type { Message } from "../types";
 
 /**
@@ -87,6 +88,37 @@ class NotificationHub {
           show();
         }
       });
+    }
+  }
+
+  /** The voice-room knock (oak's tuned "tuk … tuk"): bare sines, 3 ms attack,
+   *  τ=20 ms decay — dry thumps, not beeps. Join goes up, leave goes down. */
+  playKnock(direction: "join" | "leave"): void {
+    try {
+      this.audioContext ??= new AudioContext();
+      const context = this.audioContext;
+      if (context.state === "suspended") {
+        void context.resume();
+      }
+      const now = context.currentTime;
+      const master = context.createGain();
+      master.gain.value = 0.5;
+      master.connect(context.destination);
+      for (const note of knockSchedule(direction)) {
+        const startAt = now + note.startSeconds;
+        const envelope = context.createGain();
+        envelope.gain.setValueAtTime(0, startAt);
+        envelope.gain.linearRampToValueAtTime(1, startAt + 0.003); // 3 ms attack
+        envelope.gain.exponentialRampToValueAtTime(0.001, startAt + note.durationSeconds); // τ ≈ 20 ms decay
+        const oscillator = context.createOscillator();
+        oscillator.frequency.value = note.frequencyHz;
+        oscillator.connect(envelope);
+        envelope.connect(master);
+        oscillator.start(startAt);
+        oscillator.stop(startAt + note.durationSeconds);
+      }
+    } catch {
+      // audio must never take the app down
     }
   }
 

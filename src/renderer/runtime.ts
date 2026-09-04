@@ -3,7 +3,7 @@ import { log } from "../logging";
 import { MemoryTokenStorage } from "../core/auth";
 import { RestClient } from "../core/rest";
 import { JanusClient } from "../core/janus";
-import { SfuSession, RoomVanishedError, type MediaSource } from "../core/sfu";
+import { SfuSession, RoomVanishedError, SubscriberTransportError, type MediaSource } from "../core/sfu";
 import { extractAudioFmtpLines } from "../core/sdp";
 import { stereoVerdict } from "../core/audio-math";
 import { RoomAudio } from "../media/RoomAudio";
@@ -14,6 +14,7 @@ import {
   RecordTokenStorage,
 } from "../domain/session/connection-record";
 import { ConnectionSession, type SessionHooks } from "../domain/session/connection-session";
+import { MAX_VOICE_REJOIN_ATTEMPTS, rejoinDelayMs, rejoinExhausted } from "../domain/logic/rejoin-ladder";
 import { notifications } from "./notifications";
 import { virtualScrollTelemetry } from "./scroll-telemetry";
 import type {
@@ -22,6 +23,7 @@ import type {
   Message,
   RemoteTrackKind,
   RoomInfo,
+  VoiceControlState,
   VoiceRoomState,
 } from "../types";
 
@@ -47,6 +49,9 @@ export interface AppState {
   stateDetail: string | null;
   participants: FeedInfo[];
   sharing: boolean;
+  cameraOn: boolean;
+  /** The share pop-out window is up — the main window pumps frames into it. */
+  popoutActive: boolean;
   testToneChannel: "left" | "right" | null;
   apmEnabled: boolean;
   viewingFeedId: number | null;
@@ -69,6 +74,8 @@ class AppStore extends Emitter {
     stateDetail: null,
     participants: [],
     sharing: false,
+    cameraOn: false,
+    popoutActive: false,
     testToneChannel: null,
     apmEnabled: true,
     viewingFeedId: null,
@@ -116,8 +123,23 @@ export const sessionBinding = new SessionBinding();
 let janusClient: JanusClient | null = null;
 let sfuSession: SfuSession | null = null;
 let localDisplayStream: MediaStream | null = null;
+let localCameraStream: MediaStream | null = null;
 let janusSessionLostFired = false;
 let shareAudioElementActive = false;
+
+/**
+ * The server's voice-control verdict for OUR member — the compliance truth. Kept
+ * OUTSIDE the SFU session so it survives the rejoin ladder (fresh tracks re-mute
+ * themselves); reset only on a real leave (the server drops self-marks there,
+ * moderator marks re-publish on re-entry anyway).
+ */
+const voiceCompliance = { micMuted: false, shareAudioMuted: false, deafened: false };
+
+function applyComplianceToLiveSession(): void {
+  sfuSession?.setMicEnabled(!voiceCompliance.micMuted);
+  sfuSession?.setShareAudioEnabled(!voiceCompliance.shareAudioMuted);
+  roomAudio.setDeafened(voiceCompliance.deafened);
+}
 
 /** Wiring point for the imperative voice view (tiles/meters) — set by VoiceRoom. */
 export const voiceView = {
@@ -212,6 +234,21 @@ const sessionHooks: SessionHooks = {
       windowFocused,
       inOpenChannel,
     );
+  },
+  onOwnVoiceControlState: (state) => {
+    // The union drives our mic and our speakers; ONLY a moderator mute cuts the
+    // share audio too (a self-mute must leave the music playing — Discord semantics).
+    voiceCompliance.micMuted = state.muted;
+    voiceCompliance.shareAudioMuted = state.modMuted;
+    voiceCompliance.deafened = state.deafened;
+    applyComplianceToLiveSession();
+    log.info("voice", `compliance: mic=${state.muted ? "muted" : "open"} (self=${state.selfMuted} mod=${state.modMuted})`
+      + ` deafened=${state.deafened} shareAudio=${state.modMuted ? "muted" : "open"}`);
+  },
+  onVoiceKicked: (byUsername) => {
+    cancelVoiceRejoin();
+    void leaveVoice();
+    notifications.showToast({ title: "Voice", channelName: byUsername, body: "You were kicked from the voice channel." });
   },
 };
 
@@ -351,6 +388,8 @@ export async function teardownSession(): Promise<void> {
     stateDetail: null,
     participants: [],
     sharing: false,
+    cameraOn: false,
+    popoutActive: false,
     viewingFeedId: null,
     viewingUsername: null,
   });
@@ -522,81 +561,213 @@ function pickFallbackTextChannel(): void {
 // ---------------------------------------------------------------------------
 // Voice session (room → Janus → SFU)
 // ---------------------------------------------------------------------------
+
+/** Rejoin ladder state (oak parity: 5 attempts, delays 1/2/4/8/8 s). */
+let voiceRejoin: { channelId: number; attempt: number; timer: number } | null = null;
+
+function cancelVoiceRejoin(): void {
+  if (voiceRejoin !== null) {
+    window.clearTimeout(voiceRejoin.timer);
+    voiceRejoin = null;
+  }
+}
+
 export async function joinVoice(channel: Channel): Promise<void> {
   const session = activeSession;
   if (!session) {
     return;
   }
+  cancelVoiceRejoin();
   await teardownVoice();
+  // Entering a room is a fresh voice state: self-marks are dropped server-side on
+  // leave, and a surviving moderator mark re-publishes via /topic/voice.state.
+  session.voiceControlStore.clearAll();
+  voiceCompliance.micMuted = false;
+  voiceCompliance.shareAudioMuted = false;
+  voiceCompliance.deafened = false;
+  roomAudio.setDeafened(false);
   appStore.patch({ activeVoiceChannelId: channel.id, voiceState: "connecting", stateDetail: null, participants: [], viewingFeedId: null, viewingUsername: null });
-
-  let room: RoomInfo;
-  try {
-    room = await session.rest.getRoom(channel.id);
-  } catch (error) {
-    appStore.patch({ voiceState: "failed", stateDetail: errorMessage(error) });
-    return;
-  }
   session.stomp.send("/app/voice.join", { channelId: channel.id });
 
-  janusSessionLostFired = false;
-  const janus = new JanusClient({
-    baseUrl: room.janusUrl,
-    token: room.token,
-    pin: room.pin,
-    roomId: room.roomId,
-    onEvent: (_handleId, event) => sfuSession?.handleEvent(event),
-    onJsep: (_handleId, jsep) => {
-      if (jsep.type === "offer") {
-        void sfuSession?.handleSubscriberOffer(jsep);
-      }
-    },
-    onSessionLost: (reason) => {
-      if (janusSessionLostFired) {
-        return;
-      }
-      janusSessionLostFired = true;
-      log.warn("voice", `janus session lost: ${reason}`);
-      appStore.patch({ voiceState: "reconnecting", stateDetail: `${reason} — re-click the channel (ladder lands in M4)` });
-    },
-  });
-  janusClient = janus;
-
   try {
-    const publisherHandleId = await janus.open();
-    const sfu = new SfuSession({
-      room,
-      username: appStore.getSnapshot().ownUsername ?? "user",
-      janus,
-      publisherHandleId,
-      mediaSource: navigator.mediaDevices as MediaSource,
-      callbacks: {
-        onParticipants: (feeds) => appStore.patch({ participants: feeds }),
-        onRemoteTrack: handleRemoteTrack,
-        onRemoteTrackEnded: handleRemoteTrackEnded,
-        onState: (state, detail) => appStore.patch({ voiceState: state, stateDetail: detail ?? null }),
-        onError: (error) => {
-          if (error instanceof RoomVanishedError) {
-            appStore.patch({ voiceState: "failed", stateDetail: "room vanished — re-click the channel" });
-          } else {
-            log.error("voice", `sfu: ${error.message}`);
-            appStore.patch({ stateDetail: error.message });
-          }
-        },
-      },
-    });
-    sfuSession = sfu;
-    await sfu.start();
-    const mic = sfu.getMicTrack();
-    if (mic) {
-      roomAudio.attachOwnMic(appStore.getSnapshot().ownUsername ?? "you", mic);
-    }
-    log.info("voice", `joined room ${room.roomId} on ${room.janusUrl}`);
+    await connectVoiceRoom(channel);
+    notifications.playKnock("join");
   } catch (error) {
     appStore.patch({ voiceState: "failed", stateDetail: errorMessage(error) });
     await teardownVoice();
     activeSession?.stomp.send("/app/voice.leave", { channelId: channel.id });
   }
+}
+
+/**
+ * One full connect: fresh /room (the server re-creates a vanished room and mints
+ * a fresh Janus token), Janus session, SFU start. A join-time 426 (room vanished)
+ * gets exactly ONE retry through a fresh /room — oak's vanished-room recipe.
+ */
+async function connectVoiceRoom(channel: Channel): Promise<void> {
+  const session = activeSession;
+  if (!session) {
+    throw new Error("no active session");
+  }
+  let room: RoomInfo = await session.rest.getRoom(channel.id);
+  for (let connectAttempt = 0; ; connectAttempt++) {
+    janusSessionLostFired = false;
+    const janus = new JanusClient({
+      baseUrl: room.janusUrl,
+      token: room.token,
+      pin: room.pin,
+      roomId: room.roomId,
+      onEvent: (_handleId, event) => sfuSession?.handleEvent(event),
+      onJsep: (_handleId, jsep) => {
+        if (jsep.type === "offer") {
+          void sfuSession?.handleSubscriberOffer(jsep);
+        }
+      },
+      onSessionLost: (reason) => {
+        if (janusSessionLostFired) {
+          return;
+        }
+        janusSessionLostFired = true;
+        log.warn("voice", `janus session lost: ${reason}`);
+        handleVoiceSessionLost(reason);
+      },
+    });
+    janusClient = janus;
+    try {
+      const publisherHandleId = await janus.open();
+      const sfu = new SfuSession({
+        room,
+        username: appStore.getSnapshot().ownUsername ?? "user",
+        janus,
+        publisherHandleId,
+        mediaSource: navigator.mediaDevices as MediaSource,
+        callbacks: {
+          onParticipants: (feeds) => appStore.patch({ participants: feeds }),
+          onRemoteTrack: handleRemoteTrack,
+          onRemoteTrackEnded: handleRemoteTrackEnded,
+          onState: (state, detail) => appStore.patch({ voiceState: state, stateDetail: detail ?? null }),
+          onError: (error) => {
+            if (error instanceof RoomVanishedError) {
+              // The room died under a LIVE session — the rejoin ladder owns it now.
+              handleVoiceSessionLost("room vanished (426)");
+            } else if (error instanceof SubscriberTransportError) {
+              // Incoming media died silently (ICE failure on the subscriber PC) — the
+              // ladder rebuilds the session, exactly the manual re-click that cured it.
+              handleVoiceSessionLost("incoming media transport failed");
+            } else {
+              log.error("voice", `sfu: ${error.message}`);
+              appStore.patch({ stateDetail: error.message });
+            }
+          },
+        },
+      });
+      sfuSession = sfu;
+      await sfu.start();
+      const mic = sfu.getMicTrack();
+      if (mic) {
+        roomAudio.attachOwnMic(appStore.getSnapshot().ownUsername ?? "you", mic);
+      }
+      applyComplianceToLiveSession(); // a re-entering muted member stays muted
+      log.info("voice", `joined room ${room.roomId} on ${room.janusUrl}`);
+      return;
+    } catch (error) {
+      if (error instanceof RoomVanishedError && connectAttempt === 0) {
+        log.warn("voice", "room vanished at join (426) — one retry through a fresh /room");
+        await teardownVoice();
+        room = await session.rest.getRoom(channel.id);
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
+/**
+ * The Janus transport died (network blip, gateway restart, silence watchdog) or the
+ * room vanished. Either the channel still exists — climb the rejoin ladder — or it
+ * does not and the member is detached for good.
+ */
+function handleVoiceSessionLost(reason: string): void {
+  const state = appStore.getSnapshot();
+  if (state.activeVoiceChannelId === null) {
+    return; // nothing live — a stale callback from a previous room
+  }
+  const session = activeSession;
+  const channel = session ? session.channelStore.get(state.activeVoiceChannelId) : null;
+  if (!session || !channel) {
+    void detachVoiceAfterLoss("the channel is gone");
+    return;
+  }
+  if (voiceRejoin === null) {
+    voiceRejoin = { channelId: channel.id, attempt: 1, timer: 0 };
+    scheduleVoiceRejoin(1, reason);
+    return;
+  }
+  const failedAttempt = voiceRejoin.attempt;
+  if (rejoinExhausted(failedAttempt)) {
+    void detachVoiceAfterLoss(`could not reconnect after ${failedAttempt} attempts`);
+    return;
+  }
+  voiceRejoin.attempt = failedAttempt + 1;
+  scheduleVoiceRejoin(voiceRejoin.attempt, reason);
+}
+
+function scheduleVoiceRejoin(attempt: number, reason: string): void {
+  const delayMs = rejoinDelayMs(attempt);
+  appStore.patch({ voiceState: "reconnecting", stateDetail: `reconnecting ${attempt}/${MAX_VOICE_REJOIN_ATTEMPTS} — ${reason}` });
+  log.info("voice", `rejoin attempt ${attempt}/${MAX_VOICE_REJOIN_ATTEMPTS} in ${delayMs} ms (${reason})`);
+  const timer = window.setTimeout(() => {
+    const rejoin = voiceRejoin;
+    const session = activeSession;
+    if (!rejoin || !session) {
+      return;
+    }
+    const channel = session.channelStore.get(rejoin.channelId);
+    if (!channel) {
+      void detachVoiceAfterLoss("the channel is gone");
+      return;
+    }
+    void (async () => {
+      try {
+        await teardownVoice();
+        await connectVoiceRoom(channel);
+        // Fresh media flips the state to live via onState; the ladder is done.
+        voiceRejoin = null;
+        appStore.patch({ stateDetail: "reconnected — waiting for media" });
+        log.info("voice", "rejoin connected");
+      } catch (error) {
+        log.warn("voice", `rejoin attempt failed: ${errorMessage(error)}`);
+        handleVoiceSessionLost(errorMessage(error));
+      }
+    })();
+  }, delayMs);
+  if (voiceRejoin !== null) {
+    voiceRejoin.timer = timer;
+  }
+}
+
+/** Full detach after a lost room: teardown, server leave, knock, toast. */
+async function detachVoiceAfterLoss(reason: string): Promise<void> {
+  cancelVoiceRejoin();
+  const channelId = appStore.getSnapshot().activeVoiceChannelId;
+  const hadSession = sfuSession !== null || janusClient !== null;
+  await teardownVoice();
+  if (channelId !== null) {
+    activeSession?.stomp.send("/app/voice.leave", { channelId });
+  }
+  resetVoiceCompliance();
+  appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", stateDetail: null, participants: [], viewingFeedId: null, viewingUsername: null });
+  if (hadSession) {
+    notifications.playKnock("leave");
+    notifications.showToast({ title: "Voice", channelName: "Connection lost", body: `You were disconnected from the room — ${reason}.` });
+  }
+}
+
+function resetVoiceCompliance(): void {
+  voiceCompliance.micMuted = false;
+  voiceCompliance.shareAudioMuted = false;
+  voiceCompliance.deafened = false;
+  roomAudio.setDeafened(false);
 }
 
 export async function teardownVoice(): Promise<void> {
@@ -606,6 +777,12 @@ export async function teardownVoice(): Promise<void> {
       track.stop();
     }
     localDisplayStream = null;
+  }
+  if (localCameraStream) {
+    for (const track of localCameraStream.getTracks()) {
+      track.stop();
+    }
+    localCameraStream = null;
   }
   const session = sfuSession;
   const janus = janusClient;
@@ -620,15 +797,24 @@ export async function teardownVoice(): Promise<void> {
   roomAudio.detachOwnMic();
   roomAudio.detachAll();
   shareAudioElementActive = false;
+  if (appStore.getSnapshot().sharing || appStore.getSnapshot().cameraOn) {
+    appStore.patch({ sharing: false, cameraOn: false });
+  }
 }
 
 export async function leaveVoice(): Promise<void> {
   const channelId = appStore.getSnapshot().activeVoiceChannelId;
+  cancelVoiceRejoin();
+  const hadSession = sfuSession !== null || janusClient !== null;
   await teardownVoice();
   if (channelId !== null) {
     activeSession?.stomp.send("/app/voice.leave", { channelId });
   }
-  appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", participants: [], viewingFeedId: null, viewingUsername: null });
+  resetVoiceCompliance();
+  appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", stateDetail: null, participants: [], viewingFeedId: null, viewingUsername: null });
+  if (hadSession) {
+    notifications.playKnock("leave");
+  }
 }
 
 function handleRemoteTrack(feedId: number, username: string, kind: RemoteTrackKind, track: MediaStreamTrack): void {
@@ -655,33 +841,82 @@ function handleRemoteTrackEnded(feedId: number, _username: string, kind: RemoteT
   roomAudio.detachFeed(feedId);
 }
 
-export async function toggleShare(): Promise<void> {
+/** A share source picked in the picker modal (M4): screen, window or camera. */
+export interface ShareTarget {
+  kind: "screen" | "window" | "camera";
+  /** desktopCapturer source id, or the camera deviceId for kind="camera". */
+  id: string;
+}
+
+async function stopCameraLocal(): Promise<void> {
+  if (sfuSession) {
+    await sfuSession.stopCamera().catch(() => undefined);
+  }
+  if (localCameraStream) {
+    for (const track of localCameraStream.getTracks()) {
+      track.stop();
+    }
+    localCameraStream = null;
+  }
+  appStore.patch({ cameraOn: false });
+}
+
+async function stopShareInternal(): Promise<void> {
+  if (sfuSession) {
+    await sfuSession.stopShare().catch(() => undefined);
+  }
+  if (localDisplayStream) {
+    for (const track of localDisplayStream.getTracks()) {
+      track.stop();
+    }
+    localDisplayStream = null;
+  }
+  appStore.patch({ sharing: false });
+}
+
+/** The picker's "Share" — one outgoing video slot: any new share stops the other. */
+export async function shareTarget(target: ShareTarget): Promise<void> {
   if (!sfuSession) {
     return;
   }
-  if (appStore.getSnapshot().sharing) {
-    await sfuSession.stopShare().catch(() => undefined);
-    if (localDisplayStream) {
-      for (const track of localDisplayStream.getTracks()) {
-        track.stop();
-      }
-      localDisplayStream = null;
-    }
-    appStore.patch({ sharing: false });
-    return;
-  }
   try {
+    if (target.kind === "camera") {
+      if (appStore.getSnapshot().sharing) {
+        await stopShareInternal();
+      }
+      if (appStore.getSnapshot().cameraOn) {
+        await stopCameraLocal();
+      }
+      const cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: target.id }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      localCameraStream = cameraStream;
+      await sfuSession.startCamera(cameraStream);
+      appStore.patch({ cameraOn: true });
+      log.info("camera", `camera publishing (device ${target.id})`);
+      return;
+    }
+    if (appStore.getSnapshot().cameraOn) {
+      await stopCameraLocal();
+    }
+    if (appStore.getSnapshot().sharing) {
+      await stopShareInternal();
+    }
+    // Tell main which source the NEXT getDisplayMedia grant should hand out; loopback
+    // system audio only exists for whole screens (windows and cameras never carry it).
+    await window.spaceCapture?.select(target.id, target.kind === "screen");
     const display = await navigator.mediaDevices.getDisplayMedia({
       video: true,
-      audio: { channelCount: { ideal: 2 } },
+      audio: target.kind === "screen" ? { channelCount: { ideal: 2 } } : false,
     });
     localDisplayStream = display;
     display.getVideoTracks()[0]?.addEventListener("ended", () => {
-      void toggleShare();
+      void stopShareInternal();
     });
     await sfuSession.startShare(display);
     const shareAudio = display.getAudioTracks()[0];
-    log.info("share", `publishing share (audio channels=${shareAudio ? shareAudio.getSettings().channelCount ?? "?" : "none"})`);
+    log.info("share", `publishing ${target.kind} "${target.id}" (audio channels=${shareAudio ? shareAudio.getSettings().channelCount ?? "?" : "none"})`);
     appStore.patch({ sharing: true });
   } catch (error) {
     log.error("share", `share failed: ${errorMessage(error)}`);
@@ -691,7 +926,129 @@ export async function toggleShare(): Promise<void> {
       }
       localDisplayStream = null;
     }
+    if (localCameraStream && target.kind === "camera") {
+      for (const track of localCameraStream.getTracks()) {
+        track.stop();
+      }
+      localCameraStream = null;
+    }
   }
+}
+
+/** The camera toggle button — the default device, no picker. */
+export async function toggleCamera(): Promise<void> {
+  if (!sfuSession) {
+    return;
+  }
+  if (appStore.getSnapshot().cameraOn) {
+    await stopCameraLocal();
+    return;
+  }
+  try {
+    if (appStore.getSnapshot().sharing) {
+      await stopShareInternal();
+    }
+    const cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false,
+    });
+    localCameraStream = cameraStream;
+    await sfuSession.startCamera(cameraStream);
+    appStore.patch({ cameraOn: true });
+    log.info("camera", "camera publishing (default device)");
+  } catch (error) {
+    log.error("camera", `camera failed: ${errorMessage(error)}`);
+    if (localCameraStream) {
+      for (const track of localCameraStream.getTracks()) {
+        track.stop();
+      }
+      localCameraStream = null;
+    }
+  }
+}
+
+/** The live local camera track — the UI's own preview binds to it. */
+export function getCameraTrack(): MediaStreamTrack | null {
+  return sfuSession?.getCameraTrack() ?? null;
+}
+
+export function stopShare(): Promise<void> {
+  return stopShareInternal();
+}
+
+// ---------------------------------------------------------------------------
+// Voice control commands (self toggles + moderation)
+// ---------------------------------------------------------------------------
+
+/** Self-mute: the toggle reads ONLY the self flag — a moderator's mute is not ours to lift. */
+export function toggleSelfMute(): void {
+  const session = activeSession;
+  const channelId = appStore.getSnapshot().activeVoiceChannelId;
+  if (!session || channelId === null) {
+    return;
+  }
+  const marks = session.voiceControlStore.marksFor(session.username());
+  session.sendVoiceControl("/app/voice.mute", channelId, session.username(), { muted: !marks.selfMuted });
+}
+
+export function toggleSelfDeafen(): void {
+  const session = activeSession;
+  const channelId = appStore.getSnapshot().activeVoiceChannelId;
+  if (!session || channelId === null) {
+    return;
+  }
+  const marks = session.voiceControlStore.marksFor(session.username());
+  session.sendVoiceControl("/app/voice.deafen", channelId, session.username(), { deafened: !marks.selfDeafened });
+}
+
+/** Moderator actions on another member (the server re-checks permission + hierarchy). */
+export function serverMuteUser(username: string): void {
+  const session = activeSession;
+  const channelId = appStore.getSnapshot().activeVoiceChannelId;
+  if (!session || channelId === null) {
+    return;
+  }
+  const marks = session.voiceControlStore.marksFor(username);
+  session.sendVoiceControl("/app/voice.mute", channelId, username, { muted: !marks.modMuted });
+}
+
+export function serverDeafenUser(username: string): void {
+  const session = activeSession;
+  const channelId = appStore.getSnapshot().activeVoiceChannelId;
+  if (!session || channelId === null) {
+    return;
+  }
+  const marks = session.voiceControlStore.marksFor(username);
+  session.sendVoiceControl("/app/voice.deafen", channelId, username, { deafened: !marks.modDeafened });
+}
+
+export function kickVoiceUser(username: string): void {
+  const session = activeSession;
+  const channelId = appStore.getSnapshot().activeVoiceChannelId;
+  if (!session || channelId === null) {
+    return;
+  }
+  session.sendVoiceControl("/app/voice.kick", channelId, username, {});
+}
+
+// ---------------------------------------------------------------------------
+// Share pop-out window
+// ---------------------------------------------------------------------------
+
+export async function openSharePopout(): Promise<void> {
+  const opened = (await window.spaceWindow?.openPopout()) ?? false;
+  if (opened) {
+    appStore.patch({ popoutActive: true });
+  }
+}
+
+export function popoutClosed(): void {
+  appStore.patch({ popoutActive: false });
+}
+
+/** A JPEG frame from the share <video> — relayed to the pop-out window. */
+export function sendPopoutFrame(dataUrl: string): void {
+  window.spaceWindow?.sendFrame(dataUrl);
 }
 
 export function toggleTestTone(channel: "left" | "right"): void {
@@ -787,6 +1144,7 @@ export function buildDiagModel(): DiagModel {
       { key: "stomp", value: state.stompState },
       { key: "audio ctx", value: roomAudio.getState() },
       { key: "voice", value: state.voiceState + (state.activeVoiceChannelId !== null ? ` #${state.activeVoiceChannelId}` : "") },
+      { key: "sub conn", value: sfuSession?.getSubscriberConnectionState() ?? "—" },
       { key: "subs", value: String(sfuSession?.getSubscribedCount() ?? 0) },
       { key: "inbound", value: inboundAudioLine },
       { key: "sent fmtp", value: sentLine ?? "—" },

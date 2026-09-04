@@ -54,6 +54,16 @@ export class BadPinError extends Error {
   }
 }
 
+/** The subscriber transport died (ICE failure) — incoming media is gone for good.
+ *  The runtime reacts by climbing the rejoin ladder (a manual re-click used to be
+ *  the only cure — the failure was completely silent before this signal). */
+export class SubscriberTransportError extends Error {
+  constructor() {
+    super("subscriber peer connection failed");
+    this.name = "SubscriberTransportError";
+  }
+}
+
 /** Seam for tests: media acquisition lives behind this, production binds navigator. */
 export interface MediaSource {
   getUserMedia(constraints: MediaStreamConstraints): Promise<MediaStream>;
@@ -96,6 +106,12 @@ export class SfuSession {
   private screenVideoSender: RTCRtpSender | null = null;
   private shareAudioSender: RTCRtpSender | null = null;
   private shareAudioTrackId: string | null = null;
+  private shareAudioTrack: MediaStreamTrack | null = null;
+  private cameraVideoSender: RTCRtpSender | null = null;
+  private cameraTrack: MediaStreamTrack | null = null;
+  /** Compliance survives a rejoin: the desired mute state re-applies to the FRESH tracks. */
+  private micMutedDesired = false;
+  private shareAudioMutedDesired = false;
   private closed = false;
   private publisherIceReady = false;
   private publisherOfferBusy = false;
@@ -156,6 +172,9 @@ export class SfuSession {
       return;
     }
     this.micTrack = micStream.getAudioTracks()[0] ?? null;
+    if (this.micTrack && this.micMutedDesired) {
+      this.micTrack.enabled = false; // re-entered a room while server-muted — comply immediately
+    }
 
     const publisher = this.createPeerConnection();
     this.publisherPc = publisher;
@@ -203,14 +222,28 @@ export class SfuSession {
   }
 
   setMicEnabled(enabled: boolean): void {
+    this.micMutedDesired = !enabled;
     if (this.micTrack) {
       this.micTrack.enabled = enabled;
     }
   }
 
   /**
+   * Share-audio compliance: a MODERATOR mute cuts everything (the server's forced
+   * layer gates the whole outgoing audio at the gateway too); a self-mute must NOT
+   * kill the share audio (Discord semantics) — that split is the caller's decision.
+   */
+  setShareAudioEnabled(enabled: boolean): void {
+    this.shareAudioMutedDesired = !enabled;
+    if (this.shareAudioTrack) {
+      this.shareAudioTrack.enabled = enabled;
+    }
+  }
+
+  /**
    * Screen share: video FIRST, then share audio — the m-line order [mic, screen,
-   * shareAudio] is the classification contract. Renegotiates once.
+   * shareAudio] is the classification contract. Renegotiates once. Mutually
+   * exclusive with the camera (one outgoing video m-line per member, oak parity).
    */
   async startShare(displayStream: MediaStream): Promise<void> {
     const videoTrack = displayStream.getVideoTracks()[0];
@@ -218,10 +251,17 @@ export class SfuSession {
     if (!videoTrack || !this.publisherPc) {
       throw new Error("share needs a video track and a live publisher");
     }
+    if (this.cameraVideoSender) {
+      throw new Error("camera is already publishing — stop it before sharing a screen");
+    }
     this.screenVideoSender = this.publisherPc.addTrack(videoTrack, new MediaStream([videoTrack]));
     if (audioTrack) {
       this.shareAudioSender = this.publisherPc.addTrack(audioTrack, new MediaStream([audioTrack]));
+      this.shareAudioTrack = audioTrack;
       this.shareAudioTrackId = audioTrack.id;
+      if (this.shareAudioMutedDesired) {
+        audioTrack.enabled = false; // re-shared while mod-muted — comply immediately
+      }
       // The stereo killer: Opus intensity-stereo quantizes the side channel to zero at
       // low bitrates (live smoke: Δ collapsed 16.5 dB → 0.4 dB). Janus never echoes
       // maxaveragebitrate, so SendParameters.maxBitrate is the ONLY lever — raise the
@@ -230,6 +270,44 @@ export class SfuSession {
     }
     log.info("sfu", `share started (audio=${audioTrack ? audioTrack.id : "none"}, audio bitrate ceiling 256 kbps)`);
     await this.renegotiatePublisher();
+  }
+
+  /** Camera publishing — a second outgoing VIDEO source riding its own m-line. */
+  async startCamera(cameraStream: MediaStream): Promise<void> {
+    const videoTrack = cameraStream.getVideoTracks()[0];
+    if (!videoTrack || !this.publisherPc) {
+      throw new Error("camera needs a video track and a live publisher");
+    }
+    if (this.screenVideoSender) {
+      throw new Error("screen share is already publishing — stop it before starting the camera");
+    }
+    this.cameraVideoSender = this.publisherPc.addTrack(videoTrack, new MediaStream([videoTrack]));
+    this.cameraTrack = videoTrack;
+    log.info("sfu", `camera started (track ${videoTrack.id})`);
+    await this.renegotiatePublisher();
+  }
+
+  async stopCamera(): Promise<void> {
+    if (this.cameraTrack) {
+      this.cameraTrack.stop();
+      this.cameraTrack = null;
+    }
+    if (this.cameraVideoSender && this.publisherPc) {
+      this.publisherPc.removeTrack(this.cameraVideoSender);
+    }
+    this.cameraVideoSender = null;
+    if (this.publisherPc) {
+      await this.renegotiatePublisher();
+    }
+  }
+
+  isCameraPublishing(): boolean {
+    return this.cameraVideoSender !== null;
+  }
+
+  /** The live local camera track — the UI's own preview binds to it. */
+  getCameraTrack(): MediaStreamTrack | null {
+    return this.cameraTrack;
   }
 
   /** Best-effort maxBitrate raise on a sender (encodings may be absent pre-negotiation). */
@@ -259,6 +337,7 @@ export class SfuSession {
       this.publisherPc.removeTrack(this.shareAudioSender);
       this.shareAudioSender = null;
     }
+    this.shareAudioTrack = null;
     this.shareAudioTrackId = null;
     await this.renegotiatePublisher();
   }
@@ -374,6 +453,9 @@ export class SfuSession {
     }
     this.closed = true;
     this.callbacks.onState("reconnecting", "leaving");
+    this.cameraTrack?.stop();
+    this.cameraTrack = null;
+    this.cameraVideoSender = null;
     for (const [feedId, feed] of this.feeds) {
       this.teardownFeedTracks(feedId, feed.display);
     }
@@ -536,6 +618,17 @@ export class SfuSession {
     subscriber.onnegotiationneeded = () => undefined; // Janus is the offerer here
     subscriber.onicecandidate = () => undefined;
     subscriber.ontrack = (event: RTCTrackEvent) => this.routeRemoteTrack(event);
+    // The incoming transport was a BLIND spot: ICE failure here meant permanent
+    // silence with every log line looking healthy (live-smoke M4 — "no audio until
+    // a manual re-click"). Surface the failure; the runtime climbs the rejoin ladder.
+    subscriber.onconnectionstatechange = () => {
+      if (subscriber.connectionState === "connected") {
+        log.info("sfu", "subscriber transport connected");
+      } else if (subscriber.connectionState === "failed" && !this.closed) {
+        log.error("sfu", "subscriber transport FAILED — incoming media is dead");
+        this.callbacks.onError(new SubscriberTransportError());
+      }
+    };
     return subscriber;
   }
 
@@ -667,6 +760,10 @@ export class SfuSession {
   /** Diagnostics surface. */
   getLastSubscriberOfferSdp(): string | null {
     return this.lastSubscriberOfferSdp;
+  }
+
+  getSubscriberConnectionState(): string {
+    return this.subscriberPc?.connectionState ?? "none";
   }
 
   getPublisherLocalSdp(): string | null {

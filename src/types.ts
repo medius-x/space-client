@@ -245,6 +245,40 @@ export type RemoteTrackKind = "voice" | "share" | "video";
 
 export type VoiceRoomState = "idle" | "connecting" | "live" | "reconnecting" | "failed";
 
+/**
+ * /app/voice.mute|deafen|kick body. The self-toggle path (targetUsername == the
+ * sender) needs no permission — Discord-style; the server routes on that equality.
+ */
+export interface VoiceControlCommand {
+  channelId: number;
+  targetUsername: string;
+  muted: boolean | null;
+  deafened: boolean | null;
+}
+
+/**
+ * /topic/voice.state broadcast (append-only wire contract). muted/deafened are the
+ * UNION (compliance semantics); the four origin flags are EXPLICIT because
+ * "mod = union ∖ self" is ambiguous when both hold — the server carries both.
+ */
+export interface VoiceControlState {
+  username: string;
+  channelId: number;
+  muted: boolean;
+  deafened: boolean;
+  selfMuted: boolean;
+  selfDeafened: boolean;
+  modMuted: boolean;
+  modDeafened: boolean;
+}
+
+/** /user/queue/voice.control push targeted at the acted-on member (type=KICKED). */
+export interface VoiceControlEvent {
+  type: "KICKED";
+  channelId: number;
+  byUsername: string;
+}
+
 /** Where the speaker output of each feed sits right now (diagnostics + UI meters). */
 export interface FeedLevels {
   voiceDbfs: number | null;

@@ -243,6 +243,100 @@ ipcMain.handle("space-kv:rotate-tokens", (_event, key: unknown, expectedRefreshT
   });
 });
 
+// ---------------------------------------------------------------------------
+// Capture picker (M4): enumerate desktop sources WITH previews for the Discord-style
+// picker, and hand the CHOSEN source to the next getDisplayMedia grant. The handler
+// stays the single grant point — renderer-side chromeMediaSourceId constraints are
+// unreliable when a display-media handler is installed.
+// ---------------------------------------------------------------------------
+
+let pendingCaptureGrant: { sourceId: string; withAudio: boolean } | null = null;
+
+ipcMain.handle("space-capture:sources", async () => {
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ["screen", "window"],
+      thumbnailSize: { width: 320, height: 180 },
+    });
+    return sources.map((source) => ({
+      id: source.id,
+      name: source.name,
+      kind: source.id.startsWith("screen:") ? ("screen" as const) : ("window" as const),
+      thumbnailDataUrl: source.thumbnail.isEmpty() ? null : source.thumbnail.toDataURL(),
+    }));
+  } catch (error: unknown) {
+    appendLog(`[main] capture sources failed: ${error instanceof Error ? error.message : String(error)}`);
+    return [];
+  }
+});
+
+ipcMain.handle("space-capture:select", (_event, sourceId: unknown, withAudio: unknown) => {
+  if (typeof sourceId !== "string") {
+    return false;
+  }
+  pendingCaptureGrant = { sourceId, withAudio: withAudio === true };
+  return true;
+});
+
+// ---------------------------------------------------------------------------
+// Share pop-out window (M4): a separate BrowserWindow fed with JPEG frames from
+// the main window over IPC (MediaStream objects cannot cross renderer contexts).
+// ---------------------------------------------------------------------------
+
+let popoutWindow: BrowserWindow | null = null;
+let mainWindowRef: BrowserWindow | null = null;
+
+function loadRendererTarget(window: BrowserWindow, hash: string): Promise<void> {
+  const devServerUrl = process.env.ELECTRON_RENDERER_URL;
+  if (devServerUrl) {
+    return window.loadURL(`${devServerUrl}#${hash}`);
+  }
+  return window.loadFile(path.join(__dirname, "..", "renderer", "index.html"), { hash });
+}
+
+ipcMain.handle("space-window:popout", () => {
+  if (popoutWindow && !popoutWindow.isDestroyed()) {
+    popoutWindow.focus();
+    return true;
+  }
+  const popout = new BrowserWindow({
+    width: 880,
+    height: 520,
+    title: "space — screen share",
+    backgroundColor: "#1e1f22",
+    webPreferences: {
+      preload: path.join(__dirname, "..", "preload", "preload.js"),
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+      autoplayPolicy: "no-user-gesture-required",
+      backgroundThrottling: false, // frames must flow while the main window is focused
+    },
+  });
+  popoutWindow = popout;
+  popout.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  popout.webContents.on("will-navigate", (event, url) => {
+    if (!url.startsWith("file://") && !url.startsWith(process.env.ELECTRON_RENDERER_URL ?? "file://")) {
+      event.preventDefault();
+    }
+  });
+  popout.on("closed", () => {
+    popoutWindow = null;
+    mainWindowRef?.webContents.send("popout:closed");
+  });
+  void loadRendererTarget(popout, "popout").catch((error: unknown) => {
+    appendLog(`[main] popout load failed: ${error instanceof Error ? error.message : String(error)}`);
+    popout.close();
+  });
+  return true;
+});
+
+ipcMain.on("popout:frame", (_event, dataUrl: unknown) => {
+  if (typeof dataUrl === "string" && popoutWindow && !popoutWindow.isDestroyed()) {
+    popoutWindow.webContents.send("popout:frame", dataUrl);
+  }
+});
+
 async function createWindow(): Promise<void> {
   const mainWindow = new BrowserWindow({
     width: 1280,
@@ -261,6 +355,7 @@ async function createWindow(): Promise<void> {
   });
 
   // Security: this spike never navigates anywhere except its own local page.
+  mainWindowRef = mainWindow;
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event, url) => {
     if (!url.startsWith("file://")) {
@@ -268,22 +363,28 @@ async function createWindow(): Promise<void> {
     }
   });
 
-  // Display media: auto-grant the primary display + system audio loopback (Windows).
-  // The spike deliberately has no picker — the goal is to probe the 'loopback' path,
-  // not to build UX. request.audioRequested is honored only when the renderer asked.
+  // Display media grant. With a pending picker grant the CHOSEN source is handed out
+  // (system loopback audio only for whole screens and only when the renderer asked);
+  // without one this falls back to the primary display — the diagnostics self-test path.
   session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
+    const grant = pendingCaptureGrant;
+    pendingCaptureGrant = null; // one grant per selection — never leak into a later request
     desktopCapturer
-      .getSources({ types: ["screen"], thumbnailSize: { width: 0, height: 0 } })
+      .getSources({ types: grant ? ["screen", "window"] : ["screen"], thumbnailSize: { width: 0, height: 0 } })
       .then((sources) => {
-        const primaryId = String(screen.getPrimaryDisplay().id);
-        const chosen = sources.find((source) => source.display_id === primaryId) ?? sources[0];
+        let chosen = grant ? sources.find((source) => source.id === grant.sourceId) : undefined;
         if (!chosen) {
-          appendLog("[main] ERROR display-media: no screen sources available");
+          const primaryId = String(screen.getPrimaryDisplay().id);
+          chosen = sources.find((source) => source.display_id === primaryId) ?? sources[0];
+        }
+        if (!chosen) {
+          appendLog("[main] ERROR display-media: no sources available");
           callback({});
           return;
         }
-        appendLog(`[main] display-media grant: ${chosen.id} audio=${request.audioRequested}`);
-        callback({ video: chosen, audio: request.audioRequested ? "loopback" : undefined });
+        const withLoopback = (grant?.withAudio ?? false) && request.audioRequested;
+        appendLog(`[main] display-media grant: ${chosen.id} audio=${withLoopback ? "loopback" : "none"}`);
+        callback({ video: chosen, audio: withLoopback ? "loopback" : undefined });
       })
       .catch((error: unknown) => {
         appendLog(`[main] ERROR display-media failed: ${error instanceof Error ? error.message : String(error)}`);

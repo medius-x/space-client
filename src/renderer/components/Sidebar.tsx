@@ -7,6 +7,7 @@ import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { Modal } from "./Modal";
 import { Avatar } from "./Avatar";
 import { ProfileModal } from "./ProfileModal";
+import { VoiceMarks } from "./VoiceRoom";
 
 /**
  * Channel list + online roster, fed by the session's stores. Channel CRUD lives in
@@ -16,6 +17,7 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
   const channels = useStore(session.channelStore, (channels) => channels);
   const roster = useStore(session.rosterStore, (roster) => roster);
   const readStates = useStore(session.readStateStore, (states) => states);
+  const voiceMarks = useStore(session.voiceControlStore, (snapshot) => snapshot.marks);
   const canManageChannels = useStore(session.permissionStore, (state) => state.my?.permissions.includes("MANAGE_CHANNELS") ?? false);
   const activeChannelId = useStore(appStore, (state) => state.activeChannelId);
   const activeVoiceChannelId = useStore(appStore, (state) => state.activeVoiceChannelId);
@@ -102,7 +104,8 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
           {[...(roster.voiceMembers.get(channel.id) ?? [])].map((username) => (
             <div key={username} className="member-row">
               <span className="presence-dot online" />
-              {username}{username === ownUsername ? " (you)" : ""}
+              <span className="member-name">{username}{username === ownUsername ? " (you)" : ""}</span>
+              <VoiceMarks marks={voiceMarks.get(username)} />
             </div>
           ))}
         </div>
