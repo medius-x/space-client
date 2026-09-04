@@ -5,6 +5,8 @@ import type { ConnectionSession } from "../../domain/session/connection-session"
 import type { Channel } from "../../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { Modal } from "./Modal";
+import { Avatar } from "./Avatar";
+import { ProfileModal } from "./ProfileModal";
 
 /**
  * Channel list + online roster, fed by the session's stores. Channel CRUD lives in
@@ -23,6 +25,7 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
   const [createType, setCreateType] = useState<"TEXT" | "VOICE" | null>(null);
   const [renameTarget, setRenameTarget] = useState<Channel | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Channel | null>(null);
+  const [profileOpen, setProfileOpen] = useState(false);
 
   const textChannels = channels.filter((channel) => channel.type === "TEXT");
   const voiceChannels = channels.filter((channel) => channel.type === "VOICE");
@@ -108,9 +111,16 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
       {roster.users.map((user) => (
         <div key={user.id} className="member-row">
           <span className={"presence-dot" + (roster.presence.has(user.username) ? " online" : "")} />
-          {user.username}
+          <Avatar session={session} username={user.username} size={20} />
+          <span className="member-name">{user.username}</span>
         </div>
       ))}
+      <div className="user-bar">
+        <Avatar session={session} username={ownUsername ?? session.username()} size={32} />
+        <span className="member-name">{ownUsername ?? session.username()}</span>
+        <button className="ghost user-bar-button" title="Profile" onClick={() => setProfileOpen(true)}>👤</button>
+      </div>
+      {profileOpen ? <ProfileModal session={session} onClose={() => setProfileOpen(false)} /> : null}
 
       {menu !== null ? <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} /> : null}
       {createType !== null ? <CreateChannelModal session={session} type={createType} onClose={() => setCreateType(null)} /> : null}

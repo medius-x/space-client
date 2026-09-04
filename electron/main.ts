@@ -1,4 +1,4 @@
-import { app, BrowserWindow, desktopCapturer, ipcMain, screen, session } from "electron";
+import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, screen, session, shell } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -119,6 +119,106 @@ ipcMain.handle("space-kv:keys", (_event, prefix: unknown) => {
       .map((name) => name.slice(0, -".json".length));
   } catch {
     return [];
+  }
+});
+
+// Disk cache for attachment images, keyed by the STABLE MinIO key (presigned URLs
+// re-sign per fetch, so the HTTP cache is useless). Trim is LRU-by-mtime.
+function cacheDir(): string {
+  const dir = path.join(app.getPath("userData"), "cache");
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch {
+    // best effort
+  }
+  return dir;
+}
+
+function cachePath(key: string): string {
+  return path.join(cacheDir(), key.replace(/[^a-z0-9-_.]/gi, "_"));
+}
+
+ipcMain.handle("space-cache:put", (_event, key: unknown, bytes: unknown) => {
+  if (typeof key !== "string" || !(bytes instanceof Uint8Array)) {
+    return false;
+  }
+  try {
+    fs.writeFileSync(cachePath(key), bytes);
+    return true;
+  } catch {
+    return false;
+  }
+});
+
+ipcMain.handle("space-cache:get", (_event, key: unknown) => {
+  if (typeof key !== "string") {
+    return null;
+  }
+  try {
+    const bytes = fs.readFileSync(cachePath(key));
+    // touch for LRU
+    fs.utimesSync(cachePath(key), new Date(), new Date());
+    return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  } catch {
+    return null;
+  }
+});
+
+ipcMain.handle("space-cache:trim", (_event, maxBytes: unknown) => {
+  const budget = typeof maxBytes === "number" ? maxBytes : 256 * 1024 * 1024;
+  try {
+    const dir = cacheDir();
+    const entries = fs
+      .readdirSync(dir)
+      .map((name) => {
+        const full = path.join(dir, name);
+        const stat = fs.statSync(full);
+        return { full, size: stat.size, mtime: stat.mtimeMs };
+      })
+      .sort((left, right) => left.mtime - right.mtime); // oldest first
+    let total = entries.reduce((sum, entry) => sum + entry.size, 0);
+    for (const entry of entries) {
+      if (total <= budget) {
+        break;
+      }
+      try {
+        fs.unlinkSync(entry.full);
+        total -= entry.size;
+      } catch {
+        // already gone
+      }
+    }
+    return total;
+  } catch {
+    return 0;
+  }
+});
+
+// External links open in the system browser (the window denies its own popups).
+ipcMain.handle("space-shell:openExternal", (_event, url: unknown) => {
+  if (typeof url !== "string" || !/^https?:\/\//.test(url)) {
+    return false;
+  }
+  void shell.openExternal(url);
+  return true;
+});
+
+// Save dialog for downloads (lightbox "Save").
+ipcMain.handle("space-file:save", async (_event, fileName: unknown, bytes: unknown) => {
+  if (typeof fileName !== "string" || !(bytes instanceof Uint8Array)) {
+    return null;
+  }
+  const chosen = await dialog.showSaveDialog({
+    defaultPath: fileName,
+  });
+  if (chosen.canceled || chosen.filePath === undefined) {
+    return null;
+  }
+  try {
+    fs.writeFileSync(chosen.filePath, bytes);
+    return chosen.filePath;
+  } catch {
+    return null;
   }
 });
 

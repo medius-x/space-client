@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../hooks/useStore";
-import { ackActiveChannel, appStore, forwardCrossInstance } from "../runtime";
+import { ackActiveChannel, appStore, forwardCrossInstance, forwardRequestUpload, forwardUploadBytes } from "../runtime";
 import { connectionDirectory } from "../runtime";
 import { RecordTokenStorage } from "../../domain/session/connection-record";
 import type { ConnectionSession } from "../../domain/session/connection-session";
@@ -14,6 +14,17 @@ import { REACTION_CATALOG, REACTION_GLYPH_BY_SLUG } from "../../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { Modal } from "./Modal";
 import { VirtualList, type VirtualListHandle } from "./VirtualList";
+import { AttachmentView } from "./AttachmentView";
+import { Avatar } from "./Avatar";
+import { NowPlayingBar } from "./NowPlayingBar";
+
+/** The server's per-message attachment cap (MAX_ATTACHMENTS). */
+const MAX_STAGED_FILES = 10;
+
+interface StagedFile {
+  id: string;
+  file: File;
+}
 
 /** Jump back-fill cap (oak's MAX_JUMP_BACKFILL_MESSAGES). */
 const MAX_JUMP_BACKFILL = 1000;
@@ -72,6 +83,8 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
   const [deleteTarget, setDeleteTarget] = useState<Message | null>(null);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selection, setSelection] = useState<ReadonlySet<number>>(new Set());
+  const [staged, setStaged] = useState<readonly StagedFile[]>([]);
+  const [dragOver, setDragOver] = useState(false);
 
   useEffect(() => {
     if (activeChannelId === null) {
@@ -82,6 +95,8 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
     setEditing(null);
     setSelectionMode(false);
     setSelection(new Set());
+    setStaged([]);
+    session.playback.stop(); // one sound at a time — leaving the channel silences it
     session.loadHistory(activeChannelId).catch((error: unknown) => {
       setHistoryError(error instanceof Error ? error.message : String(error));
     });
@@ -89,6 +104,28 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
       log.warn("chat", `permission check failed: ${error instanceof Error ? error.message : String(error)}`);
     });
   }, [activeChannelId, session]);
+
+  const addStagedFiles = (fileList: readonly File[]) => {
+    if (channelPermissions?.attachFiles === false) {
+      return; // no ATTACH_FILES — staging stays empty, the gate line explains
+    }
+    setStaged((previous) => {
+      const known = new Set(previous.map((entry) => `${entry.file.name}:${entry.file.size}`));
+      const fresh: StagedFile[] = [];
+      for (const file of fileList) {
+        if (previous.length + fresh.length >= MAX_STAGED_FILES) {
+          break;
+        }
+        const fingerprint = `${file.name}:${file.size}`;
+        if (known.has(fingerprint)) {
+          continue;
+        }
+        known.add(fingerprint);
+        fresh.push({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, file });
+      }
+      return fresh.length > 0 ? [...previous, ...fresh] : previous;
+    });
+  };
 
   // Focus-regain acks the open channel (oak's ack-on-focus).
   useEffect(() => {
@@ -136,7 +173,19 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
   };
 
   return (
-    <div className="chat-pane">
+    <div
+      className={"chat-pane" + (dragOver ? " drag-over" : "")}
+      onDragOver={(event) => {
+        event.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(event) => {
+        event.preventDefault();
+        setDragOver(false);
+        addStagedFiles([...event.dataTransfer.files]);
+      }}
+    >
       <div className="chat-header">
         <span className="channel-hash">#</span> {channel.name}
         {selectionMode ? (
@@ -158,6 +207,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
         ) : null}
       </div>
       {historyError !== null ? <div className="chat-error">history: {historyError}</div> : null}
+      <NowPlayingBar session={session} />
       <MessageList
         session={session}
         channel={channel}
@@ -175,15 +225,37 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
           <button className="ghost" onClick={() => setReplyTo(null)}>×</button>
         </div>
       ) : null}
+      {staged.length > 0 ? (
+        <div className="staging-box">
+          {staged.map((entry) => (
+            <div key={entry.id} className="staging-row">
+              <span className="staging-glyph">📎</span>
+              <span className="file-name">{entry.file.name}</span>
+              <button className="ghost staging-remove" onClick={() => {
+                setStaged((previous) => previous.filter((candidate) => candidate.id !== entry.id));
+              }}>×</button>
+            </div>
+          ))}
+        </div>
+      ) : null}
       {channelPermissions === null ? (
         <div className="composer-gate">…</div>
       ) : channelPermissions.sendMessages ? (
         <Composer
-          placeholder={`Message #${channel.name}`}
+          placeholder={`Message #${channel.name}${channelPermissions.attachFiles ? " — paste or drop files to attach" : ""}`}
+          attachEnabled={channelPermissions.attachFiles}
+          allowEmptySend={staged.length > 0}
+          onPaste={(files) => addStagedFiles(files)}
           onSend={(content) => {
-            const promise = session.sendMessage(channel.id, content, replyTo?.id);
+            const files = staged.map((entry) => entry.file);
+            const promise = files.length > 0
+              ? session.sendMessageWithFiles(channel.id, files, content.length > 0 ? content : null, replyTo?.id)
+              : session.sendMessage(channel.id, content, replyTo?.id);
+            const clearing = promise.then(() => {
+              setStaged([]);
+            });
             setReplyTo(null);
-            return promise;
+            return clearing;
           }}
         />
       ) : (
@@ -509,7 +581,7 @@ function MessageRow(props: MessageRowProps): React.JSX.Element {
       }}
     >
       {startsGroup ? (
-        <div className="message-avatar">{(message.authorUsername.charAt(0) || "?").toUpperCase()}</div>
+        <Avatar session={session} username={message.authorUsername} size={40} />
       ) : (
         <div className="message-gutter">{formatTimeOfDay(toEpochMs(message.createdAt))}</div>
       )}
@@ -554,7 +626,7 @@ function MessageRow(props: MessageRowProps): React.JSX.Element {
             {message.editedAt !== null ? <span className="message-edited">(edited)</span> : null}
           </div>
         )}
-        <AttachmentNote message={message} />
+        <AttachmentView session={session} message={message} />
         {message.reactions.length > 0 ? (
           <div className="reactions-row">
             {message.reactions.map((summary) => {
@@ -601,19 +673,15 @@ function ForwardCard({ forward }: { forward: ForwardInfo }): React.JSX.Element {
   );
 }
 
-function AttachmentNote({ message }: { message: Message }): React.JSX.Element | null {
-  if (message.attachments.length === 0) {
-    return null;
-  }
-  return <div className="message-attachments">📎 {message.attachments.length} attachment(s) — rendered in M3</div>;
-}
-
 // ---------------------------------------------------------------------------
 // Composer
 // ---------------------------------------------------------------------------
 
-function Composer({ placeholder, onSend }: {
+function Composer({ placeholder, attachEnabled, allowEmptySend, onPaste, onSend }: {
   placeholder: string;
+  attachEnabled: boolean;
+  allowEmptySend: boolean;
+  onPaste(files: readonly File[]): void;
   onSend: (content: string) => Promise<void>;
 }): React.JSX.Element {
   const [text, setText] = useState("");
@@ -622,7 +690,7 @@ function Composer({ placeholder, onSend }: {
 
   const submit = async (): Promise<void> => {
     const content = text.trim();
-    if (!content || busy) {
+    if ((!content && !allowEmptySend) || busy) {
       return;
     }
     setBusy(true);
@@ -645,6 +713,13 @@ function Composer({ placeholder, onSend }: {
         rows={Math.min(4, Math.max(1, text.split("\n").length))}
         placeholder={placeholder}
         onChange={(event) => setText(event.target.value)}
+        onPaste={(event) => {
+          const files = [...event.clipboardData.files];
+          if (attachEnabled && files.length > 0) {
+            event.preventDefault();
+            onPaste(files);
+          }
+        }}
         onKeyDown={(event) => {
           if (event.key === "Enter" && !event.ctrlKey && !event.shiftKey && !event.altKey) {
             event.preventDefault();
@@ -738,8 +813,25 @@ function ForwardDialog({ session, source, sourceChannel, onClose }: {
         }
       } else {
         for (const message of source) {
+          // Cross-instance attachments are re-uploaded: mint a slot on the TARGET
+          // instance, pull the bytes from the source's (possibly re-minted) link.
+          const targetAttachments: { key: string; fileName: string }[] = [];
+          for (const attachment of message.attachments) {
+            if (attachment.key === null) {
+              continue;
+            }
+            const fresh = await session.rest.freshAttachmentLink(attachment.key);
+            if (fresh === null) {
+              continue; // the object died — forward without it rather than fail
+            }
+            const bytes = new Uint8Array(await session.rest.downloadBytes(fresh));
+            const targetSlot = await forwardRequestUpload(targetRecordId, attachment.fileName);
+            await forwardUploadBytes(targetRecordId, targetSlot.uploadUrl, bytes);
+            targetAttachments.push({ key: targetSlot.key, fileName: attachment.fileName });
+          }
           await forwardCrossInstance(targetRecordId, targetChannelId, {
             content: (message.content?.length ?? 0) > 0 ? message.content : comment,
+            attachments: targetAttachments.length > 0 ? targetAttachments : null,
             originServer,
             originChannel: sourceChannel.name,
             originAuthorId: message.authorId,
@@ -786,7 +878,7 @@ function ForwardDialog({ session, source, sourceChannel, onClose }: {
       </div>
       <input type="text" value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Comment (optional)" />
       {crossInstance && hasAttachments ? (
-        <div className="chat-error">Cross-instance attachment re-upload arrives with M3 — only the text will travel.</div>
+        <div className="modal-note">Attachments are re-uploaded to the target server — this may take a while.</div>
       ) : null}
       <div className="error-line">{error ?? ""}</div>
       <div className="modal-actions">

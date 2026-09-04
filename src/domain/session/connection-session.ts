@@ -1,12 +1,17 @@
 import { log } from "../../logging";
 import { RestClient } from "../../core/rest";
 import { StompClient } from "../../core/stomp";
-import type { Channel, Message, PresenceEvent, ReactionEvent, ServerProfile, VoiceMemberEvent } from "../../types";
+import type { Channel, Message, PresenceEvent, ReactionEvent, ServerProfile, UserSummary, VoiceMemberEvent } from "../../types";
 import { ChannelStore } from "../stores/ChannelStore";
 import { MessageStore } from "../stores/MessageStore";
 import { PermissionStore } from "../stores/PermissionStore";
 import { ReadStateStore } from "../stores/ReadStateStore";
 import { RosterStore } from "../stores/RosterStore";
+import { AttachmentCache } from "../../media/attachment-cache";
+import { PlaybackService } from "../../media/playback";
+import { generateVideoPreview } from "../../media/video-thumbnail";
+import { isVideoFile } from "../logic/attachment-layout";
+import { sanitizeSlotFileName } from "../logic/ascii-name";
 import { ConnectionDirectory, RecordTokenStorage } from "./connection-record";
 
 /** Fires into the app shell (runtime.ts) — the session never touches UI state itself. */
@@ -55,6 +60,8 @@ export class ConnectionSession {
   readonly rosterStore = new RosterStore();
   readonly permissionStore = new PermissionStore();
   readonly readStateStore = new ReadStateStore();
+  readonly attachmentCache = new AttachmentCache(() => (this.disposed ? null : this.rest));
+  readonly playback = new PlaybackService();
 
   private readonly directory: ConnectionDirectory;
   private readonly hooks: SessionHooks;
@@ -131,6 +138,7 @@ export class ConnectionSession {
     if (readStates) {
       this.readStateStore.applySnapshot(readStates);
     }
+    this.playback.bindRest(() => (this.disposed ? null : this.rest));
     void this.directory.touch(this.recordId);
 
     this.hooks.onStompState("connecting");
@@ -154,6 +162,7 @@ export class ConnectionSession {
       return;
     }
     this.disposed = true;
+    this.playback.stop();
     this.stomp.disconnect();
   }
 
@@ -197,6 +206,40 @@ export class ConnectionSession {
   async sendMessage(channelId: number, content: string, replyToId?: number): Promise<void> {
     const created = await this.rest.sendMessage(channelId, { content, replyToId: replyToId ?? null });
     this.messageStore.applyLive(created); // the STOMP echo dedups against this id
+  }
+
+  /**
+   * Upload a batch of files and send the message carrying them: per file —
+   * mint a slot, PUT the bytes; videos additionally get a client-generated
+   * JPEG preview (seek+canvas) uploaded as its own object. A failed preview
+   * never blocks the send.
+   */
+  async sendMessageWithFiles(channelId: number, files: readonly File[], content: string | null, replyToId?: number): Promise<void> {
+    const refs: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null }[] = [];
+    for (const file of files) {
+      // The slot name feeds only the object KEY (the server 400s on non-ASCII);
+      // the ORIGINAL name stays on the message as the display fileName.
+      const slot = await this.rest.requestAttachmentUpload(sanitizeSlotFileName(file.name));
+      await this.rest.uploadBytes(slot.uploadUrl, await file.arrayBuffer(), file.type || "application/octet-stream");
+      const reference: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null }
+        = { key: slot.key, fileName: file.name, thumbnailKey: null, durationMillis: null };
+      if (isVideoFile(file.name)) {
+        const preview = await generateVideoPreview(file);
+        if (preview !== null) {
+          const thumbSlot = await this.rest.requestAttachmentUpload(sanitizeSlotFileName(`${file.name}-preview.jpg`));
+          await this.rest.uploadBytes(thumbSlot.uploadUrl, await preview.jpegBlob.arrayBuffer(), "image/jpeg");
+          reference.thumbnailKey = thumbSlot.key;
+          reference.durationMillis = preview.durationMillis;
+        }
+      }
+      refs.push(reference);
+    }
+    const created = await this.rest.sendMessage(channelId, {
+      content,
+      attachments: refs,
+      replyToId: replyToId ?? null,
+    });
+    this.messageStore.applyLive(created);
   }
 
   async editMessage(channelId: number, messageId: number, content: string): Promise<void> {
@@ -286,6 +329,10 @@ export class ConnectionSession {
   private subscribeGlobalTopics(): void {
     this.stomp.subscribe("/topic/presence", (raw) => {
       this.rosterStore.applyPresenceEvent(JSON.parse(raw) as PresenceEvent);
+    });
+    this.stomp.subscribe("/topic/users", (raw) => {
+      // Avatar confirm/remove pushes the updated user to everyone.
+      this.rosterStore.updateUser(JSON.parse(raw) as UserSummary);
     });
     this.stomp.subscribe("/topic/voice", (raw) => {
       const event = JSON.parse(raw) as VoiceMemberEvent;

@@ -109,6 +109,30 @@ export interface ServerProfile {
 }
 
 // ---------------------------------------------------------------------------
+// M3: attachments and avatars (upload slots, fresh links, public user view)
+// ---------------------------------------------------------------------------
+
+/** POST /api/attachments (and the avatar slots) — a presigned PUT target + stable key. */
+export interface AttachmentUploadSlot {
+  key: string;
+  uploadUrl: string;
+}
+
+/** GET /api/attachments/link?key=… — a re-minted presigned GET (404 → null on the client). */
+export interface AttachmentLink {
+  url: string;
+}
+
+/** The public user view (avatar confirm/remove responses, GET /api/users/me). */
+export interface UserResponse {
+  id: number;
+  username: string;
+  createdAt: string;
+  avatarKey: string | null;
+  avatarUrl: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // RBAC viewer permissions (M1: UI gating only — the server 403 stays the authority)
 // ---------------------------------------------------------------------------
 

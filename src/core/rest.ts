@@ -1,4 +1,6 @@
 import type {
+  AttachmentLink,
+  AttachmentUploadSlot,
   AuthTokens,
   Channel,
   ChannelMyPermissions,
@@ -10,6 +12,7 @@ import type {
   ReactionSummary,
   RoomInfo,
   ServerProfile,
+  UserResponse,
   UserSummary,
 } from "../types";
 import type { TokenStorage } from "./auth";
@@ -183,6 +186,96 @@ export class RestClient {
       method: "POST",
       body: lastReadMessageId === null ? undefined : JSON.stringify({ lastReadMessageId }),
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Attachments & avatars (M3)
+  // ---------------------------------------------------------------------------
+
+  /** Phase 1 of an upload: mint a key + presigned PUT slot for the bytes. */
+  async requestAttachmentUpload(fileName: string): Promise<AttachmentUploadSlot> {
+    return this.request<AttachmentUploadSlot>("/api/attachments", {
+      method: "POST",
+      body: JSON.stringify({ fileName }),
+    });
+  }
+
+  /**
+   * Phase 2: PUT the bytes straight to MinIO. NO auth header (the signature lives
+   * in the query string); Content-Type inferred by the caller, like the Java client.
+   */
+  async uploadBytes(presignedUrl: string, bytes: ArrayBuffer, contentType: string): Promise<void> {
+    const response = await this.fetchImpl(presignedUrl, {
+      method: "PUT",
+      headers: { "Content-Type": contentType },
+      body: bytes,
+    });
+    if (!response.ok) {
+      throw new ApiError(response.status, `MinIO upload failed: HTTP ${response.status}`);
+    }
+  }
+
+  /** Raw GET of a presigned URL (lightbox download, cross-instance re-upload). */
+  async downloadBytes(url: string): Promise<ArrayBuffer> {
+    const response = await this.fetchImpl(url, { method: "GET" });
+    if (!response.ok) {
+      throw new ApiError(response.status, `download failed: HTTP ${response.status}`);
+    }
+    return await response.arrayBuffer();
+  }
+
+  /** Re-mint a presigned GET for a key we already hold; null when the object is gone. */
+  async freshAttachmentLink(key: string): Promise<string | null> {
+    try {
+      const link = await this.request<AttachmentLink>(`/api/attachments/link?key=${encodeURIComponent(key)}`, {
+        method: "GET",
+      });
+      return link.url;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  async requestAvatarUpload(fileName: string): Promise<AttachmentUploadSlot> {
+    return this.request<AttachmentUploadSlot>("/api/users/me/avatar", {
+      method: "POST",
+      body: JSON.stringify({ fileName }),
+    });
+  }
+
+  async requestAvatarOriginalUpload(fileName: string): Promise<AttachmentUploadSlot> {
+    return this.request<AttachmentUploadSlot>("/api/users/me/avatar/original", {
+      method: "POST",
+      body: JSON.stringify({ fileName }),
+    });
+  }
+
+  /** originalKey null = re-crop (keep the stored original, only the crop changed). */
+  async confirmAvatar(avatarKey: string, originalKey: string | null): Promise<UserResponse> {
+    return this.request<UserResponse>("/api/users/me/avatar/confirm", {
+      method: "POST",
+      body: JSON.stringify({ avatarKey, originalKey }),
+    });
+  }
+
+  async removeAvatar(): Promise<UserResponse> {
+    return this.request<UserResponse>("/api/users/me/avatar", { method: "DELETE" });
+  }
+
+  /** Lazy presigned GET of the stored pre-crop original; null when none exists. */
+  async getAvatarOriginalUrl(): Promise<string | null> {
+    try {
+      const link = await this.request<AttachmentLink>("/api/users/me/avatar/original", { method: "GET" });
+      return link.url;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   async createChannel(request: { name: string; type?: ChannelType | null }): Promise<Channel> {

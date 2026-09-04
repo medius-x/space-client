@@ -53,6 +53,24 @@ export class RosterStore extends Emitter {
     this.emit();
   }
 
+  /** /topic/users push (avatar confirm/remove, future renames) — replace by id. */
+  updateUser(user: UserSummary): void {
+    const existing = this.state.users.find((entry) => entry.id === user.id);
+    if (existing === undefined) {
+      this.state = { ...this.state, users: [...this.state.users, user] };
+      this.emit();
+      return;
+    }
+    if (existing.username === user.username && existing.avatarKey === user.avatarKey && existing.avatarUrl === user.avatarUrl) {
+      return;
+    }
+    this.state = {
+      ...this.state,
+      users: this.state.users.map((entry) => (entry.id === user.id ? user : entry)),
+    };
+    this.emit();
+  }
+
   applyVoiceEvent(event: VoiceMemberEvent): void {
     const voiceMembers = new Map(this.state.voiceMembers);
     const current = new Set(voiceMembers.get(event.channelId) ?? []);

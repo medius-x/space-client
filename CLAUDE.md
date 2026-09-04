@@ -27,7 +27,38 @@ Electron + TypeScript **спайк-клиент** OAK-сервера. Цель �
 Физическая грабля смоука: наушники на столе + микрофон гарнитуры вплотную к «уху» =
 акустическая петля, моргает MONO (оба канала громкие). Убрать микрофон от динамика.
 
-## Текущее состояние: M2 (глубина чата + VirtualList)
+## Текущее состояние: M3 (вложения и медиа)
+
+M2 закрыт и закоммичен (`893b3f6`). M3 (код готов, ждёт смоука): **аплоад 2-фазный**
+(`POST /api/attachments {fileName}` → `{key, uploadUrl}` → голый PUT в MinIO с
+Content-Type, БЕЗ авторизации — подпись в query; видео получают клиентский
+JPEG-превью: seek 5% + canvas ≤480 + отдельный слот, провал превью не блокирует
+отправку — `media/video-thumbnail.ts`); **композер**: paste (clipboardData.files)
+и drag-drop на чат-панель, стейджинг-бокс построчно с «×», кап 10, гейт по
+ATTACH_FILES, отправка с пустым текстом при вложениях; **рендер**
+(`AttachmentView`): мозаика картинок (1 крупно / 2-3 в ряд / 4+ грид 2 колонки —
+`logic/attachment-layout.ts`, чистая + тесты), видео-карточка (превью+play+бейдж
+длительности → модал с fresh-link recovery), аудио-карточка + закреплённый
+**NowPlayingBar** (один общий трек — `media/playback.ts`: HTMLAudioElement,
+resume без переустановки src, fresh-link recovery с позицией смерти, стоп на
+смене канала), прочие файлы → чип в системный браузер (`space-shell:openExternal`).
+**Кэш картинок** (`media/attachment-cache.ts`): память (objectURL LRU 32) → диск
+(IPC `space-cache:put/get/trim`, LRU 256 МБ, ключ = стабильный MinIO key —
+presigned переподписывается, HTTP-кэш бесполезен) → сеть; in-flight дедуп;
+fresh-link на протухшем URL (403/404→null). **Лайтбокс**: wheel-зум, drag-пан,
+dbl-reset, ←/→ внутри сообщения, Save через OS-диалог (`space-file:save`).
+**Аватары**: двухфазный аплоад (оригинал ≤2048 + кроп 256 через интерактивный
+`AvatarCropDialog` move+corner-resize → confirm), Re-crop из сохранённого
+оригинала (`GET /api/users/me/avatar/original`), Remove; live через `/topic/users`
+(RosterStore.updateUser); рендер в сообщениях/ростере/user-bar (вход — 👤 внизу
+сайдбара → ProfileModal); фолбэк — цветной круг с инициалом. **Кросс-инстанс
+форвард аттачей** разблокирован: fresh-link исходника → downloadBytes → слот на
+целевом инстансе → uploadBytes (временный RestClient по записи).
+
+Грабли: `Uint8Array<ArrayBufferLike>` ≠ BlobPart в строгом TS — cast `as BlobPart`;
+кэш-IPC гоняет Uint8Array structured-clone'ом. Гейт 114/114.
+
+## M2 (закрыт, 893b3f6): глубина чата + VirtualList
 
 M1 закрыт и закоммичен (`M1: connections, channels and chat core`). M2 (код готов,
 ждёт смоука): мутации сообщений edit (PATCH {content}, инлайн-редактор с oak-клавишами)

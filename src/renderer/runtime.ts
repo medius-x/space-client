@@ -429,6 +429,7 @@ export function ackActiveChannel(): void {
 /** Cross-instance forward: a THROWAWAY client for the target record (v1: one active session). */
 export async function forwardCrossInstance(targetRecordId: string, targetChannelId: number, snapshot: {
   content: string | null;
+  attachments?: { key: string; fileName: string }[] | null;
   originServer: string;
   originChannel: string;
   originAuthorId: number;
@@ -447,6 +448,7 @@ export async function forwardCrossInstance(targetRecordId: string, targetChannel
   await client.forwardMessage(targetChannelId, {
     sourceMessageId: null,
     content: snapshot.content,
+    attachments: snapshot.attachments ?? null,
     originServer: snapshot.originServer,
     originChannel: snapshot.originChannel,
     originAuthorId: snapshot.originAuthorId,
@@ -454,6 +456,26 @@ export async function forwardCrossInstance(targetRecordId: string, targetChannel
     originCreatedAt: snapshot.originCreatedAt,
     originReply: snapshot.originReply,
   });
+}
+
+/** Target-instance upload slot + byte PUT for cross-instance attachment re-upload. */
+function targetRecordClient(targetRecordId: string): RestClient {
+  const record = connectionDirectory.get(targetRecordId);
+  if (!record) {
+    throw new Error("target server record not found");
+  }
+  return new RestClient({
+    baseUrl: record.hostUrl,
+    tokenStorage: new RecordTokenStorage(connectionDirectory, targetRecordId),
+  });
+}
+
+export async function forwardRequestUpload(targetRecordId: string, fileName: string): Promise<{ key: string; uploadUrl: string }> {
+  return await targetRecordClient(targetRecordId).requestAttachmentUpload(fileName);
+}
+
+export async function forwardUploadBytes(targetRecordId: string, uploadUrl: string, bytes: Uint8Array): Promise<void> {
+  await targetRecordClient(targetRecordId).uploadBytes(uploadUrl, bytes.buffer as ArrayBuffer, "application/octet-stream");
 }
 
 function restoreLastChannel(session: ConnectionSession): void {

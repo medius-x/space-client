@@ -37,3 +37,22 @@ contextBridge.exposeInMainWorld("spaceKv", {
     return ipcRenderer.invoke("space-kv:keys", prefix);
   },
 });
+
+/** Media bridges: disk image cache (by stable key), system browser, save dialog. */
+contextBridge.exposeInMainWorld("spaceMedia", {
+  cachePut(key: string, bytes: Uint8Array): Promise<unknown> {
+    return ipcRenderer.invoke("space-cache:put", key, bytes);
+  },
+  cacheGet(key: string): Promise<unknown> {
+    return ipcRenderer.invoke("space-cache:get", key);
+  },
+  cacheTrim(maxBytes: number): Promise<unknown> {
+    return ipcRenderer.invoke("space-cache:trim", maxBytes);
+  },
+  openExternal(url: string): Promise<unknown> {
+    return ipcRenderer.invoke("space-shell:openExternal", url);
+  },
+  saveFile(fileName: string, bytes: Uint8Array): Promise<unknown> {
+    return ipcRenderer.invoke("space-file:save", fileName, bytes);
+  },
+});
