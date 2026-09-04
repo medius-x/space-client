@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useStore } from "../hooks/useStore";
-import { appStore, callUser, joinVoiceGuarded, setActiveChannel } from "../runtime";
+import { appStore, callUser, joinVoiceGuarded, setActiveChannel, toggleUserSettings } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { Channel, Role, ServerMember } from "../../types";
 import { BAN_MEMBERS_PERMISSION, KICK_MEMBERS_PERMISSION } from "../../types";
@@ -207,6 +207,7 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
       <div className="user-bar">
         <Avatar session={session} username={ownUsername ?? session.username()} size={32} />
         <span className="member-name">{ownUsername ?? session.username()}</span>
+        <button className="ghost user-bar-button" title="Settings" onClick={toggleUserSettings}>⚙</button>
         <button className="ghost user-bar-button" title="Profile" onClick={() => setProfileOpen(true)}>👤</button>
       </div>
       {profileOpen ? <ProfileModal session={session} onClose={() => setProfileOpen(false)} /> : null}

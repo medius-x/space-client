@@ -17,6 +17,8 @@ import {
 import { ConnectionSession, type SessionHooks } from "../domain/session/connection-session";
 import { MAX_VOICE_REJOIN_ATTEMPTS, rejoinDelayMs, rejoinExhausted } from "../domain/logic/rejoin-ladder";
 import { dmDisplayName } from "../domain/logic/dm-display";
+import { SettingsStore } from "../domain/stores/SettingsStore";
+import type { NotificationPrefs } from "../types";
 import { notifications } from "./notifications";
 import { virtualScrollTelemetry } from "./scroll-telemetry";
 import type {
@@ -76,11 +78,15 @@ export interface AppState {
   /** The room↔call exclusivity question awaiting the user's answer. */
   callConflict: { kind: "start-call" | "accept-call" | "join-voice"; peer: string | null; voiceChannelId: number | null } | null;
   testToneChannel: "left" | "right" | null;
-  apmEnabled: boolean;
   viewingFeedId: number | null;
   viewingUsername: string | null;
   diagOpen: boolean;
   stompState: "off" | "connecting" | "connected" | "lost";
+  /** Server settings screen (in-app, replaces the content area) — M7. */
+  serverSettingsOpen: boolean;
+  serverSettingsSection: "overview" | "roles" | "members" | "channels";
+  /** User settings modal — M7. */
+  userSettingsOpen: boolean;
 }
 
 class AppStore extends Emitter {
@@ -114,11 +120,13 @@ class AppStore extends Emitter {
     peerScreenOn: false,
     callConflict: null,
     testToneChannel: null,
-    apmEnabled: true,
     viewingFeedId: null,
     viewingUsername: null,
     diagOpen: true,
     stompState: "off",
+    serverSettingsOpen: false,
+    serverSettingsSection: "overview",
+    userSettingsOpen: false,
   };
 
   getSnapshot = (): AppState => this.state;
@@ -141,6 +149,8 @@ class AppStore extends Emitter {
 export const appStore = new AppStore();
 export const roomAudio = new RoomAudio();
 export const connectionDirectory = new ConnectionDirectory();
+/** App-wide client settings (instant-apply, KV-persisted) — M7. */
+export const settingsStore = new SettingsStore();
 
 /** The single active session (v1). Login flow and the rail re-point it. */
 let activeSession: ConnectionSession | null = null;
@@ -266,9 +276,21 @@ const sessionHooks: SessionHooks = {
       ? state.dmMode && state.activeDmId === message.channelId
       : state.activeChannelId === message.channelId);
     const windowFocused = document.hasFocus();
+    const settings = settingsStore.getSnapshot();
+    const serverPrefs = notificationPrefsFor(session.recordId);
     // DM rule: EVERY direct message is a mention equivalent (oak parity) — the
-    // badge is red and the bell rings even without an @.
-    session.readStateStore.bumpLive(message, state.ownUsername, inOpenChannel, windowFocused, dm !== null);
+    // badge is red and the bell rings even without an @. suppressEveryoneHere
+    // keeps an @everyone ping out of the red counter (it still counts unread).
+    if (settings.badgeEnabled) {
+      session.readStateStore.bumpLive(
+        message,
+        state.ownUsername,
+        inOpenChannel,
+        windowFocused,
+        dm !== null,
+        !serverPrefs.suppressEveryoneHere,
+      );
+    }
     if (dm !== null) {
       session.socialStore.updateDmLastMessage(message); // float the row + refresh the preview
     }
@@ -284,8 +306,14 @@ const sessionHooks: SessionHooks = {
       channelName,
       windowFocused,
       inOpenChannel,
-      dm !== null,
+      {
+        serverMode: serverPrefs.mode,
+        suppressEveryoneHere: serverPrefs.suppressEveryoneHere,
+        notificationsEnabled: settings.notificationsEnabled,
+        soundEnabled: settings.soundEnabled,
+      },
       dm !== null ? () => openDm(dm.id) : undefined,
+      dm !== null, // every DM is a mention equivalent
     );
   },
   onOwnVoiceControlState: (state) => {
@@ -324,6 +352,11 @@ const sessionHooks: SessionHooks = {
 
 /** App entry: load the directory, auto-resume the most recently used connection. */
 export async function bootstrapApp(): Promise<void> {
+  await settingsStore.load();
+  notifications.setToastConfig({
+    dismissSeconds: () => settingsStore.getSnapshot().toastDismissSeconds,
+    maxToasts: () => settingsStore.getSnapshot().maxToasts,
+  });
   await connectionDirectory.loadAll();
   const newest = connectionDirectory.getSnapshot()[0];
   if (newest && newest.refreshToken !== "" && newest.token !== EXPIRED_MARKER) {
@@ -422,6 +455,7 @@ async function openSession(recordId: string): Promise<void> {
   sessionBinding.set(session);
   try {
     await session.start();
+    session.attachmentCache.setDiskBudget(settingsStore.getSnapshot().imageCacheMegabytes * 1024 * 1024);
     appStore.patch({
       screen: "main",
       loginError: null,
@@ -466,6 +500,8 @@ export async function teardownSession(): Promise<void> {
     popoutActive: false,
     viewingFeedId: null,
     viewingUsername: null,
+    serverSettingsOpen: false,
+    userSettingsOpen: false,
   });
 }
 
@@ -502,6 +538,107 @@ export function exitHomeMode(): void {
   if (appStore.getSnapshot().dmMode) {
     appStore.patch({ dmMode: false, activeDmId: null });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Settings surfaces (M7): the server settings screen + the user settings modal
+// ---------------------------------------------------------------------------
+
+/** oak's canManageAnySettings — gates the Server Settings entry point. */
+export function canManageServerSettings(session: ConnectionSession | null): boolean {
+  if (session === null) {
+    return false;
+  }
+  const permissions = session.permissionStore.getSnapshot().my?.permissions ?? [];
+  return permissions.some((name) =>
+    name === "MANAGE_ROLES" || name === "MANAGE_MEMBERS" || name === "KICK_MEMBERS"
+    || name === "BAN_MEMBERS" || name === "MANAGE_CHANNELS");
+}
+
+export function openServerSettings(): void {
+  const session = activeSession;
+  if (!canManageServerSettings(session)) {
+    return;
+  }
+  appStore.patch({ serverSettingsOpen: true });
+}
+
+export function setServerSettingsSection(section: AppState["serverSettingsSection"]): void {
+  appStore.patch({ serverSettingsSection: section });
+}
+
+export function closeServerSettings(): void {
+  appStore.patch({ serverSettingsOpen: false });
+}
+
+export function toggleUserSettings(): void {
+  appStore.patch({ userSettingsOpen: !appStore.getSnapshot().userSettingsOpen });
+}
+
+function notificationPrefsFor(recordId: string): NotificationPrefs {
+  return connectionDirectory.get(recordId)?.notifPrefs ?? { mode: "ALL", suppressEveryoneHere: false };
+}
+
+export async function updateNotificationPrefs(recordId: string, patch: Partial<NotificationPrefs>): Promise<void> {
+  const record = connectionDirectory.get(recordId);
+  if (!record) {
+    return;
+  }
+  await connectionDirectory.update(recordId, {
+    notifPrefs: { ...record.notifPrefs, ...patch },
+  });
+}
+
+/**
+ * Password change: the response carries a FRESH pair (the old family is revoked)
+ * which rest.changePassword saves into the record — the STOMP session survives
+ * (the server only checks the JWT on CONNECT).
+ */
+export async function changeAccountPassword(oldPassword: string, newPassword: string): Promise<void> {
+  const session = activeSession;
+  if (!session) {
+    throw new Error("not connected");
+  }
+  await session.rest.changePassword(oldPassword, newPassword);
+}
+
+/**
+ * Username change: the JWT subject IS the username, so the server revokes every
+ * refresh family and the old access token dies with it. Record update + token
+ * rotation happen first, then the WHOLE session restarts (the old STOMP
+ * principal would break every @MessageMapping). Must not run while in voice/call.
+ */
+export async function changeAccountUsername(newUsername: string): Promise<void> {
+  const session = activeSession;
+  if (!session) {
+    throw new Error("not connected");
+  }
+  if (inVoiceOrCall()) {
+    throw new Error("Leave voice and calls before changing your username.");
+  }
+  const record = connectionDirectory.get(session.recordId);
+  if (!record) {
+    throw new Error("no connection record");
+  }
+  const result = await session.rest.changeUsername(newUsername);
+  const previous = { token: record.token, refreshToken: record.refreshToken, expiresAt: record.expiresAt };
+  await connectionDirectory.update(record.id, { username: result.user.username });
+  await connectionDirectory.applyTokens(record.id, {
+    token: result.auth.token,
+    refreshToken: result.auth.refreshToken,
+    expiresAt: Date.now() + result.auth.expiresIn * 1000,
+  }, previous);
+  await openSession(session.recordId); // quiet restart: same record, new principal
+}
+
+export function inVoiceOrCall(): boolean {
+  const state = appStore.getSnapshot();
+  return state.activeVoiceChannelId !== null || state.callState !== "idle";
+}
+
+/** The single source for Enter semantics (composer AND inline editor): default = Enter sends. */
+export function enterInsertsNewline(): boolean {
+  return settingsStore.getSnapshot().ctrlEnterSends;
 }
 
 export function setFriendsTab(tab: FriendsTab): void {
@@ -782,6 +919,7 @@ async function connectVoiceRoom(channel: Channel): Promise<void> {
         },
       });
       sfuSession = sfu;
+      sfu.apmEnabled = settingsStore.getSnapshot().apmEnabled; // takes effect on this start()
       await sfu.start();
       const mic = sfu.getMicTrack();
       if (mic) {
@@ -1177,7 +1315,6 @@ export function sendPopoutFrame(dataUrl: string): void {
 
 const CALL_VOICE_FEED_ID = -1;
 const CALL_SHARE_FEED_ID = -2;
-const RING_TIMEOUT_MS = 60_000;
 const CALL_GAP_TIMEOUT_MS = 30_000;
 
 let callSession: PeerCallSession | null = null;
@@ -1219,8 +1356,9 @@ function stopStream(stream: MediaStream | null): void {
 }
 
 async function captureCallMic(): Promise<MediaStream> {
+  const apm = settingsStore.getSnapshot().apmEnabled;
   return navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    audio: { echoCancellation: apm, noiseSuppression: apm, autoGainControl: apm },
   });
 }
 
@@ -1331,6 +1469,10 @@ function drainPendingCallSignals(): void {
 
 function armRingTimeout(): void {
   clearRingTimeout();
+  const timeoutSeconds = settingsStore.getSnapshot().ringTimeoutSeconds;
+  if (timeoutSeconds <= 0) {
+    return; // "Off" — the ring loops until someone acts
+  }
   ringTimeoutTimer = window.setTimeout(() => {
     const state = appStore.getSnapshot();
     if (state.callState === "ringing-out") {
@@ -1340,7 +1482,7 @@ function armRingTimeout(): void {
     } else if (state.callState === "ringing-in") {
       teardownCall(); // missed call — the caller's own timeout sends HANGUP
     }
-  }, RING_TIMEOUT_MS);
+  }, timeoutSeconds * 1000);
 }
 
 function clearRingTimeout(): void {

@@ -25,7 +25,6 @@ declare global {
 }
 
 const MEMORY_CAP = 32;
-const DISK_BUDGET_BYTES = 256 * 1024 * 1024;
 
 export interface CacheableImage {
   key: string;
@@ -36,10 +35,18 @@ export class AttachmentCache extends Emitter {
   private readonly memory = new Map<string, string>(); // key → objectURL, LRU by insertion
   private readonly inFlight = new Map<string, Promise<string | null>>();
   private readonly rest: () => RestClient | null;
+  /** Disk budget in bytes; 0 = memory-only (client settings, M7). */
+  private diskBudgetBytes = 256 * 1024 * 1024;
 
   constructor(rest: () => RestClient | null) {
     super();
     this.rest = rest;
+  }
+
+  /** Instant-apply disk budget; 0 also purges whatever is already on disk. */
+  setDiskBudget(bytes: number): void {
+    this.diskBudgetBytes = Math.max(0, bytes);
+    void this.trimDisk();
   }
 
   getSnapshot = (): ReadonlyMap<string, string> => this.memory;
@@ -123,6 +130,9 @@ export class AttachmentCache extends Emitter {
   }
 
   private async readDisk(key: string): Promise<Uint8Array | null> {
+    if (this.diskBudgetBytes === 0) {
+      return null; // memory-only mode — the disk layer is switched off
+    }
     const bridge = typeof window !== "undefined" ? window.spaceMedia : undefined;
     if (!bridge) {
       return null;
@@ -136,15 +146,30 @@ export class AttachmentCache extends Emitter {
   }
 
   private async writeDisk(key: string, bytes: Uint8Array): Promise<void> {
+    if (this.diskBudgetBytes === 0) {
+      return;
+    }
     const bridge = typeof window !== "undefined" ? window.spaceMedia : undefined;
     if (!bridge) {
       return;
     }
     try {
       await bridge.cachePut(key, bytes);
-      await bridge.cacheTrim(DISK_BUDGET_BYTES);
+      await this.trimDisk();
     } catch (error) {
       log.warn("cache", `disk write for ${key} failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private async trimDisk(): Promise<void> {
+    const bridge = typeof window !== "undefined" ? window.spaceMedia : undefined;
+    if (!bridge) {
+      return;
+    }
+    try {
+      await bridge.cacheTrim(this.diskBudgetBytes);
+    } catch {
+      // trimming is best-effort
     }
   }
 }

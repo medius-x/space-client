@@ -1,4 +1,4 @@
-import { decideNotification, messageMentionsUser } from "../domain/logic/notification-decider";
+import { decideNotification, messageHasEveryoneHere, messageMentionsUserDirect } from "../domain/logic/notification-decider";
 import { knockSchedule } from "../domain/logic/knock-sound";
 import {
   CHIME_DURATION_SECONDS,
@@ -17,10 +17,22 @@ import type { Message } from "../types";
  * fast decay — deliberately NOT a pure sine, which read as a Windows system sound).
  */
 
-const TOAST_CAP = 3;
-const TOAST_TTL_MS = 5_000;
 const BELL_PARTIALS = [1_318.51, 1_975.53]; // E6 + B6
 const BELL_DURATION_S = 0.35;
+
+/** Per-server + master switches the decider needs (assembled by the runtime). */
+export interface ToastDecisionPrefs {
+  serverMode: "ALL" | "MENTIONS" | "NOTHING";
+  suppressEveryoneHere: boolean;
+  notificationsEnabled: boolean;
+  soundEnabled: boolean;
+}
+
+/** Toast stack tuning — live accessors over the settings store. */
+export interface ToastConfig {
+  dismissSeconds(): number;
+  maxToasts(): number;
+}
 
 export interface ToastPayload {
   title: string;
@@ -35,12 +47,37 @@ class NotificationHub {
   private ringbackTimer: number | null = null;
   /** The CURRENT burst's master gain — stopRingback cuts it instead of letting it play out. */
   private ringbackGain: GainNode | null = null;
+  private toastConfig: ToastConfig = {
+    dismissSeconds: () => 5,
+    maxToasts: () => 3,
+  };
+
+  setToastConfig(config: ToastConfig): void {
+    this.toastConfig = config;
+  }
 
   /** The full decision path for one live message. forceMention = the DM rule
    *  (every direct message counts as a mention); onClick routes the toast click. */
-  handleMessage(message: Message, ownUsername: string, channelName: string, windowFocused: boolean, inOpenChannel: boolean, forceMention = false, onClick?: () => void): void {
-    const mention = forceMention || messageMentionsUser(message.mentions, ownUsername);
-    const action = decideNotification({ mention, windowFocused, inOpenChannel });
+  handleMessage(
+    message: Message,
+    ownUsername: string,
+    channelName: string,
+    windowFocused: boolean,
+    inOpenChannel: boolean,
+    prefs: ToastDecisionPrefs,
+    onClick?: () => void,
+    forceMention = false,
+  ): void {
+    const action = decideNotification({
+      mention: forceMention || messageMentionsUserDirect(message.mentions, ownUsername),
+      everyoneHere: messageHasEveryoneHere(message.mentions),
+      windowFocused,
+      inOpenChannel,
+      serverMode: prefs.serverMode,
+      suppressEveryoneHere: prefs.suppressEveryoneHere,
+      notificationsEnabled: prefs.notificationsEnabled,
+      soundEnabled: prefs.soundEnabled,
+    });
     if (action === "none") {
       return;
     }
@@ -60,7 +97,8 @@ class NotificationHub {
 
   showToast(payload: ToastPayload): void {
     const stack = this.ensureStack();
-    while (stack.children.length >= TOAST_CAP) {
+    const cap = this.toastConfig.maxToasts();
+    while (stack.children.length >= cap) {
       stack.firstElementChild?.remove();
     }
     const card = document.createElement("div");
@@ -80,7 +118,7 @@ class NotificationHub {
       card.remove();
     });
     stack.appendChild(card);
-    window.setTimeout(() => card.remove(), TOAST_TTL_MS);
+    window.setTimeout(() => card.remove(), this.toastConfig.dismissSeconds() * 1000);
   }
 
   showSystem(author: string, channelName: string, body: string | null): void {

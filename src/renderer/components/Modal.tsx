@@ -1,10 +1,12 @@
 import { useEffect } from "react";
 
 /** Overlay + card; Escape and backdrop clicks close. */
-export function Modal({ title, children, onClose }: {
+export function Modal({ title, children, onClose, wide }: {
   title: string;
   children: React.ReactNode;
   onClose: () => void;
+  /** Wider card for multi-pane settings surfaces (M7). */
+  wide?: boolean;
 }): React.JSX.Element {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -25,7 +27,7 @@ export function Modal({ title, children, onClose }: {
         }
       }}
     >
-      <div className="modal-card">
+      <div className={"modal-card" + (wide === true ? " wide" : "")}>
         <div className="modal-title">{title}</div>
         {children}
       </div>

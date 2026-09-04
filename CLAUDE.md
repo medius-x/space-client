@@ -27,9 +27,59 @@ Electron + TypeScript **спайк-клиент** OAK-сервера. Цель �
 Физическая грабля смоука: наушники на столе + микрофон гарнитуры вплотную к «уху» =
 акустическая петля, моргает MONO (оба канала громкие). Убрать микрофон от динамика.
 
-## Текущее состояние: M6 (социальный слой)
+## Текущее состояние: M7 (RBAC-UI, настройки)
 
-M5 закрыт и закоммичен (`b14b2a6`). M6 (код готов, ждёт смоука): **друзья** —
+M6 закрыт и закоммичен (`088df95`). M7 (код готов, ждёт смоука; electron-builder —
+после смоука): **ServerSettings** (ПКМ по серверу в рейле, гейт canManageAnySettings
+= MANAGE_ROLES||MANAGE_MEMBERS||KICK||BAN||MANAGE_CHANNELS; in-app экран поверх
+контента, ESC/✕ закрывает): **Overview** — rename `PATCH /api/server {name}`
+(wire разведан по oak-клиенту — ПРОВЕРИТЬ НА СМОУКЕ ответ); **Roles** — список
+custom по position (@everyone внизу редактируем только по правам, OWNER скрыт),
+«+» создаёт «New role N» сразу POST (дефолт: без цвета/прав, oak-паттерн),
+↑/↓-кнопки reorder (drag не делали — осознанное отступление) → `PUT /roles/order`,
+trash+confirm; редактор: Appearance (имя, палитра+HEX+Default, mentionable/hoist,
+Save Changes — **color на PATCH безусловен: null=сброс, отправляем выбранный
+color всегда**), Permissions (каталог `GET /api/permissions`, группы
+General/Text/Voice, описания всегда видны, пометка «(not implemented yet)»,
+VIEW_CHANNEL без чекбокса), Members-в-роль (полный набор PUT
+`/api/members/{id}/roles` + пикер кандидатов без роли); **Members** — активные +
+GET /bans списком, Kick/Ban (owner иммунен)/Unban, роли read-only; **Channels** —
+текст+голос, таб Permissions = tri-state по роли (✓/—/✗, `PUT /overrides/{roleId}
+{allow[],deny[]}` — ПОЛНАЯ замена, neutral = имя вне обоих множеств, DELETE =
+сброс к базе роли; показываем только Text/Voice+MANAGE_CHANNELS, VIEW скрыт) и
+таб Access = Public/Locked/Hidden (НЕ поле сервера — ИНФЕРЕНС из @everyone-deny:
+hidden=deny VIEW, locked=deny READ/SEND/ADD_REACTIONS (text) или CONNECT/SPEAK
+(voice); чекбоксы ролей/участников с доступом → Save прогоняет ЧИСТУЮ
+`buildAccessWrites` (managed-набор {VIEW,READ,SEND,ADD_REACTIONS,CONNECT,SPEAK}:
+@everyone deny=(old−managed)∪modeSet; грантам allow∪=modeSet; снятым −managed;
+опустевшие строки DELETE; unmanaged биты переживают) — вся математика в
+`logic/channel-access.ts` с тестами). **Live-трекинг**: `/topic/roles|members` →
+memberRefresh теперь ДОТЯГИВАЕТ refreshPermissions (гейты второго клиента
+флипаются; оверрайды сами пингуют `/topic/channels.changed` → refetch+гейтинг,
+а сервер дополнительно кикает из голоса потерявших CONNECT через
+VoiceAccessEnforcer). **UserSettings** (⚙ в user-bar, 5 секций instant-apply —
+отступление от «7 секций» oak: нет тем/устройств, аватар уже в ProfileModal):
+**Account** (пароль: ротация пары БЕЗ рестарта WS — сервер проверяет JWT только
+на CONNECT; username: гейт CHANGE_NICKNAME + запрет в голосе/звонке; PATCH
+ротирует ВСЕ refresh-семьи и убивает STOMP principal=username → запись+токены
+обновляются, затем ПОЛНЫЙ тихий рестарт сессии openSession; **Appearance**
+(ctrlEnterSends — композер И инлайн-редактор читают на каждом нажатии; disk
+cache Off/64..2048 MB — AttachmentCache.setDiskBudget, 0 = память+пурж диска);
+**Notifications** (мастера notifications/sound/badge, toast TTL/cap, ring
+timeout Off/30..300 c — armRingTimeout читает настройку; per-server
+mode ALL/MENTIONS/NOTHING + suppress @everyone/@here — в записи подключения
+`notifPrefs`, pre-M7 записи дефолтятся при loadAll; декайдер расширен:
+MENTIONS глушит не-mention тосты, NOTHING глушит тосты но НЕ бейджи, suppress
+убирает @everyone из красного, звук только на effective-mention);
+**Voice** (APM-тумблер — echoCancellation/noiseSuppression/AGC в getUserMedia,
+применяется со следующего входа в голос/звонок); **Connections** (read-only).
+**Полиш**: @автодополнение в композере (попап по `@префиксу` — ростер, ≤10,
+↑/↓/Enter/Tab/Esc; Enter при открытом попапе = выбор, не отправка). Гейт
+188/188.
+
+## M6 (закрыт, 088df95): социальный слой
+
+M5 закрыт и закоммичен (`b14b2a6`). M6: **друзья** —
 `GET /api/users/me/relationships` (типы `FRIEND|BLOCKED|PENDING_INCOMING|
 PENDING_OUTGOING` — сервер сам сворачивает направление в caller-view); запрос
 `POST /friends {username}` (взаимный pending авто-акцептится в FRIEND), accept =

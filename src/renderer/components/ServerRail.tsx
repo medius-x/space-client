@@ -3,8 +3,10 @@ import { useStore } from "../hooks/useStore";
 import {
   appStore,
   beginAddServer,
+  canManageServerSettings,
   connectionDirectory,
   exitHomeMode,
+  openServerSettings,
   removeConnection,
   switchConnection,
   toggleHomeMode,
@@ -28,6 +30,10 @@ export function ServerRail({ activeRecordId, session }: {
   const [menu, setMenu] = useState<{ recordId: string; x: number; y: number } | null>(null);
 
   const menuItems: ContextMenuItem[] = menu === null ? [] : [
+    // Gated live: without any settings permission the entry never appears (oak parity).
+    ...(menu.recordId === session?.recordId && canManageServerSettings(session)
+      ? [{ label: "Server Settings", action: () => openServerSettings() }]
+      : []),
     { label: "Switch here", action: () => void switchConnection(menu.recordId) },
     { label: "Forget this server", danger: true, action: () => void removeConnection(menu.recordId) },
   ];

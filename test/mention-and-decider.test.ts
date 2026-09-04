@@ -1,7 +1,24 @@
 import { describe, expect, it } from "vitest";
 import { segmentMessageContent } from "../src/domain/logic/mention-segmenter";
-import { decideNotification, messageMentionsUser } from "../src/domain/logic/notification-decider";
+import {
+  decideNotification,
+  messageHasEveryoneHere,
+  messageMentionsUserDirect,
+  type NotificationInput,
+} from "../src/domain/logic/notification-decider";
 import { buildReplyPreview } from "../src/domain/logic/reply-tree";
+
+const BASE_PREFS = {
+  everyoneHere: false,
+  serverMode: "ALL",
+  suppressEveryoneHere: false,
+  notificationsEnabled: true,
+  soundEnabled: true,
+} as const;
+
+function decide(overrides: Partial<NotificationInput>): string {
+  return decideNotification({ ...BASE_PREFS, mention: false, windowFocused: false, inOpenChannel: false, ...overrides });
+}
 
 describe("segmentMessageContent", () => {
   it("splits text and mention spans by the server's offsets", () => {
@@ -39,22 +56,45 @@ describe("segmentMessageContent", () => {
 
 describe("decideNotification", () => {
   it("nothing while watching the receiving channel in a focused window", () => {
-    expect(decideNotification({ mention: true, windowFocused: true, inOpenChannel: true })).toBe("none");
-    expect(decideNotification({ mention: false, windowFocused: true, inOpenChannel: true })).toBe("none");
+    expect(decide({ mention: true, windowFocused: true, inOpenChannel: true })).toBe("none");
+    expect(decide({ mention: false, windowFocused: true, inOpenChannel: true })).toBe("none");
   });
 
   it("mentions always ping (with sound); non-mentions toast only unfocused", () => {
-    expect(decideNotification({ mention: true, windowFocused: false, inOpenChannel: false })).toBe("toast-sound");
-    expect(decideNotification({ mention: true, windowFocused: true, inOpenChannel: false })).toBe("toast-sound");
-    expect(decideNotification({ mention: false, windowFocused: false, inOpenChannel: false })).toBe("toast");
-    expect(decideNotification({ mention: false, windowFocused: true, inOpenChannel: false })).toBe("none");
+    expect(decide({ mention: true })).toBe("toast-sound");
+    expect(decide({ mention: true, windowFocused: true, inOpenChannel: false })).toBe("toast-sound");
+    expect(decide({ mention: false })).toBe("toast");
+    expect(decide({ mention: false, windowFocused: true, inOpenChannel: false })).toBe("none");
   });
 
-  it("mention detection covers USER-by-name plus EVERYONE/HERE", () => {
-    expect(messageMentionsUser([{ type: "USER", name: "alice" }], "alice")).toBe(true);
-    expect(messageMentionsUser([{ type: "USER", name: "alice" }], "bob")).toBe(false);
-    expect(messageMentionsUser([{ type: "EVERYONE", name: "@everyone" }], "bob")).toBe(true);
-    expect(messageMentionsUser([{ type: "HERE", name: "@here" }], "bob")).toBe(true);
-    expect(messageMentionsUser([{ type: "ROLE", name: "admin" }], "bob")).toBe(false); // roles are M7
+  it("the master switch kills everything", () => {
+    expect(decide({ mention: true, notificationsEnabled: false })).toBe("none");
+    expect(decide({ mention: false, notificationsEnabled: false })).toBe("none");
+  });
+
+  it("per-server mode: MENTIONS mutes non-mention toasts, NOTHING mutes all", () => {
+    expect(decide({ mention: false, serverMode: "MENTIONS" })).toBe("none");
+    expect(decide({ mention: true, serverMode: "MENTIONS" })).toBe("toast-sound");
+    expect(decide({ mention: true, serverMode: "NOTHING" })).toBe("none");
+  });
+
+  it("soundEnabled off keeps the mention toast but drops the bell", () => {
+    expect(decide({ mention: true, soundEnabled: false })).toBe("toast");
+  });
+
+  it("suppressEveryoneHere: @everyone stops counting as a mention (still toasts unfocused)", () => {
+    expect(decide({ everyoneHere: true, suppressEveryoneHere: true })).toBe("toast"); // unfocused non-mention
+    expect(decide({ everyoneHere: true, suppressEveryoneHere: true, windowFocused: true })).toBe("none");
+    expect(decide({ everyoneHere: true, suppressEveryoneHere: false })).toBe("toast-sound");
+    expect(decide({ everyoneHere: true, suppressEveryoneHere: true, serverMode: "MENTIONS" })).toBe("none");
+  });
+
+  it("direct vs broad mention detection", () => {
+    expect(messageMentionsUserDirect([{ type: "USER", name: "alice" }], "alice")).toBe(true);
+    expect(messageMentionsUserDirect([{ type: "USER", name: "alice" }], "bob")).toBe(false);
+    expect(messageMentionsUserDirect([{ type: "EVERYONE", name: "@everyone" }], "bob")).toBe(false);
+    expect(messageHasEveryoneHere([{ type: "EVERYONE", name: "@everyone" }])).toBe(true);
+    expect(messageHasEveryoneHere([{ type: "HERE", name: "@here" }])).toBe(true);
+    expect(messageHasEveryoneHere([{ type: "ROLE", name: "admin" }])).toBe(false);
   });
 });

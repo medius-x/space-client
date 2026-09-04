@@ -1,7 +1,7 @@
 import { Emitter } from "../lib/store";
 import { kv } from "../persistence/kv-client";
 import type { TokenStorage } from "../../core/auth";
-import type { AuthTokens } from "../../types";
+import type { AuthTokens, NotificationPrefs } from "../../types";
 import { log } from "../../logging";
 
 /**
@@ -28,7 +28,11 @@ export interface ConnectionRecord {
   /** username → gain multiplier (1.0 = 100%). */
   voiceVolumes: Record<string, number>;
   shareVolumes: Record<string, number>;
+  /** Per-server notification overrides; records written before M7 default to ALL. */
+  notifPrefs: NotificationPrefs;
 }
+
+export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = { mode: "ALL", suppressEveryoneHere: false };
 
 export interface NewConnection {
   hostUrl: string;
@@ -101,7 +105,9 @@ export class ConnectionDirectory extends Emitter {
     for (const sanitizedKey of sanitizedKeys) {
       const record = await kv.get<ConnectionRecord>(sanitizedKey);
       if (isValidRecord(record)) {
-        this.records.set(record.id, record);
+        // Pre-M7 records carry no prefs — default them in memory (the merge below
+        // only happens on the next explicit write).
+        this.records.set(record.id, { ...record, notifPrefs: record.notifPrefs ?? DEFAULT_NOTIFICATION_PREFS });
       }
     }
     this.loaded = true;
@@ -124,6 +130,7 @@ export class ConnectionDirectory extends Emitter {
       cachedServerName: null,
       voiceVolumes: {},
       shareVolumes: {},
+      notifPrefs: DEFAULT_NOTIFICATION_PREFS,
     };
     this.records.set(record.id, record);
     this.rebuildSnapshot();

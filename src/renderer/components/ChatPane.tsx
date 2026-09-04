@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../hooks/useStore";
 import { ackActiveChannel, appStore, forwardCrossInstance, forwardRequestUpload, forwardUploadBytes } from "../runtime";
-import { connectionDirectory } from "../runtime";
+import { connectionDirectory, settingsStore } from "../runtime";
 import { RecordTokenStorage } from "../../domain/session/connection-record";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import { HISTORY_PAGE } from "../../domain/session/connection-session";
@@ -271,6 +271,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
         <div className="composer-gate">…</div>
       ) : permissions.sendMessages ? (
         <Composer
+          session={session}
           placeholder={`Message ${chatTitlePrefix}${viewChannel.name}${permissions.attachFiles ? " — paste or drop files to attach" : ""}`}
           attachEnabled={permissions.attachFiles}
           allowEmptySend={staged.length > 0}
@@ -631,10 +632,16 @@ function MessageRow(props: MessageRowProps): React.JSX.Element {
             onChange={(event) => setDraft(event.target.value)}
             onBlur={commitEdit}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.ctrlKey && !event.shiftKey && !event.altKey) {
+              // Same settings-owned Enter semantics as the composer (M7).
+              const plainEnter = event.key === "Enter" && !event.ctrlKey && !event.shiftKey && !event.altKey;
+              const ctrlEnter = event.key === "Enter" && event.ctrlKey && !event.shiftKey && !event.altKey;
+              const shiftEnter = event.key === "Enter" && event.shiftKey && !event.altKey;
+              const commitOnThisEnter = settingsStore.getSnapshot().ctrlEnterSends ? ctrlEnter : plainEnter;
+              const newlineOnThisEnter = settingsStore.getSnapshot().ctrlEnterSends ? plainEnter || shiftEnter : ctrlEnter || shiftEnter;
+              if (commitOnThisEnter) {
                 event.preventDefault();
                 commitEdit();
-              } else if (event.key === "Enter" && (event.ctrlKey || event.shiftKey) && !event.altKey) {
+              } else if (newlineOnThisEnter) {
                 event.preventDefault();
                 const textarea = event.currentTarget;
                 textarea.setRangeText("\n", textarea.selectionStart, textarea.selectionEnd, "end");
@@ -706,7 +713,8 @@ function ForwardCard({ forward }: { forward: ForwardInfo }): React.JSX.Element {
 // Composer
 // ---------------------------------------------------------------------------
 
-function Composer({ placeholder, attachEnabled, allowEmptySend, onPaste, onSend }: {
+function Composer({ session, placeholder, attachEnabled, allowEmptySend, onPaste, onSend }: {
+  session: ConnectionSession;
   placeholder: string;
   attachEnabled: boolean;
   allowEmptySend: boolean;
@@ -716,6 +724,40 @@ function Composer({ placeholder, attachEnabled, allowEmptySend, onPaste, onSend 
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [mentionQuery, setMentionQuery] = useState<{ token: string; caret: number } | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const users = useStore(session.rosterStore, (state) => state.users);
+  const ownUsername = useStore(appStore, (state) => state.ownUsername);
+  const ctrlEnterSends = useStore(settingsStore, (settings) => settings.ctrlEnterSends);
+
+  const mentionCandidates = useMemo(() => {
+    if (mentionQuery === null) {
+      return [];
+    }
+    const prefix = mentionQuery.token.slice(1).toLowerCase(); // after the @
+    return users
+      .filter((user) => user.username !== ownUsername)
+      .filter((user) => user.username.toLowerCase().startsWith(prefix))
+      .slice(0, 10);
+  }, [mentionQuery, users, ownUsername]);
+
+  // Track the @token ending at the caret — the popup's query.
+  const updateMentionQuery = (value: string, caret: number): void => {
+    const beforeCaret = value.slice(0, caret);
+    const tokenMatch = beforeCaret.match(/(?:^|\s)@([A-Za-z0-9_-]*)$/);
+    setMentionQuery(tokenMatch !== null ? { token: tokenMatch[0].trimStart(), caret } : null);
+    setMentionIndex(0);
+  };
+
+  const applyMention = (username: string): void => {
+    if (mentionQuery === null) {
+      return;
+    }
+    const start = mentionQuery.caret - mentionQuery.token.length;
+    const replaced = `${text.slice(0, start)}@${username} ${text.slice(mentionQuery.caret)}`;
+    setText(replaced);
+    setMentionQuery(null);
+  };
 
   const submit = async (): Promise<void> => {
     const content = text.trim();
@@ -727,6 +769,7 @@ function Composer({ placeholder, attachEnabled, allowEmptySend, onPaste, onSend 
     try {
       await onSend(content);
       setText("");
+      setMentionQuery(null);
     } catch (submitError) {
       // Keep the text — a failed send must never eat the draft.
       setError(submitError instanceof Error ? submitError.message : String(submitError));
@@ -737,11 +780,28 @@ function Composer({ placeholder, attachEnabled, allowEmptySend, onPaste, onSend 
 
   return (
     <div className="composer">
+      {mentionQuery !== null && mentionCandidates.length > 0 ? (
+        <div className="mention-popup">
+          {mentionCandidates.map((user, index) => (
+            <div
+              key={user.id}
+              className={"mention-row" + (index === mentionIndex ? " chosen" : "")}
+              onClick={() => applyMention(user.username)}
+            >
+              <Avatar session={session} username={user.username} size={20} />
+              <span>{user.username}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
       <textarea
         value={text}
         rows={Math.min(4, Math.max(1, text.split("\n").length))}
         placeholder={placeholder}
-        onChange={(event) => setText(event.target.value)}
+        onChange={(event) => {
+          setText(event.target.value);
+          updateMentionQuery(event.target.value, event.target.selectionStart);
+        }}
         onPaste={(event) => {
           const files = [...event.clipboardData.files];
           if (attachEnabled && files.length > 0) {
@@ -750,12 +810,40 @@ function Composer({ placeholder, attachEnabled, allowEmptySend, onPaste, onSend 
           }
         }}
         onKeyDown={(event) => {
-          if (event.key === "Enter" && !event.ctrlKey && !event.shiftKey && !event.altKey) {
+          if (mentionQuery !== null && mentionCandidates.length > 0) {
+            if (event.key === "ArrowDown") {
+              event.preventDefault();
+              setMentionIndex((index) => (index + 1) % mentionCandidates.length);
+              return;
+            }
+            if (event.key === "ArrowUp") {
+              event.preventDefault();
+              setMentionIndex((index) => (index - 1 + mentionCandidates.length) % mentionCandidates.length);
+              return;
+            }
+            if (event.key === "Enter" || event.key === "Tab") {
+              event.preventDefault();
+              applyMention(mentionCandidates[mentionIndex]!.username);
+              return;
+            }
+            if (event.key === "Escape") {
+              setMentionQuery(null);
+              return;
+            }
+          }
+          // Enter semantics are SETTINGS-OWNED (M7): default Enter sends and
+          // Ctrl/Shift+Enter newline; with ctrlEnterSends the roles swap (Shift
+          // stays a newline in both modes). Ctrl+Enter needs the manual insert —
+          // Chromium treats it as non-text.
+          const plainEnter = event.key === "Enter" && !event.ctrlKey && !event.shiftKey && !event.altKey;
+          const ctrlEnter = event.key === "Enter" && event.ctrlKey && !event.shiftKey && !event.altKey;
+          const shiftEnter = event.key === "Enter" && event.shiftKey && !event.altKey;
+          const sendOnThisEnter = ctrlEnterSends ? ctrlEnter : plainEnter;
+          const newlineOnThisEnter = ctrlEnterSends ? plainEnter || shiftEnter : ctrlEnter || shiftEnter;
+          if (sendOnThisEnter) {
             event.preventDefault();
             void submit();
-          } else if (event.key === "Enter" && (event.ctrlKey || event.shiftKey) && !event.altKey) {
-            // The oak composer contract: Ctrl+Enter OR Shift+Enter breaks the line
-            // (Ctrl+Enter needs the manual insert — Chromium treats it as non-text).
+          } else if (newlineOnThisEnter) {
             event.preventDefault();
             const textarea = event.currentTarget;
             textarea.setRangeText("\n", textarea.selectionStart, textarea.selectionEnd, "end");
@@ -764,7 +852,11 @@ function Composer({ placeholder, attachEnabled, allowEmptySend, onPaste, onSend 
         }}
       />
       <div className="composer-foot">
-        <span className="composer-hint">Enter to send · Ctrl/Shift+Enter for a new line</span>
+        <span className="composer-hint">
+          {ctrlEnterSends
+            ? "Ctrl+Enter to send · Enter for a new line · @ to mention"
+            : "Enter to send · Ctrl/Shift+Enter for a new line · @ to mention"}
+        </span>
         <span className="error-line">{error ?? ""}</span>
       </div>
     </div>

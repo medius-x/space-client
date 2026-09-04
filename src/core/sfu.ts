@@ -99,6 +99,8 @@ export class SfuSession {
   private readonly mediaSource: MediaSource;
   private readonly createPeerConnection: () => RTCPeerConnection;
   private readonly callbacks: SfuCallbacks;
+  /** Chromium APM on the mic capture; runtime-owned (client settings, M7). Applies to the NEXT start(). */
+  apmEnabled = true;
 
   private publisherPc: RTCPeerConnection | null = null;
   private micTrack: MediaStreamTrack | null = null;
@@ -156,9 +158,9 @@ export class SfuSession {
     try {
       micStream = await this.mediaSource.getUserMedia({
         audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
+          echoCancellation: this.apmEnabled,
+          noiseSuppression: this.apmEnabled,
+          autoGainControl: this.apmEnabled,
         },
       });
     } catch (error: unknown) {

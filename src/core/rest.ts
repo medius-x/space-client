@@ -5,18 +5,22 @@ import type {
   Channel,
   CallConfig,
   ChannelMyPermissions,
+  ChannelOverride,
   ChannelReadState,
   ChannelType,
+  ChannelUserOverride,
   DmChannel,
   ForwardMessageRequest,
   Message,
   MyPermissions,
+  PermissionCatalogEntry,
   ReactionSummary,
   Relationship,
   Role,
   RoomInfo,
   ServerMember,
   ServerProfile,
+  UserRenamedResponse,
   UserResponse,
   UserSummary,
 } from "../types";
@@ -415,12 +419,140 @@ export class RestClient {
     await this.request<unknown>(`/api/members/${userId}/kick`, { method: "POST" });
   }
 
+  /** FULL replacement of the member's explicit role set (PUT). */
+  async updateMemberRoles(userId: number, roleIds: number[]): Promise<ServerMember> {
+    return this.request<ServerMember>(`/api/members/${userId}/roles`, {
+      method: "PUT",
+      body: JSON.stringify({ roleIds }),
+    });
+  }
+
   async banMember(userId: number): Promise<void> {
     await this.request<unknown>(`/api/members/${userId}/ban`, { method: "POST" });
   }
 
   async unbanMember(userId: number): Promise<void> {
     await this.request<unknown>(`/api/members/${userId}/ban`, { method: "DELETE" });
+  }
+
+  // ---------------------------------------------------------------------------
+  // RBAC editor (M7): role CRUD, channel overrides, account mutations
+  // ---------------------------------------------------------------------------
+
+  async getPermissionCatalog(): Promise<PermissionCatalogEntry[]> {
+    return this.request<PermissionCatalogEntry[]>("/api/permissions", { method: "GET" });
+  }
+
+  /** 201; the server defaults mentionable/hoist to false, color to null. */
+  async createRole(request: {
+    name: string;
+    permissions?: string[] | null;
+    color?: number | null;
+    mentionable?: boolean | null;
+    hoist?: boolean | null;
+  }): Promise<Role> {
+    return this.request<Role>("/api/roles", {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  }
+
+  /**
+   * Partial PATCH: null fields keep their value, EXCEPT color — null RESETS it
+   * (send the current color to keep it). @everyone edits permissions/mentionable
+   * only; the OWNER role is 403.
+   */
+  async updateRole(roleId: number, request: {
+    name?: string | null;
+    permissions?: string[] | null;
+    color?: number | null;
+    mentionable?: boolean | null;
+    hoist?: boolean | null;
+  }): Promise<Role> {
+    return this.request<Role>(`/api/roles/${roleId}`, {
+      method: "PATCH",
+      body: JSON.stringify(request),
+    });
+  }
+
+  async deleteRole(roleId: number): Promise<void> {
+    await this.request<unknown>(`/api/roles/${roleId}`, { method: "DELETE" });
+  }
+
+  /** Custom roles only, top→bottom; the list may be partial (dense renumber). */
+  async reorderRoles(roleIds: number[]): Promise<void> {
+    await this.request<unknown>("/api/roles/order", {
+      method: "PUT",
+      body: JSON.stringify({ roleIds }),
+    });
+  }
+
+  async getChannelOverrides(channelId: number): Promise<ChannelOverride[]> {
+    return this.request<ChannelOverride[]>(`/api/channels/${channelId}/overrides`, { method: "GET" });
+  }
+
+  /** Full replacement of both sets for one role (PUT). */
+  async upsertChannelOverride(channelId: number, roleId: number, request: { allow: string[]; deny: string[] }): Promise<ChannelOverride> {
+    return this.request<ChannelOverride>(`/api/channels/${channelId}/overrides/${roleId}`, {
+      method: "PUT",
+      body: JSON.stringify(request),
+    });
+  }
+
+  async deleteChannelOverride(channelId: number, roleId: number): Promise<void> {
+    await this.request<unknown>(`/api/channels/${channelId}/overrides/${roleId}`, { method: "DELETE" });
+  }
+
+  async getChannelUserOverrides(channelId: number): Promise<ChannelUserOverride[]> {
+    return this.request<ChannelUserOverride[]>(`/api/channels/${channelId}/overrides/users`, { method: "GET" });
+  }
+
+  async upsertChannelUserOverride(channelId: number, userId: number, request: { allow: string[]; deny: string[] }): Promise<ChannelUserOverride> {
+    return this.request<ChannelUserOverride>(`/api/channels/${channelId}/overrides/users/${userId}`, {
+      method: "PUT",
+      body: JSON.stringify(request),
+    });
+  }
+
+  async deleteChannelUserOverride(channelId: number, userId: number): Promise<void> {
+    await this.request<unknown>(`/api/channels/${channelId}/overrides/users/${userId}`, { method: "DELETE" });
+  }
+
+  async getBannedMembers(): Promise<ServerMember[]> {
+    return this.request<ServerMember[]>("/api/members/bans", { method: "GET" });
+  }
+
+  async renameServer(name: string): Promise<ServerProfile> {
+    return this.request<ServerProfile>("/api/server", {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  /** The response carries a FRESH token pair — the whole old family is revoked. */
+  async changeUsername(username: string): Promise<UserRenamedResponse> {
+    return this.request<UserRenamedResponse>("/api/users/me/username", {
+      method: "PATCH",
+      body: JSON.stringify({ username }),
+    });
+  }
+
+  /** Rotates the refresh family too; the new pair is saved into this client's storage. */
+  async changePassword(oldPassword: string, newPassword: string): Promise<void> {
+    const auth = await this.request<{ token: string; refreshToken: string; tokenType: string; expiresIn: number }>(
+      "/api/users/me/password",
+      {
+        method: "POST",
+        body: JSON.stringify({ oldPassword, newPassword }),
+      },
+    );
+    const previous = this.tokenStorage.load();
+    await this.tokenStorage.save({
+      token: auth.token,
+      refreshToken: auth.refreshToken,
+      expiresAt: Date.now() + auth.expiresIn * 1000,
+    }, previous);
+    log.info("rest", "password changed — token family rotated");
   }
 
   logout(): void {

@@ -146,6 +146,10 @@ export const MANAGE_CHANNELS_PERMISSION = "MANAGE_CHANNELS";
 export const SEND_MESSAGES_PERMISSION = "SEND_MESSAGES";
 export const KICK_MEMBERS_PERMISSION = "KICK_MEMBERS";
 export const BAN_MEMBERS_PERMISSION = "BAN_MEMBERS";
+export const MANAGE_SERVER_PERMISSION = "MANAGE_SERVER";
+export const MANAGE_ROLES_PERMISSION = "MANAGE_ROLES";
+export const MANAGE_MEMBERS_PERMISSION = "MANAGE_MEMBERS";
+export const CHANGE_NICKNAME_PERMISSION = "CHANGE_NICKNAME";
 
 /** GET /api/channels/{id}/permissions/me — override-aware, per channel. */
 export interface ChannelMyPermissions {
@@ -424,4 +428,47 @@ export interface MemberEvent {
 export interface MemberKickEvent {
   by: string;
   banned: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// RBAC editor surfaces (M7): catalog, channel overrides, account mutations
+// ---------------------------------------------------------------------------
+
+/** GET /api/permissions — the server's catalog, enum order, VIEW_CHANNEL last. */
+export interface PermissionCatalogEntry {
+  name: string;
+  group: "GENERAL" | "TEXT" | "VOICE";
+}
+
+/**
+ * A role-level channel override. Tri-state per permission: in `allow`, in `deny`
+ * (deny wins on the wire), or in NEITHER (neutral — the role's base applies).
+ * PUT replaces both sets wholesale; DELETE removes the row entirely.
+ */
+export interface ChannelOverride {
+  channelId: number;
+  roleId: number;
+  allow: string[];
+  deny: string[];
+}
+
+/** Per-user override row — `username` arrives on the wire, no client-side join. */
+export interface ChannelUserOverride {
+  channelId: number;
+  userId: number;
+  username: string;
+  allow: string[];
+  deny: string[];
+}
+
+/** PATCH /api/users/me/username — fresh tokens in `auth` (the old family is dead). */
+export interface UserRenamedResponse {
+  user: UserResponse;
+  auth: { token: string; refreshToken: string; tokenType: string; expiresIn: number };
+}
+
+/** Per-server notification overrides (the record's notifPrefs, oak parity). */
+export interface NotificationPrefs {
+  mode: "ALL" | "MENTIONS" | "NOTHING";
+  suppressEveryoneHere: boolean;
 }

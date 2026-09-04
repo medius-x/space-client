@@ -13,6 +13,7 @@ import type {
   PresenceEvent,
   ReactionEvent,
   Relationship,
+  Role,
   ServerProfile,
   UserSummary,
   VoiceControlCommand,
@@ -515,6 +516,45 @@ export class ConnectionSession {
     await this.rest.banMember(userId);
   }
 
+  async unbanMember(userId: number): Promise<void> {
+    await this.rest.unbanMember(userId);
+    this.memberRefresh.request(); // the ban list refreshes via /topic/members anyway — this covers a missed push
+  }
+
+  // ---------------------------------------------------------------------------
+  // RBAC editor (M7): roles CRUD/reorder — every mutation ends with the coalesced
+  // member+roles refresh so all viewers (including this one) re-derive gates live
+  // ---------------------------------------------------------------------------
+
+  /** oak parity: creation is one click, defaults empty — naming/colors happen in the editor. */
+  async createRole(name: string): Promise<Role> {
+    const role = await this.rest.createRole({ name });
+    this.memberRefresh.request();
+    return role;
+  }
+
+  async updateRole(roleId: number, patch: {
+    name?: string | null;
+    permissions?: string[] | null;
+    color?: number | null;
+    mentionable?: boolean | null;
+    hoist?: boolean | null;
+  }): Promise<Role> {
+    const role = await this.rest.updateRole(roleId, patch);
+    this.memberRefresh.request();
+    return role;
+  }
+
+  async deleteRole(roleId: number): Promise<void> {
+    await this.rest.deleteRole(roleId);
+    this.memberRefresh.request();
+  }
+
+  async reorderRoles(roleIds: number[]): Promise<void> {
+    await this.rest.reorderRoles(roleIds);
+    this.memberRefresh.request();
+  }
+
   private async doRefreshSocial(): Promise<void> {
     if (this.disposed) {
       return;
@@ -544,6 +584,10 @@ export class ConnectionSession {
     }
     this.memberStore.setMembers(members);
     this.memberStore.setRoles(roles);
+    // M7 live tracking: a role edit can flip THE VIEWER's own gates — refresh
+    // my-permissions and every cached channel bit along with the roster (oak's
+    // loadMyPermissionsIfNeeded after /topic/roles).
+    await this.refreshPermissions();
   }
 
   // ---------------------------------------------------------------------------
