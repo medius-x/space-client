@@ -279,6 +279,44 @@ export interface VoiceControlEvent {
   byUsername: string;
 }
 
+// ---------------------------------------------------------------------------
+// 1:1 P2P calls (M5) — the server only relays; media flows peer-to-peer
+// ---------------------------------------------------------------------------
+
+/** Call signaling wire type — the server relays any type verbatim (stamps `from`). */
+export type CallSignalType =
+  | "RING" | "ACCEPT" | "REJECT" | "HANGUP" // call lifecycle
+  | "OFFER" | "ANSWER" | "ICE"               // WebRTC negotiation
+  | "CAM_ON" | "CAM_OFF"                     // UI-only peer camera state
+  | "MIC_ON" | "MIC_OFF"                     // UI-only peer mic state
+  | "DEAFEN_ON" | "DEAFEN_OFF"               // UI-only peer deafen state
+  | "SCREEN_ON" | "SCREEN_OFF";              // UI-only peer share state
+
+/** Mirrors the server DTO (dev.onvoid.RTCIceCandidate fields). */
+export interface CallIceCandidate {
+  sdp: string;
+  sdpMid: string | null;
+  sdpMLineIndex: number | null;
+}
+
+/** /app/call.signal body (outgoing: no `from` — the server stamps it). */
+export interface CallSignal {
+  type: CallSignalType;
+  to: string;
+  sdp: string | null;
+  candidate: CallIceCandidate | null;
+}
+
+/** The relayed push the target receives on /user/queue/call.signal. */
+export interface IncomingCallSignal extends CallSignal {
+  from: string;
+}
+
+/** GET /api/call/config — RTCIceServer-compatible field names. */
+export interface CallConfig {
+  iceServers: { urls: string[]; username: string; credential: string }[];
+}
+
 /** Where the speaker output of each feed sits right now (diagnostics + UI meters). */
 export interface FeedLevels {
   voiceDbfs: number | null;

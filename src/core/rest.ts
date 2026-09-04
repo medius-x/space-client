@@ -3,6 +3,7 @@ import type {
   AttachmentUploadSlot,
   AuthTokens,
   Channel,
+  CallConfig,
   ChannelMyPermissions,
   ChannelReadState,
   ChannelType,
@@ -113,6 +114,11 @@ export class RestClient {
 
   async getRoom(channelId: number): Promise<RoomInfo> {
     return this.request<RoomInfo>(`/api/channels/${channelId}/room`, { method: "GET" });
+  }
+
+  /** ICE/TURN servers for 1:1 peer connections (STUN + Coturn relay fallback). */
+  async getCallConfig(): Promise<CallConfig> {
+    return this.request<CallConfig>("/api/call/config", { method: "GET" });
   }
 
   // ---------------------------------------------------------------------------

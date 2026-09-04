@@ -1090,3 +1090,90 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 }
 .popout-root img { max-width: 100%; max-height: 100%; object-fit: contain; }
 .popout-waiting { color: var(--sp-text-dim); font-size: 14px; }
+
+/* ===== M5: 1:1 P2P calls ===== */
+
+.call-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--sp-darker);
+}
+.call-status {
+  padding: 8px 16px;
+  font-size: 13px;
+  color: var(--sp-text-muted);
+  background: var(--sp-surface);
+  flex-shrink: 0;
+}
+.call-status.reconnecting { color: var(--sp-yellow); }
+
+.call-tiles {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 16px;
+  min-height: 0;
+}
+.call-tile {
+  background: var(--sp-surface);
+  border: 2px solid transparent;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  min-height: 0;
+}
+.call-tile.self { border-color: var(--sp-control); }
+.call-tile-head { display: flex; align-items: center; gap: 8px; }
+.call-tile-name { font-weight: 600; }
+.call-tile-video {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border-radius: 6px;
+  background: #000;
+  object-fit: contain;
+}
+.call-tile-placeholder {
+  flex: 1;
+  min-height: 0;
+  border-radius: 6px;
+  background: var(--sp-darkest);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 56px;
+  font-weight: 700;
+  color: var(--sp-text-dim);
+}
+
+.call-peer-volumes {
+  display: flex;
+  gap: 24px;
+  padding: 0 16px 8px;
+}
+.call-peer-volumes .tile-controls { flex: 1; }
+
+.call-card {
+  position: fixed;
+  right: 16px;
+  bottom: 60px;
+  z-index: 55;
+  width: 280px;
+  background: #2b2d31;
+  border: 1px solid var(--sp-control);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+.call-card-title { color: var(--sp-text-dim); font-size: 11px; }
+.call-card-peer { font-weight: 700; font-size: 15px; }
+.call-card-actions { display: flex; gap: 8px; margin-top: 4px; }
+.call-card-actions button { flex: 1; }

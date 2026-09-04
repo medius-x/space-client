@@ -16,6 +16,19 @@ export interface AudioFmtpLine {
   fmtp: string | undefined;
 }
 
+/**
+ * The a=mid of EVERY m= section, in SDP order — the m-line SLOT contract resolved
+ * through the actual SDP. Indexing the PC's transceiver ARRAY is fragile: on SRD an
+ * offer Chromium may refuse to reuse our pre-created EMPTY transceivers and add its
+ * own (live M5 smoke: ontrack arrived on array slots 3/4, our senders were dead).
+ * The mids inside the negotiated SDP are the only stable identity.
+ */
+export function sectionMids(sdp: string): (string | null)[] {
+  return splitSections(sdp)
+    .filter((section) => section.startsWith("m="))
+    .map((section) => section.match(/^a=mid:([^\r\n]*)/m)?.[1] ?? null);
+}
+
 function splitSections(sdp: string): string[] {
   return sdp.split(/(?=m=)/);
 }

@@ -1,5 +1,5 @@
 import { Emitter } from "../lib/store";
-import type { PresenceEvent, UserSummary, VoiceMemberEvent } from "../../types";
+import type { PresenceEvent, PresenceStatus, UserSummary, VoiceMemberEvent } from "../../types";
 
 /**
  * Per-connection roster: users, presence set, voice-channel membership. Fed by the
@@ -18,6 +18,14 @@ export class RosterStore extends Emitter {
     presence: new Set<string>(),
     voiceMembers: new Map<number, ReadonlySet<string>>(),
   };
+  /**
+   * Snapshot/delta race guard (oak's pendingDeltas): presence deltas arriving while
+   * a snapshot is IN FLIGHT are buffered and re-applied over it — a snapshot taken
+   * a moment earlier would otherwise resurrect a user who just went offline (or
+   * bury one who just came online).
+   */
+  private presenceSnapshotInFlight = false;
+  private readonly pendingPresenceDeltas = new Map<string, PresenceStatus>();
 
   getSnapshot = (): RosterState => this.state;
 
@@ -29,9 +37,34 @@ export class RosterStore extends Emitter {
     this.emit();
   }
 
+  /** Marks the snapshot window open — deltas from now on are buffered, not applied. */
+  beginPresenceSnapshot(): void {
+    this.presenceSnapshotInFlight = true;
+  }
+
+  /** Applies the snapshot, then replays the deltas that raced it (newest wins). */
   setPresence(usernames: readonly string[]): void {
-    this.state = { ...this.state, presence: new Set(usernames) };
+    const presence = new Set(usernames);
+    for (const [username, status] of this.pendingPresenceDeltas) {
+      if (status === "ONLINE") {
+        presence.add(username);
+      } else {
+        presence.delete(username);
+      }
+    }
+    this.pendingPresenceDeltas.clear();
+    this.presenceSnapshotInFlight = false;
+    this.state = { ...this.state, presence };
     this.emit();
+  }
+
+  /** A failed snapshot must not leave the buffer open forever — replay onto the current state. */
+  abortPresenceSnapshot(): void {
+    if (!this.presenceSnapshotInFlight) {
+      return;
+    }
+    const current = [...this.state.presence];
+    this.setPresence(current);
   }
 
   setVoiceMembers(entries: readonly { channelId: number; usernames: string[] }[]): void {
@@ -43,6 +76,10 @@ export class RosterStore extends Emitter {
   }
 
   applyPresenceEvent(event: PresenceEvent): void {
+    if (this.presenceSnapshotInFlight) {
+      this.pendingPresenceDeltas.set(event.username, event.status); // last write per user wins
+      return;
+    }
     const presence = new Set(this.state.presence);
     if (event.status === "ONLINE") {
       presence.add(event.username);

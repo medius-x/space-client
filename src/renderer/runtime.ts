@@ -4,6 +4,7 @@ import { MemoryTokenStorage } from "../core/auth";
 import { RestClient } from "../core/rest";
 import { JanusClient } from "../core/janus";
 import { SfuSession, RoomVanishedError, SubscriberTransportError, type MediaSource } from "../core/sfu";
+import { PeerCallSession, type PeerCallOptions, type PeerTrackKind } from "../core/peer-call";
 import { extractAudioFmtpLines } from "../core/sdp";
 import { stereoVerdict } from "../core/audio-math";
 import { RoomAudio } from "../media/RoomAudio";
@@ -18,8 +19,10 @@ import { MAX_VOICE_REJOIN_ATTEMPTS, rejoinDelayMs, rejoinExhausted } from "../do
 import { notifications } from "./notifications";
 import { virtualScrollTelemetry } from "./scroll-telemetry";
 import type {
+  CallConfig,
   Channel,
   FeedInfo,
+  IncomingCallSignal,
   Message,
   RemoteTrackKind,
   RoomInfo,
@@ -52,6 +55,18 @@ export interface AppState {
   cameraOn: boolean;
   /** The share pop-out window is up — the main window pumps frames into it. */
   popoutActive: boolean;
+  callState: "idle" | "ringing-out" | "ringing-in" | "connecting" | "in-call";
+  callPeer: string | null;
+  callHealthy: boolean;
+  callSeconds: number;
+  callCameraOn: boolean;
+  callSharing: boolean;
+  peerMicOn: boolean;
+  peerDeafenedOn: boolean;
+  peerCameraOn: boolean;
+  peerScreenOn: boolean;
+  /** The room↔call exclusivity question awaiting the user's answer. */
+  callConflict: { kind: "start-call" | "accept-call" | "join-voice"; peer: string | null; voiceChannelId: number | null } | null;
   testToneChannel: "left" | "right" | null;
   apmEnabled: boolean;
   viewingFeedId: number | null;
@@ -76,6 +91,17 @@ class AppStore extends Emitter {
     sharing: false,
     cameraOn: false,
     popoutActive: false,
+    callState: "idle",
+    callPeer: null,
+    callHealthy: true,
+    callSeconds: 0,
+    callCameraOn: false,
+    callSharing: false,
+    peerMicOn: true,
+    peerDeafenedOn: false,
+    peerCameraOn: false,
+    peerScreenOn: false,
+    callConflict: null,
     testToneChannel: null,
     apmEnabled: true,
     viewingFeedId: null,
@@ -250,6 +276,7 @@ const sessionHooks: SessionHooks = {
     void leaveVoice();
     notifications.showToast({ title: "Voice", channelName: byUsername, body: "You were kicked from the voice channel." });
   },
+  onCallSignal: (signal) => handleCallSignal(signal),
 };
 
 /** App entry: load the directory, auto-resume the most recently used connection. */
@@ -372,6 +399,7 @@ async function openSession(recordId: string): Promise<void> {
 }
 
 export async function teardownSession(): Promise<void> {
+  teardownCall();
   await teardownVoice();
   roomAudio.stopLevelPolling();
   roomAudio.detachOwnMic();
@@ -1051,6 +1079,521 @@ export function sendPopoutFrame(dataUrl: string): void {
   window.spaceWindow?.sendFrame(dataUrl);
 }
 
+// ---------------------------------------------------------------------------
+// 1:1 P2P calls (M5) — RING/ACCEPT handshake, PeerCallSession, sounds, exclusivity
+// ---------------------------------------------------------------------------
+
+const CALL_VOICE_FEED_ID = -1;
+const CALL_SHARE_FEED_ID = -2;
+const RING_TIMEOUT_MS = 60_000;
+const CALL_GAP_TIMEOUT_MS = 30_000;
+
+let callSession: PeerCallSession | null = null;
+let callMicStream: MediaStream | null = null;
+let callCameraStream: MediaStream | null = null;
+let callDisplayStream: MediaStream | null = null;
+let ringTimeoutTimer: number | null = null;
+let gapTimeoutTimer: number | null = null;
+let callTickerTimer: number | null = null;
+/** The mic state to restore when a self-deafen ends (oak's implied-mute survival). */
+let callMicStateBeforeDeafen = true;
+/** Signals that raced ahead of the session (OFFER while the callee's mic was still starting). */
+const pendingCallSignals: IncomingCallSignal[] = [];
+
+/** Wiring point for the call pane's imperative peer-video view. */
+export const callView = {
+  attachPeerVideo(_track: MediaStreamTrack): void {
+    // replaced by CallPane at mount
+  },
+  dropPeerVideo(): void {
+    // replaced by CallPane at mount
+  },
+};
+
+/** The peer's live video track — the pane re-binds to it on mount (the <video> element
+ *  may not exist yet when the track arrives: CAM_ON races the React render). */
+let callPeerVideoTrack: MediaStreamTrack | null = null;
+
+export function getCallPeerVideoTrack(): MediaStreamTrack | null {
+  return callPeerVideoTrack;
+}
+
+function stopStream(stream: MediaStream | null): void {
+  if (stream) {
+    for (const track of stream.getTracks()) {
+      track.stop();
+    }
+  }
+}
+
+async function captureCallMic(): Promise<MediaStream> {
+  return navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  });
+}
+
+async function fetchIceServers(): Promise<RTCIceServer[]> {
+  try {
+    const config: CallConfig = await activeSession!.rest.getCallConfig();
+    return config.iceServers;
+  } catch (error) {
+    log.warn("call", `call config unavailable (${errorMessage(error)}) — host candidates only`);
+    return [];
+  }
+}
+
+function callCallbacks(peer: string): PeerCallOptions["callbacks"] {
+  return {
+    onRemoteTrack: (kind: PeerTrackKind, track: MediaStreamTrack) => {
+      if (kind === "voice") {
+        roomAudio.attachVoiceTrack(CALL_VOICE_FEED_ID, peer, track, persistedGain("voice", peer));
+      } else if (kind === "share") {
+        roomAudio.attachShareTrack(CALL_SHARE_FEED_ID, peer, track, persistedGain("share", peer));
+      } else {
+        callPeerVideoTrack = track;
+        callView.attachPeerVideo(track);
+      }
+    },
+    onRemoteTrackEnded: (kind: PeerTrackKind) => {
+      if (kind === "voice") {
+        roomAudio.detachFeed(CALL_VOICE_FEED_ID);
+      } else if (kind === "share") {
+        roomAudio.detachFeed(CALL_SHARE_FEED_ID);
+      } else {
+        callPeerVideoTrack = null;
+        callView.dropPeerVideo();
+      }
+    },
+    onPeerMic: (enabled) => appStore.patch({ peerMicOn: enabled }),
+    onPeerDeafened: (enabled) => appStore.patch({ peerDeafenedOn: enabled }),
+    onPeerCamera: (enabled) => appStore.patch({ peerCameraOn: enabled }),
+    onPeerScreen: (enabled) => appStore.patch({ peerScreenOn: enabled }),
+    onConnectionHealth: (healthy) => appStore.patch({ callHealthy: healthy }),
+    onNegotiated: () => {
+      clearGapTimeout();
+      appStore.patch({ callState: "in-call", callHealthy: true });
+      startCallTicker();
+      log.info("call", `media up with ${peer}`);
+    },
+    onError: (message) => log.error("call", message),
+  };
+}
+
+function handleCallSignal(signal: IncomingCallSignal): void {
+  const state = appStore.getSnapshot();
+  switch (signal.type) {
+    case "RING": {
+      if (state.callState !== "idle") {
+        // Busy — the polite auto-reject (oak parity: a duplicate RING never reaches the card).
+        activeSession?.sendCallSignal({ type: "REJECT", to: signal.from, sdp: null, candidate: null });
+        return;
+      }
+      appStore.patch({ callState: "ringing-in", callPeer: signal.from, callHealthy: true, callSeconds: 0 });
+      notifications.playChime();
+      armRingTimeout();
+      log.info("call", `incoming RING from ${signal.from}`);
+      return;
+    }
+    case "ACCEPT": {
+      if (state.callState !== "ringing-out" || state.callPeer !== signal.from) {
+        return;
+      }
+      notifications.stopRingback();
+      clearRingTimeout();
+      void establishCallerSession(signal.from);
+      return;
+    }
+    case "REJECT": {
+      if (state.callState !== "ringing-out" || state.callPeer !== signal.from) {
+        return;
+      }
+      teardownCall();
+      notifications.showToast({ title: "Call", channelName: signal.from, body: "Declined your call." });
+      return;
+    }
+    case "HANGUP": {
+      if (state.callState === "idle") {
+        return;
+      }
+      teardownCall();
+      notifications.showToast({ title: "Call", channelName: signal.from, body: "The call ended." });
+      return;
+    }
+    default: {
+      if (callSession !== null) {
+        void callSession.handleSignal(signal);
+      } else {
+        pendingCallSignals.push(signal);
+      }
+    }
+  }
+}
+
+function drainPendingCallSignals(): void {
+  const queued = [...pendingCallSignals];
+  pendingCallSignals.length = 0;
+  for (const signal of queued) {
+    void callSession?.handleSignal(signal);
+  }
+}
+
+function armRingTimeout(): void {
+  clearRingTimeout();
+  ringTimeoutTimer = window.setTimeout(() => {
+    const state = appStore.getSnapshot();
+    if (state.callState === "ringing-out") {
+      activeSession?.sendCallSignal({ type: "HANGUP", to: state.callPeer ?? "", sdp: null, candidate: null });
+      teardownCall();
+      notifications.showToast({ title: "Call", channelName: state.callPeer ?? "", body: "No answer." });
+    } else if (state.callState === "ringing-in") {
+      teardownCall(); // missed call — the caller's own timeout sends HANGUP
+    }
+  }, RING_TIMEOUT_MS);
+}
+
+function clearRingTimeout(): void {
+  if (ringTimeoutTimer !== null) {
+    window.clearTimeout(ringTimeoutTimer);
+    ringTimeoutTimer = null;
+  }
+}
+
+/** accept→media window: if the peer vanished after ACCEPT, do not hang in "connecting". */
+function armGapTimeout(): void {
+  clearGapTimeout();
+  gapTimeoutTimer = window.setTimeout(() => {
+    if (appStore.getSnapshot().callState === "connecting") {
+      teardownCall();
+      notifications.showToast({ title: "Call", channelName: appStore.getSnapshot().callPeer ?? "", body: "Could not connect." });
+    }
+  }, CALL_GAP_TIMEOUT_MS);
+}
+
+function clearGapTimeout(): void {
+  if (gapTimeoutTimer !== null) {
+    window.clearTimeout(gapTimeoutTimer);
+    gapTimeoutTimer = null;
+  }
+}
+
+function startCallTicker(): void {
+  stopCallTicker();
+  callTickerTimer = window.setInterval(() => {
+    const state = appStore.getSnapshot();
+    if (state.callState === "in-call" && state.callHealthy) {
+      appStore.patch({ callSeconds: state.callSeconds + 1 }); // the timer pauses while reconnecting
+    }
+  }, 1_000);
+}
+
+function stopCallTicker(): void {
+  if (callTickerTimer !== null) {
+    window.clearInterval(callTickerTimer);
+    callTickerTimer = null;
+  }
+}
+
+/** The "Call" action (roster context menu). Asks about the room conflict first. */
+export function callUser(username: string): void {
+  const state = appStore.getSnapshot();
+  if (!activeSession || state.callState !== "idle") {
+    return;
+  }
+  if (state.activeVoiceChannelId !== null) {
+    appStore.patch({ callConflict: { kind: "start-call", peer: username, voiceChannelId: state.activeVoiceChannelId } });
+    return;
+  }
+  void beginOutgoingCall(username);
+}
+
+async function beginOutgoingCall(username: string): Promise<void> {
+  try {
+    callMicStream = await captureCallMic();
+  } catch (error) {
+    notifications.showToast({ title: "Call", channelName: username, body: `Microphone unavailable — ${errorMessage(error)}` });
+    return;
+  }
+  appStore.patch({ callState: "ringing-out", callPeer: username, callHealthy: true, callSeconds: 0 });
+  activeSession?.sendCallSignal({ type: "RING", to: username, sdp: null, candidate: null });
+  notifications.startRingback();
+  armRingTimeout();
+  log.info("call", `RING → ${username}`);
+}
+
+async function establishCallerSession(peer: string): Promise<void> {
+  const session = activeSession;
+  const micStream = callMicStream;
+  if (!session || micStream === null) {
+    teardownCall();
+    return;
+  }
+  appStore.patch({ callState: "connecting" });
+  const iceServers = await fetchIceServers();
+  callSession = new PeerCallSession({
+    isCaller: true,
+    peerUsername: peer,
+    iceServers,
+    micStream,
+    sendSignal: (signal) => session.sendCallSignal(signal),
+    callbacks: callCallbacks(peer),
+  });
+  drainPendingCallSignals();
+  await callSession.startOffer();
+  armGapTimeout();
+}
+
+/** The incoming card's Accept — asks about the room conflict first. */
+export function acceptIncomingCall(): void {
+  const state = appStore.getSnapshot();
+  if (state.callState !== "ringing-in") {
+    return;
+  }
+  if (state.activeVoiceChannelId !== null) {
+    appStore.patch({ callConflict: { kind: "accept-call", peer: state.callPeer, voiceChannelId: state.activeVoiceChannelId } });
+    return;
+  }
+  void acceptCallNow();
+}
+
+async function acceptCallNow(): Promise<void> {
+  const peer = appStore.getSnapshot().callPeer;
+  const session = activeSession;
+  if (peer === null || !session) {
+    teardownCall();
+    return;
+  }
+  clearRingTimeout();
+  appStore.patch({ callState: "connecting" });
+  try {
+    callMicStream = await captureCallMic();
+  } catch (error) {
+    notifications.showToast({ title: "Call", channelName: peer, body: `Microphone unavailable — ${errorMessage(error)}` });
+    teardownCall();
+    return;
+  }
+  const iceServers = await fetchIceServers();
+  callSession = new PeerCallSession({
+    isCaller: false,
+    peerUsername: peer,
+    iceServers,
+    micStream: callMicStream,
+    sendSignal: (signal) => session.sendCallSignal(signal),
+    callbacks: callCallbacks(peer),
+  });
+  session.sendCallSignal({ type: "ACCEPT", to: peer, sdp: null, candidate: null });
+  drainPendingCallSignals();
+  armGapTimeout();
+}
+
+export function rejectIncomingCall(): void {
+  const state = appStore.getSnapshot();
+  if (state.callState !== "ringing-in" || state.callPeer === null) {
+    return;
+  }
+  activeSession?.sendCallSignal({ type: "REJECT", to: state.callPeer, sdp: null, candidate: null });
+  teardownCall();
+}
+
+export function hangUpCall(): void {
+  const state = appStore.getSnapshot();
+  if (state.callState === "idle") {
+    return;
+  }
+  if (state.callPeer !== null) {
+    activeSession?.sendCallSignal({ type: "HANGUP", to: state.callPeer, sdp: null, candidate: null });
+  }
+  teardownCall();
+}
+
+/** The exclusivity modal's answer. Confirmed transitions leave the room / end the call first. */
+export function resolveCallConflict(proceed: boolean): void {
+  const conflict = appStore.getSnapshot().callConflict;
+  appStore.patch({ callConflict: null });
+  if (!conflict || !proceed) {
+    return;
+  }
+  if (conflict.kind === "start-call" && conflict.peer !== null) {
+    const peer = conflict.peer;
+    void leaveVoice().then(() => void beginOutgoingCall(peer));
+    return;
+  }
+  if (conflict.kind === "accept-call") {
+    void leaveVoice().then(() => void acceptCallNow());
+    return;
+  }
+  if (conflict.kind === "join-voice" && conflict.voiceChannelId !== null) {
+    hangUpCall();
+    const channel = activeSession?.channelStore.get(conflict.voiceChannelId);
+    if (channel) {
+      void joinVoice(channel);
+    }
+  }
+}
+
+/** A voice-channel click while a call is live — ask before tearing the call down. */
+export function joinVoiceGuarded(channel: Channel): void {
+  if (appStore.getSnapshot().callState !== "idle") {
+    appStore.patch({ callConflict: { kind: "join-voice", peer: appStore.getSnapshot().callPeer, voiceChannelId: channel.id } });
+    return;
+  }
+  void joinVoice(channel);
+}
+
+function teardownCall(): void {
+  notifications.stopRingback();
+  clearRingTimeout();
+  clearGapTimeout();
+  stopCallTicker();
+  if (callSession !== null) {
+    callSession.close();
+    callSession = null;
+  }
+  stopStream(callMicStream);
+  stopStream(callCameraStream);
+  stopStream(callDisplayStream);
+  callMicStream = null;
+  callCameraStream = null;
+  callDisplayStream = null;
+  roomAudio.detachFeed(CALL_VOICE_FEED_ID);
+  roomAudio.detachFeed(CALL_SHARE_FEED_ID);
+  roomAudio.setDeafened(false); // call-local deafen dies with the call
+  callPeerVideoTrack = null;
+  callView.dropPeerVideo();
+  pendingCallSignals.length = 0;
+  appStore.patch({
+    callState: "idle",
+    callPeer: null,
+    callHealthy: true,
+    callSeconds: 0,
+    callCameraOn: false,
+    callSharing: false,
+    peerMicOn: true,
+    peerDeafenedOn: false,
+    peerCameraOn: false,
+    peerScreenOn: false,
+  });
+  callMicStateBeforeDeafen = true;
+}
+
+export function toggleCallMic(): void {
+  if (callSession !== null) {
+    callSession.setMicEnabled(!callSession.isMicEnabled());
+  }
+}
+
+export function isCallMicEnabled(): boolean {
+  return callSession?.isMicEnabled() ?? true;
+}
+
+/**
+ * Call-local deafen (oak semantics): silence OUR playout AND gate the mic — a
+ * deafened member must not keep broadcasting. The pre-deafen mic state returns on
+ * undeafen; MIC_OFF/ON + DEAFEN signals keep the peer's badges truthful.
+ */
+export function toggleCallDeafen(): void {
+  const session = callSession;
+  const nowDeafened = !roomAudio.isDeafened();
+  roomAudio.setDeafened(nowDeafened);
+  if (session === null) {
+    return;
+  }
+  if (nowDeafened) {
+    callMicStateBeforeDeafen = session.isMicEnabled();
+    if (callMicStateBeforeDeafen) {
+      session.setMicEnabled(false); // rides MIC_OFF to the peer
+    }
+  } else if (callMicStateBeforeDeafen) {
+    session.setMicEnabled(true);
+  }
+  session.setDeafened(nowDeafened);
+}
+
+export async function toggleCallCamera(): Promise<void> {
+  const session = callSession;
+  if (session === null) {
+    return;
+  }
+  if (session.isCameraActive()) {
+    await session.setCameraStream(null);
+    stopStream(callCameraStream);
+    callCameraStream = null;
+    appStore.patch({ callCameraOn: false });
+    return;
+  }
+  try {
+    const cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false,
+    });
+    await session.setCameraStream(cameraStream);
+    callCameraStream = cameraStream;
+    appStore.patch({ callCameraOn: true });
+  } catch (error) {
+    log.error("call", `camera failed: ${errorMessage(error)}`);
+  }
+}
+
+/** The LOCAL video track for the self tile — the camera OR the shared screen. */
+export function getCallLocalVideoTrack(): MediaStreamTrack | null {
+  return callCameraStream?.getVideoTracks()[0] ?? callDisplayStream?.getVideoTracks()[0] ?? null;
+}
+
+async function stopCallShareInternal(): Promise<void> {
+  await callSession?.stopShare();
+  stopStream(callDisplayStream);
+  callDisplayStream = null;
+  appStore.patch({ callSharing: false });
+}
+
+/** The share picker's target inside a call (screen/window swap the video slot, screens carry stereo audio). */
+export async function callShareTarget(target: ShareTarget): Promise<void> {
+  const session = callSession;
+  if (session === null) {
+    return;
+  }
+  try {
+    if (target.kind === "camera") {
+      if (session.isSharing()) {
+        await stopCallShareInternal();
+      }
+      stopStream(callCameraStream);
+      const cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: target.id }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      await session.setCameraStream(cameraStream);
+      callCameraStream = cameraStream;
+      appStore.patch({ callCameraOn: true });
+      return;
+    }
+    if (session.isSharing()) {
+      await stopCallShareInternal();
+    }
+    if (appStore.getSnapshot().callCameraOn) {
+      await toggleCallCamera();
+    }
+    await window.spaceCapture?.select(target.id, target.kind === "screen");
+    const display = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: target.kind === "screen" ? { channelCount: { ideal: 2 } } : false,
+    });
+    callDisplayStream = display;
+    display.getVideoTracks()[0]?.addEventListener("ended", () => {
+      void stopCallShareInternal();
+    });
+    await session.startShare(display);
+    appStore.patch({ callSharing: true });
+  } catch (error) {
+    log.error("call", `call share failed: ${errorMessage(error)}`);
+    stopStream(callDisplayStream);
+    callDisplayStream = null;
+  }
+}
+
+export function stopCallShare(): Promise<void> {
+  return stopCallShareInternal();
+}
+
 export function toggleTestTone(channel: "left" | "right"): void {
   if (roomAudio.getTestToneChannel() === channel) {
     roomAudio.stopStereoTestTone();
@@ -1144,6 +1687,7 @@ export function buildDiagModel(): DiagModel {
       { key: "stomp", value: state.stompState },
       { key: "audio ctx", value: roomAudio.getState() },
       { key: "voice", value: state.voiceState + (state.activeVoiceChannelId !== null ? ` #${state.activeVoiceChannelId}` : "") },
+      { key: "call", value: state.callState !== "idle" ? `${state.callState} → ${state.callPeer ?? "?"} (${state.callHealthy ? "healthy" : "reconnecting"})` : "—" },
       { key: "sub conn", value: sfuSession?.getSubscriberConnectionState() ?? "—" },
       { key: "subs", value: String(sfuSession?.getSubscribedCount() ?? 0) },
       { key: "inbound", value: inboundAudioLine },

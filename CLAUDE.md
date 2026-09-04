@@ -27,7 +27,80 @@ Electron + TypeScript **спайк-клиент** OAK-сервера. Цель �
 Физическая грабля смоука: наушники на столе + микрофон гарнитуры вплотную к «уху» =
 акустическая петля, моргает MONO (оба канала громкие). Убрать микрофон от динамика.
 
-## Текущее состояние: M4 (голос-парити)
+## Текущее состояние: M5 (P2P-звонки)
+
+M4 закрыт и закоммичен (`eb59ddc`). M5 (код готов, ждёт смоука): **сигналинг** —
+`/app/call.signal` → сервер релеит адресно в `/user/queue/call.signal`, штампует
+`from`; `CallSignal{type, to, sdp?, candidate?}`, типы RING/ACCEPT/REJECT/HANGUP/
+OFFER/ANSWER/ICE (+UI-статусы CAM/MIC/SCREEN_ON|OFF — сервер релеит как есть);
+`IceCandidate{sdp, sdpMid, sdpMLineIndex}` (sdp = candidate-строка); ICE/TURN из
+`GET /api/call/config` (имена полей RTCIceServer-совместимы, кладутся в
+RTCPeerConnection напрямую). **Ядро `core/peer-call.ts`** — m-line КОНТРАКТ в
+initial offer, ренего НЕ существует: [0] голос (мик сразу), [1] видео (камера ИЛИ
+экран), [2] шар-аудио; камера/шар/стоп = replaceTrack на пред-согласованных
+слотах (видео-слот один — камера и шара взаимно исключаются); stereo=1 мунжится
+в ПОСЛЕДНЮЮ m=audio оффера (`mungeStereoIntoOffer(sdp, "")` — fallback как раз
+наша раскладка), replaceTrack SDP не трогает — стерео живёт весь звонок;
+maxBitrate 256k на шар-сендере; trickle ICE с БУФЕРОМ кандидатов до
+setRemoteDescription (ANSWER может опоздать); маршрутизация входящих треков ПО
+СЛОТУ m-line (indexOf transceiver). **ICE-restart только caller** (роль фиксирует
+RING/ACCEPT-рукопожатие, glare невозможен): failed → лестница 1/2/4/8/16 с без
+лимита (`logic/ice-restart.ts`, planIceRestart — транзиентный disconnected
+игнорируется); callee «answering in place» — тот же OFFER-путь. **runtime**:
+машина состояний idle/ringing-out/ringing-in/connecting/in-call; busy =
+авто-REJECT; ring-timeout 60 с (No answer/missed); gap-timeout 30 с (accept→media,
+если пир исчез после ACCEPT); сигналы, обогнавшие сессию (OFFER пока микрофон
+callee поднимается) буферизуются и дренятся; **эксклюзивы комната↔звонок** —
+модал в ОБЕ стороны (start/accept при комнате → «отключит от комнаты», клик по
+каналу при звонке → «завершит звонок»); RoomAudio-цепи по фидам -1/-2 (голос/шар
+пира) — громкости шэрятся с записью подключения (persistedGain); call-деafen =
+локальный roomAudio.setDeafened (серверного voice-control в P2P нет). **Звуки**:
+ringback у звонящего (440+480 Гц, 1.8 с бёрст + 1.2 с пауза, луп, тихо);
+chime у принимающего (ОДНОКРАТНЫЙ, три парциали C6, экспо-декей 2.6 с) —
+`logic/call-sounds.ts`. **UI**: ПКМ по участнику ростера → Call (online, не self);
+`CallOverlayCard` (fixed, ringing — чат остаётся доступен); `CallPane`
+(connecting/in-call занимает контент-область): 2 тайла (self первый), марки
+мьюта своего/пира, слайдеры voice/share пира, Mute/Deafen/Camera/Share/Hangup,
+таймер MM:SS (пауза при reconnecting); diag-строка `call`. Грабля (предотвращена):
+трек видео пира может прийти ДО монтирования <video> — трек держится в runtime
+(getCallPeerVideoTrack), CallPane ре-биндит на флипе peerTileMedia.
+
+**Смоук-фиксы M5 (3 живых бага):** (1) **Чёрный экран видео у получателя** —
+`replaceTrack` на слоте, согласованном БЕЗ трека (нет msid в SDP), НЕ анонсирует
+источник удалённой стороне: ontrack у получателя не стреляет НИКОГДА. Лекарь —
+ПАССИВНЫЙ БИНД `receiver.track` пустых слотов (видео/шар-аудио) после КАЖДОГО
+setRemoteDescription (дедуп по треку): трек там существует с момента согласования
+m-line (muted), Chromium оживит его с первым RTP — ренего и glare не нужны
+(`bindPassiveReceiverSlots`; ontrack остался авторитетом ТОЛЬКО для voice-слота).
+Локальное превью при шаре — тот же класс: эффект слушал только callCameraOn,
+теперь [callCameraOn, callSharing] + getCallLocalVideoTrack (камера-или-экран).
+(2) **Deafen** делал только локальную тишину — теперь глушит и мик (implied mute,
+MIC_OFF уезжает пиру → 🔇), undeafen возвращает прежнее состояние мьюка, новый
+UI-сигнал DEAFEN_ON/OFF даёт пиру марку 🎧 (серверного voice-control в P2P нет).
+(3) **Рингбэк при быстром ответе доигрывал бёрст** — stopRingback убирал только
+интервал; теперь мастер-гейн текущего бёрста режется 30-мс рампой
+(cancelScheduledValues + linearRampToValueAtTime). (4) **Видео у получателя —
+второй раунд (первый пассивный бинд не долечил)**: в логах обеих сторон «remote
+track on unexpected m-line slot 3/4» — при SRD Chromium НЕ сматчил наши заранее
+созданные ПУСТЫЕ видео/шар-транссиверы с m-line оффера и создал свои: наших 3 +
+его новые = 6, индексный слот-контракт сломан, а конструкторские sender'ы callee
+шли по мёртвым m-line (RTP в никуда). Лекарь — **адресация по a=mid из
+согласованного SDP, не по индексу массива** (`sdp.sectionMids`; slotMids
+принимаются из local offer / входящего offer / answer): senderForSlot /
+bindPassiveReceiverSlots / роутинг ontrack резолвят транссиверы по mid —
+устойчиво к любому матчингу Chromium; телеметрия «mids from …: transceivers: …»
+в лог. (5) **«У одного клиент
+собеседник офлайн»** — ГОНКА СНАПШОТА И ПОДПИСКИ: presence-снимок брался ДО
+stomp.connect/SUBSCRIBE — ONLINE-дельта пира, подключившегося в этом окне,
+уходила в топик без подписчика → офлайн навсегда (асимметрично: у второго всё
+норм). Лекарь (калька oak pendingDeltas): presence и voice-members снимаются
+СТРОГО ПОСЛЕ subscribeGlobalTopics; дельты на время полёта снимка буферизуются в
+RosterStore (Map username→статус, последняя побеждает) и накатываются ПОВЕРХ
+снимка; проваленный снимок закрывает буфер через abortPresenceSnapshot (накат на
+текущее состояние). Остальные срезы (channels/messages/read-states) гонки не
+имеют: у них либо рефетч-пинги, либо ack на открытии.
+
+## M4 (закрыт, eb59ddc): голос-парити
 
 M3 закрыт и закоммичен (`7321b95`). M4 (код готов, ждёт смоука): **self mute/deafen +
 модерация** — `/app/voice.mute|deafen|kick` с `VoiceControlCommand{channelId,

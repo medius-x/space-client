@@ -1,5 +1,13 @@
 import { decideNotification, messageMentionsUser } from "../domain/logic/notification-decider";
 import { knockSchedule } from "../domain/logic/knock-sound";
+import {
+  CHIME_DURATION_SECONDS,
+  CHIME_PARTIALS_HZ,
+  CHIME_PARTIAL_GAINS,
+  RINGBACK_BURST_SECONDS,
+  RINGBACK_TONE_HZ,
+  ringbackCycleSeconds,
+} from "../domain/logic/call-sounds";
 import type { Message } from "../types";
 
 /**
@@ -24,6 +32,9 @@ export interface ToastPayload {
 class NotificationHub {
   private stackElement: HTMLDivElement | null = null;
   private audioContext: AudioContext | null = null;
+  private ringbackTimer: number | null = null;
+  /** The CURRENT burst's master gain — stopRingback cuts it instead of letting it play out. */
+  private ringbackGain: GainNode | null = null;
 
   /** The full decision path for one live message. */
   handleMessage(message: Message, ownUsername: string, channelName: string, windowFocused: boolean, inOpenChannel: boolean): void {
@@ -117,6 +128,89 @@ class NotificationHub {
         oscillator.start(startAt);
         oscillator.stop(startAt + note.durationSeconds);
       }
+    } catch {
+      // audio must never take the app down
+    }
+  }
+
+  /** Caller's ringback: the dual-tone 440+480 Hz cadence, looped until stopped. */
+  startRingback(): void {
+    if (this.ringbackTimer !== null) {
+      return;
+    }
+    const playBurst = (): void => {
+      try {
+        this.audioContext ??= new AudioContext();
+        const context = this.audioContext;
+        if (context.state === "suspended") {
+          void context.resume();
+        }
+        const now = context.currentTime;
+        const master = context.createGain();
+        master.gain.value = 0.08; // phone-line quiet — it loops for up to a minute
+        master.connect(context.destination);
+        for (const frequency of RINGBACK_TONE_HZ) {
+          const oscillator = context.createOscillator();
+          oscillator.frequency.value = frequency;
+          oscillator.connect(master);
+          oscillator.start(now);
+          oscillator.stop(now + RINGBACK_BURST_SECONDS);
+        }
+        this.ringbackGain = master;
+      } catch {
+        // audio must never take the app down
+      }
+    };
+    playBurst();
+    this.ringbackTimer = window.setInterval(playBurst, ringbackCycleSeconds() * 1000);
+  }
+
+  /** Stops the loop AND cuts the in-flight burst — a fast ACCEPT must silence the
+   *  ringback instantly, not after the 1.8 s burst finishes (live M5 smoke). */
+  stopRingback(): void {
+    if (this.ringbackTimer !== null) {
+      window.clearInterval(this.ringbackTimer);
+      this.ringbackTimer = null;
+    }
+    const gain = this.ringbackGain;
+    if (gain !== null) {
+      this.ringbackGain = null;
+      try {
+        const context = this.audioContext!;
+        gain.gain.cancelScheduledValues(context.currentTime);
+        gain.gain.setValueAtTime(gain.gain.value, context.currentTime);
+        gain.gain.linearRampToValueAtTime(0, context.currentTime + 0.03); // 30 ms cut
+      } catch {
+        // context may be gone — the oscillators stop on their own anyway
+      }
+    }
+  }
+
+  /** Callee's chime: ONE long fading bell per incoming call (not a repeating ring). */
+  playChime(): void {
+    try {
+      this.audioContext ??= new AudioContext();
+      const context = this.audioContext;
+      if (context.state === "suspended") {
+        void context.resume();
+      }
+      const now = context.currentTime;
+      const master = context.createGain();
+      master.gain.value = 0.12;
+      master.connect(context.destination);
+      CHIME_PARTIALS_HZ.forEach((frequency, index) => {
+        const oscillator = context.createOscillator();
+        oscillator.frequency.value = frequency;
+        const envelope = context.createGain();
+        const peak = CHIME_PARTIAL_GAINS[index] ?? 1;
+        envelope.gain.setValueAtTime(0, now);
+        envelope.gain.linearRampToValueAtTime(peak, now + 0.004);
+        envelope.gain.exponentialRampToValueAtTime(0.001 * peak, now + CHIME_DURATION_SECONDS);
+        oscillator.connect(envelope);
+        envelope.connect(master);
+        oscillator.start(now);
+        oscillator.stop(now + CHIME_DURATION_SECONDS);
+      });
     } catch {
       // audio must never take the app down
     }

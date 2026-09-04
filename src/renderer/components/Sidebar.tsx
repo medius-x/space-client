@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useStore } from "../hooks/useStore";
-import { appStore, joinVoice, setActiveChannel } from "../runtime";
+import { appStore, callUser, joinVoiceGuarded, setActiveChannel } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
-import type { Channel } from "../../types";
+import type { Channel, UserSummary } from "../../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { Modal } from "./Modal";
 import { Avatar } from "./Avatar";
@@ -11,13 +11,15 @@ import { VoiceMarks } from "./VoiceRoom";
 
 /**
  * Channel list + online roster, fed by the session's stores. Channel CRUD lives in
- * the context menu (right-click a channel) and the section "+" buttons.
+ * the context menu (right-click a channel) and the section "+" buttons; the roster
+ * rows carry the 1:1 Call action.
  */
 export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.Element {
   const channels = useStore(session.channelStore, (channels) => channels);
   const roster = useStore(session.rosterStore, (roster) => roster);
   const readStates = useStore(session.readStateStore, (states) => states);
   const voiceMarks = useStore(session.voiceControlStore, (snapshot) => snapshot.marks);
+  const [memberMenu, setMemberMenu] = useState<{ user: UserSummary; x: number; y: number } | null>(null);
   const canManageChannels = useStore(session.permissionStore, (state) => state.my?.permissions.includes("MANAGE_CHANNELS") ?? false);
   const activeChannelId = useStore(appStore, (state) => state.activeChannelId);
   const activeVoiceChannelId = useStore(appStore, (state) => state.activeVoiceChannelId);
@@ -40,9 +42,21 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
   };
   const onVoiceChannelClick = (channel: Channel) => {
     if (channel.id !== activeVoiceChannelId) {
-      void joinVoice(channel);
+      joinVoiceGuarded(channel); // asks about ending a live call first
     }
   };
+  const openMemberMenu = (user: UserSummary) => (event: React.MouseEvent) => {
+    event.preventDefault();
+    if (user.username === ownUsername) {
+      return;
+    }
+    setMemberMenu({ user, x: event.clientX, y: event.clientY });
+  };
+  const memberMenuItems: ContextMenuItem[] = memberMenu === null ? [] : [
+    ...(roster.presence.has(memberMenu.user.username)
+      ? [{ label: "Call", action: () => callUser(memberMenu.user.username) }]
+      : []),
+  ];
   const openMenu = (channel: Channel) => (event: React.MouseEvent) => {
     event.preventDefault();
     // oak parity: without MANAGE_CHANNELS the right-click does nothing at all.
@@ -112,7 +126,7 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
       ))}
       <div className="sidebar-section-title">Online — {onlineCount}</div>
       {roster.users.map((user) => (
-        <div key={user.id} className="member-row">
+        <div key={user.id} className="member-row" onContextMenu={openMemberMenu(user)}>
           <span className={"presence-dot" + (roster.presence.has(user.username) ? " online" : "")} />
           <Avatar session={session} username={user.username} size={20} />
           <span className="member-name">{user.username}</span>
@@ -126,6 +140,9 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
       {profileOpen ? <ProfileModal session={session} onClose={() => setProfileOpen(false)} /> : null}
 
       {menu !== null ? <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} /> : null}
+      {memberMenu !== null ? (
+        <ContextMenu x={memberMenu.x} y={memberMenu.y} items={memberMenuItems} onClose={() => setMemberMenu(null)} />
+      ) : null}
       {createType !== null ? <CreateChannelModal session={session} type={createType} onClose={() => setCreateType(null)} /> : null}
       {renameTarget !== null ? <RenameChannelModal session={session} channel={renameTarget} onClose={() => setRenameTarget(null)} /> : null}
       {deleteTarget !== null ? <DeleteChannelModal session={session} channel={deleteTarget} onClose={() => setDeleteTarget(null)} /> : null}

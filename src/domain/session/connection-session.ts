@@ -2,7 +2,10 @@ import { log } from "../../logging";
 import { RestClient } from "../../core/rest";
 import { StompClient } from "../../core/stomp";
 import type {
+  CallIceCandidate,
+  CallSignalType,
   Channel,
+  IncomingCallSignal,
   Message,
   PresenceEvent,
   ReactionEvent,
@@ -42,6 +45,8 @@ export interface SessionHooks {
   onOwnVoiceControlState(state: VoiceControlState): void;
   /** /user/queue/voice.control type=KICKED — the runtime tears the voice session down. */
   onVoiceKicked(byUsername: string): void;
+  /** A relayed 1:1 call signal (RING/ACCEPT/OFFER/ICE/…) — the runtime owns the call machine. */
+  onCallSignal(signal: IncomingCallSignal): void;
 }
 
 export interface ConnectionSessionOptions {
@@ -123,11 +128,14 @@ export class ConnectionSession {
   }
 
   async start(): Promise<void> {
-    const [channels, users, presence, voiceMembers, profile, myPermissions, readStates] = await Promise.all([
+    // PRESENCE and VOICE MEMBERSHIP are deliberately NOT in this batch: their
+    // /topic deltas fire on the server the moment they change, and a snapshot taken
+    // BEFORE our SUBSCRIBE frame lands would miss every change in the window — the
+    // other user then shows OFFLINE forever (live M5 smoke). Both are re-fetched
+    // AFTER the subscriptions below, with deltas buffered while the fetch is flying.
+    const [channels, users, profile, myPermissions, readStates] = await Promise.all([
       this.rest.getChannels(),
       this.rest.getUsers(),
-      this.rest.getPresence(),
-      this.rest.getVoiceMembers(),
       this.rest.getServerProfile().catch((error: unknown) => {
         log.warn("session", `server profile unavailable: ${error instanceof Error ? error.message : String(error)}`);
         return null;
@@ -144,8 +152,6 @@ export class ConnectionSession {
     ]);
     this.channelStore.applySnapshot(channels);
     this.rosterStore.setUsers(users);
-    this.rosterStore.setPresence(presence);
-    this.rosterStore.setVoiceMembers(voiceMembers);
     if (profile) {
       void this.directory.update(this.recordId, { cachedServerName: profile.name });
     }
@@ -162,6 +168,30 @@ export class ConnectionSession {
     await this.stomp.connect();
     this.subscribeGlobalTopics();
     this.syncChannelSubscriptions();
+
+    // Post-subscription snapshots: deltas arriving during the fetch ride the
+    // pendingDeltas buffer inside the stores, so nothing is lost either side.
+    this.rosterStore.beginPresenceSnapshot();
+    void this.rest.getPresence()
+      .then((presence) => {
+        if (!this.disposed) {
+          this.rosterStore.setPresence(presence);
+        }
+      })
+      .catch((error: unknown) => {
+        log.warn("session", `presence snapshot failed: ${error instanceof Error ? error.message : String(error)}`);
+        this.rosterStore.abortPresenceSnapshot(); // unbuffer the deltas onto current state
+      });
+    void this.rest.getVoiceMembers()
+      .then((voiceMembers) => {
+        if (!this.disposed) {
+          this.rosterStore.setVoiceMembers(voiceMembers);
+        }
+      })
+      .catch((error: unknown) => {
+        log.warn("session", `voice members snapshot failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+
     log.info("session", `connection up: ${this.username()} @ ${this.hostUrl()} (${channels.length} channels)`);
   }
 
@@ -357,6 +387,11 @@ export class ConnectionSession {
     } satisfies VoiceControlCommand);
   }
 
+  /** Send one call signal to a peer (the server stamps `from` and relays). */
+  sendCallSignal(signal: { type: CallSignalType; to: string; sdp: string | null; candidate: CallIceCandidate | null }): void {
+    this.stomp.send("/app/call.signal", signal);
+  }
+
   // ---------------------------------------------------------------------------
   // STOMP topic wiring
   // ---------------------------------------------------------------------------
@@ -391,6 +426,9 @@ export class ConnectionSession {
         log.warn("voice", `kicked from channel #${event.channelId} by ${event.byUsername}`);
         this.hooks.onVoiceKicked(event.byUsername);
       }
+    });
+    this.stomp.subscribe("/user/queue/call.signal", (raw) => {
+      this.hooks.onCallSignal(JSON.parse(raw) as IncomingCallSignal);
     });
     this.stomp.subscribe("/topic/server", (raw) => {
       const profile = JSON.parse(raw) as ServerProfile;
