@@ -1,4 +1,17 @@
-import type { AuthTokens, Channel, ChannelMyPermissions, ChannelType, Message, MyPermissions, RoomInfo, ServerProfile, UserSummary } from "../types";
+import type {
+  AuthTokens,
+  Channel,
+  ChannelMyPermissions,
+  ChannelReadState,
+  ChannelType,
+  ForwardMessageRequest,
+  Message,
+  MyPermissions,
+  ReactionSummary,
+  RoomInfo,
+  ServerProfile,
+  UserSummary,
+} from "../types";
 import type { TokenStorage } from "./auth";
 import { log } from "../logging";
 
@@ -125,6 +138,50 @@ export class RestClient {
     return this.request<Message>(`/api/channels/${channelId}/messages`, {
       method: "POST",
       body: JSON.stringify(request),
+    });
+  }
+
+  /** PATCH returns the edited message; the .edited topic echo dedups by id upstream. */
+  async editMessage(channelId: number, messageId: number, request: { content: string }): Promise<Message> {
+    return this.request<Message>(`/api/channels/${channelId}/messages/${messageId}`, {
+      method: "PATCH",
+      body: JSON.stringify(request),
+    });
+  }
+
+  async deleteMessage(channelId: number, messageId: number): Promise<void> {
+    await this.request<unknown>(`/api/channels/${channelId}/messages/${messageId}`, { method: "DELETE" });
+  }
+
+  /** Both reaction calls return the message's full reaction snapshot (200). */
+  async addReaction(channelId: number, messageId: number, slug: string): Promise<ReactionSummary[]> {
+    return this.request<ReactionSummary[]>(`/api/channels/${channelId}/messages/${messageId}/reactions/${slug}`, {
+      method: "PUT",
+    });
+  }
+
+  async removeReaction(channelId: number, messageId: number, slug: string): Promise<ReactionSummary[]> {
+    return this.request<ReactionSummary[]>(`/api/channels/${channelId}/messages/${messageId}/reactions/${slug}`, {
+      method: "DELETE",
+    });
+  }
+
+  async forwardMessage(targetChannelId: number, request: ForwardMessageRequest): Promise<Message> {
+    return this.request<Message>(`/api/channels/${targetChannelId}/messages/forward`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  }
+
+  async getReadStates(): Promise<ChannelReadState[]> {
+    return this.request<ChannelReadState[]>("/api/read-states", { method: "GET" });
+  }
+
+  /** null lastReadMessageId = "mark everything currently there as read" (empty body). */
+  async ackChannelRead(channelId: number, lastReadMessageId: number | null): Promise<void> {
+    await this.request<unknown>(`/api/channels/${channelId}/read`, {
+      method: "POST",
+      body: lastReadMessageId === null ? undefined : JSON.stringify({ lastReadMessageId }),
     });
   }
 

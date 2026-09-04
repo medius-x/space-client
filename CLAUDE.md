@@ -27,7 +27,33 @@ Electron + TypeScript **спайк-клиент** OAK-сервера. Цель �
 Физическая грабля смоука: наушники на столе + микрофон гарнитуры вплотную к «уху» =
 акустическая петля, моргает MONO (оба канала громкие). Убрать микрофон от динамика.
 
-## Текущее состояние: M1 (ConnectionSession + каналы + чат-ядро)
+## Текущее состояние: M2 (глубина чата + VirtualList)
+
+M1 закрыт и закоммичен (`M1: connections, channels and chat core`). M2 (код готов,
+ждёт смоука): мутации сообщений edit (PATCH {content}, инлайн-редактор с oak-клавишами)
+/ delete (свой или MANAGE_MESSAGES, confirm-модал); replies (replyToId, рекурсивные
+цитаты depth-5 с live-патчингом `logic/reply-tree.ts` — удаление/правка оригинала
+патчит цитаты локально, сервер ничего не пушит); forwards (модал с выбором
+сервер+канал; same-instance — сервер копирует сам; cross-instance — снапшот-режим
+через временный RestClient по записи, текст-only — АТТАЧИ до M3); reactions (10
+слагов-каталог в types.ts: hundred…cross, НИКАКИХ point; чипы с toggle-mine по
+selfUserId, попап-пикер из контекст-меню); mentions-рендер (сегментация по
+server-офсетам); unread/read-states (сеяние из GET /api/read-states, локальные
+bump'ы, ack на open/focus, бейджи в сайдбаре серый/красный, divider NEW с
+auto-dismiss); уведомления (in-app тосты стек ≤3, OS Notification из renderer —
+без IPC, WebAudio-колокольчик E6+квинта только на mention; декайдер:
+none при open+focused); **свой VirtualList** (`domain/logic/virtual-window.ts`
+чистая математика + компонент: estimate→measure высоты, prepend-анкор по старому
+первому ключу с пере-утверждением 3 layout-прохода, jump с бэкфиллом кап 1000 и
+re-assert 4×30мс); пагинация скроллом вверх (HISTORY_PAGE=50, конец по СЫРОЙ
+странице); мультиселект (Select → клики тогглят, групповой Forward/Delete);
+perf-гейт: кнопка «seed 10k» в diag. Гейт 104/104.
+
+Отложено (осознанно): контекст-меню «Copy text» есть, markdown-lite нет (oak
+backlog), day-dividers нет, автодополнение @упоминаний нет (M7-полиш), live-трекинг
+ролей для гейтов — M7, кросс-инстанс форвард аттачей — M3 (нужен presigned-аплоад).
+
+## M1 (закрыт): ConnectionSession + каналы + чат-ядро
 
 Полная перепись oak-клиента (план: goofy-leaping-sutton.md). M0 готов: electron-vite +
 React 19, стор-паттерн Emitter+useSyncExternalStore, runtime-синглтон вне React-дерева
@@ -52,6 +78,9 @@ localStorage в запись (коалесированный флэш 800 мс).
 - `GET /api/channels/{id}/messages?limit=&beforeId=` — старые первыми; limit дефолт 50,
   кап 200. MessageResponse: автор ПЛОСКИЙ (authorId/authorUsername), attachments/
   mentions/reactions НИКОГДА null (пустые массивы), createdAt — ISO-строка.
+  **`content` у attachment-only сообщений = null, НЕ ""** (живой краш M2-смоука:
+  пустой экран при скролле вверх, segmentMessageContent упал на .length null) —
+  тип Message.content честно `string | null`, все рендеры коалесят `?? ""`.
 - `POST /api/channels/{id}/messages` → 201 + созданное сообщение; STOMP-echo того же id
   приходит ВСЕМ, включая отправителя → дедуп по id (MessageStore.applyLive).
 - Каналы: `POST /api/channels {name, type|null→TEXT}`; rename = **PATCH

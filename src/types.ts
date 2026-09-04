@@ -83,8 +83,8 @@ export interface Message {
   channelId: number;
   authorId: number;
   authorUsername: string;
-  /** May be empty for attachment-only messages. */
-  content: string;
+  /** NULL for attachment-only messages (the live server sends null, not ""). */
+  content: string | null;
   /** ISO-8601 UTC string. */
   createdAt: string;
   attachments: Attachment[];
@@ -125,6 +125,60 @@ export const SEND_MESSAGES_PERMISSION = "SEND_MESSAGES";
 export interface ChannelMyPermissions {
   sendMessages: boolean;
   attachFiles: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// M2: reactions, read states, forward
+// ---------------------------------------------------------------------------
+
+/** Pushed on /topic/channel.{id}.reactions — the FULL deterministic snapshot. */
+export interface ReactionEvent {
+  messageId: number;
+  reactions: ReactionSummary[];
+}
+
+/** GET /api/read-states — the server pre-computes both counters. */
+export interface ChannelReadState {
+  channelId: number;
+  unreadCount: number;
+  mentionCount: number;
+  lastReadMessageId: number | null;
+  lastMessageId: number | null;
+}
+
+/** The server's emoji whitelist (slugs on the wire, glyphs are client-side). */
+export const REACTION_CATALOG: readonly { slug: string; glyph: string }[] = [
+  { slug: "hundred", glyph: "💯" },
+  { slug: "thumbsup", glyph: "👍" },
+  { slug: "thumbsdown", glyph: "👎" },
+  { slug: "heart", glyph: "❤" },
+  { slug: "eyes", glyph: "👀" },
+  { slug: "cry", glyph: "😢" },
+  { slug: "smile", glyph: "😄" },
+  { slug: "facepalm", glyph: "🤦" },
+  { slug: "check", glyph: "✅" },
+  { slug: "cross", glyph: "❌" },
+];
+
+export const REACTION_GLYPH_BY_SLUG: Readonly<Record<string, string>> = Object.fromEntries(
+  REACTION_CATALOG.map((entry) => [entry.slug, entry.glyph]),
+);
+
+/**
+ * POST /api/channels/{target}/messages/forward. Intra-instance: only sourceMessageId
+ * set (the server copies everything, trusted=true). Cross-instance snapshot:
+ * sourceMessageId null + the copied payload + origin fields (trusted=false).
+ */
+export interface ForwardMessageRequest {
+  sourceMessageId: number | null;
+  content: string | null;
+  attachments?: { key: string; fileName: string; thumbnailKey?: string | null; durationMillis?: number | null }[] | null;
+  originServer?: string | null;
+  originChannel?: string | null;
+  originAuthorId?: number | null;
+  originAuthorName?: string | null;
+  originCreatedAt?: string | null;
+  originReply?: ReplyInfo | null;
 }
 
 /** GET /api/channels/{id}/room — the server creates the room; roomId == channelId. */

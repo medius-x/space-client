@@ -13,6 +13,7 @@ import { Modal } from "./Modal";
 export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.Element {
   const channels = useStore(session.channelStore, (channels) => channels);
   const roster = useStore(session.rosterStore, (roster) => roster);
+  const readStates = useStore(session.readStateStore, (states) => states);
   const canManageChannels = useStore(session.permissionStore, (state) => state.my?.permissions.includes("MANAGE_CHANNELS") ?? false);
   const activeChannelId = useStore(appStore, (state) => state.activeChannelId);
   const activeVoiceChannelId = useStore(appStore, (state) => state.activeVoiceChannelId);
@@ -57,19 +58,27 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
           <button className="section-add" title="Create text channel" onClick={() => setCreateType("TEXT")}>+</button>
         ) : null}
       </div>
-      {textChannels.map((channel) => (
-        <div
-          key={channel.id}
-          className={"channel-row"
-            + (channel.id === activeChannelId ? " active" : "")
-            + (channel.locked ? " locked" : "")}
-          title={channel.locked ? "Locked for you" : undefined}
-          onClick={() => onTextChannelClick(channel)}
-          onContextMenu={openMenu(channel)}
-        >
-          <span className="channel-hash">#</span> {channel.name}
-        </div>
-      ))}
+      {textChannels.map((channel) => {
+        const unread = readStates.get(channel.id);
+        return (
+          <div
+            key={channel.id}
+            className={"channel-row"
+              + (channel.id === activeChannelId ? " active" : "")
+              + (channel.locked ? " locked" : "")}
+            title={channel.locked ? "Locked for you" : undefined}
+            onClick={() => onTextChannelClick(channel)}
+            onContextMenu={openMenu(channel)}
+          >
+            <span className="channel-name"><span className="channel-hash">#</span> {channel.name}</span>
+            {unread !== undefined && unread.unreadCount > 0 ? (
+              <span className={"channel-badge" + (unread.mentionCount > 0 ? " mention" : "")}>
+                {unread.unreadCount > 99 ? "99+" : unread.unreadCount}
+              </span>
+            ) : null}
+          </div>
+        );
+      })}
       <div className="sidebar-section-title">
         <span>Voice channels</span>
         {canManageChannels ? (

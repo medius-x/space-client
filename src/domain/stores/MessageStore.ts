@@ -1,5 +1,6 @@
 import { Emitter } from "../lib/store";
-import type { Message } from "../../types";
+import { patchReplyTreesForDeleted, patchReplyTreesForEdited } from "../logic/reply-tree";
+import type { Message, ReactionSummary } from "../../types";
 
 /**
  * Per-connection message lists, keyed by channel id. The snapshot IS the store
@@ -86,6 +87,48 @@ export class MessageStore extends Emitter {
     this.lists.set(channelId, [...fresh, ...current]);
     this.emit();
     return fresh.length;
+  }
+
+  /**
+   * The .edited push: replace the row by id AND refresh every quote tree that
+   * references it. Idempotent against the REST caller's own optimistic replace.
+   */
+  applyEdited(edited: Message): boolean {
+    const current = this.lists.get(edited.channelId);
+    if (current === undefined || !current.some((message) => message.id === edited.id)) {
+      return false;
+    }
+    const replaced = current.map((message) => (message.id === edited.id ? edited : message));
+    this.lists.set(edited.channelId, patchReplyTreesForEdited(replaced, edited));
+    this.emit();
+    return true;
+  }
+
+  /** The .deleted push (bare id): remove the row, mark its quote levels deleted. */
+  applyDeleted(channelId: number, messageId: number): boolean {
+    const current = this.lists.get(channelId);
+    if (current === undefined || !current.some((message) => message.id === messageId)) {
+      return false;
+    }
+    const remaining = current.filter((message) => message.id !== messageId);
+    this.lists.set(channelId, patchReplyTreesForDeleted(remaining, messageId));
+    this.emit();
+    return true;
+  }
+
+  /** The .reactions push — the full snapshot replaces the chip row wholesale. */
+  applyReactions(channelId: number, messageId: number, reactions: ReactionSummary[]): boolean {
+    const current = this.lists.get(channelId);
+    if (current === undefined) {
+      return false;
+    }
+    const target = current.find((message) => message.id === messageId);
+    if (target === undefined || target.reactions === reactions) {
+      return false;
+    }
+    this.lists.set(channelId, current.map((message) => (message.id === messageId ? { ...message, reactions } : message)));
+    this.emit();
+    return true;
   }
 
   /** Channel deleted — forget its list entirely. */

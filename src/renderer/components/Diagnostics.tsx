@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { buildDiagModel, runDisplayMediaSelfTest, type DiagModel } from "../runtime";
+import { buildDiagModel, runDisplayMediaSelfTest, seedSyntheticMessages, type DiagModel } from "../runtime";
 import { log } from "../../logging";
 
 /** The evidence surface: connection key/values, stereo oracle, log tail. 4 Hz refresh. */
@@ -21,6 +21,7 @@ export function Diagnostics(): React.JSX.Element {
     <div className="diagnostics">
       <div className="diag-title">diagnostics</div>
       <button className="ghost" onClick={() => void runDisplayMediaSelfTest()}>getDisplayMedia self-test</button>
+      <button className="ghost" onClick={() => seedSyntheticMessages(10_000)}>seed 10k messages (perf gate)</button>
       {model.lines.map((line) => (
         <div key={line.key} className="diag-kv">
           <span className="key">{line.key}</span>

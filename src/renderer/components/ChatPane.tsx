@@ -1,16 +1,61 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../hooks/useStore";
-import { appStore } from "../runtime";
-import { log } from "../../logging";
+import { ackActiveChannel, appStore, forwardCrossInstance } from "../runtime";
+import { connectionDirectory } from "../runtime";
+import { RecordTokenStorage } from "../../domain/session/connection-record";
 import type { ConnectionSession } from "../../domain/session/connection-session";
-import type { Message } from "../../types";
-import { computeGroupStarts, formatTimeOfDay, toEpochMs } from "../../domain/logic/message-grouping";
+import { HISTORY_PAGE } from "../../domain/session/connection-session";
+import { RestClient } from "../../core/rest";
+import { log } from "../../logging";
+import { computeGroupStarts, formatTimeOfDay, toEpochMs, type GroupableMessage } from "../../domain/logic/message-grouping";
+import { segmentMessageContent } from "../../domain/logic/mention-segmenter";
+import type { Channel, ForwardInfo, Message, ReplyInfo } from "../../types";
+import { REACTION_CATALOG, REACTION_GLYPH_BY_SLUG } from "../../types";
+import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
+import { Modal } from "./Modal";
+import { VirtualList, type VirtualListHandle } from "./VirtualList";
+
+/** Jump back-fill cap (oak's MAX_JUMP_BACKFILL_MESSAGES). */
+const MAX_JUMP_BACKFILL = 1000;
+const DIVIDER_TTL_MS = 1600;
+const HIGHLIGHT_TTL_MS = 1500;
+const QUOTE_DEPTH_MAX = 5;
 
 /**
- * The chat pane: channel header, grouped message list, composer. History loads once
- * per channel (the effect keys on activeChannelId); live messages arrive through the
- * store's /topic/channel.{id} subscription and dedup against the REST echo by id.
+ * Content-aware height estimate — the flatter the estimate, the more totalHeight
+ * "breathes" when measurement replaces it, and a breathing scrollHeight makes the
+ * scrollbar thumb drift off the cursor mid-drag (the mapping denominator moves).
  */
+function estimateRowHeight(message: Message): number {
+  const CHARS_PER_LINE = 72;
+  const lines = message.content === null ? 0 : Math.max(1, Math.ceil(message.content.length / CHARS_PER_LINE));
+  let height = 30 + lines * 21;
+  if (message.reply !== null) {
+    height += 34;
+  }
+  if (message.forward !== null) {
+    height += 30;
+  }
+  if (message.reactions.length > 0) {
+    height += 26;
+  }
+  if (message.attachments.length > 0) {
+    height += 22;
+  }
+  return height;
+}
+
+interface ChatActions {
+  replyTo: Message | null;
+  setReplyTo(message: Message | null): void;
+  beginEdit(message: Message): void;
+  beginForward(messages: readonly Message[]): void;
+  jumpTo(messageId: number): void;
+  selectionMode: boolean;
+  selection: ReadonlySet<number>;
+  toggleSelected(messageId: number): void;
+}
+
 export function ChatPane({ session }: { session: ConnectionSession }): React.JSX.Element {
   const channels = useStore(session.channelStore, (channels) => channels);
   const activeChannelId = useStore(appStore, (state) => state.activeChannelId);
@@ -19,24 +64,47 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
     activeChannelId === null ? null : state.channels.get(activeChannelId) ?? null,
   );
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const [editing, setEditing] = useState<Message | null>(null);
+  const [menu, setMenu] = useState<{ message: Message; x: number; y: number } | null>(null);
+  const [picker, setPicker] = useState<{ message: Message; x: number; y: number } | null>(null);
+  const [forwardQueue, setForwardQueue] = useState<readonly Message[] | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Message | null>(null);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selection, setSelection] = useState<ReadonlySet<number>>(new Set());
 
   useEffect(() => {
     if (activeChannelId === null) {
       return;
     }
     setHistoryError(null);
+    setReplyTo(null);
+    setEditing(null);
+    setSelectionMode(false);
+    setSelection(new Set());
     session.loadHistory(activeChannelId).catch((error: unknown) => {
       setHistoryError(error instanceof Error ? error.message : String(error));
     });
-    // Override-aware composer gate — cached per channel after the first fetch.
     session.ensureChannelPermissions(activeChannelId).catch((error: unknown) => {
       log.warn("chat", `permission check failed: ${error instanceof Error ? error.message : String(error)}`);
     });
   }, [activeChannelId, session]);
 
+  // Focus-regain acks the open channel (oak's ack-on-focus).
+  useEffect(() => {
+    const onWindowFocus = () => ackActiveChannel();
+    window.addEventListener("focus", onWindowFocus);
+    return () => window.removeEventListener("focus", onWindowFocus);
+  }, []);
+
   const channel = activeChannelId !== null
     ? channels.find((entry) => entry.id === activeChannelId) ?? null
     : null;
+
+  const exitSelection = () => {
+    setSelectionMode(false);
+    setSelection(new Set());
+  };
 
   if (channel === null) {
     return (
@@ -46,94 +114,489 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
     );
   }
 
+  const actions: ChatActions = {
+    replyTo,
+    setReplyTo,
+    beginEdit: (message) => setEditing(message),
+    beginForward: (list) => setForwardQueue(list),
+    jumpTo: () => undefined, // MessageList replaces this with its scroll/backfill wiring
+    selectionMode,
+    selection,
+    toggleSelected: (messageId) => {
+      setSelection((previous) => {
+        const next = new Set(previous);
+        if (next.has(messageId)) {
+          next.delete(messageId);
+        } else {
+          next.add(messageId);
+        }
+        return next;
+      });
+    },
+  };
+
   return (
     <div className="chat-pane">
-      <div className="chat-header"><span className="channel-hash">#</span> {channel.name}</div>
+      <div className="chat-header">
+        <span className="channel-hash">#</span> {channel.name}
+        {selectionMode ? (
+          <div className="selection-bar">
+            <span>{selection.size} selected</span>
+            <button className="ghost" disabled={selection.size === 0}
+              onClick={() => setForwardQueue(messages.filter((message) => selection.has(message.id)))}>Forward</button>
+            <button className="danger" disabled={selection.size === 0}
+              onClick={() => {
+                for (const messageId of selection) {
+                  void session.deleteMessage(channel.id, messageId).catch((error: unknown) => {
+                    log.warn("chat", `bulk delete failed: ${error instanceof Error ? error.message : String(error)}`);
+                  });
+                }
+                exitSelection();
+              }}>Delete</button>
+            <button className="ghost" onClick={exitSelection}>Cancel</button>
+          </div>
+        ) : null}
+      </div>
       {historyError !== null ? <div className="chat-error">history: {historyError}</div> : null}
-      <MessageList messages={messages} />
+      <MessageList
+        session={session}
+        channel={channel}
+        messages={messages}
+        actions={actions}
+        editing={editing}
+        setEditing={setEditing}
+        onMenu={setMenu}
+        onPicker={setPicker}
+      />
+      {replyTo !== null ? (
+        <div className="reply-bar">
+          <span>Replying to <strong>{replyTo.authorUsername}</strong></span>
+          <span className="reply-preview">{(replyTo.content ?? "").slice(0, 80)}</span>
+          <button className="ghost" onClick={() => setReplyTo(null)}>×</button>
+        </div>
+      ) : null}
       {channelPermissions === null ? (
         <div className="composer-gate">…</div>
       ) : channelPermissions.sendMessages ? (
         <Composer
           placeholder={`Message #${channel.name}`}
-          onSend={(content) => session.sendMessage(channel.id, content)}
+          onSend={(content) => {
+            const promise = session.sendMessage(channel.id, content, replyTo?.id);
+            setReplyTo(null);
+            return promise;
+          }}
         />
       ) : (
         <div className="composer-gate">You do not have permission to send messages in this channel.</div>
       )}
+
+      {menu !== null ? (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={messageMenuItems(session, menu.message, actions, {
+            beginSelection: () => setSelectionMode(true),
+            openPicker: () => setPicker({ message: menu.message, x: menu.x, y: menu.y + 120 }),
+            confirmDelete: () => setDeleteTarget(menu.message),
+          })}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
+      {picker !== null ? (
+        <div className="emoji-picker" style={{ left: Math.min(picker.x, window.innerWidth - 340), top: Math.min(picker.y, window.innerHeight - 60) }} onClick={(event) => event.stopPropagation()}>
+          {REACTION_CATALOG.map((entry) => {
+            const summary = picker.message.reactions.find((candidate) => candidate.reaction === entry.slug);
+            const selfId = session.selfUserId();
+            const mine = selfId !== null && (summary?.userIds.includes(selfId) ?? false);
+            return (
+              <button key={entry.slug} className="emoji-choice"
+                onClick={() => {
+                  void session.toggleReaction(channel.id, picker.message.id, entry.slug, mine).catch(() => undefined);
+                  setPicker(null);
+                }}>
+                {entry.glyph}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+      {forwardQueue !== null ? (
+        <ForwardDialog session={session} source={forwardQueue} sourceChannel={channel} onClose={() => setForwardQueue(null)} />
+      ) : null}
+      {deleteTarget !== null ? (
+        <Modal title="Delete message?" onClose={() => setDeleteTarget(null)}>
+          <div className="modal-note">This cannot be undone.</div>
+          <div className="modal-actions">
+            <button className="ghost" onClick={() => setDeleteTarget(null)}>Cancel</button>
+            <button className="danger" onClick={() => {
+              void session.deleteMessage(channel.id, deleteTarget.id).catch(() => undefined);
+              setDeleteTarget(null);
+            }}>Delete</button>
+          </div>
+        </Modal>
+      ) : null}
     </div>
   );
 }
 
-function MessageList({ messages }: { messages: readonly Message[] }): React.JSX.Element {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const stickToBottomRef = useRef(true);
+function messageMenuItems(
+  session: ConnectionSession,
+  message: Message,
+  actions: ChatActions,
+  extra: {
+    beginSelection(): void;
+    openPicker(): void;
+    confirmDelete(): void;
+  },
+): ContextMenuItem[] {
+  const ownUsername = session.username();
+  const canManageMessages = session.permissionStore.can("MANAGE_MESSAGES");
+  const items: ContextMenuItem[] = [
+    { label: "Add reaction…", action: extra.openPicker },
+    { label: "Reply", action: () => actions.setReplyTo(message) },
+  ];
+  if ((message.content?.length ?? 0) > 0) {
+    items.push({ label: "Copy text", action: () => void navigator.clipboard.writeText(message.content ?? "").catch(() => undefined) });
+  }
+  if (message.authorUsername === ownUsername) {
+    items.push({ label: "Edit", action: () => actions.beginEdit(message) });
+  }
+  items.push({ label: "Forward", action: () => actions.beginForward([message]) });
+  if (!actions.selectionMode) {
+    items.push({ label: "Select messages", action: extra.beginSelection });
+  }
+  if (message.authorUsername === ownUsername || canManageMessages) {
+    items.push({ label: "Delete", danger: true, action: extra.confirmDelete });
+  }
+  return items;
+}
 
-  // Autoscroll ONLY while the user is at the bottom — reading backlog must win.
+// ---------------------------------------------------------------------------
+// Message list (VirtualList + pagination + jump + unread divider)
+// ---------------------------------------------------------------------------
+
+interface MessageListProps {
+  session: ConnectionSession;
+  channel: Channel;
+  messages: readonly Message[];
+  actions: ChatActions;
+  editing: Message | null;
+  setEditing(message: Message | null): void;
+  onMenu(state: { message: Message; x: number; y: number }): void;
+  onPicker(state: { message: Message; x: number; y: number }): void;
+}
+
+function MessageList(props: MessageListProps): React.JSX.Element {
+  const { session, channel, messages, actions, editing } = props;
+  const listRef = useRef<VirtualListHandle | null>(null);
+  const nearBottomRef = useRef(true);
+  const loadingOlderRef = useRef(false);
+  const hasOlderRef = useRef(true);
+  const pendingJumpRef = useRef<number | null>(null);
+  const firstLayoutRef = useRef(true);
+  const [dividerReadId, setDividerReadId] = useState<number | null>(null);
+  const [highlightId, setHighlightId] = useState<number | null>(null);
+
+  // Snapshot the unread divider at open (before the ack moves the pointer).
   useEffect(() => {
-    const element = containerRef.current;
-    if (element !== null && stickToBottomRef.current) {
-      element.scrollTop = element.scrollHeight;
+    const lastRead = session.readStateStore.get(channel.id).lastReadMessageId;
+    setDividerReadId(lastRead);
+    firstLayoutRef.current = true;
+    hasOlderRef.current = true;
+    if (lastRead !== null) {
+      const timer = window.setTimeout(() => setDividerReadId(null), DIVIDER_TTL_MS);
+      return () => window.clearTimeout(timer);
+    }
+  }, [channel.id, session]);
+
+  // First layout: open on the divider when unread exists, else on the bottom.
+  useEffect(() => {
+    if (messages.length === 0) {
+      return;
+    }
+    if (!firstLayoutRef.current) {
+      return;
+    }
+    firstLayoutRef.current = false;
+    if (dividerReadId !== null) {
+      window.setTimeout(() => listRef.current?.scrollToBottom(), 30); // let heights settle, then…
+      window.setTimeout(() => {
+        const index = messages.findIndex((message) => message.id > dividerReadId);
+        if (index > 0) {
+          listRef.current?.scrollToKey(String(messages[index]?.id), "center");
+        }
+      }, 60);
+    } else {
+      window.setTimeout(() => listRef.current?.scrollToBottom(), 30);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages.length > 0]);
+
+  // New messages stick to the bottom while the user is there.
+  const messageCountRef = useRef(messages.length);
+  useEffect(() => {
+    const grew = messages.length > messageCountRef.current;
+    messageCountRef.current = messages.length;
+    if (grew && nearBottomRef.current) {
+      listRef.current?.scrollToBottom();
     }
   }, [messages]);
 
-  const groupStarts = useMemo(
-    () => computeGroupStarts(messages.map((message) => ({
-      id: message.id,
-      authorUsername: message.authorUsername,
-      createdAtEpochMs: toEpochMs(message.createdAt),
-    }))),
-    [messages],
+  // Back-filled jump: scroll + flash when the target arrives.
+  useEffect(() => {
+    const target = pendingJumpRef.current;
+    if (target === null || !messages.some((message) => message.id === target)) {
+      return;
+    }
+    pendingJumpRef.current = null;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      window.setTimeout(() => listRef.current?.scrollToKey(String(target), "center"), 30 * attempt);
+    }
+    setHighlightId(target);
+    const timer = window.setTimeout(() => setHighlightId(null), HIGHLIGHT_TTL_MS);
+    return () => window.clearTimeout(timer);
+  }, [messages]);
+
+  const loadOlder = () => {
+    if (loadingOlderRef.current || !hasOlderRef.current || messages.length === 0) {
+      return;
+    }
+    loadingOlderRef.current = true;
+    void session.loadOlder(channel.id, messages[0]!.id)
+      .then((rawPageLength) => {
+        if (rawPageLength < HISTORY_PAGE) {
+          hasOlderRef.current = false; // end of history latches on the RAW page
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        loadingOlderRef.current = false;
+      });
+  };
+
+  const wiredActions: ChatActions = {
+    ...actions,
+    jumpTo: (messageId: number) => {
+      if (messages.some((message) => message.id === messageId)) {
+        setHighlightId(messageId);
+        window.setTimeout(() => setHighlightId(null), HIGHLIGHT_TTL_MS);
+        for (let attempt = 0; attempt < 4; attempt++) {
+          window.setTimeout(() => listRef.current?.scrollToKey(String(messageId), "center"), 30 * attempt);
+        }
+        return;
+      }
+      pendingJumpRef.current = messageId;
+      void (async () => {
+        let loaded = 0;
+        while (
+          !session.messageStore.listFor(channel.id).some((message) => message.id === messageId)
+          && loaded < MAX_JUMP_BACKFILL
+        ) {
+          const list = session.messageStore.listFor(channel.id);
+          if (list.length === 0) {
+            pendingJumpRef.current = null;
+            return;
+          }
+          const raw = await session.loadOlder(channel.id, list[0]!.id);
+          if (raw < HISTORY_PAGE) {
+            pendingJumpRef.current = null; // history exhausted — the quote is dangling
+            return;
+          }
+          loaded += raw;
+        }
+      })().catch(() => undefined);
+    },
+  };
+
+  const groupStarts = useMemo(() => computeGroupStarts(messages.map((message): GroupableMessage => ({
+    id: message.id,
+    authorUsername: message.authorUsername,
+    createdAtEpochMs: toEpochMs(message.createdAt),
+  }))), [messages]);
+
+  const dividerIndex = dividerReadId === null
+    ? -1
+    : messages.findIndex((message) => message.id > dividerReadId);
+
+  return (
+    <VirtualList
+      className="message-list virtual-list"
+      ref={listRef}
+      items={messages}
+      itemKey={(message) => String(message.id)}
+      estimateHeight={estimateRowHeight}
+      onNearTop={loadOlder}
+      onBottomProximity={(nearBottom) => {
+        nearBottomRef.current = nearBottom;
+        if (nearBottom) {
+          setDividerReadId(null); // reaching the bottom dismisses the divider
+        }
+      }}
+      renderItem={(message, index) => (
+        <>
+          {index === dividerIndex ? (
+            <div className="new-messages-divider"><span>NEW</span></div>
+          ) : null}
+          <MessageRow
+            session={session}
+            channel={channel}
+            message={message}
+            startsGroup={groupStarts[index] ?? true}
+            editing={editing?.id === message.id}
+            highlighted={highlightId === message.id}
+            selected={actions.selectionMode && actions.selection.has(message.id)}
+            actions={wiredActions}
+            setEditing={props.setEditing}
+            onMenu={props.onMenu}
+          />
+        </>
+      )}
+    />
   );
+}
+
+// ---------------------------------------------------------------------------
+// Rows
+// ---------------------------------------------------------------------------
+
+interface MessageRowProps {
+  session: ConnectionSession;
+  channel: Channel;
+  message: Message;
+  startsGroup: boolean;
+  editing: boolean;
+  highlighted: boolean;
+  selected: boolean;
+  actions: ChatActions;
+  setEditing(message: Message | null): void;
+  onMenu(state: { message: Message; x: number; y: number }): void;
+}
+
+function MessageRow(props: MessageRowProps): React.JSX.Element {
+  const { session, channel, message, startsGroup, editing, highlighted, selected, actions } = props;
+  const [draft, setDraft] = useState(message.content ?? "");
+
+  useEffect(() => {
+    setDraft(message.content ?? "");
+  }, [message.id, message.content]);
+
+  const commitEdit = () => {
+    const trimmed = draft.trim();
+    if (trimmed.length === 0 || trimmed === (message.content ?? "")) {
+      props.setEditing(null);
+      return;
+    }
+    void session.editMessage(channel.id, message.id, trimmed).catch(() => undefined);
+    props.setEditing(null);
+  };
 
   return (
     <div
-      className="message-list"
-      ref={containerRef}
-      onScroll={(event) => {
-        const element = event.currentTarget;
-        stickToBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+      className={"message-row"
+        + (startsGroup ? " head" : " continuation")
+        + (highlighted ? " highlighted" : "")
+        + (selected ? " selected" : "")}
+      onClick={() => {
+        if (actions.selectionMode) {
+          actions.toggleSelected(message.id);
+        }
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        if (!actions.selectionMode) {
+          props.onMenu({ message, x: event.clientX, y: event.clientY });
+        }
       }}
     >
-      {messages.map((message, index) =>
-        groupStarts[index]
-          ? <MessageHeadRow key={message.id} message={message} />
-          : <MessageContinuationRow key={message.id} message={message} />,
+      {startsGroup ? (
+        <div className="message-avatar">{(message.authorUsername.charAt(0) || "?").toUpperCase()}</div>
+      ) : (
+        <div className="message-gutter">{formatTimeOfDay(toEpochMs(message.createdAt))}</div>
       )}
-    </div>
-  );
-}
-
-function MessageHeadRow({ message }: { message: Message }): React.JSX.Element {
-  return (
-    <div className="message-row head">
-      <div className="message-avatar">{(message.authorUsername.charAt(0) || "?").toUpperCase()}</div>
       <div className="message-body">
-        <div className="message-meta">
-          <span className="message-author">{message.authorUsername}</span>
-          <span className="message-time">{formatTimeOfDay(toEpochMs(message.createdAt))}</span>
-        </div>
-        <div className="message-content">
-          {message.content}
-          {message.editedAt !== null ? <span className="message-edited">(edited)</span> : null}
-        </div>
+        {startsGroup ? (
+          <div className="message-meta">
+            <span className="message-author">{message.authorUsername}</span>
+            <span className="message-time">{formatTimeOfDay(toEpochMs(message.createdAt))}</span>
+          </div>
+        ) : null}
+        {message.forward !== null ? <ForwardCard forward={message.forward} /> : null}
+        {message.reply !== null ? <QuoteCard level={message.reply} depth={0} onJump={actions.jumpTo} /> : null}
+        {editing ? (
+          <textarea
+            className="inline-editor"
+            autoFocus
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={commitEdit}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.ctrlKey && !event.shiftKey && !event.altKey) {
+                event.preventDefault();
+                commitEdit();
+              } else if (event.key === "Enter" && (event.ctrlKey || event.shiftKey) && !event.altKey) {
+                event.preventDefault();
+                const textarea = event.currentTarget;
+                textarea.setRangeText("\n", textarea.selectionStart, textarea.selectionEnd, "end");
+                setDraft(textarea.value);
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                props.setEditing(null);
+              }
+            }}
+          />
+        ) : (
+          <div className="message-content">
+            {segmentMessageContent(message.content, message.mentions).map((segment, segmentIndex) =>
+              segment.kind === "mention"
+                ? <span key={segmentIndex} className="mention">{segment.text}</span>
+                : <span key={segmentIndex}>{segment.text}</span>,
+            )}
+            {message.editedAt !== null ? <span className="message-edited">(edited)</span> : null}
+          </div>
+        )}
         <AttachmentNote message={message} />
+        {message.reactions.length > 0 ? (
+          <div className="reactions-row">
+            {message.reactions.map((summary) => {
+              const selfId = session.selfUserId();
+              const mine = selfId !== null && summary.userIds.includes(selfId);
+              return (
+                <button
+                  key={summary.reaction}
+                  className={"reaction-chip" + (mine ? " mine" : "")}
+                  title={summary.usernames.join(", ")}
+                  onClick={() => void session.toggleReaction(channel.id, message.id, summary.reaction, mine).catch(() => undefined)}
+                >
+                  {REACTION_GLYPH_BY_SLUG[summary.reaction] ?? summary.reaction} {summary.count}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
       </div>
     </div>
   );
 }
 
-function MessageContinuationRow({ message }: { message: Message }): React.JSX.Element {
+function QuoteCard({ level, depth, onJump }: { level: ReplyInfo; depth: number; onJump: (messageId: number) => void }): React.JSX.Element {
+  if (level.deleted) {
+    return <div className="quote-card deleted">Original message deleted</div>;
+  }
   return (
-    <div className="message-row continuation">
-      <div className="message-gutter">{formatTimeOfDay(toEpochMs(message.createdAt))}</div>
-      <div className="message-body">
-        <div className="message-content">
-          {message.content}
-          {message.editedAt !== null ? <span className="message-edited">(edited)</span> : null}
-        </div>
-        <AttachmentNote message={message} />
-      </div>
+    <div className="quote-card">
+      <span className="quote-author" onClick={() => onJump(level.messageId)}>{level.authorUsername}</span>
+      <span className="quote-preview">{level.preview}</span>
+      {level.forward !== null ? <span className="quote-forward">↗ from {level.forward.authorUsername}</span> : null}
+      {level.reply !== null && depth < QUOTE_DEPTH_MAX ? <QuoteCard level={level.reply} depth={depth + 1} onJump={onJump} /> : null}
+    </div>
+  );
+}
+
+function ForwardCard({ forward }: { forward: ForwardInfo }): React.JSX.Element {
+  return (
+    <div className="forward-card">
+      <span className="quote-author">Forwarded from {forward.authorUsername}</span>
+      <span className="quote-meta">{forward.serverName} → #{forward.channelName}{forward.trusted ? "" : " · unverified"}</span>
     </div>
   );
 }
@@ -144,6 +607,10 @@ function AttachmentNote({ message }: { message: Message }): React.JSX.Element | 
   }
   return <div className="message-attachments">📎 {message.attachments.length} attachment(s) — rendered in M3</div>;
 }
+
+// ---------------------------------------------------------------------------
+// Composer
+// ---------------------------------------------------------------------------
 
 function Composer({ placeholder, onSend }: {
   placeholder: string;
@@ -197,5 +664,135 @@ function Composer({ placeholder, onSend }: {
         <span className="error-line">{error ?? ""}</span>
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Forward dialog (same-instance full; cross-instance text-only, attachments → M3)
+// ---------------------------------------------------------------------------
+
+function ForwardDialog({ session, source, sourceChannel, onClose }: {
+  session: ConnectionSession;
+  source: readonly Message[];
+  sourceChannel: Channel;
+  onClose(): void;
+}): React.JSX.Element {
+  const records = useStore(connectionDirectory, (allRecords) => allRecords);
+  const ownChannels = useStore(session.channelStore, (channels) => channels);
+  const [targetRecordId, setTargetRecordId] = useState(session.recordId);
+  const [foreignChannels, setForeignChannels] = useState<readonly Channel[] | null>(null);
+  const [targetChannelId, setTargetChannelId] = useState<number | null>(null);
+  const [comment, setComment] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const crossInstance = targetRecordId !== session.recordId;
+  const hasAttachments = source.some((message) => message.attachments.length > 0);
+
+  // Another server's channel list arrives through a throwaway client for its record.
+  useEffect(() => {
+    if (!crossInstance) {
+      setForeignChannels(null);
+      setTargetChannelId(null);
+      return;
+    }
+    let cancelled = false;
+    const record = connectionDirectory.get(targetRecordId);
+    if (!record) {
+      return;
+    }
+    const client = new RestClient({
+      baseUrl: record.hostUrl,
+      tokenStorage: new RecordTokenStorage(connectionDirectory, targetRecordId),
+    });
+    void client.getChannels()
+      .then((channels) => {
+        if (!cancelled) {
+          setForeignChannels(channels.filter((entry) => entry.type === "TEXT"));
+        }
+      })
+      .catch((fetchError: unknown) => {
+        if (!cancelled) {
+          setForeignChannels([]);
+          setError(fetchError instanceof Error ? fetchError.message : String(fetchError));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [targetRecordId, crossInstance]);
+
+  const targetChannels = crossInstance ? foreignChannels : ownChannels.filter((entry) => entry.type === "TEXT");
+  const originServer = connectionDirectory.get(session.recordId)?.cachedServerName ?? session.hostUrl();
+
+  const submit = async (): Promise<void> => {
+    if (targetChannelId === null || busy) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      if (!crossInstance) {
+        for (const message of source) {
+          await session.forwardMessage(targetChannelId, message.id, comment.length > 0 ? comment : null);
+        }
+      } else {
+        for (const message of source) {
+          await forwardCrossInstance(targetRecordId, targetChannelId, {
+            content: (message.content?.length ?? 0) > 0 ? message.content : comment,
+            originServer,
+            originChannel: sourceChannel.name,
+            originAuthorId: message.authorId,
+            originAuthorName: message.authorUsername,
+            originCreatedAt: message.createdAt,
+            originReply: message.reply,
+          });
+        }
+      }
+      onClose();
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : String(submitError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title={`Forward ${source.length === 1 ? "message" : `${source.length} messages`}`} onClose={onClose}>
+      <div className="forward-picker">
+        <div className="forward-column">
+          <div className="forward-column-title">Server</div>
+          {records.map((record) => (
+            <div key={record.id}
+              className={"forward-row" + (record.id === targetRecordId ? " chosen" : "")}
+              onClick={() => setTargetRecordId(record.id)}>
+              <span className="forward-badge">{(record.cachedServerName ?? record.hostUrl).charAt(0).toUpperCase()}</span>
+              <span className="forward-row-name">{record.cachedServerName ?? record.hostUrl}</span>
+            </div>
+          ))}
+        </div>
+        <div className="forward-column">
+          <div className="forward-column-title">Channel</div>
+          {targetChannels === null ? <div className="forward-note">Loading channels…</div> : null}
+          {targetChannels?.length === 0 ? <div className="forward-note">No text channels.</div> : null}
+          {targetChannels?.map((entry) => (
+            <div key={entry.id}
+              className={"forward-row" + (entry.id === targetChannelId ? " chosen" : "")}
+              onClick={() => setTargetChannelId(entry.id)}>
+              # {entry.name}
+            </div>
+          ))}
+        </div>
+      </div>
+      <input type="text" value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Comment (optional)" />
+      {crossInstance && hasAttachments ? (
+        <div className="chat-error">Cross-instance attachment re-upload arrives with M3 — only the text will travel.</div>
+      ) : null}
+      <div className="error-line">{error ?? ""}</div>
+      <div className="modal-actions">
+        <button className="ghost" onClick={onClose}>Cancel</button>
+        <button className="primary" disabled={busy || targetChannelId === null} onClick={() => void submit()}>Forward</button>
+      </div>
+    </Modal>
   );
 }

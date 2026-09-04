@@ -1,10 +1,11 @@
 import { log } from "../../logging";
 import { RestClient } from "../../core/rest";
 import { StompClient } from "../../core/stomp";
-import type { Channel, Message, PresenceEvent, ServerProfile, VoiceMemberEvent } from "../../types";
+import type { Channel, Message, PresenceEvent, ReactionEvent, ServerProfile, VoiceMemberEvent } from "../../types";
 import { ChannelStore } from "../stores/ChannelStore";
 import { MessageStore } from "../stores/MessageStore";
 import { PermissionStore } from "../stores/PermissionStore";
+import { ReadStateStore } from "../stores/ReadStateStore";
 import { RosterStore } from "../stores/RosterStore";
 import { ConnectionDirectory, RecordTokenStorage } from "./connection-record";
 
@@ -18,6 +19,8 @@ export interface SessionHooks {
   onChannelGone(channelId: number): void;
   /** After a diff-refetch applied (rename/override pings) — re-validate active channel. */
   onChannelsChanged(): void;
+  /** A live message actually INSERTED into a loaded channel (echo-deduped). */
+  onLiveMessage(message: Message): void;
 }
 
 export interface ConnectionSessionOptions {
@@ -30,6 +33,8 @@ export interface ConnectionSessionOptions {
 
 /** History page size for the initial load (oak's INITIAL_HISTORY_LIMIT). */
 const INITIAL_HISTORY_LIMIT = 100;
+/** Scroll-up / back-fill page size (oak's HISTORY_PAGE). */
+export const HISTORY_PAGE = 50;
 
 function toWsUrl(hostUrl: string): string {
   return hostUrl.replace(/^http/, "ws") + "/ws";
@@ -49,6 +54,7 @@ export class ConnectionSession {
   readonly messageStore = new MessageStore();
   readonly rosterStore = new RosterStore();
   readonly permissionStore = new PermissionStore();
+  readonly readStateStore = new ReadStateStore();
 
   private readonly directory: ConnectionDirectory;
   private readonly hooks: SessionHooks;
@@ -93,7 +99,7 @@ export class ConnectionSession {
   }
 
   async start(): Promise<void> {
-    const [channels, users, presence, voiceMembers, profile, myPermissions] = await Promise.all([
+    const [channels, users, presence, voiceMembers, profile, myPermissions, readStates] = await Promise.all([
       this.rest.getChannels(),
       this.rest.getUsers(),
       this.rest.getPresence(),
@@ -107,6 +113,10 @@ export class ConnectionSession {
         log.warn("session", `my permissions unavailable: ${error instanceof Error ? error.message : String(error)}`);
         return null;
       }),
+      this.rest.getReadStates().catch((error: unknown) => {
+        log.warn("session", `read states unavailable: ${error instanceof Error ? error.message : String(error)}`);
+        return null;
+      }),
     ]);
     this.channelStore.applySnapshot(channels);
     this.rosterStore.setUsers(users);
@@ -117,6 +127,9 @@ export class ConnectionSession {
     }
     if (myPermissions) {
       this.permissionStore.applyMy(myPermissions);
+    }
+    if (readStates) {
+      this.readStateStore.applySnapshot(readStates);
     }
     void this.directory.touch(this.recordId);
 
@@ -181,9 +194,59 @@ export class ConnectionSession {
     }
   }
 
-  async sendMessage(channelId: number, content: string): Promise<void> {
-    const created = await this.rest.sendMessage(channelId, { content });
+  async sendMessage(channelId: number, content: string, replyToId?: number): Promise<void> {
+    const created = await this.rest.sendMessage(channelId, { content, replyToId: replyToId ?? null });
     this.messageStore.applyLive(created); // the STOMP echo dedups against this id
+  }
+
+  async editMessage(channelId: number, messageId: number, content: string): Promise<void> {
+    const edited = await this.rest.editMessage(channelId, messageId, { content });
+    this.messageStore.applyEdited(edited);
+  }
+
+  async deleteMessage(channelId: number, messageId: number): Promise<void> {
+    await this.rest.deleteMessage(channelId, messageId);
+    this.messageStore.applyDeleted(channelId, messageId);
+  }
+
+  async toggleReaction(channelId: number, messageId: number, slug: string, mine: boolean): Promise<void> {
+    const reactions = mine
+      ? await this.rest.removeReaction(channelId, messageId, slug)
+      : await this.rest.addReaction(channelId, messageId, slug);
+    this.messageStore.applyReactions(channelId, messageId, reactions);
+  }
+
+  /** Same-instance forward — the server copies content/attachments/origin itself. */
+  async forwardMessage(targetChannelId: number, sourceMessageId: number, comment: string | null): Promise<void> {
+    const forwarded = await this.rest.forwardMessage(targetChannelId, { sourceMessageId, content: comment });
+    this.messageStore.applyLive(forwarded);
+  }
+
+  /**
+   * Scroll-up pagination page. Returns the RAW page length (the caller latches
+   * end-of-history on a short page — dedup must not fake it).
+   */
+  async loadOlder(channelId: number, beforeId: number): Promise<number> {
+    const page = await this.rest.getMessages(channelId, beforeId, HISTORY_PAGE);
+    if (this.disposed) {
+      return 0;
+    }
+    this.messageStore.prependPage(channelId, page);
+    return page.length;
+  }
+
+  /** The read-state ack: local counters now, the REST call fire-and-forget. */
+  ackChannelRead(channelId: number, lastReadMessageId: number | null): void {
+    this.readStateStore.ack(channelId, lastReadMessageId);
+    void this.rest.ackChannelRead(channelId, lastReadMessageId).catch((error: unknown) => {
+      log.warn("chat", `read ack failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+
+  /** The signed-in user's id — "is this reaction mine" and self-checks. */
+  selfUserId(): number | null {
+    const username = this.username();
+    return this.rosterStore.getSnapshot().users.find((user) => user.username === username)?.id ?? null;
   }
 
   async createChannel(request: { name: string; type: "TEXT" | "VOICE" }): Promise<Channel> {
@@ -210,6 +273,7 @@ export class ConnectionSession {
     if (this.channelStore.applyDeleted(channelId)) {
       this.messageStore.dropChannel(channelId);
       this.permissionStore.dropChannel(channelId);
+      this.readStateStore.dropChannel(channelId);
       this.subscribedChannelIds.delete(channelId);
       this.hooks.onChannelGone(channelId);
     }
@@ -251,15 +315,29 @@ export class ConnectionSession {
     });
   }
 
-  /** Subscribe the message topic of every TEXT channel (subscribe-all, VOICE excluded). */
+  /** Subscribe the message-topic family of every TEXT channel (subscribe-all, VOICE excluded). */
   private syncChannelSubscriptions(): void {
     for (const channel of this.channelStore.getSnapshot()) {
       if (channel.type !== "TEXT" || this.subscribedChannelIds.has(channel.id)) {
         continue;
       }
       this.subscribedChannelIds.add(channel.id);
-      this.stomp.subscribe(`/topic/channel.${channel.id}`, (raw) => {
-        this.messageStore.applyLive(JSON.parse(raw) as Message);
+      const destination = `/topic/channel.${channel.id}`;
+      this.stomp.subscribe(destination, (raw) => {
+        const message = JSON.parse(raw) as Message;
+        if (this.messageStore.applyLive(message)) {
+          this.hooks.onLiveMessage(message);
+        }
+      });
+      this.stomp.subscribe(`${destination}.edited`, (raw) => {
+        this.messageStore.applyEdited(JSON.parse(raw) as Message);
+      });
+      this.stomp.subscribe(`${destination}.deleted`, (raw) => {
+        this.messageStore.applyDeleted(channel.id, JSON.parse(raw) as number);
+      });
+      this.stomp.subscribe(`${destination}.reactions`, (raw) => {
+        const event = JSON.parse(raw) as ReactionEvent;
+        this.messageStore.applyReactions(channel.id, event.messageId, event.reactions);
       });
     }
   }

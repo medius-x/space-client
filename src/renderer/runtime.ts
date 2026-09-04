@@ -11,11 +11,15 @@ import {
   ConnectionDirectory,
   EXPIRED_MARKER,
   normalizeHostUrl,
+  RecordTokenStorage,
 } from "../domain/session/connection-record";
 import { ConnectionSession, type SessionHooks } from "../domain/session/connection-session";
+import { notifications } from "./notifications";
+import { virtualScrollTelemetry } from "./scroll-telemetry";
 import type {
   Channel,
   FeedInfo,
+  Message,
   RemoteTrackKind,
   RoomInfo,
   VoiceRoomState,
@@ -188,6 +192,27 @@ const sessionHooks: SessionHooks = {
   onChannelsChanged: () => {
     ensureActiveChannelExists();
   },
+  onLiveMessage: (message) => {
+    const session = activeSession;
+    const state = appStore.getSnapshot();
+    if (!session || state.ownUsername === null) {
+      return;
+    }
+    const inOpenChannel = state.activeChannelId === message.channelId;
+    const windowFocused = document.hasFocus();
+    session.readStateStore.bumpLive(message, state.ownUsername, inOpenChannel, windowFocused);
+    if (inOpenChannel && windowFocused) {
+      return;
+    }
+    const channel = session.channelStore.get(message.channelId);
+    notifications.handleMessage(
+      message,
+      state.ownUsername,
+      channel ? `#${channel.name}` : `#${message.channelId}`,
+      windowFocused,
+      inOpenChannel,
+    );
+  },
 };
 
 /** App entry: load the directory, auto-resume the most recently used connection. */
@@ -341,10 +366,94 @@ export function setActiveChannel(channelId: number): void {
     return;
   }
   appStore.patch({ activeChannelId: channelId });
-  void session.loadHistory(channelId).catch((error: unknown) => {
-    log.warn("chat", `history load failed: ${errorMessage(error)}`);
-  });
+  void session.loadHistory(channelId)
+    .then(() => ackActiveChannel())
+    .catch((error: unknown) => {
+      log.warn("chat", `history load failed: ${errorMessage(error)}`);
+    });
   void connectionDirectory.update(session.recordId, { lastChannelId: channelId });
+}
+
+/** Perf-gate helper: fill the ACTIVE channel's list locally with synthetic messages. */
+export function seedSyntheticMessages(count: number): void {
+  const session = activeSession;
+  const channelId = appStore.getSnapshot().activeChannelId;
+  if (!session || channelId === null) {
+    log.warn("perf", "seed needs an active text channel");
+    return;
+  }
+  const baseTime = Date.now() - count * 60_000;
+  const authors = ["alice", "bob", "carol", "dave"];
+  const synthetic: Message[] = Array.from({ length: count }, (_unused, index) => {
+    const id = index + 1;
+    const authorUsername = authors[index % authors.length]!;
+    const lineCount = 1 + (index % 3);
+    return {
+      id,
+      channelId,
+      authorId: index % authors.length,
+      authorUsername,
+      content: `synthetic message ${id} — ${"lorem ipsum dolor sit amet ".repeat(lineCount).trim()}`,
+      createdAt: new Date(baseTime + id * 60_000).toISOString(),
+      attachments: [],
+      mentions: [],
+      editedAt: index % 17 === 0 ? new Date(baseTime + id * 60_000 + 5000).toISOString() : null,
+      reactions: index % 23 === 0 ? [{ reaction: "thumbsup", count: 2, userIds: [1, 2], usernames: ["alice", "bob"] }] : [],
+      reply: index % 31 === 0 ? { messageId: Math.max(1, id - 1), authorId: 0, authorUsername: authors[(index + 3) % authors.length]!, preview: `synthetic message ${id - 1}`, createdAt: new Date(baseTime + (id - 1) * 60_000).toISOString(), deleted: false, forward: null, reply: null } : null,
+      forward: null,
+    };
+  });
+  session.messageStore.applySnapshot(channelId, synthetic);
+  log.info("perf", `seeded ${count} synthetic messages into channel #${channelId} — scroll it`);
+}
+
+/** Ack the open channel up to its newest loaded message (divider dismisses with it). */
+export function ackActiveChannel(): void {
+  const session = activeSession;
+  const channelId = appStore.getSnapshot().activeChannelId;
+  if (!session || channelId === null) {
+    return;
+  }
+  const messages = session.messageStore.listFor(channelId);
+  const lastId = messages.length > 0 ? messages[messages.length - 1]!.id : null;
+  const state = session.readStateStore.get(channelId);
+  if (lastId === null && state.unreadCount === 0) {
+    return;
+  }
+  if (lastId !== null && state.lastReadMessageId === lastId && state.unreadCount === 0) {
+    return;
+  }
+  session.ackChannelRead(channelId, lastId);
+}
+
+/** Cross-instance forward: a THROWAWAY client for the target record (v1: one active session). */
+export async function forwardCrossInstance(targetRecordId: string, targetChannelId: number, snapshot: {
+  content: string | null;
+  originServer: string;
+  originChannel: string;
+  originAuthorId: number;
+  originAuthorName: string;
+  originCreatedAt: string;
+  originReply: Message["reply"];
+}): Promise<void> {
+  const record = connectionDirectory.get(targetRecordId);
+  if (!record) {
+    throw new Error("target server record not found");
+  }
+  const client = new RestClient({
+    baseUrl: record.hostUrl,
+    tokenStorage: new RecordTokenStorage(connectionDirectory, targetRecordId),
+  });
+  await client.forwardMessage(targetChannelId, {
+    sourceMessageId: null,
+    content: snapshot.content,
+    originServer: snapshot.originServer,
+    originChannel: snapshot.originChannel,
+    originAuthorId: snapshot.originAuthorId,
+    originAuthorName: snapshot.originAuthorName,
+    originCreatedAt: snapshot.originCreatedAt,
+    originReply: snapshot.originReply,
+  });
 }
 
 function restoreLastChannel(session: ConnectionSession): void {
@@ -661,6 +770,7 @@ export function buildDiagModel(): DiagModel {
       { key: "sent fmtp", value: sentLine ?? "—" },
       { key: "wire fmtp", value: wireLine ?? "—" },
       { key: "user", value: state.ownUsername ?? "—" },
+      { key: "vscroll", value: `${Math.round(virtualScrollTelemetry.scrollTop)}/${Math.round(virtualScrollTelemetry.scrollHeight)} (${(virtualScrollTelemetry.thumbFraction * 100).toFixed(0)}%)` },
     ],
     stereo: reading,
     stereoVerdict: verdict,
