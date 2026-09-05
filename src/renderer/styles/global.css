@@ -62,26 +62,7 @@ body {
 
 /* ===== Layout shells ===== */
 
-.login-screen {
-  height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.login-card {
-  background: var(--sp-surface);
-  border-radius: 8px;
-  padding: 32px;
-  width: 380px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.login-title { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
-
-.main-shell { display: flex; height: 100vh; }
+.main-shell { display: flex; height: 100%; }
 
 .sidebar {
   width: 220px;
@@ -337,10 +318,8 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 
 /* ===== App frame + server rail (M1) ===== */
 
-.app-frame { display: flex; height: 100vh; }
-.app-body { flex: 1; display: flex; min-width: 0; }
-.app-body > .login-screen,
-.app-body > .main-shell { flex: 1; }
+.app-frame { display: flex; height: 100%; }
+.app-frame > * { flex: 1; min-width: 0; }
 
 .server-rail {
   width: 72px;
@@ -349,38 +328,26 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
   padding: 8px 0 12px;
   overflow-y: auto;
 }
 
-/* Row wrapper: 72×56 like oak's ServerNode; the icon morphs circle→squircle. */
-.rail-icon {
+/* Row wrapper — oak's ServerNode: a 72×56 click zone carrying the white
+   selection pill at the RAIL's left edge, the 48×48 icon and the badge. */
+.rail-wrap {
   position: relative;
-  width: 48px;
-  height: 48px;
-  margin: 4px 0;
-  border-radius: 50%;
-  background: var(--sp-surface);
+  width: 72px;
+  height: 56px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-weight: 700;
-  font-size: 18px;
-  color: var(--sp-text);
   cursor: pointer;
   user-select: none;
   flex-shrink: 0;
-  overflow: visible;
-  transition: border-radius 0.12s ease, background 0.12s ease;
 }
-.rail-icon:hover { border-radius: 16px; background: var(--sp-accent); }
-.rail-icon.active { border-radius: 16px; }
-/* oak's selection pill: white 4×24 bar hugging the rail's left edge. */
-.rail-icon.active::before {
-  content: "";
+.rail-pill {
   position: absolute;
-  left: -12px;
+  left: 0;
   top: 50%;
   transform: translateY(-50%);
   width: 4px;
@@ -388,21 +355,45 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   border-radius: 2px;
   background: var(--sp-text);
 }
-.rail-icon.expired { color: var(--sp-text-dim); }
-.rail-icon.home { font-size: 22px; }
-.rail-icon.home.active { background: var(--sp-green); }
-.rail-icon.add {
-  background: transparent;
-  color: var(--sp-green);
-  font-size: 24px;
-  border: 2px dashed var(--sp-control);
+/* oak's icon shape — the SAME superellipse squircle AvatarService.squirclePath(48)
+   draws in JavaFX; the avatar (or the initials disc) is clipped by it and the
+   hover accent fills it. */
+.rail-icon {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  clip-path: path("M48 24 C48 8 40 0 24 0 C8 0 0 8 0 24 C0 40 8 48 24 48 C40 48 48 40 48 24 Z");
+  background: var(--sp-surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--sp-text);
+  font-weight: 700;
+  font-size: 16px;
 }
-.rail-icon.add:hover { background: var(--sp-green); color: #fff; border-style: solid; }
-.rail-separator { width: 32px; height: 2px; background: var(--sp-control); border-radius: 1px; flex-shrink: 0; }
+.rail-wrap:hover .rail-icon { background: var(--sp-accent); color: #fff; }
+.rail-icon .icon { font-size: 24px; }
+.rail-avatar { width: 100%; height: 100%; object-fit: cover; display: block; }
+.rail-avatar-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  font-size: 15px;
+  letter-spacing: 0.5px;
+}
+.rail-icon.expired { color: var(--sp-text-dim); }
+.rail-wrap.home.active .rail-icon { background: var(--sp-green); }
+.rail-icon.add { color: var(--sp-green); }
+.rail-wrap:hover .rail-icon.add { background: var(--sp-green); color: #fff; }
+.rail-separator { width: 32px; height: 2px; background: var(--sp-control); border-radius: 1px; flex-shrink: 0; margin: 4px 0; }
 .rail-badge {
   position: absolute;
-  bottom: -4px;
-  right: -4px;
+  /* the wrap is the anchor: the icon's bottom-right corner sits 12px/4px in */
+  right: 8px;
+  bottom: 0;
   background: var(--sp-red);
   color: #fff;
   font-size: 10px;
@@ -502,16 +493,21 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   padding: 24px;
   text-align: center;
 }
+/* oak's .column-header: BOTH the server-name bar (above the channels) and the
+   channel-name bar (above the chat) are the SAME box — one typography, one
+   height, one bottom rule — so the divider reads as a single continuous line
+   running from panel to panel. */
 .chat-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 37px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--sp-control);
   font-weight: 700;
   color: var(--sp-text-muted);
   font-size: 13px;
   flex-shrink: 0;
-  display: flex;
-  gap: 6px;
-  align-items: center;
 }
 .chat-error { color: var(--sp-red); font-size: 12px; padding: 4px 16px 0; }
 
@@ -557,9 +553,11 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   text-align: center;
 }
 
-.composer { padding: 0 16px 16px; flex-shrink: 0; }
+/* Bottom inset 8 — the SAME clearance the left overlay card keeps from the
+   window's bottom edge, so the composer and the user bar end on one line. */
+.composer { padding: 0 16px 8px; flex-shrink: 0; }
 .composer-gate {
-  padding: 12px 16px 16px;
+  padding: 12px 16px 8px;
   color: var(--sp-text-dim);
   font-size: 13px;
   flex-shrink: 0;
@@ -568,7 +566,9 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 /* ===== M2: chat depth ===== */
 
 .channel-row { justify-content: space-between; }
-.channel-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The name takes the free space (glyph left, badge right) — oak's ChannelNode
+   alignment; without flex the space-between pushed the name toward the badge. */
+.channel-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .channel-badge {
   background: var(--sp-control);
   color: var(--sp-text);
@@ -599,6 +599,23 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   content: "";
   flex: 1;
   border-top: 1px solid var(--sp-yellow);
+}
+
+/* oak's BeginOfChannel marker: the cap above the oldest loaded message — dim
+   gray hairlines (an ENDPOINT, not an event — unlike the amber NEW divider). */
+.begin-marker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--sp-text-dim);
+  font-size: 11px;
+  padding: 4px 8px;
+}
+.begin-marker::before,
+.begin-marker::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--sp-text-dim);
 }
 
 .message-content .mention {
@@ -1285,24 +1302,6 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 
 /* ===== Social layer (M6): home rail, DM list, friends pane, hoisted roster ===== */
 
-.rail-icon.home { font-size: 20px; }
-.rail-icon.home.active { background: var(--sp-green); }
-.rail-separator { width: 32px; height: 2px; background: var(--sp-control); border-radius: 1px; }
-.rail-badge {
-  position: absolute;
-  bottom: -2px;
-  right: -2px;
-  background: var(--sp-red);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 700;
-  border-radius: 8px;
-  padding: 0 5px;
-  min-width: 16px;
-  text-align: center;
-}
-.rail-icon { position: relative; }
-
 .dm-row {
   display: flex;
   align-items: center;
@@ -1402,6 +1401,19 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 
 /* ===== M7: server/user settings, tri-state editor, mention popup ===== */
 
+/* Settings as FULL-WINDOW overlays (the agreed Discord-style variant of oak's
+   modal settings window): they cover everything below the caption bar; the
+   section nav carries the ✕/Esc close. */
+.settings-overlay {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 32px; /* the caption bar's height */
+  bottom: 0;
+  z-index: 30;
+  display: flex;
+}
+
 .settings-screen { display: flex; height: 100%; background: var(--sp-pane); }
 .settings-nav {
   width: 200px;
@@ -1468,6 +1480,25 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 .roles-row:hover { background: var(--sp-hover); color: var(--sp-text); }
 .roles-row.active { background: var(--sp-selected); color: var(--sp-text); }
 .role-order { display: flex; gap: 2px; width: 44px; flex-shrink: 0; }
+/* Drag-and-drop reorder (oak's RoleListCell): the grip starts the drag, the
+   dragged role renders as a visible drop GAP that live-previews the position. */
+.role-grip {
+  color: var(--sp-text-dim);
+  cursor: grab;
+  flex-shrink: 0;
+  padding: 0 6px 0 0;
+  user-select: none;
+  line-height: 1;
+}
+.role-grip:active { cursor: grabbing; }
+.role-grip.pinned { opacity: 0.35; cursor: default; }
+.roles-row.drop-gap {
+  height: 26px;
+  padding: 0;
+  background: var(--sp-selected);
+  border-radius: 4px;
+}
+.roles-row.drag-over { outline: 1px dashed var(--sp-control); outline-offset: -1px; }
 .role-color-chip { width: 14px; height: 14px; border-radius: 4px; flex-shrink: 0; display: inline-block; }
 .role-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .role-editor { flex: 1; overflow-y: auto; min-width: 0; }
@@ -1518,9 +1549,6 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 .tri-button.deny { color: var(--sp-red); }
 .tri-button.deny.chosen { background: var(--sp-red); color: #fff; }
 
-.user-settings { display: flex; gap: 0; min-height: 380px; }
-.user-settings .settings-nav { width: 160px; }
-.user-settings-body { flex: 1; overflow-y: auto; max-height: 440px; padding-left: 16px; min-width: 380px; }
 .modal-card.wide { width: 720px; max-width: 92vw; }
 
 .mention-popup {
@@ -1575,7 +1603,7 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 .virtual-list::-webkit-scrollbar,
 .settings-body::-webkit-scrollbar,
 .roles-list::-webkit-scrollbar,
-.user-settings-body::-webkit-scrollbar,
+
 .friend-picker-list::-webkit-scrollbar {
   width: 12px;
 }
@@ -1585,7 +1613,7 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 .virtual-list::-webkit-scrollbar-thumb,
 .settings-body::-webkit-scrollbar-thumb,
 .roles-list::-webkit-scrollbar-thumb,
-.user-settings-body::-webkit-scrollbar-thumb,
+
 .friend-picker-list::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.08);
   border-radius: 6px;
@@ -1598,7 +1626,7 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 .virtual-list:hover::-webkit-scrollbar-thumb,
 .settings-body:hover::-webkit-scrollbar-thumb,
 .roles-list:hover::-webkit-scrollbar-thumb,
-.user-settings-body:hover::-webkit-scrollbar-thumb,
+
 .friend-picker-list:hover::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.18);
   background-clip: padding-box;
@@ -1629,8 +1657,7 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 
 /* ===== oak left-section: two columns + the voice/user overlay card ===== */
 
-.main-shell { display: flex; height: 100vh; }
-.app-frame { height: 100vh; }
+.main-shell { display: flex; height: 100%; }
 
 .left-section {
   position: relative;
@@ -1714,10 +1741,12 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
   display: flex;
   align-items: center;
   gap: 8px;
+  min-height: 37px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--sp-control);
   flex-shrink: 0;
 }
+.room-view-header > .icon { font-size: 16px; color: var(--sp-text-dim); }
 .room-view-sub { font-size: 12px; color: var(--sp-text-muted); }
 .room-view-body { flex: 1; overflow-y: auto; padding: 16px; }
 .tile-grid { gap: 8px; }
@@ -1783,27 +1812,31 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 .app-frame { flex: 1; min-height: 0; display: flex; }
 .app-frame > * { flex: 1; }
 
-/* oak's channel column: the server name header (full-bleed, divider below). */
+/* oak's channel column: the server name header — full-bleed (the negative
+   margins cancel the sidebar's padding) and the TWIN of .chat-header above. */
 .sidebar-server-header {
-  color: var(--sp-text);
-  font-size: 15px;
-  margin: -4px -12px 0;
+  display: flex;
+  align-items: center;
+  min-height: 37px;
+  color: var(--sp-text-muted);
+  font-weight: 700;
+  font-size: 13px;
+  margin: -12px -12px 0;
   padding: 8px 12px;
   border-bottom: 1px solid var(--sp-control);
+  flex-shrink: 0;
 }
 
-/* oak's message hover cluster: [forward][react][reply] 20×20 at the row's top-right. */
+/* oak's message hover cluster: [forward][react][reply] 20×20 buttons sit
+   DIRECTLY on the message tile's top-right (unmanaged nodes in oak, no card
+   chrome around them) — each button is bare until its own hover fills it. */
 .message-row { position: relative; }
 .message-hover-buttons {
   position: absolute;
-  top: -10px;
-  right: 4px;
+  top: 0;
+  right: 8px; /* scrollbar clearance — the bar paints over the row's right edge */
   display: none;
-  gap: 4px;
-  background: var(--sp-surface);
-  border: 1px solid var(--sp-control);
-  border-radius: 4px;
-  padding: 2px;
+  gap: 2px;
   z-index: 2;
 }
 .message-row:hover .message-hover-buttons { display: flex; }
@@ -1819,3 +1852,22 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
   justify-content: center;
 }
 .hover-button:hover { background: var(--sp-control); color: var(--sp-text); }
+.hover-button .icon { font-size: 13px; }
+
+/* ===== Icon sizes (own the font-size in CSS, never inline in JSX) ===== */
+
+.chat-header .icon { font-size: 16px; color: var(--sp-text-dim); }
+.icon-button .icon { font-size: 16px; }
+.voice-mark .icon { font-size: 11px; }
+.friends-title .icon { font-size: 16px; }
+.friends-entry .icon { font-size: 16px; color: var(--sp-text); }
+.friends-entry .channel-name { font-weight: 700; color: var(--sp-text); }
+.composer-attach .icon { font-size: 16px; }
+.kind-choice .icon { font-size: 16px; }
+.modal-close .icon { font-size: 16px; }
+.caption-button .icon { font-size: 16px; }
+.share-panel-head .icon { font-size: 14px; }
+.picker-row .icon { font-size: 16px; }
+.picker-thumb-placeholder .icon { font-size: 24px; }
+.roles-row .mdi-lock { font-size: 12px; color: var(--sp-text-dim); }
+.role-editor-name .icon { font-size: 16px; color: var(--sp-text-dim); }

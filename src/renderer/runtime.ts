@@ -44,7 +44,9 @@ import type {
 export type FriendsTab = "ALL" | "ONLINE" | "PENDING" | "BLOCKED" | "ADD_FRIEND";
 
 export interface AppState {
-  screen: "login" | "main";
+  /** The login form is a MODAL over the always-present main window (oak's Add
+   *  Server dialog) — the window itself never becomes a login screen. */
+  loginFormOpen: boolean;
   loginError: string | null;
   loginBusy: boolean;
   loginPrefill: { url: string; username: string } | null;
@@ -93,7 +95,7 @@ export interface AppState {
 
 class AppStore extends Emitter {
   private state: AppState = {
-    screen: "login",
+    loginFormOpen: false,
     loginError: null,
     loginBusy: false,
     loginPrefill: null,
@@ -244,7 +246,7 @@ const sessionHooks: SessionHooks = {
   onSessionExpired: (recordId) => {
     log.warn("app", `session expired (record ${recordId}) — back to login`);
     void teardownSession();
-    appStore.patch({ screen: "login", loginError: "Session expired — log in again" });
+    appStore.patch({ loginFormOpen: true, loginError: "Session expired — log in again" });
   },
   onStompState: (state) => appStore.patch({ stompState: state }),
   onStompConnected: () => {
@@ -342,12 +344,17 @@ const sessionHooks: SessionHooks = {
   },
   onMemberKicked: (event) => {
     // Tokens survive a kick (only a BAN kills them at the REST layer) — dropping
-    // to the login screen keeps the record one click away, oak's ErrorDialog parity.
+    // to the login modal keeps the record one click away, oak's ErrorDialog parity.
     const reason = event.banned
       ? `You were banned by ${event.by}. A moderator must unban you before reconnecting.`
       : `You were removed from the server by ${event.by}. Click the server again to reconnect.`;
+    const record = activeSession !== null ? connectionDirectory.get(activeSession.recordId) : null;
     void teardownSession().finally(() => {
-      appStore.patch({ loginError: reason });
+      appStore.patch({
+        loginFormOpen: true,
+        loginError: reason,
+        loginPrefill: record !== null ? { url: record.hostUrl, username: record.username } : null,
+      });
       notifications.showToast({ title: event.banned ? "Banned" : "Removed from server", channelName: event.by, body: reason });
     });
   },
@@ -425,7 +432,7 @@ export async function switchConnection(recordId: string): Promise<void> {
     await openSession(recordId);
   } catch (error) {
     appStore.patch({
-      screen: "login",
+      loginFormOpen: true,
       loginError: errorMessage(error),
       loginPrefill: { url: record.hostUrl, username: record.username },
     });
@@ -436,15 +443,21 @@ export async function switchConnection(recordId: string): Promise<void> {
 
 export async function removeConnection(recordId: string): Promise<void> {
   if (activeSession?.recordId === recordId) {
+    // Removing the ACTIVE server leaves an empty main window (the rail with its
+    // "+" stays) — no login modal: the user deliberately dropped the server.
     await teardownSession();
-    appStore.patch({ screen: "login" });
   }
   await connectionDirectory.remove(recordId);
 }
 
-/** "+" on the rail: login screen with an empty form (the live session stays alive). */
+/** "+" on the rail: the login modal with an empty form (the live session stays alive). */
 export function beginAddServer(): void {
-  appStore.patch({ screen: "login", loginError: null, loginPrefill: null });
+  appStore.patch({ loginFormOpen: true, loginError: null, loginPrefill: null });
+}
+
+/** ✕ / Esc on the login modal. */
+export function closeLoginForm(): void {
+  appStore.patch({ loginFormOpen: false, loginError: null });
 }
 
 async function openSession(recordId: string): Promise<void> {
@@ -460,7 +473,7 @@ async function openSession(recordId: string): Promise<void> {
     await session.start();
     session.attachmentCache.setDiskBudget(settingsStore.getSnapshot().imageCacheMegabytes * 1024 * 1024);
     appStore.patch({
-      screen: "main",
+      loginFormOpen: false,
       loginError: null,
       loginPrefill: null,
       ownUsername: record.username,
@@ -488,7 +501,6 @@ export async function teardownSession(): Promise<void> {
   sessionBinding.set(null);
   appStore.patch({
     stompState: "off",
-    screen: "login",
     ownUsername: null,
     activeChannelId: null,
     dmMode: false,

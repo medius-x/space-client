@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../hooks/useStore";
 import {
   appStore,
@@ -38,6 +38,7 @@ import {
   type TriState,
 } from "../../domain/logic/channel-access";
 import { argbIntToCss, memberNameColor } from "../../domain/logic/roster-grouping";
+import { moveRoleIdTowards } from "../../domain/logic/role-drag";
 import { Modal } from "./Modal";
 import { Avatar } from "./Avatar";
 
@@ -228,10 +229,23 @@ function RolesSection({ session }: { session: ConnectionSession }): React.JSX.El
   const canManageMembers = useStore(session.permissionStore, (state) => state.my?.permissions.includes(MANAGE_MEMBERS_PERMISSION) ?? false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Role | null>(null);
+  /** The drag in flight (oak's draggedRole): the dragged role renders as the
+   *  drop gap, drag-over live-previews the position, the drop persists. */
+  const [draggedId, setDraggedId] = useState<number | null>(null);
+  /** Optimistic order while a drag is live; null = the store's order. A drag
+   *  cancelled without a drop just drops this — the store is the truth. */
+  const [previewIds, setPreviewIds] = useState<readonly number[] | null>(null);
+  const dropHandledRef = useRef(false);
 
-  const custom = roles.filter((role) => role.kind === "CUSTOM");
+  const roleById = useMemo(() => new Map(roles.map((role) => [role.id, role])), [roles]);
   const everyone = roles.find((role) => role.kind === "EVERYONE") ?? null; // OWNER is deliberately hidden
-  const ordered = [...custom, ...(everyone !== null ? [everyone] : [])];
+  const custom = roles.filter((role) => role.kind === "CUSTOM");
+  const storeIds = custom.map((role) => role.id);
+  const orderedIds = previewIds ?? storeIds;
+  const ordered = [
+    ...orderedIds.map((id) => roleById.get(id)).filter((role): role is Role => role !== undefined),
+    ...(everyone !== null ? [everyone] : []),
+  ];
   const selected = ordered.find((role) => role.id === selectedId) ?? null;
 
   const createRole = async (): Promise<void> => {
@@ -250,19 +264,32 @@ function RolesSection({ session }: { session: ConnectionSession }): React.JSX.El
     }
   };
 
-  const moveRole = async (roleId: number, direction: -1 | 1): Promise<void> => {
-    const ids = custom.map((role) => role.id);
-    const index = ids.indexOf(roleId);
-    const swapWith = index + direction;
-    if (index === -1 || swapWith < 0 || swapWith >= ids.length) {
-      return;
+  // The shared drag-over/drop math (oak's moveDraggedTo): above the target's
+  // midline inserts before it, below — after; the pinned @everyone row appends.
+  // Returns the resulting order so the DROP can persist exactly what it previewed.
+  const previewTowards = (targetRoleId: number | null, belowTarget: boolean): readonly number[] => {
+    const currentIds = previewIds ?? storeIds;
+    if (draggedId === null) {
+      return currentIds;
     }
-    [ids[index], ids[swapWith]] = [ids[swapWith]!, ids[index]!];
+    const next = moveRoleIdTowards(currentIds, draggedId, targetRoleId, belowTarget);
+    if (next !== currentIds) {
+      setPreviewIds(next);
+    }
+    return next;
+  };
+
+  const persistOrder = async (ids: readonly number[]): Promise<void> => {
     try {
       await session.reorderRoles(ids);
     } catch (error: unknown) {
       window.alert(`Could not reorder: ${error instanceof Error ? error.message : String(error)}`);
     }
+  };
+
+  const clearDrag = (): void => {
+    setDraggedId(null);
+    setPreviewIds(null);
   };
 
   return (
@@ -272,36 +299,69 @@ function RolesSection({ session }: { session: ConnectionSession }): React.JSX.El
           <span>Roles — {custom.length}</span>
           <button className="section-add" title="Create role" onClick={() => void createRole()}>+</button>
         </div>
-        {ordered.map((role, index) => (
-          <div
-            key={role.id}
-            className={"roles-row" + (role.id === selected?.id ? " active" : "")}
-            onClick={() => setSelectedId(role.id)}
-          >
-            {role.kind === "CUSTOM" ? (
-              <span className="role-order">
-                <button className="ghost tiny" title="Move up" disabled={index === 0} onClick={(event) => {
-                  event.stopPropagation();
-                  void moveRole(role.id, -1);
-                }}>↑</button>
-                <button className="ghost tiny" title="Move down" disabled={index === custom.length - 1} onClick={(event) => {
-                  event.stopPropagation();
-                  void moveRole(role.id, 1);
-                }}>↓</button>
-              </span>
-            ) : (
-              <span className="role-order" />
-            )}
-            <span className="role-color-chip" style={{ background: role.color !== null ? argbIntToCss(role.color) : "var(--sp-control)" }} />
-            <span className="role-name">{role.name}</span>
-            {role.kind === "CUSTOM" ? (
-              <button className="ghost tiny" title="Delete role" onClick={(event) => {
-                event.stopPropagation();
-                setDeleteTarget(role);
-              }}>🗑</button>
-            ) : null}
-          </div>
-        ))}
+        {ordered.map((role) => {
+          const isDragged = draggedId === role.id;
+          const isEveryone = role.kind === "EVERYONE";
+          return (
+            <div
+              key={role.id}
+              className={"roles-row"
+                + (role.id === selected?.id ? " active" : "")
+                + (isDragged ? " drop-gap" : "")}
+              onClick={() => setSelectedId(role.id)}
+              onDragOver={(event) => {
+                if (draggedId === null || isDragged) {
+                  return;
+                }
+                event.preventDefault(); // accept the drop
+                event.dataTransfer.dropEffect = "move";
+                const row = event.currentTarget;
+                previewTowards(isEveryone ? null : role.id, event.clientY > row.getBoundingClientRect().top + row.offsetHeight / 2);
+              }}
+              onDrop={(event) => {
+                if (draggedId === null) {
+                  return;
+                }
+                event.preventDefault();
+                const row = event.currentTarget;
+                const finalIds = previewTowards(isEveryone ? null : role.id, event.clientY > row.getBoundingClientRect().top + row.offsetHeight / 2);
+                dropHandledRef.current = true;
+                void persistOrder(finalIds);
+                clearDrag();
+              }}
+            >
+              {isDragged ? null : (
+                <>
+                  <span
+                    className={"role-grip" + (role.kind === "CUSTOM" ? "" : " pinned")}
+                    title={role.kind === "CUSTOM" ? "Drag to reorder" : undefined}
+                    draggable={role.kind === "CUSTOM"}
+                    onDragStart={(event) => {
+                      dropHandledRef.current = false;
+                      setDraggedId(role.id);
+                      event.dataTransfer.effectAllowed = "move";
+                      event.dataTransfer.setData("text/plain", String(role.id));
+                    }}
+                    onDragEnd={() => {
+                      // No drop landed — the drag was cancelled: back to the store order.
+                      if (!dropHandledRef.current) {
+                        clearDrag();
+                      }
+                    }}
+                  >⠿</span>
+                  <span className="role-color-chip" style={{ background: role.color !== null ? argbIntToCss(role.color) : "var(--sp-control)" }} />
+                  <span className="role-name">{role.name}</span>
+                  {role.kind === "CUSTOM" ? (
+                    <button className="ghost tiny" title="Delete role" onClick={(event) => {
+                      event.stopPropagation();
+                      setDeleteTarget(role);
+                    }}>🗑</button>
+                  ) : null}
+                </>
+              )}
+            </div>
+          );
+        })}
       </div>
       <div className="role-editor">
         {selected === null ? (
@@ -757,7 +817,7 @@ function ChannelsSection({ session }: { session: ConnectionSession }): React.JSX
             onClick={() => setSelectedId(channel.id)}>
             <span className={"icon channel-glyph " + (channel.type === "VOICE" ? "mdi-volume-high" : "mdi-pound")} />
             <span className="role-name">{channel.name}</span>
-            {channel.locked ? <span className="icon mdi-lock" style={{ fontSize: 12, color: "var(--sp-text-dim)" }} /> : null}
+            {channel.locked ? <span className="icon mdi-lock" /> : null}
           </div>
         ))}
       </div>
@@ -777,7 +837,7 @@ function ChannelEditor({ session, channel }: { session: ConnectionSession; chann
   return (
     <div className="role-editor-inner">
       <div className="role-editor-head">
-        <span className="role-editor-name"><span className={"icon " + (channel.type === "VOICE" ? "mdi-volume-high" : "mdi-pound")} style={{ fontSize: 16, color: "var(--sp-text-dim)" }} /> {channel.name}</span>
+        <span className="role-editor-name"><span className={"icon " + (channel.type === "VOICE" ? "mdi-volume-high" : "mdi-pound")} /> {channel.name}</span>
       </div>
       <div className="friends-tabs">
         <button className={"friends-tab" + (tab === "permissions" ? " active" : "")} onClick={() => setTab("permissions")}>Permissions</button>

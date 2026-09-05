@@ -54,7 +54,7 @@ export function VoiceMarks({ marks }: { marks: VoiceMemberMarks | undefined }): 
     <span className="voice-marks">
       {muteTone !== "none" ? (
         <span className={`voice-mark voice-mark-${muteTone}`} title={muteTone === "mod" ? "Muted by a moderator" : "Muted by themselves"}>
-          <span className="icon mdi-microphone-off" style={{ fontSize: 11 }} />
+          <span className="icon mdi-microphone-off" />
         </span>
       ) : null}
       {deafenTone !== "none" ? (
@@ -116,7 +116,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
           title={selfMuted ? "Unmute" : "Mute"}
           onClick={toggleSelfMute}
         >
-          <span className={"icon " + (selfMuted ? "mdi-microphone-off" : "mdi-microphone")} style={{ fontSize: 16 }} />
+          <span className={"icon " + (selfMuted ? "mdi-microphone-off" : "mdi-microphone")} />
         </button>
         <button
           className={"voice-toggle icon-button" + (selfDeafened ? " on" : "")}
@@ -137,17 +137,17 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
           title={cameraOn ? "Camera off" : "Camera"}
           onClick={() => void toggleCamera()}
         >
-          <span className={"icon " + (cameraOn ? "mdi-video" : "mdi-video-off")} style={{ fontSize: 16 }} />
+          <span className={"icon " + (cameraOn ? "mdi-video" : "mdi-video-off")} />
         </button>
         <button
           className={"voice-toggle icon-button" + (sharing ? " on" : "")}
           title={sharing ? "Stop sharing" : "Share screen"}
           onClick={() => (sharing ? void stopShare() : setPickerOpen(true))}
         >
-          <span className="icon mdi-cast-connected" style={{ fontSize: 16 }} />
+          <span className="icon mdi-cast-connected" />
         </button>
         <button className="voice-toggle icon-button leave" title="Disconnect" onClick={() => void leaveVoice()}>
-          <span className="icon mdi-phone-hangup" style={{ fontSize: 16 }} />
+          <span className="icon mdi-phone-hangup" />
         </button>
       </div>
       {pickerOpen ? (
@@ -366,9 +366,9 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
     <div className="room-view">
       <div className="room-view-header">
         <button className="voice-toggle icon-button" title="Back to chat" onClick={toggleRoomView}>
-          <span className="icon mdi-chevron-left" style={{ fontSize: 16 }} />
+          <span className="icon mdi-chevron-left" />
         </button>
-        <span className="icon mdi-volume-high" style={{ fontSize: 16, color: "var(--sp-text-dim)" }} />
+        <span className="icon mdi-volume-high" />
         <span className="pane-title">{channel !== null ? channel.name : "Voice"}</span>
         <span className="room-view-sub">{participants.length + 1} in room{screens > 0 ? ` · ${screens} screen${screens > 1 ? "s" : ""}` : ""}</span>
       </div>
@@ -376,7 +376,7 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
         {viewingFeedId !== null ? (
           <div className="share-panel">
             <div className="share-panel-head">
-              <span><span className="icon mdi-monitor" style={{ fontSize: 14 }} /> {viewingUsername ?? "…"}'s screen</span>
+              <span><span className="icon mdi-monitor" /> {viewingUsername ?? "…"}'s screen</span>
               <span className="share-panel-actions">
                 <button className="ghost" onClick={() => void openSharePopout()} disabled={popoutActive}>Pop out</button>
                 <button className="ghost" onClick={() => setViewingFeed(viewingFeedId)}>Stop watching</button>

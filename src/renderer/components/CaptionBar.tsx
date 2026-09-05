@@ -19,13 +19,13 @@ export function CaptionBar(): React.JSX.Element {
       <span className="caption-brand">SPACE</span>
       <div className="caption-buttons">
         <button className="caption-button" title="Minimize" onClick={() => window.spaceWindow?.minimize()}>
-          <span className="icon mdi-window-minimize" style={{ fontSize: 16 }} />
+          <span className="icon mdi-window-minimize" />
         </button>
         <button className="caption-button" title={maximized ? "Restore" : "Maximize"} onClick={() => window.spaceWindow?.toggleMaximize()}>
-          <span className={"icon " + (maximized ? "mdi-window-restore" : "mdi-window-maximize")} style={{ fontSize: 16 }} />
+          <span className={"icon " + (maximized ? "mdi-window-restore" : "mdi-window-maximize")} />
         </button>
         <button className="caption-button close" title="Close" onClick={() => window.spaceWindow?.close()}>
-          <span className="icon mdi-close" style={{ fontSize: 16 }} />
+          <span className="icon mdi-close" />
         </button>
       </div>
     </div>

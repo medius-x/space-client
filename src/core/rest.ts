@@ -480,7 +480,7 @@ export class RestClient {
   }
 
   /** Custom roles only, top→bottom; the list may be partial (dense renumber). */
-  async reorderRoles(roleIds: number[]): Promise<void> {
+  async reorderRoles(roleIds: readonly number[]): Promise<void> {
     await this.request<unknown>("/api/roles/order", {
       method: "PUT",
       body: JSON.stringify({ roleIds }),

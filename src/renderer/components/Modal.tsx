@@ -32,7 +32,7 @@ export function Modal({ title, children, onClose, wide }: {
         <div className="modal-titlebar">
           <div className="modal-title">{title}</div>
           <button className="modal-close" title="Close" onClick={onClose}>
-            <span className="icon mdi-close" style={{ fontSize: 16 }} />
+            <span className="icon mdi-close" />
           </button>
         </div>
         {children}

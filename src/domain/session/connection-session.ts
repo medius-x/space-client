@@ -99,6 +99,12 @@ export class ConnectionSession {
   readonly attachmentCache = new AttachmentCache(() => (this.disposed ? null : this.rest));
   readonly playback = new PlaybackService();
   /**
+   * The live server profile (name + avatar) from GET /api/server and
+   * /topic/server pushes — the rail reads the presigned avatarUrl from here for
+   * the ACTIVE record; inactive records render from the disk cache by key.
+   */
+  serverProfile: ServerProfile | null = null;
+  /**
    * Relationship/DM lists are event→refetch fed (oak's pattern), coalesced so a
    * burst of pushes never runs parallel fetches that could land out of order.
    */
@@ -173,7 +179,8 @@ export class ConnectionSession {
     this.channelStore.applySnapshot(channels);
     this.rosterStore.setUsers(users);
     if (profile) {
-      void this.directory.update(this.recordId, { cachedServerName: profile.name });
+      this.serverProfile = profile;
+      void this.directory.update(this.recordId, { cachedServerName: profile.name, cachedServerAvatarKey: profile.avatarKey });
     }
     if (myPermissions) {
       this.permissionStore.applyMy(myPermissions);
@@ -550,7 +557,7 @@ export class ConnectionSession {
     this.memberRefresh.request();
   }
 
-  async reorderRoles(roleIds: number[]): Promise<void> {
+  async reorderRoles(roleIds: readonly number[]): Promise<void> {
     await this.rest.reorderRoles(roleIds);
     this.memberRefresh.request();
   }
@@ -671,7 +678,8 @@ export class ConnectionSession {
     });
     this.stomp.subscribe("/topic/server", (raw) => {
       const profile = JSON.parse(raw) as ServerProfile;
-      void this.directory.update(this.recordId, { cachedServerName: profile.name });
+      this.serverProfile = profile;
+      void this.directory.update(this.recordId, { cachedServerName: profile.name, cachedServerAvatarKey: profile.avatarKey });
     });
     this.stomp.subscribe("/topic/channels", (raw) => {
       const channel = JSON.parse(raw) as Channel;

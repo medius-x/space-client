@@ -67,8 +67,8 @@ export function DmSidebar({ session }: { session: ConnectionSession }): React.JS
         className={"channel-row friends-entry" + (activeDmId === null ? " active" : "")}
         onClick={() => setFriendsTab(appStore.getSnapshot().friendsTab === "ADD_FRIEND" ? "ADD_FRIEND" : appStore.getSnapshot().friendsTab)}
       >
-        <span className="icon mdi-account-multiple" style={{ fontSize: 16, color: "var(--sp-text)" }} />
-        <span className="channel-name" style={{ fontWeight: 700, color: "var(--sp-text)" }}>Friends</span>
+        <span className="icon mdi-account-multiple" />
+        <span className="channel-name">Friends</span>
       </div>
       {dms.map((dm) => {
         const name = dmDisplayName(dm, ownUsername);

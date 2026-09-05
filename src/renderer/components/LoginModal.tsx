@@ -1,13 +1,18 @@
 import { useState } from "react";
 import { useStore } from "../hooks/useStore";
-import { appStore, sessionBinding, startSession } from "../runtime";
+import { appStore, closeLoginForm, startSession } from "../runtime";
 import { DEFAULT_REST_BASE_URL } from "../../config";
+import { Modal } from "./Modal";
 
-export function LoginScreen(): React.JSX.Element {
+/**
+ * The login form as a MODAL over the always-present main window (oak's Add
+ * Server dialog): opened by the rail "+", an expired session or a kick. ✕
+ * just closes it — the window itself never becomes a login screen.
+ */
+export function LoginModal(): React.JSX.Element {
   const error = useStore(appStore, (state) => state.loginError);
   const busy = useStore(appStore, (state) => state.loginBusy);
   const prefill = useStore(appStore, (state) => state.loginPrefill);
-  const sessionAlive = useStore(sessionBinding, (current) => current !== null);
   const [serverUrl, setServerUrl] = useState(prefill?.url ?? DEFAULT_REST_BASE_URL);
   const [username, setUsername] = useState(prefill?.username ?? "");
   const [password, setPassword] = useState("");
@@ -17,11 +22,17 @@ export function LoginScreen(): React.JSX.Element {
   };
 
   return (
-    <div className="login-screen">
-      <div className="login-card">
-        <div className="login-title">space</div>
-        <input type="url" value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} placeholder="http://localhost:8080" />
+    <Modal title="Add a server" onClose={closeLoginForm}>
+      <label className="settings-field">
+        <span>Server address</span>
+        <input type="url" value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} placeholder="http://localhost:8080" autoFocus />
+      </label>
+      <label className="settings-field">
+        <span>Username</span>
         <input type="text" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="Username" autoComplete="username" />
+      </label>
+      <label className="settings-field">
+        <span>Password</span>
         <input
           type="password"
           value={password}
@@ -34,19 +45,18 @@ export function LoginScreen(): React.JSX.Element {
           placeholder="Password (8+ chars)"
           autoComplete="current-password"
         />
-        <div className="error-line">{error ?? ""}</div>
+      </label>
+      <div className="error-line">{error ?? ""}</div>
+      <div className="modal-actions">
+        <button className="ghost" disabled={busy} onClick={closeLoginForm}>Cancel</button>
         <button className="primary" disabled={busy} onClick={() => submit("login")}>
           {busy ? "Connecting…" : "Log in"}
         </button>
-        <button className="ghost" disabled={busy} onClick={() => submit("register")}>
-          Register
-        </button>
-        {sessionAlive ? (
-          <button className="ghost" disabled={busy} onClick={() => appStore.patch({ screen: "main", loginError: null })}>
-            ← Back to the app
-          </button>
-        ) : null}
       </div>
-    </div>
+      <div className="settings-hint">No account on that server yet? Register with the same form.</div>
+      <div className="modal-actions">
+        <button className="ghost" disabled={busy} onClick={() => submit("register")}>Register</button>
+      </div>
+    </Modal>
   );
 }

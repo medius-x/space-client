@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../hooks/useStore";
+import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
 import { ackActiveChannel, appStore, forwardCrossInstance, forwardRequestUpload, forwardUploadBytes } from "../runtime";
 import { connectionDirectory, settingsStore } from "../runtime";
 import { RecordTokenStorage } from "../../domain/session/connection-record";
@@ -102,6 +103,10 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
   const [editing, setEditing] = useState<Message | null>(null);
   const [menu, setMenu] = useState<{ message: Message; x: number; y: number } | null>(null);
   const [picker, setPicker] = useState<{ message: Message; x: number; y: number } | null>(null);
+  const pickerRef = useRef<HTMLDivElement | null>(null);
+  // Any pointer press outside the picker (or Escape) closes it — it must not
+  // hang over the chat until a reaction is picked (live M7 polish report).
+  useOutsideDismiss(pickerRef, () => setPicker(null));
   const [forwardQueue, setForwardQueue] = useState<readonly Message[] | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Message | null>(null);
   const [selectionMode, setSelectionMode] = useState(false);
@@ -218,7 +223,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
     >
       <div className="chat-header">
         {dm === null
-          ? <span className="icon mdi-pound" style={{ fontSize: 16, color: "var(--sp-text-dim)" }} />
+          ? <span className="icon mdi-pound" />
           : <span className="channel-hash">@</span>}
         {" "}{viewChannel.name}
         {selectionMode ? (
@@ -309,7 +314,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
         />
       ) : null}
       {picker !== null ? (
-        <div className="emoji-picker" style={{ left: Math.min(picker.x, window.innerWidth - 340), top: Math.min(picker.y, window.innerHeight - 60) }} onClick={(event) => event.stopPropagation()}>
+        <div ref={pickerRef} className="emoji-picker" style={{ left: Math.min(picker.x, window.innerWidth - 340), top: Math.min(picker.y, window.innerHeight - 60) }} onClick={(event) => event.stopPropagation()}>
           {REACTION_CATALOG.map((entry) => {
             const summary = picker.message.reactions.find((candidate) => candidate.reaction === entry.slug);
             const selfId = session.selfUserId();
@@ -402,6 +407,7 @@ function MessageList(props: MessageListProps): React.JSX.Element {
   const firstLayoutRef = useRef(true);
   const [dividerReadId, setDividerReadId] = useState<number | null>(null);
   const [highlightId, setHighlightId] = useState<number | null>(null);
+  const [beginReached, setBeginReached] = useState(false);
 
   // Snapshot the unread divider at open (before the ack moves the pointer).
   useEffect(() => {
@@ -409,11 +415,22 @@ function MessageList(props: MessageListProps): React.JSX.Element {
     setDividerReadId(lastRead);
     firstLayoutRef.current = true;
     hasOlderRef.current = true;
+    setBeginReached(false);
     if (lastRead !== null) {
       const timer = window.setTimeout(() => setDividerReadId(null), DIVIDER_TTL_MS);
       return () => window.clearTimeout(timer);
     }
   }, [channel.id, session]);
+
+  // oak's BeginOfChannel latch: a short initial page IS the whole history — the
+  // marker rides above everything without a guaranteed-empty pagination probe.
+  useEffect(() => {
+    if (!beginReached && hasOlderRef.current && !loadingOlderRef.current
+      && messages.length > 0 && messages.length < HISTORY_PAGE) {
+      hasOlderRef.current = false;
+      setBeginReached(true);
+    }
+  }, [messages, beginReached]);
 
   // First layout: open on the divider when unread exists, else on the bottom.
   useEffect(() => {
@@ -472,6 +489,7 @@ function MessageList(props: MessageListProps): React.JSX.Element {
       .then((rawPageLength) => {
         if (rawPageLength < HISTORY_PAGE) {
           hasOlderRef.current = false; // end of history latches on the RAW page
+          setBeginReached(true);
         }
       })
       .catch(() => undefined)
@@ -540,6 +558,9 @@ function MessageList(props: MessageListProps): React.JSX.Element {
       }}
       renderItem={(message, index) => (
         <>
+          {index === 0 && beginReached ? (
+            <div className="begin-marker">Beginning of history</div>
+          ) : null}
           {index === dividerIndex ? (
             <div className="new-messages-divider"><span>NEW</span></div>
           ) : null}
@@ -627,7 +648,7 @@ function MessageRow(props: MessageRowProps): React.JSX.Element {
               actions.beginForward([message]);
             }}
           >
-            <span className="icon mdi-forward" style={{ fontSize: 13 }} />
+            <span className="icon mdi-forward" />
           </button>
           <button
             className="hover-button"
@@ -638,7 +659,7 @@ function MessageRow(props: MessageRowProps): React.JSX.Element {
               props.onPicker({ message, x: rect.left, y: rect.bottom + 4 });
             }}
           >
-            <span className="icon mdi-emoticon" style={{ fontSize: 13 }} />
+            <span className="icon mdi-emoticon" />
           </button>
           <button
             className="hover-button"
@@ -648,7 +669,7 @@ function MessageRow(props: MessageRowProps): React.JSX.Element {
               actions.setReplyTo(message);
             }}
           >
-            <span className="icon mdi-reply" style={{ fontSize: 13 }} />
+            <span className="icon mdi-reply" />
           </button>
         </div>
       ) : null}
@@ -843,7 +864,7 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onPaste
           title={attachEnabled ? "Attach files" : "Attaching is disabled here"}
           disabled={!attachEnabled}
           onClick={() => fileInputRef.current?.click()}
-        ><span className="icon mdi-plus" style={{ fontSize: 16 }} /></button>
+        ><span className="icon mdi-plus" /></button>
         <input
           ref={fileInputRef}
           type="file"

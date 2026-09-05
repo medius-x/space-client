@@ -62,7 +62,7 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
         <DmSidebar session={session} />
       ) : (
         <>
-          <div className="sidebar-server-header pane-title">
+          <div className="sidebar-server-header">
             {connectionDirectory.get(session.recordId)?.cachedServerName ?? session.hostUrl().replace(/^https?:\/\//, "")}
           </div>
           <div className="sidebar-section-title">
@@ -155,8 +155,8 @@ function CreateChannelModal({ session, type, onClose }: {
   return (
     <Modal title="Create channel" onClose={onClose}>
       <div className="modal-row">
-        <label className={"kind-choice" + (kind === "TEXT" ? " chosen" : "")} onClick={() => setKind("TEXT")}><span className="icon mdi-pound" style={{ fontSize: 16 }} /> text</label>
-        <label className={"kind-choice" + (kind === "VOICE" ? " chosen" : "")} onClick={() => setKind("VOICE")}><span className="icon mdi-volume-high" style={{ fontSize: 16 }} /> voice</label>
+        <label className={"kind-choice" + (kind === "TEXT" ? " chosen" : "")} onClick={() => setKind("TEXT")}><span className="icon mdi-pound" /> text</label>
+        <label className={"kind-choice" + (kind === "VOICE" ? " chosen" : "")} onClick={() => setKind("VOICE")}><span className="icon mdi-volume-high" /> voice</label>
       </div>
       <input
         autoFocus

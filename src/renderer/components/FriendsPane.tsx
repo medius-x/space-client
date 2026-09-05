@@ -44,7 +44,7 @@ export function FriendsPane({ session }: { session: ConnectionSession }): React.
   return (
     <div className="friends-pane">
       <div className="friends-header">
-        <span className="friends-title"><span className="icon mdi-account-multiple" style={{ fontSize: 16 }} /> Friends</span>
+        <span className="friends-title"><span className="icon mdi-account-multiple" /> Friends</span>
         <div className="friends-tabs">
           {TABS.map((entry) => (
             <button

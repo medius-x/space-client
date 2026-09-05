@@ -25,6 +25,8 @@ export interface ConnectionRecord {
   lastUsedAt: number;
   lastChannelId: number | null;
   cachedServerName: string | null;
+  /** Stable MinIO key of the server icon (offline rail rendering by key). */
+  cachedServerAvatarKey: string | null;
   /** username → gain multiplier (1.0 = 100%). */
   voiceVolumes: Record<string, number>;
   shareVolumes: Record<string, number>;
@@ -105,9 +107,13 @@ export class ConnectionDirectory extends Emitter {
     for (const sanitizedKey of sanitizedKeys) {
       const record = await kv.get<ConnectionRecord>(sanitizedKey);
       if (isValidRecord(record)) {
-        // Pre-M7 records carry no prefs — default them in memory (the merge below
-        // only happens on the next explicit write).
-        this.records.set(record.id, { ...record, notifPrefs: record.notifPrefs ?? DEFAULT_NOTIFICATION_PREFS });
+        // Pre-M7 records carry no prefs / no avatar key — default them in memory
+        // (the merge below only happens on the next explicit write).
+        this.records.set(record.id, {
+          ...record,
+          notifPrefs: record.notifPrefs ?? DEFAULT_NOTIFICATION_PREFS,
+          cachedServerAvatarKey: record.cachedServerAvatarKey ?? null,
+        });
       }
     }
     this.loaded = true;
@@ -128,6 +134,7 @@ export class ConnectionDirectory extends Emitter {
       lastUsedAt: now,
       lastChannelId: null,
       cachedServerName: null,
+      cachedServerAvatarKey: null,
       voiceVolumes: {},
       shareVolumes: {},
       notifPrefs: DEFAULT_NOTIFICATION_PREFS,

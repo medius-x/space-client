@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useStore } from "../hooks/useStore";
 import {
   appStore,
@@ -12,7 +12,6 @@ import {
 } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import { CHANGE_NICKNAME_PERMISSION } from "../../types";
-import { Modal } from "./Modal";
 import { AvatarEditor } from "./ProfileModal";
 
 /**
@@ -20,6 +19,7 @@ import { AvatarEditor } from "./ProfileModal";
  * mutations with token rotation), Appearance, Notifications (global + per-server
  * overrides), Voice (APM), Connections (read-only). Instant-apply everywhere:
  * every control writes through to the settings store / the record immediately.
+ * Rendered as a full-window overlay (same shell as the server settings).
  */
 
 type Section = "general" | "account" | "appearance" | "notifications" | "voice" | "connections";
@@ -35,30 +35,41 @@ const SECTIONS: { key: Section; label: string }[] = [
 
 export function UserSettingsModal({ session }: { session: ConnectionSession }): React.JSX.Element {
   const [section, setSection] = useState<Section>("general");
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        toggleUserSettings();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   return (
-    <Modal title="User Settings" onClose={toggleUserSettings} wide>
-      <div className="user-settings">
-        <div className="settings-nav">
-          {SECTIONS.map((entry) => (
-            <button
-              key={entry.key}
-              className={"settings-nav-item" + (entry.key === section ? " active" : "")}
-              onClick={() => setSection(entry.key)}
-            >
-              {entry.label}
-            </button>
-          ))}
-        </div>
-        <div className="user-settings-body">
-          {section === "general" ? <AvatarEditor session={session} /> : null}
-          {section === "account" ? <AccountSection session={session} /> : null}
-          {section === "appearance" ? <AppearanceSection session={session} /> : null}
-          {section === "notifications" ? <NotificationsSection session={session} /> : null}
-          {section === "voice" ? <VoiceSection /> : null}
-          {section === "connections" ? <ConnectionsSection session={session} /> : null}
-        </div>
+    <div className="settings-screen">
+      <div className="settings-nav">
+        <div className="settings-nav-title">User Settings</div>
+        {SECTIONS.map((entry) => (
+          <button
+            key={entry.key}
+            className={"settings-nav-item" + (entry.key === section ? " active" : "")}
+            onClick={() => setSection(entry.key)}
+          >
+            {entry.label}
+          </button>
+        ))}
+        <button className="settings-close" title="Close (Esc)" onClick={toggleUserSettings}>✕ esc</button>
       </div>
-    </Modal>
+      <div className="settings-body">
+        {section === "general" ? <AvatarEditor session={session} /> : null}
+        {section === "account" ? <AccountSection session={session} /> : null}
+        {section === "appearance" ? <AppearanceSection session={session} /> : null}
+        {section === "notifications" ? <NotificationsSection session={session} /> : null}
+        {section === "voice" ? <VoiceSection /> : null}
+        {section === "connections" ? <ConnectionsSection session={session} /> : null}
+      </div>
+    </div>
   );
 }
 

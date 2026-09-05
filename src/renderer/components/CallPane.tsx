@@ -126,7 +126,7 @@ export function CallPane({ session }: { session: ConnectionSession }): React.JSX
             <span className="call-tile-name">{ownUsername} (you)</span>
             {!micOn ? (
               <span className="voice-mark voice-mark-self" title="Your mic is muted">
-                <span className="icon mdi-microphone-off" style={{ fontSize: 11 }} />
+                <span className="icon mdi-microphone-off" />
               </span>
             ) : null}
             {deafened ? (
@@ -146,7 +146,7 @@ export function CallPane({ session }: { session: ConnectionSession }): React.JSX
             <span className="call-tile-name">{callPeer ?? "?"}</span>
             {!peerMicOn ? (
               <span className="voice-mark voice-mark-self" title="Peer muted their mic">
-                <span className="icon mdi-microphone-off" style={{ fontSize: 11 }} />
+                <span className="icon mdi-microphone-off" />
               </span>
             ) : null}
             {peerDeafenedOn ? (
@@ -189,7 +189,7 @@ export function CallPane({ session }: { session: ConnectionSession }): React.JSX
             setMicOn(isCallMicEnabled());
           }}
         >
-          <span className={"icon " + (micOn ? "mdi-microphone" : "mdi-microphone-off")} style={{ fontSize: 16 }} />
+          <span className={"icon " + (micOn ? "mdi-microphone" : "mdi-microphone-off")} />
         </button>
         <button
           className={"voice-toggle icon-button" + (deafened ? " on" : "")}
@@ -203,7 +203,7 @@ export function CallPane({ session }: { session: ConnectionSession }): React.JSX
           <HeadphonesOffIcon size={16} />
         </button>
         <button className={"voice-toggle icon-button" + (callCameraOn ? " on" : "")} title={callCameraOn ? "Camera off" : "Camera"} onClick={() => void toggleCallCamera()}>
-          <span className={"icon " + (callCameraOn ? "mdi-video" : "mdi-video-off")} style={{ fontSize: 16 }} />
+          <span className={"icon " + (callCameraOn ? "mdi-video" : "mdi-video-off")} />
         </button>
         <button
           className={"voice-toggle icon-button" + (apmEnabled ? "" : " on")}
@@ -217,10 +217,10 @@ export function CallPane({ session }: { session: ConnectionSession }): React.JSX
           title={callSharing ? "Stop sharing" : "Share screen"}
           onClick={() => (callSharing ? void stopCallShare() : setPickerOpen(true))}
         >
-          <span className="icon mdi-cast-connected" style={{ fontSize: 16 }} />
+          <span className="icon mdi-cast-connected" />
         </button>
         <button className="danger icon-button" title="Hang up" onClick={hangUpCall}>
-          <span className="icon mdi-phone-hangup" style={{ fontSize: 16 }} />
+          <span className="icon mdi-phone-hangup" />
         </button>
       </div>
       {pickerOpen ? <SharePickerModal onClose={() => setPickerOpen(false)} onTarget={onPick} /> : null}

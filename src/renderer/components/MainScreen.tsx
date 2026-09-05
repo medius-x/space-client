@@ -48,12 +48,11 @@ export function MainScreen({ session }: { session: ConnectionSession }): React.J
   // The live call takes over the content area (oak's call room view); a RING does
   // not — the card overlay leaves chat usable while the phone "rings".
   const callOccupiesContent = callState === "connecting" || callState === "in-call";
-  const settingsOccupiesContent = serverSettingsOpen && !callOccupiesContent;
   const friendsOccupiesContent = dmMode && activeDmId === null;
   // oak layout: the room view is a chat-area swap (voice bar click); the roster
   // is its own 190px column beside the chat — hidden in Home mode and under the
   // full-width call view.
-  const roomViewOccupiesContent = roomViewOpen && !callOccupiesContent && !settingsOccupiesContent && !friendsOccupiesContent;
+  const roomViewOccupiesContent = roomViewOpen && !callOccupiesContent && !friendsOccupiesContent;
   const rosterVisible = !dmMode && !callOccupiesContent && !roomViewOccupiesContent;
 
   return (
@@ -74,8 +73,6 @@ export function MainScreen({ session }: { session: ConnectionSession }): React.J
         <main className="content">
           {callOccupiesContent ? (
             <CallPane session={session} />
-          ) : settingsOccupiesContent ? (
-            <ServerSettingsPane session={session} />
           ) : friendsOccupiesContent ? (
             <FriendsPane session={session} />
           ) : roomViewOccupiesContent ? (
@@ -86,9 +83,21 @@ export function MainScreen({ session }: { session: ConnectionSession }): React.J
           {rosterVisible ? <MembersPane session={session} /> : null}
         </main>
       </div>
+      {/* Settings are FULL-WINDOW overlays below the caption (Discord style, the
+          agreed variant of oak's modal window): the rail/chat stay mounted, the
+          overlay covers them — ESC / the ✕ in the section nav closes. */}
+      {serverSettingsOpen ? (
+        <div className="settings-overlay">
+          <ServerSettingsPane session={session} />
+        </div>
+      ) : null}
+      {userSettingsOpen ? (
+        <div className="settings-overlay">
+          <UserSettingsModal session={session} />
+        </div>
+      ) : null}
       <CallOverlayCard />
       <CallConflictModal />
-      {userSettingsOpen ? <UserSettingsModal session={session} /> : null}
       {diagOpen ? <Diagnostics /> : null}
     </>
   );
@@ -109,7 +118,7 @@ function UserBar({ session }: { session: ConnectionSession }): React.JSX.Element
         <span className={"user-bar-status " + status.className}>{status.text}</span>
       </div>
       <button className="ghost user-bar-button" title="Settings" onClick={toggleUserSettings}>
-        <span className="icon mdi-settings" style={{ fontSize: 16 }} />
+        <span className="icon mdi-settings" />
       </button>
     </div>
   );

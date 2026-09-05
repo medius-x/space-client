@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 import type { ConnectionSession } from "../../domain/session/connection-session";
-import type { CacheableImage } from "../../media/attachment-cache";
 
-/** Cached image URL for render: instant from memory (no flash), async otherwise. */
-export function useAttachmentImage(session: ConnectionSession, image: CacheableImage | null): string | null {
-  const [url, setUrl] = useState<string | null>(() => (image === null ? null : session.attachmentCache.peek(image.key)));
+/** Cached image URL for render: instant from memory (no flash), async otherwise.
+ *  A null session (no live connection) renders nothing — there is no cache. */
+export function useAttachmentImage(session: ConnectionSession | null, image: { key: string; url: string | null } | null): string | null {
+  const [url, setUrl] = useState<string | null>(() => (image === null || session === null ? null : session.attachmentCache.peek(image.key)));
 
   useEffect(() => {
-    if (image === null) {
+    if (image === null || session === null) {
       setUrl(null);
       return;
     }

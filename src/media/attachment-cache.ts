@@ -28,7 +28,9 @@ const MEMORY_CAP = 32;
 
 export interface CacheableImage {
   key: string;
-  url: string;
+  /** null = disk-only attempt (e.g. an inactive server's icon: only its own
+   *  session could mint a presigned URL, and it is not the live one). */
+  url: string | null;
 }
 
 export class AttachmentCache extends Emitter {
@@ -84,29 +86,31 @@ export class AttachmentCache extends Emitter {
     }
 
     let url = image.url;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const response = await fetch(url);
-        if (response.ok) {
-          const bytes = new Uint8Array(await response.arrayBuffer());
-          void this.writeDisk(image.key, bytes);
-          return this.remember(image.key, bytes);
+    if (url !== null) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const response = await fetch(url);
+          if (response.ok) {
+            const bytes = new Uint8Array(await response.arrayBuffer());
+            void this.writeDisk(image.key, bytes);
+            return this.remember(image.key, bytes);
+          }
+          if (response.status === 404) {
+            return null; // the object is gone for good
+          }
+        } catch {
+          // network error — fall through to the recovery mint
         }
-        if (response.status === 404) {
-          return null; // the object is gone for good
+        const client = this.rest();
+        if (client === null) {
+          return null;
         }
-      } catch {
-        // network error — fall through to the recovery mint
+        const fresh = await client.freshAttachmentLink(image.key).catch(() => null);
+        if (fresh === null || fresh === undefined) {
+          return null;
+        }
+        url = fresh;
       }
-      const client = this.rest();
-      if (client === null) {
-        return null;
-      }
-      const fresh = await client.freshAttachmentLink(image.key).catch(() => null);
-      if (fresh === null || fresh === undefined) {
-        return null;
-      }
-      url = fresh;
     }
     return null;
   }
