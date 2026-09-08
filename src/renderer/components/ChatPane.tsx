@@ -9,9 +9,11 @@ import { HISTORY_PAGE } from "../../domain/session/connection-session";
 import { RestClient } from "../../core/rest";
 import { log } from "../../logging";
 import { computeGroupStarts, formatHeaderStamp, formatTimeOfDay, toEpochMs, type GroupableMessage } from "../../domain/logic/message-grouping";
-import { segmentMessageContent } from "../../domain/logic/mention-segmenter";
+import { firstHttpUrl, segmentMessageContent } from "../../domain/logic/mention-segmenter";
+import { linkPreviewFor, type LinkPreview } from "../link-preview";
 import { dmDisplayName } from "../../domain/logic/dm-display";
 import { memberNameColor } from "../../domain/logic/roster-grouping";
+import { paletteColor } from "../../domain/logic/user-palette";
 import type { Channel, ChannelMyPermissions, DmChannel, ForwardInfo, Message, ReplyInfo } from "../../types";
 import { REACTION_CATALOG, REACTION_GLYPH_BY_SLUG } from "../../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
@@ -83,6 +85,16 @@ function dmViewChannel(dm: DmChannel, selfUsername: string): Channel {
   };
 }
 
+/** oak's reply-bar preview: the text with newlines flattened, else the first
+ *  attachment's file name (attachment-only replies preview the file, not emptiness). */
+function replyPreviewOf(message: Message): string {
+  const flattened = (message.content ?? "").replaceAll("\n", " ").trim();
+  if (flattened.length > 0) {
+    return flattened.slice(0, 100);
+  }
+  return message.attachments[0]?.fileName ?? "";
+}
+
 export function ChatPane({ session }: { session: ConnectionSession }): React.JSX.Element {
   const channels = useStore(session.channelStore, (channels) => channels);
   const activeChannelId = useStore(appStore, (state) => state.activeChannelId);
@@ -120,6 +132,13 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
   const [selection, setSelection] = useState<ReadonlySet<number>>(new Set());
   const [staged, setStaged] = useState<readonly StagedFile[]>([]);
   const [dragOver, setDragOver] = useState(false);
+  // oak: overflow past the cap reports a closing note row ("N more skipped — max 10");
+  // the upload spinner reuses the staging box while attachments are being sent.
+  const [capNote, setCapNote] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [reactedBy, setReactedBy] = useState<{ x: number; y: number; names: readonly string[] } | null>(null);
+  const reactedByRef = useRef<HTMLDivElement | null>(null);
+  useOutsideDismiss(reactedByRef, () => setReactedBy(null));
 
   useEffect(() => {
     if (activeChatId === null) {
@@ -131,6 +150,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
     setSelectionMode(false);
     setSelection(new Set());
     setStaged([]);
+    setCapNote(null);
     session.playback.stop(); // one sound at a time — leaving the channel silences it
     session.loadHistory(activeChatId).catch((error: unknown) => {
       setHistoryError(error instanceof Error ? error.message : String(error));
@@ -146,22 +166,25 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
     if (channelPermissions?.attachFiles === false) {
       return; // no ATTACH_FILES — staging stays empty, the gate line explains
     }
-    setStaged((previous) => {
-      const known = new Set(previous.map((entry) => `${entry.file.name}:${entry.file.size}`));
-      const fresh: StagedFile[] = [];
-      for (const file of fileList) {
-        if (previous.length + fresh.length >= MAX_STAGED_FILES) {
-          break;
-        }
-        const fingerprint = `${file.name}:${file.size}`;
-        if (known.has(fingerprint)) {
-          continue;
-        }
-        known.add(fingerprint);
-        fresh.push({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, file });
+    const known = new Set(staged.map((entry) => `${entry.file.name}:${entry.file.size}`));
+    const fresh: StagedFile[] = [];
+    let skippedByCap = 0;
+    for (const file of fileList) {
+      if (staged.length + fresh.length >= MAX_STAGED_FILES) {
+        skippedByCap += 1; // oak: the overflow is REPORTED, not silently dropped
+        continue;
       }
-      return fresh.length > 0 ? [...previous, ...fresh] : previous;
-    });
+      const fingerprint = `${file.name}:${file.size}`;
+      if (known.has(fingerprint)) {
+        continue;
+      }
+      known.add(fingerprint);
+      fresh.push({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, file });
+    }
+    setCapNote(skippedByCap > 0 ? `${skippedByCap} more skipped — max ${MAX_STAGED_FILES}` : null);
+    if (fresh.length > 0) {
+      setStaged([...staged, ...fresh]);
+    }
   };
 
   // Focus-regain acks the open channel (oak's ack-on-focus).
@@ -263,11 +286,12 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
         setEditing={setEditing}
         onMenu={setMenu}
         onPicker={setPicker}
+        onReactedBy={setReactedBy}
       />
       {replyTo !== null ? (
         <div className="reply-bar">
-          <span>Replying to <strong>{replyTo.authorUsername}</strong></span>
-          <span className="reply-preview">{(replyTo.content ?? "").slice(0, 80)}</span>
+          <span>Replying to <strong>@{replyTo.authorUsername}</strong></span>
+          <span className="reply-preview">{replyPreviewOf(replyTo)}</span>
           <button className="ghost" onClick={() => setReplyTo(null)}>×</button>
         </div>
       ) : null}
@@ -279,35 +303,49 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
               <span className="file-name">{entry.file.name}</span>
               <button className="ghost staging-remove" onClick={() => {
                 setStaged((previous) => previous.filter((candidate) => candidate.id !== entry.id));
+                setCapNote(null);
               }}>×</button>
             </div>
           ))}
+          {uploading ? (
+            <div className="staging-row spinner-row">
+              <span className="icon mdi-refresh" />
+              <span className="file-name">Uploading…</span>
+            </div>
+          ) : null}
+          {capNote !== null ? <div className="staging-skip-note">{capNote}</div> : null}
         </div>
       ) : null}
-      {permissions === null ? (
-        <div className="composer-gate">…</div>
-      ) : permissions.sendMessages ? (
+      {/* oak's applyComposerGating: without SEND_MESSAGES the whole card disappears
+          (no gate line); without ATTACH_FILES only the paperclip hides (the composer
+          itself stays). DMs are always fully writable. */}
+      {permissions !== null && permissions.sendMessages ? (
         <Composer
           session={session}
           placeholder={`Message ${chatTitlePrefix}${viewChannel.name}${permissions.attachFiles ? " — paste or drop files to attach" : ""}`}
           attachEnabled={permissions.attachFiles}
           allowEmptySend={staged.length > 0}
+          onCancelReply={replyTo !== null ? () => setReplyTo(null) : null}
           onPaste={(files) => addStagedFiles(files)}
           onSend={(content) => {
             const files = staged.map((entry) => entry.file);
+            if (files.length > 0) {
+              setUploading(true); // text-only sends are instant — no spinner (oak)
+            }
             const promise = files.length > 0
               ? session.sendMessageWithFiles(viewChannel.id, files, content.length > 0 ? content : null, replyTo?.id)
               : session.sendMessage(viewChannel.id, content, replyTo?.id);
             const clearing = promise.then(() => {
               setStaged([]);
+              setCapNote(null);
+            }).finally(() => {
+              setUploading(false);
             });
             setReplyTo(null);
             return clearing;
           }}
         />
-      ) : (
-        <div className="composer-gate">You do not have permission to send messages in this channel.</div>
-      )}
+      ) : null}
 
       {menu !== null ? (
         <ContextMenu
@@ -320,6 +358,22 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
           })}
           onClose={() => setMenu(null)}
         />
+      ) : null}
+      {reactedBy !== null ? (
+        <div
+          ref={reactedByRef}
+          className="reacted-by"
+          style={{
+            left: Math.max(8, Math.min(reactedBy.x, window.innerWidth - 200)),
+            top: Math.min(reactedBy.y, window.innerHeight - 8 - Math.min(reactedBy.names.length, 5) * 22 - 16),
+          }}
+        >
+          {reactedBy.names.length === 0 ? (
+            <div className="reacted-by-name">Nobody yet</div>
+          ) : (
+            reactedBy.names.map((name) => <div key={name} className="reacted-by-name">{name}</div>)
+          )}
+        </div>
       ) : null}
       {picker !== null ? (
         <div
@@ -414,6 +468,7 @@ interface MessageListProps {
   setEditing(message: Message | null): void;
   onMenu(state: { message: Message; x: number; y: number }): void;
   onPicker(state: { message: Message; x: number; y: number }): void;
+  onReactedBy(state: { x: number; y: number; names: readonly string[] }): void;
 }
 
 function MessageList(props: MessageListProps): React.JSX.Element {
@@ -679,6 +734,7 @@ function MessageList(props: MessageListProps): React.JSX.Element {
             setEditing={props.setEditing}
             onMenu={props.onMenu}
             onPicker={props.onPicker}
+            onReactedBy={props.onReactedBy}
           />
         </>
       )}
@@ -703,6 +759,7 @@ interface MessageRowProps {
   setEditing(message: Message | null): void;
   onMenu(state: { message: Message; x: number; y: number }): void;
   onPicker(state: { message: Message; x: number; y: number }): void;
+  onReactedBy(state: { x: number; y: number; names: readonly string[] }): void;
 }
 
 function MessageRow(props: MessageRowProps): React.JSX.Element {
@@ -722,6 +779,65 @@ function MessageRow(props: MessageRowProps): React.JSX.Element {
     void session.editMessage(channel.id, message.id, trimmed).catch(() => undefined);
     props.setEditing(null);
   };
+
+  // oak's canAddReactions: DM participants always may; server channels need ADD_REACTIONS.
+  const dmContext = channel.type === "DM" || channel.type === "GROUP_DM";
+  const canReact = dmContext || session.permissionStore.can("ADD_REACTIONS");
+
+  const body = editing ? (
+    <textarea
+      className="inline-editor"
+      autoFocus
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commitEdit}
+      onKeyDown={(event) => {
+        // Same settings-owned Enter semantics as the composer (M7).
+        const plainEnter = event.key === "Enter" && !event.ctrlKey && !event.shiftKey && !event.altKey;
+        const ctrlEnter = event.key === "Enter" && event.ctrlKey && !event.shiftKey && !event.altKey;
+        const shiftEnter = event.key === "Enter" && event.shiftKey && !event.altKey;
+        const commitOnThisEnter = settingsStore.getSnapshot().ctrlEnterSends ? ctrlEnter : plainEnter;
+        const newlineOnThisEnter = settingsStore.getSnapshot().ctrlEnterSends ? plainEnter || shiftEnter : ctrlEnter || shiftEnter;
+        if (commitOnThisEnter) {
+          event.preventDefault();
+          commitEdit();
+        } else if (newlineOnThisEnter) {
+          event.preventDefault();
+          const textarea = event.currentTarget;
+          textarea.setRangeText("\n", textarea.selectionStart, textarea.selectionEnd, "end");
+          setDraft(textarea.value);
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          props.setEditing(null);
+        }
+      }}
+    />
+  ) : (
+    <div className="message-content">
+      {segmentMessageContent(message.content, message.mentions).map((segment, segmentIndex) =>
+        segment.kind === "mention"
+          ? <span key={segmentIndex} className="mention">{segment.text}</span>
+          : segment.kind === "link"
+            ? (
+              <a
+                key={segmentIndex}
+                className="body-link"
+                href={segment.url}
+                onClick={(event) => {
+                  event.preventDefault(); // the app never navigates — the system browser opens
+                  void window.spaceMedia?.openExternal(segment.url);
+                }}
+              >
+                {segment.text}
+              </a>
+            )
+            : <span key={segmentIndex}>{segment.text}</span>,
+      )}
+      {message.editedAt !== null ? <span className="message-edited">(edited)</span> : null}
+    </div>
+  );
+  const attachmentView = <AttachmentView session={session} message={message} />;
+  const previewUrl = firstHttpUrl(message.content); // oak: only the FIRST link gets a card
 
   return (
     <div
@@ -765,17 +881,19 @@ function MessageRow(props: MessageRowProps): React.JSX.Element {
           >
             <span className="icon mdi-reply" />
           </button>
-          <button
-            className="hover-button"
-            title="Add reaction"
-            onClick={(event) => {
-              event.stopPropagation();
-              const rect = event.currentTarget.getBoundingClientRect();
-              props.onPicker({ message, x: rect.left, y: rect.bottom + 4 });
-            }}
-          >
-            <span className="icon mdi-emoticon" />
-          </button>
+          {canReact ? (
+            <button
+              className="hover-button"
+              title="Add reaction"
+              onClick={(event) => {
+                event.stopPropagation();
+                const rect = event.currentTarget.getBoundingClientRect();
+                props.onPicker({ message, x: rect.left, y: rect.bottom + 4 });
+              }}
+            >
+              <span className="icon mdi-emoticon" />
+            </button>
+          ) : null}
         </div>
       ) : null}
       {startsGroup ? (
@@ -790,47 +908,25 @@ function MessageRow(props: MessageRowProps): React.JSX.Element {
             <span className="message-time">{formatHeaderStamp(toEpochMs(message.createdAt), Date.now(), settingsStore.getSnapshot().relativeDates)}</span>
           </div>
         ) : null}
-        {message.forward !== null ? <ForwardCard forward={message.forward} /> : null}
-        {message.reply !== null ? <QuoteCard level={message.reply} depth={0} onJump={actions.jumpTo} /> : null}
-        {editing ? (
-          <textarea
-            className="inline-editor"
-            autoFocus
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onBlur={commitEdit}
-            onKeyDown={(event) => {
-              // Same settings-owned Enter semantics as the composer (M7).
-              const plainEnter = event.key === "Enter" && !event.ctrlKey && !event.shiftKey && !event.altKey;
-              const ctrlEnter = event.key === "Enter" && event.ctrlKey && !event.shiftKey && !event.altKey;
-              const shiftEnter = event.key === "Enter" && event.shiftKey && !event.altKey;
-              const commitOnThisEnter = settingsStore.getSnapshot().ctrlEnterSends ? ctrlEnter : plainEnter;
-              const newlineOnThisEnter = settingsStore.getSnapshot().ctrlEnterSends ? plainEnter || shiftEnter : ctrlEnter || shiftEnter;
-              if (commitOnThisEnter) {
-                event.preventDefault();
-                commitEdit();
-              } else if (newlineOnThisEnter) {
-                event.preventDefault();
-                const textarea = event.currentTarget;
-                textarea.setRangeText("\n", textarea.selectionStart, textarea.selectionEnd, "end");
-                setDraft(textarea.value);
-              } else if (event.key === "Escape") {
-                event.preventDefault();
-                props.setEditing(null);
-              }
-            }}
-          />
+        {message.forward !== null && !editing ? (
+          /* oak: a forward renders the BODY + attachments INSIDE the card — the
+             forwarded content reads as the quoted original, not as a plain
+             message under a one-line marker. The inline editor keeps the flat order. */
+          <ForwardCard forward={message.forward}>
+            {body}
+            {attachmentView}
+            {previewUrl !== null ? <LinkPreviewCard url={previewUrl} /> : null}
+          </ForwardCard>
         ) : (
-          <div className="message-content">
-            {segmentMessageContent(message.content, message.mentions).map((segment, segmentIndex) =>
-              segment.kind === "mention"
-                ? <span key={segmentIndex} className="mention">{segment.text}</span>
-                : <span key={segmentIndex}>{segment.text}</span>,
-            )}
-            {message.editedAt !== null ? <span className="message-edited">(edited)</span> : null}
-          </div>
+          <>
+            {message.reply !== null
+              ? <QuoteCard level={message.reply} depth={0} clickable onJump={actions.jumpTo} />
+              : null}
+            {body}
+            {previewUrl !== null ? <LinkPreviewCard url={previewUrl} /> : null}
+            {attachmentView}
+          </>
         )}
-        <AttachmentView session={session} message={message} />
         {message.reactions.length > 0 ? (
           <div className="reactions-row">
             {message.reactions.map((summary) => {
@@ -842,6 +938,14 @@ function MessageRow(props: MessageRowProps): React.JSX.Element {
                   className={"reaction-chip" + (mine ? " mine" : "")}
                   title={summary.usernames.join(", ")}
                   onClick={() => void session.toggleReaction(channel.id, message.id, summary.reaction, mine).catch(() => undefined)}
+                  onContextMenu={(event) => {
+                    // oak's showReactedByMenu: right-click a chip to see who reacted.
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (!actions.selectionMode) {
+                      props.onReactedBy({ x: event.clientX, y: event.clientY, names: summary.usernames });
+                    }
+                  }}
                 >
                   {REACTION_GLYPH_BY_SLUG[summary.reaction] ?? summary.reaction} {summary.count}
                 </button>
@@ -854,25 +958,121 @@ function MessageRow(props: MessageRowProps): React.JSX.Element {
   );
 }
 
-function QuoteCard({ level, depth, onJump }: { level: ReplyInfo; depth: number; onJump: (messageId: number) => void }): React.JSX.Element {
+function QuoteCard({ level, depth, clickable, onJump }: {
+  level: ReplyInfo;
+  depth: number;
+  /** Live tree rows jump on click; FROZEN snapshots (inside a forward) never do. */
+  clickable: boolean;
+  onJump: (messageId: number) => void;
+}): React.JSX.Element {
   if (level.deleted) {
     return <div className="quote-card deleted">Original message deleted</div>;
   }
   return (
-    <div className="quote-card">
-      <span className="quote-author" onClick={() => onJump(level.messageId)}>{level.authorUsername}</span>
-      <span className="quote-preview">{level.preview}</span>
+    <div className={"quote-card" + (clickable ? " live" : "")}>
+      {/* oak's quote level: [reply glyph]["Reply to" bold][nick in palette color] →
+          optional nested forward context → nested reply card → one-line preview. */}
+      <div
+        className="quote-head"
+        onClick={clickable ? () => onJump(level.messageId) : undefined}
+      >
+        <span className="icon mdi-reply" />
+        <span className="quote-prefix">Reply to</span>
+        <span className="quote-author" style={{ color: paletteColor(level.authorUsername) }}>{level.authorUsername}</span>
+      </div>
       {level.forward !== null ? <span className="quote-forward">↗ from {level.forward.authorUsername}</span> : null}
-      {level.reply !== null && depth < QUOTE_DEPTH_MAX ? <QuoteCard level={level.reply} depth={depth + 1} onJump={onJump} /> : null}
+      {level.reply !== null && depth < QUOTE_DEPTH_MAX
+        ? <QuoteCard level={level.reply} depth={depth + 1} clickable={clickable} onJump={onJump} />
+        : null}
+      <span className="quote-preview">{level.preview}</span>
     </div>
   );
 }
 
-function ForwardCard({ forward }: { forward: ForwardInfo }): React.JSX.Element {
+/**
+ * oak's forward card: row 1 — [forward glyph]["Forwarded from"][server → #channel]
+ * (+ yellow " · unverified" for cross-instance snapshots); row 2 — the ORIGINAL
+ * author (palette color) + their timestamp; the frozen quote tree and then the
+ * BODY + attachments live INSIDE the card — a forward reads as the quoted original.
+ */
+function ForwardCard({ forward, children }: { forward: ForwardInfo; children: React.ReactNode }): React.JSX.Element {
   return (
     <div className="forward-card">
-      <span className="quote-author">Forwarded from {forward.authorUsername}</span>
-      <span className="quote-meta">{forward.serverName} → #{forward.channelName}{forward.trusted ? "" : " · unverified"}</span>
+      <div className="forward-head">
+        <span className="icon mdi-forward" />
+        <span className="forward-prefix">Forwarded from</span>
+        <span className="forward-origin">{forward.serverName} → #{forward.channelName}</span>
+        {!forward.trusted ? <span className="forward-unverified"> · unverified</span> : null}
+      </div>
+      <div className="forward-author-row">
+        <span className="forward-author" style={{ color: paletteColor(forward.authorUsername) }}>{forward.authorUsername}</span>
+        <span className="forward-time">{formatHeaderStamp(toEpochMs(forward.createdAt), Date.now(), settingsStore.getSnapshot().relativeDates)}</span>
+      </div>
+      {forward.reply !== null ? <QuoteCard level={forward.reply} depth={1} clickable={false} onJump={() => undefined} /> : null}
+      {children}
+    </div>
+  );
+}
+
+/**
+ * oak's OG preview card: the FIRST link of a message expands into a page-embed —
+ * title + description (≤2 lines) + a 72×72 thumbnail, click opens the system
+ * browser. Async with an identity guard (a late callback must not paint a row
+ * the virtual list has reused); failures render nothing — the link stays a link.
+ */
+function LinkPreviewCard({ url }: { url: string }): React.JSX.Element | null {
+  const [preview, setPreview] = useState<LinkPreview | null | undefined>(undefined);
+  const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPreview(undefined);
+    setThumbnailUrl(null);
+    void linkPreviewFor(url).then((result) => {
+      if (!cancelled) {
+        setPreview(result);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [url]);
+
+  useEffect(() => {
+    const imageUrl = preview?.imageUrl ?? null;
+    if (imageUrl === null) {
+      return;
+    }
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    void window.spaceNet?.fetchImage(imageUrl).then((image) => {
+      if (cancelled || image === null) {
+        return;
+      }
+      objectUrl = URL.createObjectURL(new Blob([image.data as BlobPart])); // TS: Uint8Array<ArrayBufferLike> ≠ BlobPart
+      setThumbnailUrl(objectUrl);
+    });
+    return () => {
+      cancelled = true;
+      if (objectUrl !== null) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [preview?.imageUrl]);
+
+  if (preview === null || preview === undefined) {
+    return null; // loading or a dead/title-less page — nothing until parsed
+  }
+  return (
+    <div
+      className="link-preview-card"
+      onClick={() => void window.spaceMedia?.openExternal(url)}
+    >
+      <div className="link-preview-text">
+        <span className="link-preview-title">{preview.title}</span>
+        {preview.description !== null ? <span className="link-preview-description">{preview.description}</span> : null}
+      </div>
+      {thumbnailUrl !== null ? <img className="link-preview-thumb" src={thumbnailUrl} alt="" /> : null}
     </div>
   );
 }
@@ -881,11 +1081,13 @@ function ForwardCard({ forward }: { forward: ForwardInfo }): React.JSX.Element {
 // Composer
 // ---------------------------------------------------------------------------
 
-function Composer({ session, placeholder, attachEnabled, allowEmptySend, onPaste, onSend }: {
+function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCancelReply, onPaste, onSend }: {
   session: ConnectionSession;
   placeholder: string;
   attachEnabled: boolean;
   allowEmptySend: boolean;
+  /** oak: ESC in the field cancels an armed reply (consumed so the field keeps focus); null = nothing armed. */
+  onCancelReply: (() => void) | null;
   onPaste(files: readonly File[]): void;
   onSend: (content: string) => Promise<void>;
 }): React.JSX.Element {
@@ -964,12 +1166,15 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onPaste
         </div>
       ) : null}
       <div className="composer-card">
-        <button
-          className="composer-attach"
-          title={attachEnabled ? "Attach files" : "Attaching is disabled here"}
-          disabled={!attachEnabled}
-          onClick={() => fileInputRef.current?.click()}
-        ><span className="icon mdi-plus" /></button>
+        {/* oak's applyComposerGating: without ATTACH_FILES the paperclip HIDES
+            (never disables); the composer itself stays. Glyph = Icons.attach(). */}
+        {attachEnabled ? (
+          <button
+            className="composer-attach"
+            title="Attach files"
+            onClick={() => fileInputRef.current?.click()}
+          ><span className="icon mdi-paperclip" /></button>
+        ) : null}
         <input
           ref={fileInputRef}
           type="file"
@@ -996,6 +1201,11 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onPaste
             }
           }}
           onKeyDown={(event) => {
+          if (event.key === "Escape" && onCancelReply !== null) {
+            event.preventDefault();
+            onCancelReply();
+            return;
+          }
           if (mentionQuery !== null && mentionCandidates.length > 0) {
             if (event.key === "ArrowDown") {
               event.preventDefault();

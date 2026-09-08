@@ -1,4 +1,4 @@
-import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, screen, session, shell } from "electron";
+import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, net, screen, session, shell } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -201,6 +201,36 @@ ipcMain.handle("space-shell:openExternal", (_event, url: unknown) => {
   }
   void shell.openExternal(url);
   return true;
+});
+
+// OG link-preview fetching (oak's LinkPreviewService counterpart). The renderer's
+// own fetch is CORS-bound; the MAIN process net stack is not, so page HTML and
+// preview images travel through this channel. Hard limits: http(s) only, a byte
+// cap per kind, an abort timeout. Redirects resolve — the FINAL url comes back
+// (relative og:image resolution needs it).
+const NET_FETCH_TIMEOUT_MS = 8000;
+const NET_TEXT_CAP_BYTES = 512 * 1024;
+const NET_IMAGE_CAP_BYTES = 2 * 1024 * 1024;
+ipcMain.handle("space-net:fetch", async (_event, url: unknown, kind: unknown) => {
+  if (typeof url !== "string" || !/^https?:\/\//.test(url) || (kind !== "text" && kind !== "image")) {
+    return null;
+  }
+  try {
+    const response = await net.fetch(url, { signal: AbortSignal.timeout(NET_FETCH_TIMEOUT_MS) });
+    if (!response.ok) {
+      return null;
+    }
+    const cap = kind === "text" ? NET_TEXT_CAP_BYTES : NET_IMAGE_CAP_BYTES;
+    const buffer = new Uint8Array(await response.arrayBuffer());
+    return {
+      finalUrl: response.url || url,
+      contentType: response.headers.get("content-type") ?? "",
+      // Over-cap responses are truncated, not fatal — the OG parser only needs <head>.
+      data: buffer.slice(0, cap),
+    };
+  } catch {
+    return null;
+  }
 });
 
 // Save dialog for downloads (lightbox "Save").

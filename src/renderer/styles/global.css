@@ -696,7 +696,9 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 .virtual-list { flex: 1; overflow-y: auto; overflow-anchor: none; position: relative; }
 
 .message-row.highlighted { background: rgba(88, 101, 242, 0.15); border-radius: 4px; }
-.message-row.selected { background: var(--sp-selected); border-radius: 4px; }
+/* oak: selection tint = #3c3f8c (the same blurple tint as the jump flash) —
+   doubled with :hover so row hover can't grey a selected row back out. */
+.message-row.selected, .message-row.selected:hover { background: #3c3f8c; border-radius: 4px; }
 
 .new-messages-divider {
   display: flex;
@@ -738,6 +740,33 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   padding: 0 2px;
   font-weight: 600;
 }
+.message-content .body-link { color: #00a8fc; text-decoration: underline; cursor: pointer; }
+
+/* oak's OG preview card: title + description (≤2 lines) + 72×72 thumbnail,
+   click → system browser; shows nothing while loading or on failure. */
+.link-preview-card {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  background: var(--sp-surface);
+  border-radius: 8px;
+  padding: 8px;
+  margin: 2px 0 4px;
+  max-width: 440px;
+  cursor: pointer;
+  min-width: 0;
+}
+.link-preview-text { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.link-preview-title { font-size: 13px; font-weight: 700; color: var(--sp-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.link-preview-description {
+  font-size: 12px;
+  color: var(--sp-text-dim);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.link-preview-thumb { width: 72px; height: 72px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
 
 .quote-card {
   background: var(--sp-surface);
@@ -747,16 +776,25 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   margin: 2px 0 4px;
   font-size: 12px;
   display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  align-items: baseline;
-  cursor: pointer;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
 }
-.quote-card .quote-author { font-weight: 700; color: var(--sp-text); }
+/* oak: the head row = [reply glyph]["Reply to" bold][nick in palette color],
+   all 12px #80848e; only LIVE quote trees jump (frozen snapshots keep default cursor). */
+.quote-head { display: flex; gap: 4px; align-items: baseline; color: var(--sp-text-dim); min-width: 0; }
+.quote-head .icon { font-size: 13px; }
+.quote-prefix { color: var(--sp-text-dim); font-weight: 700; }
+.quote-author { font-weight: 700; }
+.quote-card.live .quote-head { cursor: pointer; }
 .quote-card .quote-preview { color: var(--sp-text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .quote-card .quote-forward { color: var(--sp-text-dim); font-size: 11px; font-weight: 700; }
 .quote-card.deleted { font-style: italic; color: var(--sp-text-dim); cursor: default; }
 
+/* oak's forward card (structure): two rows — origin line, then original
+   author+time, with the frozen quote tree and the body+attachments INSIDE.
+   DELIBERATE deviation (user call): oak paints forwards with the SAME blurple
+   bar as replies; here the bar is AMBER so a forward is told apart at a glance. */
 .forward-card {
   background: var(--sp-surface);
   border-left: 3px solid var(--sp-yellow);
@@ -765,11 +803,19 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   margin: 2px 0 4px;
   font-size: 12px;
   display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  align-items: baseline;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
-.forward-card .quote-meta { color: var(--sp-text-dim); font-size: 11px; font-weight: 700; }
+.forward-head { display: flex; gap: 4px; align-items: baseline; color: var(--sp-text-dim); flex-wrap: wrap; }
+.forward-head .icon { font-size: 12px; }
+.forward-prefix { font-weight: 700; color: var(--sp-text-dim); }
+.forward-origin { color: var(--sp-text-dim); font-size: 11px; }
+.forward-unverified { color: var(--sp-yellow); font-size: 11px; }
+.forward-author-row { display: flex; gap: 6px; align-items: baseline; }
+.forward-author { font-weight: 700; }
+.forward-time { color: var(--sp-text-dim); font-size: 11px; }
+.forward-card > .message-content { margin-top: 2px; }
 
 .reactions-row { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; padding: 2px 0 0; }
 .reaction-chip {
@@ -926,6 +972,25 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 .staging-row .file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .staging-remove { padding: 0 6px; }
 .staging-glyph { flex-shrink: 0; }
+/* oak: overflow past the cap reports a closing note row; uploads spin here. */
+.staging-skip-note { font-size: 12px; color: var(--sp-text-dim); padding: 2px 0 0 26px; }
+.spinner-row .icon { animation: sp-spin 900ms linear infinite; }
+@keyframes sp-spin { to { transform: rotate(360deg); } }
+
+/* oak's showReactedByMenu: right-click a reaction chip — one name per line,
+   scrollable past 5 rows, "Nobody yet" for an empty list. */
+.reacted-by {
+  position: fixed;
+  z-index: 60;
+  background: var(--sp-surface);
+  border: 1px solid var(--sp-control);
+  border-radius: 8px;
+  padding: 6px 10px;
+  min-width: 140px;
+  max-height: 126px;
+  overflow-y: auto;
+}
+.reacted-by-name { font-size: 13px; color: var(--sp-text); padding: 2px 0; }
 
 .attachment-block { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
 .mosaic-row { display: flex; }

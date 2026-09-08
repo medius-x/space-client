@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { segmentMessageContent } from "../src/domain/logic/mention-segmenter";
+import { firstHttpUrl, segmentMessageContent } from "../src/domain/logic/mention-segmenter";
 import {
   decideNotification,
   messageHasEveryoneHere,
@@ -51,6 +51,37 @@ describe("segmentMessageContent", () => {
     expect(segmentMessageContent(null, [])).toEqual([]);
     expect(segmentMessageContent(null, [{ type: "USER", id: 1, name: "a", start: 0, end: 2 }])).toEqual([]);
     expect(buildReplyPreview(null)).toBe("");
+  });
+
+  it("http(s) words in the text gaps become link segments", () => {
+    const segments = segmentMessageContent("see https://example.com/x and http://foo.io/y please", []);
+    expect(segments.map((segment) => segment.kind)).toEqual(["text", "link", "text", "link", "text"]);
+    expect(segments[1]).toMatchObject({ kind: "link", url: "https://example.com/x" });
+    expect(segments[3]).toMatchObject({ kind: "link", url: "http://foo.io/y" });
+  });
+
+  it("trailing punctuation stays OUT of the link (oak's LinkHighlighter)", () => {
+    const segments = segmentMessageContent("go to https://example.com/a, then stop.", []);
+    expect(segments[1]).toMatchObject({ kind: "link", url: "https://example.com/a" });
+    expect(segments[2]).toMatchObject({ kind: "text", text: ", then stop." });
+  });
+
+  it("a mention always wins an intersection — links never cross mention spans", () => {
+    const segments = segmentMessageContent("look https://x.io/@alice now", [
+      { type: "USER", id: 1, name: "alice", start: 18, end: 24 },
+    ]);
+    expect(segments[1]).toMatchObject({ kind: "link", url: "https://x.io/" });
+    expect(segments[2]).toMatchObject({ kind: "mention", text: "@alice" });
+  });
+
+  it("bare domains without a scheme stay plain text", () => {
+    expect(segmentMessageContent("visit example.com today", [])).toEqual([{ kind: "text", text: "visit example.com today" }]);
+  });
+
+  it("firstHttpUrl picks the first link without trailing punctuation", () => {
+    expect(firstHttpUrl("a https://one.io/x, b https://two.io/y")).toBe("https://one.io/x");
+    expect(firstHttpUrl("no links here")).toBeNull();
+    expect(firstHttpUrl(null)).toBeNull();
   });
 });
 

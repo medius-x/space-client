@@ -57,6 +57,17 @@ contextBridge.exposeInMainWorld("spaceMedia", {
   },
 });
 
+/** Cross-origin fetch bridge for OG link previews (M7, oak's LinkPreviewService):
+ *  the renderer's own fetch is CORS-bound, the main process net stack is not. */
+contextBridge.exposeInMainWorld("spaceNet", {
+  fetchText(url: string): Promise<{ finalUrl: string; contentType: string; data: Uint8Array } | null> {
+    return ipcRenderer.invoke("space-net:fetch", url, "text");
+  },
+  fetchImage(url: string): Promise<{ finalUrl: string; contentType: string; data: Uint8Array } | null> {
+    return ipcRenderer.invoke("space-net:fetch", url, "image");
+  },
+});
+
 /** Capture-picker bridge (M4): desktop sources with previews + the grant hint. */
 contextBridge.exposeInMainWorld("spaceCapture", {
   sources(): Promise<unknown> {
