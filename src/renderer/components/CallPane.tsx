@@ -24,7 +24,7 @@ import {
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import { Modal } from "./Modal";
 import { SharePickerModal } from "./SharePickerModal";
-import { HeadphonesOffIcon, TriangleWaveIcon } from "./MdiSvg";
+import { NsEngineMenu } from "./VoiceRoom";
 import { settingsStore } from "../runtime";
 
 function formatSeconds(total: number): string {
@@ -57,6 +57,7 @@ export function CallPane({ session }: { session: ConnectionSession }): React.JSX
   const [deafened, setDeafened] = useState(false);
   const [micOn, setMicOn] = useState(true);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [nsMenu, setNsMenu] = useState<{ x: number; y: number } | null>(null);
   const peerTileMedia = peerScreenOn || peerCameraOn;
 
   // The imperative peer-video hook (the runtime routes the remote track here).
@@ -131,7 +132,7 @@ export function CallPane({ session }: { session: ConnectionSession }): React.JSX
             ) : null}
             {deafened ? (
               <span className="voice-mark voice-mark-self" title="You are deafened">
-                <HeadphonesOffIcon size={11} />
+                <span className="icon mdi-headphones-off" />
               </span>
             ) : null}
           </div>
@@ -151,7 +152,7 @@ export function CallPane({ session }: { session: ConnectionSession }): React.JSX
             ) : null}
             {peerDeafenedOn ? (
               <span className="voice-mark voice-mark-self" title="Peer deafened themselves">
-                <HeadphonesOffIcon size={11} />
+                <span className="icon mdi-headphones-off" />
               </span>
             ) : null}
           </div>
@@ -200,17 +201,19 @@ export function CallPane({ session }: { session: ConnectionSession }): React.JSX
             setMicOn(isCallMicEnabled());
           }}
         >
-          <HeadphonesOffIcon size={16} />
+          {/* oak's deafen toggle swaps the glyph: plain headphones while hearing,
+              crossed-out only while deafened (room-call parity with the voice bar). */}
+          <span className={"icon " + (deafened ? "mdi-headphones-off" : "mdi-headphones")} />
         </button>
         <button className={"voice-toggle icon-button" + (callCameraOn ? " on" : "")} title={callCameraOn ? "Camera off" : "Camera"} onClick={() => void toggleCallCamera()}>
           <span className={"icon " + (callCameraOn ? "mdi-video" : "mdi-video-off")} />
         </button>
         <button
-          className={"voice-toggle icon-button" + (apmEnabled ? "" : " on")}
-          title={apmEnabled ? "Noise suppression: on — click to disable" : "Noise suppression: off — click to enable"}
-          onClick={() => settingsStore.apply({ apmEnabled: !apmEnabled })}
+          className={"voice-toggle icon-button" + (apmEnabled ? " on" : "")}
+          title={"Noise suppression: " + (apmEnabled ? "WebRTC (built-in)" : "Raw (off)")}
+          onClick={(event) => setNsMenu({ x: event.currentTarget.getBoundingClientRect().left, y: event.currentTarget.getBoundingClientRect().bottom + 4 })}
         >
-          <TriangleWaveIcon size={16} />
+          <span className="icon mdi-triangle-wave" />
         </button>
         <button
           className={"voice-toggle icon-button" + (callSharing ? " on" : "")}
@@ -224,6 +227,15 @@ export function CallPane({ session }: { session: ConnectionSession }): React.JSX
         </button>
       </div>
       {pickerOpen ? <SharePickerModal onClose={() => setPickerOpen(false)} onTarget={onPick} /> : null}
+      {nsMenu !== null ? (
+        <NsEngineMenu
+          apmEnabled={apmEnabled}
+          x={nsMenu.x}
+          y={nsMenu.y}
+          onPick={(next) => settingsStore.apply({ apmEnabled: next })}
+          onClose={() => setNsMenu(null)}
+        />
+      ) : null}
     </div>
   );
 }

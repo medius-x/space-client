@@ -81,6 +81,41 @@ export function ServerRail({ activeRecordId, session }: {
 }
 
 /**
+ * The server icon at ANY size (the settings preview reuses it): the avatar by
+ * stable key (live presigned URL for the active session) or the palette
+ * initials disc — squircle-clipped like the rail.
+ */
+export function ServerIconPreview({ session, size }: {
+  session: ConnectionSession;
+  size: number;
+}): React.JSX.Element {
+  const records = useStore(connectionDirectory, (allRecords) => allRecords);
+  const record = records.find((entry) => entry.id === session.recordId) ?? null;
+  const name = record?.cachedServerName ?? session.hostUrl().replace(/^https?:\/\//, "");
+  const liveAvatarUrl = session.serverProfile?.avatarUrl ?? null;
+  const iconUrl = useAttachmentImage(
+    session,
+    record?.cachedServerAvatarKey != null ? { key: record.cachedServerAvatarKey, url: liveAvatarUrl } : null,
+  );
+  return (
+    <span className="rail-preview" style={{ width: size, height: size }}>
+      <ServerIconBody iconUrl={iconUrl} name={name} />
+    </span>
+  );
+}
+
+/** The squircle-clipped icon content shared by the rail rows and the preview. */
+function ServerIconBody({ iconUrl, name }: { iconUrl: string | null; name: string }): React.JSX.Element {
+  return iconUrl !== null ? (
+    <img className="rail-avatar" src={iconUrl} alt={name} draggable={false} />
+  ) : (
+    <span className="rail-avatar rail-avatar-fallback" style={{ background: paletteColor(name) }}>
+      {serverInitials(name)}
+    </span>
+  );
+}
+
+/**
  * One server row: the 72×56 click wrap (oak's ServerNode) carrying the white
  * selection pill at the rail's left edge, the 48×48 squircle icon and the
  * unread badge at its bottom-right corner.
@@ -117,13 +152,7 @@ function RailRow({ record, active, expired, busy, session, onActivate, onMenu }:
     >
       {active ? <span className="rail-pill" /> : null}
       <div className={"rail-icon" + (expired ? " expired" : "")}>
-        {iconUrl !== null ? (
-          <img className="rail-avatar" src={iconUrl} alt={name} draggable={false} />
-        ) : (
-          <span className="rail-avatar rail-avatar-fallback" style={{ background: paletteColor(name) }}>
-            {serverInitials(name)}
-          </span>
-        )}
+        <ServerIconBody iconUrl={iconUrl} name={name} />
       </div>
     </div>
   );

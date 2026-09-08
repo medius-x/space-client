@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { useStore } from "../hooks/useStore";
-import { appStore, connectionDirectory, joinVoiceGuarded, setActiveChannel } from "../runtime";
+import { appStore, connectionDirectory, joinVoiceGuarded, setActiveChannel, toggleRoomView } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { Channel } from "../../types";
 import { MANAGE_CHANNELS_PERMISSION } from "../../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { Modal } from "./Modal";
 import { Avatar } from "./Avatar";
+import { ChannelGlyph } from "./ChannelGlyph";
 import { VoiceMarks } from "./VoiceRoom";
 import { DmSidebar } from "./DmSidebar";
 
@@ -42,6 +43,9 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
   const onVoiceChannelClick = (channel: Channel) => {
     if (channel.id !== activeVoiceChannelId) {
       joinVoiceGuarded(channel); // asks about ending a live call first
+    } else {
+      // oak: clicking the room you are ALREADY in opens (toggles) its room view.
+      toggleRoomView();
     }
   };
   const openMenu = (channel: Channel) => (event: React.MouseEvent) => {
@@ -83,7 +87,7 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
                 onClick={() => onTextChannelClick(channel)}
                 onContextMenu={openMenu(channel)}
               >
-                <span className="icon mdi-pound channel-glyph" />
+                <ChannelGlyph voice={false} locked={channel.locked} />
                 <span className="channel-name">{channel.name}</span>
                 {unread !== undefined && unread.unreadCount > 0 ? (
                   <span className={"channel-badge" + (unread.mentionCount > 0 ? " mention" : "")}>
@@ -102,7 +106,7 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
                 onClick={() => onVoiceChannelClick(channel)}
                 onContextMenu={openMenu(channel)}
               >
-                <span className="icon mdi-volume-high channel-glyph" />
+                <ChannelGlyph voice locked={channel.locked} />
                 <span className="channel-name">{channel.name}</span>
               </div>
               {[...(roster.voiceMembers.get(channel.id) ?? [])].map((username) => (

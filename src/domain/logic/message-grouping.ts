@@ -38,18 +38,19 @@ export function formatTimeOfDay(epochMs: number): string {
   return new Date(epochMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-/** oak's message-header stamp: "Today at 14:05" / "Yesterday at 14:05" / "Sep 4 at 14:05". */
-export function formatHeaderStamp(epochMs: number, nowMs: number): string {
+/** oak's message-header stamp: "Today at 14:05" / "Yesterday at 14:05" / "Sep 4
+ *  at 14:05". relativeDates=false (oak Appearance) always shows the full date. */
+export function formatHeaderStamp(epochMs: number, nowMs: number, relativeDates = true): string {
   const date = new Date(epochMs);
   const now = new Date(nowMs);
   const time = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
   const sameDay = (left: Date, right: Date): boolean =>
     left.getFullYear() === right.getFullYear() && left.getMonth() === right.getMonth() && left.getDate() === right.getDate();
-  if (sameDay(date, now)) {
+  if (relativeDates && sameDay(date, now)) {
     return `Today at ${time}`;
   }
   const yesterday = new Date(nowMs - 86_400_000);
-  if (sameDay(date, yesterday)) {
+  if (relativeDates && sameDay(date, yesterday)) {
     return `Yesterday at ${time}`;
   }
   const month = date.toLocaleString("en", { month: "short" });

@@ -7,8 +7,6 @@ import { Sidebar } from "./Sidebar";
 import { ChatPane } from "./ChatPane";
 import { FriendsPane } from "./FriendsPane";
 import { MembersPane } from "./MembersPane";
-import { ServerSettingsPane } from "./ServerSettingsPane";
-import { UserSettingsModal } from "./UserSettingsModal";
 import { VoiceBar, RoomView } from "./VoiceRoom";
 import { CallConflictModal, CallOverlayCard, CallPane } from "./CallPane";
 import { Diagnostics } from "./Diagnostics";
@@ -26,11 +24,7 @@ export function MainScreen({ session }: { session: ConnectionSession }): React.J
   const callState = useStore(appStore, (state) => state.callState);
   const dmMode = useStore(appStore, (state) => state.dmMode);
   const activeDmId = useStore(appStore, (state) => state.activeDmId);
-  const serverSettingsOpen = useStore(appStore, (state) => state.serverSettingsOpen);
-  const userSettingsOpen = useStore(appStore, (state) => state.userSettingsOpen);
   const roomViewOpen = useStore(appStore, (state) => state.roomViewOpen);
-  const activeVoiceChannelId = useStore(appStore, (state) => state.activeVoiceChannelId);
-  const voiceConnected = activeVoiceChannelId !== null;
 
   // The diagnostics panel is a hidden hotkey away (Ctrl+Shift+D) — the default
   // window must look exactly like what a user gets.
@@ -83,19 +77,7 @@ export function MainScreen({ session }: { session: ConnectionSession }): React.J
           {rosterVisible ? <MembersPane session={session} /> : null}
         </main>
       </div>
-      {/* Settings are FULL-WINDOW overlays below the caption (Discord style, the
-          agreed variant of oak's modal window): the rail/chat stay mounted, the
-          overlay covers them — ESC / the ✕ in the section nav closes. */}
-      {serverSettingsOpen ? (
-        <div className="settings-overlay">
-          <ServerSettingsPane session={session} />
-        </div>
-      ) : null}
-      {userSettingsOpen ? (
-        <div className="settings-overlay">
-          <UserSettingsModal session={session} />
-        </div>
-      ) : null}
+      {/* The settings overlays live in App (direct children of #app) — see App.tsx. */}
       <CallOverlayCard />
       <CallConflictModal />
       {diagOpen ? <Diagnostics /> : null}
@@ -118,7 +100,7 @@ function UserBar({ session }: { session: ConnectionSession }): React.JSX.Element
         <span className={"user-bar-status " + status.className}>{status.text}</span>
       </div>
       <button className="ghost user-bar-button" title="Settings" onClick={toggleUserSettings}>
-        <span className="icon mdi-settings" />
+        <span className="icon mdi-cog" />
       </button>
     </div>
   );

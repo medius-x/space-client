@@ -12,6 +12,8 @@ import { kv } from "../persistence/kv-client";
 export interface ClientSettings {
   /** false = Enter sends, Ctrl/Shift+Enter newline (oak default). */
   ctrlEnterSends: boolean;
+  /** false = message timestamps always show the full date (oak Appearance). */
+  relativeDates: boolean;
   /** 0 = disk cache off (memory-only); LRU cap otherwise. */
   imageCacheMegabytes: number;
   notificationsEnabled: boolean;
@@ -25,10 +27,16 @@ export interface ClientSettings {
   ringTimeoutSeconds: number;
   /** Chromium APM (echo cancellation et al) on the mic path. */
   apmEnabled: boolean;
+  /** Device picks (oak Audio/Video): null = system default. Mic/camera apply
+   *  on the next capture; the speaker switches live via setSinkId. */
+  microphoneDeviceId: string | null;
+  speakerDeviceId: string | null;
+  cameraDeviceId: string | null;
 }
 
 export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   ctrlEnterSends: false,
+  relativeDates: true,
   imageCacheMegabytes: 256,
   notificationsEnabled: true,
   soundEnabled: true,
@@ -37,6 +45,9 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   maxToasts: 3,
   ringTimeoutSeconds: 60,
   apmEnabled: true,
+  microphoneDeviceId: null,
+  speakerDeviceId: null,
+  cameraDeviceId: null,
 };
 
 const KV_KEY = "client-settings";

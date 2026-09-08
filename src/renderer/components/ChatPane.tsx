@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../hooks/useStore";
 import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
 import { ackActiveChannel, appStore, forwardCrossInstance, forwardRequestUpload, forwardUploadBytes } from "../runtime";
@@ -11,7 +11,7 @@ import { log } from "../../logging";
 import { computeGroupStarts, formatHeaderStamp, formatTimeOfDay, toEpochMs, type GroupableMessage } from "../../domain/logic/message-grouping";
 import { segmentMessageContent } from "../../domain/logic/mention-segmenter";
 import { dmDisplayName } from "../../domain/logic/dm-display";
-import { paletteColor } from "../../domain/logic/user-palette";
+import { memberNameColor } from "../../domain/logic/roster-grouping";
 import type { Channel, ChannelMyPermissions, DmChannel, ForwardInfo, Message, ReplyInfo } from "../../types";
 import { REACTION_CATALOG, REACTION_GLYPH_BY_SLUG } from "../../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
@@ -31,7 +31,6 @@ interface StagedFile {
 
 /** Jump back-fill cap (oak's MAX_JUMP_BACKFILL_MESSAGES). */
 const MAX_JUMP_BACKFILL = 1000;
-const DIVIDER_TTL_MS = 1600;
 const HIGHLIGHT_TTL_MS = 1500;
 const QUOTE_DEPTH_MAX = 5;
 
@@ -98,6 +97,14 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
   const channelPermissions = useStore(session.permissionStore, (state) =>
     activeChatId === null || dm !== null ? null : state.channels.get(activeChatId) ?? null,
   );
+  // The author's nick is painted by their TOP COLORED ROLE (roster parity,
+  // oak) — not by the deterministic palette; non-members (DM peers) stay default.
+  const members = useStore(session.memberStore, (state) => state.members);
+  const roles = useStore(session.memberStore, (state) => state.roles);
+  const authorColor = useCallback((username: string): string | null => {
+    const member = members.find((entry) => entry.username === username);
+    return member !== undefined ? memberNameColor(member, roles) : null;
+  }, [members, roles]);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [editing, setEditing] = useState<Message | null>(null);
@@ -251,6 +258,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
         channel={viewChannel}
         messages={messages}
         actions={actions}
+        authorColor={authorColor}
         editing={editing}
         setEditing={setEditing}
         onMenu={setMenu}
@@ -314,7 +322,17 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
         />
       ) : null}
       {picker !== null ? (
-        <div ref={pickerRef} className="emoji-picker" style={{ left: Math.min(picker.x, window.innerWidth - 340), top: Math.min(picker.y, window.innerHeight - 60) }} onClick={(event) => event.stopPropagation()}>
+        <div
+          ref={pickerRef}
+          className="emoji-picker"
+          style={{
+            // Clamp by the picker's REAL footprint (the whole catalog in one
+            // row) — a fixed 340px left it clipped by the window's right edge.
+            left: Math.max(8, Math.min(picker.x, window.innerWidth - (REACTION_CATALOG.length * 42 + 16))),
+            top: Math.min(Math.max(8, picker.y), window.innerHeight - 56),
+          }}
+          onClick={(event) => event.stopPropagation()}
+        >
           {REACTION_CATALOG.map((entry) => {
             const summary = picker.message.reactions.find((candidate) => candidate.reaction === entry.slug);
             const selfId = session.selfUserId();
@@ -391,6 +409,7 @@ interface MessageListProps {
   channel: Channel;
   messages: readonly Message[];
   actions: ChatActions;
+  authorColor(username: string): string | null;
   editing: Message | null;
   setEditing(message: Message | null): void;
   onMenu(state: { message: Message; x: number; y: number }): void;
@@ -409,6 +428,49 @@ function MessageList(props: MessageListProps): React.JSX.Element {
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [beginReached, setBeginReached] = useState(false);
 
+  // oak's divider lifecycle (MainController, Java-ported): it appears above the
+  // first unread (channel open, or a live batch while the user is away) and is
+  // dismissed ONLY by the pinned-bottom timer — 1.5s, RESTARTED by every
+  // scroll/click/keypress while pinned, CANCELLED by scrolling away. No
+  // TTL-at-open, no instant clear on the auto-scroll (that made it flash for a
+  // frame, live report).
+  const dismissTimerRef = useRef(0);
+  const cancelDividerDismiss = () => {
+    if (dismissTimerRef.current !== 0) {
+      window.clearTimeout(dismissTimerRef.current);
+      dismissTimerRef.current = 0;
+    }
+  };
+  const scheduleDividerDismiss = () => {
+    cancelDividerDismiss();
+    if (!nearBottomRef.current) {
+      return; // scrolled away — the divider STAYS until the user comes back
+    }
+    dismissTimerRef.current = window.setTimeout(() => {
+      dismissTimerRef.current = 0;
+      setDividerReadId(null);
+    }, 1500);
+  };
+  useEffect(() => cancelDividerDismiss, []);
+
+  // While the divider is up, ANY user activity restarts the dismiss countdown —
+  // the same restart-on-scroll/click contract oak's markReadDelay has.
+  useEffect(() => {
+    if (dividerReadId === null) {
+      return;
+    }
+    const onActivity = () => scheduleDividerDismiss();
+    window.addEventListener("wheel", onActivity);
+    window.addEventListener("pointerdown", onActivity);
+    window.addEventListener("keydown", onActivity);
+    return () => {
+      window.removeEventListener("wheel", onActivity);
+      window.removeEventListener("pointerdown", onActivity);
+      window.removeEventListener("keydown", onActivity);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dividerReadId]);
+
   // Snapshot the unread divider at open (before the ack moves the pointer).
   useEffect(() => {
     const lastRead = session.readStateStore.get(channel.id).lastReadMessageId;
@@ -416,10 +478,6 @@ function MessageList(props: MessageListProps): React.JSX.Element {
     firstLayoutRef.current = true;
     hasOlderRef.current = true;
     setBeginReached(false);
-    if (lastRead !== null) {
-      const timer = window.setTimeout(() => setDividerReadId(null), DIVIDER_TTL_MS);
-      return () => window.clearTimeout(timer);
-    }
   }, [channel.id, session]);
 
   // oak's BeginOfChannel latch: a short initial page IS the whole history — the
@@ -455,15 +513,45 @@ function MessageList(props: MessageListProps): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages.length > 0]);
 
-  // New messages stick to the bottom while the user is there.
+  // New messages stick to the bottom while the user is there. A batch arriving
+  // while the user is AWAY (scrolled up, or the window unfocused) raises the
+  // NEW divider above it. A batch the user IS watching (pinned + window
+  // focused) is READ on the spot. One's OWN batch (the send echo) is read
+  // UNCONDITIONALLY — your own message can never be "new messages" for you
+  // (live report: a new-group own message still raised the divider when the
+  // scroll-proximity flag flipped false for a frame during the re-layout).
   const messageCountRef = useRef(messages.length);
+  const previousTailRef = useRef<number | null>(null);
   useEffect(() => {
     const grew = messages.length > messageCountRef.current;
+    const pinned = nearBottomRef.current;
+    const watching = pinned && document.hasFocus();
+    const ownBatch = previousTailRef.current !== null
+      && messages.filter((message) => message.id > previousTailRef.current!)
+        .every((message) => message.authorUsername === session.username());
+    if (grew && previousTailRef.current !== null && !watching && !ownBatch) {
+      setDividerReadId(previousTailRef.current);
+    }
+    previousTailRef.current = messages.length > 0 ? messages[messages.length - 1]!.id : null;
     messageCountRef.current = messages.length;
-    if (grew && nearBottomRef.current) {
+    if (grew && pinned) {
       listRef.current?.scrollToBottom();
     }
+    if (grew && (watching || ownBatch)) {
+      ackActiveChannel();
+    }
   }, [messages]);
+
+  useEffect(() => {
+    const onFocus = () => {
+      if (nearBottomRef.current) {
+        scheduleDividerDismiss(); // focus while pinned restarts the countdown
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Back-filled jump: scroll + flash when the target arrives.
   useEffect(() => {
@@ -553,7 +641,9 @@ function MessageList(props: MessageListProps): React.JSX.Element {
       onBottomProximity={(nearBottom) => {
         nearBottomRef.current = nearBottom;
         if (nearBottom) {
-          setDividerReadId(null); // reaching the bottom dismisses the divider
+          scheduleDividerDismiss(); // back at the bottom → restart the countdown
+        } else {
+          cancelDividerDismiss(); // scrolled away — the divider stays put
         }
       }}
       renderItem={(message, index) => (
@@ -562,12 +652,25 @@ function MessageList(props: MessageListProps): React.JSX.Element {
             <div className="begin-marker">Beginning of history</div>
           ) : null}
           {index === dividerIndex ? (
-            <div className="new-messages-divider"><span>NEW</span></div>
+            <div
+              className="new-messages-divider"
+              title="Jump to the first unread message"
+              onClick={(event) => {
+                event.stopPropagation();
+                const firstUnread = messages[dividerIndex];
+                if (firstUnread !== undefined) {
+                  wiredActions.jumpTo(firstUnread.id);
+                }
+              }}
+            >
+              <span>↓ New messages ↓</span>
+            </div>
           ) : null}
           <MessageRow
             session={session}
             channel={channel}
             message={message}
+            authorColor={props.authorColor}
             startsGroup={groupStarts[index] ?? true}
             editing={editing?.id === message.id}
             highlighted={highlightId === message.id}
@@ -591,6 +694,7 @@ interface MessageRowProps {
   session: ConnectionSession;
   channel: Channel;
   message: Message;
+  authorColor(username: string): string | null;
   startsGroup: boolean;
   editing: boolean;
   highlighted: boolean;
@@ -637,7 +741,8 @@ function MessageRow(props: MessageRowProps): React.JSX.Element {
         }
       }}
     >
-      {/* oak's hover cluster: [forward][react][reply] 20×20 at the row's top-right. */}
+      {/* oak's hover cluster, right to left: [react][reply][forward] — the react
+          button hugs the scrollbar clearance, forward sits leftmost (Java-checked). */}
       {!actions.selectionMode ? (
         <div className="message-hover-buttons">
           <button
@@ -652,6 +757,16 @@ function MessageRow(props: MessageRowProps): React.JSX.Element {
           </button>
           <button
             className="hover-button"
+            title="Reply"
+            onClick={(event) => {
+              event.stopPropagation();
+              actions.setReplyTo(message);
+            }}
+          >
+            <span className="icon mdi-reply" />
+          </button>
+          <button
+            className="hover-button"
             title="Add reaction"
             onClick={(event) => {
               event.stopPropagation();
@@ -660,16 +775,6 @@ function MessageRow(props: MessageRowProps): React.JSX.Element {
             }}
           >
             <span className="icon mdi-emoticon" />
-          </button>
-          <button
-            className="hover-button"
-            title="Reply"
-            onClick={(event) => {
-              event.stopPropagation();
-              actions.setReplyTo(message);
-            }}
-          >
-            <span className="icon mdi-reply" />
           </button>
         </div>
       ) : null}
@@ -681,8 +786,8 @@ function MessageRow(props: MessageRowProps): React.JSX.Element {
       <div className="message-body">
         {startsGroup ? (
           <div className="message-meta">
-            <span className="message-author" style={{ color: paletteColor(message.authorUsername) }}>{message.authorUsername}</span>
-            <span className="message-time">{formatHeaderStamp(toEpochMs(message.createdAt), Date.now())}</span>
+            <span className="message-author" style={{ color: props.authorColor(message.authorUsername) ?? undefined }}>{message.authorUsername}</span>
+            <span className="message-time">{formatHeaderStamp(toEpochMs(message.createdAt), Date.now(), settingsStore.getSnapshot().relativeDates)}</span>
           </div>
         ) : null}
         {message.forward !== null ? <ForwardCard forward={message.forward} /> : null}
@@ -933,14 +1038,10 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onPaste
         }}
         />
       </div>
-      <div className="composer-foot">
-        <span className="composer-hint">
-          {ctrlEnterSends
-            ? "Ctrl+Enter to send · Enter for a new line · @ to mention"
-            : "Enter to send · Ctrl/Shift+Enter for a new line · @ to mention"}
-        </span>
-        <span className="error-line">{error ?? ""}</span>
-      </div>
+      {/* No hint line under the card (oak has none) — the composer's bottom
+          inset matches the left overlay card's, so the two read as a pair.
+          The error line only exists while a send actually failed. */}
+      {error !== null ? <div className="composer-error">{error}</div> : null}
     </div>
   );
 }

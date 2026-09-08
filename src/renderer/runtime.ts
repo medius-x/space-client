@@ -193,16 +193,13 @@ function applyComplianceToLiveSession(): void {
   roomAudio.setDeafened(voiceCompliance.deafened);
 }
 
-/** Wiring point for the imperative voice view (tiles/meters) — set by VoiceRoom. */
+/** Wiring point for the imperative voice view (tiles) — set by VoiceRoom. */
 export const voiceView = {
   attachShareVideo(username: string, track: MediaStreamTrack): void {
     void username; void track;
   },
   dropShareVideo(): void {
     // replaced by VoiceRoom at mount
-  },
-  onSpeaking(username: string, speaking: boolean): void {
-    void username; void speaking;
   },
 };
 
@@ -472,6 +469,7 @@ async function openSession(recordId: string): Promise<void> {
   try {
     await session.start();
     session.attachmentCache.setDiskBudget(settingsStore.getSnapshot().imageCacheMegabytes * 1024 * 1024);
+    roomAudio.setOutputDevice(settingsStore.getSnapshot().speakerDeviceId); // the saved sink, before any chain attaches
     appStore.patch({
       loginFormOpen: false,
       loginError: null,
@@ -480,9 +478,6 @@ async function openSession(recordId: string): Promise<void> {
       baseUrl: record.hostUrl,
     });
     restoreLastChannel(session);
-    roomAudio.setSpeakingHandler((username, speaking) => {
-      voiceView.onSpeaking(username, speaking);
-    });
     roomAudio.startLevelPolling();
     await roomAudio.resume();
   } catch (error) {
@@ -941,6 +936,7 @@ async function connectVoiceRoom(channel: Channel): Promise<void> {
       });
       sfuSession = sfu;
       sfu.apmEnabled = settingsStore.getSnapshot().apmEnabled; // takes effect on this start()
+      sfu.microphoneDeviceId = settingsStore.getSnapshot().microphoneDeviceId;
       await sfu.start();
       const mic = sfu.getMicTrack();
       if (mic) {
@@ -1214,7 +1210,8 @@ export async function shareTarget(target: ShareTarget): Promise<void> {
   }
 }
 
-/** The camera toggle button — the default device, no picker. */
+/** The camera toggle button — the PICKED device (client settings, oak Video),
+ *  falling back to the system default. */
 export async function toggleCamera(): Promise<void> {
   if (!sfuSession) {
     return;
@@ -1223,18 +1220,23 @@ export async function toggleCamera(): Promise<void> {
     await stopCameraLocal();
     return;
   }
+  const pickedCamera = settingsStore.getSnapshot().cameraDeviceId;
   try {
     if (appStore.getSnapshot().sharing) {
       await stopShareInternal();
     }
     const cameraStream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+      video: {
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        ...(pickedCamera !== null ? { deviceId: { exact: pickedCamera } } : {}),
+      },
       audio: false,
     });
     localCameraStream = cameraStream;
     await sfuSession.startCamera(cameraStream);
     appStore.patch({ cameraOn: true });
-    log.info("camera", "camera publishing (default device)");
+    log.info("camera", `camera publishing (${pickedCamera ?? "default device"})`);
   } catch (error) {
     log.error("camera", `camera failed: ${errorMessage(error)}`);
     if (localCameraStream) {
@@ -1249,6 +1251,11 @@ export async function toggleCamera(): Promise<void> {
 /** The live local camera track — the UI's own preview binds to it. */
 export function getCameraTrack(): MediaStreamTrack | null {
   return sfuSession?.getCameraTrack() ?? null;
+}
+
+/** The live local share video — the own-tile preview binds to it. */
+export function getVoiceShareTrack(): MediaStreamTrack | null {
+  return sfuSession?.getShareTrack() ?? null;
 }
 
 export function stopShare(): Promise<void> {
@@ -1377,9 +1384,14 @@ function stopStream(stream: MediaStream | null): void {
 }
 
 async function captureCallMic(): Promise<MediaStream> {
-  const apm = settingsStore.getSnapshot().apmEnabled;
+  const settings = settingsStore.getSnapshot();
   return navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: apm, noiseSuppression: apm, autoGainControl: apm },
+    audio: {
+      echoCancellation: settings.apmEnabled,
+      noiseSuppression: settings.apmEnabled,
+      autoGainControl: settings.apmEnabled,
+      ...(settings.microphoneDeviceId !== null ? { deviceId: { exact: settings.microphoneDeviceId } } : {}),
+    },
   });
 }
 
@@ -1775,9 +1787,14 @@ export async function toggleCallCamera(): Promise<void> {
     appStore.patch({ callCameraOn: false });
     return;
   }
+  const pickedCamera = settingsStore.getSnapshot().cameraDeviceId;
   try {
     const cameraStream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+      video: {
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        ...(pickedCamera !== null ? { deviceId: { exact: pickedCamera } } : {}),
+      },
       audio: false,
     });
     await session.setCameraStream(cameraStream);

@@ -30,13 +30,15 @@ Electron + TypeScript **спайк-клиент** OAK-сервера. Цель �
 ## Текущее состояние: M7 (RBAC-UI, настройки)
 
 **UI-полиш к oak-парити (раунд 2, весь визуальный слой):** **шрифты/иконки** — Open
-Sans TTF + **MaterialDesignIcons.ttf ВЫРЕЗАН ИЗ ikonli-materialdesign-pack-12.1.0
-jar'а в .m2** (тот же шрифт v1.7.22, что рендерит oak; `styles/icons.css` —
-@font-face + по классу `.icon.mdi-<name>`; кодпоинты сняты javap-дампом enum'а
-MaterialDesign; 6 имён, отсутствующих в 1.7.22, = алиасы подмен oak Icons.java
-(cog→settings, trash-can→delete, monitor-share→cast-connected, shield-account→
-shield), а **headphones-off — inline SVG** с path'ом из oak Icons.java
-(`components/MdiSvg.tsx`, triangle-wave тоже там). Эмодзи-глифы заменены на MDI
+Sans TTF + **@mdi/font 7.4.47 (npm devDep)**: `styles/icons.css` + woff2 в
+`styles/fonts/` генерятся `scripts/regen-icons.mjs` (`npm run icons` — список
+используемых `mdi-*` классов собирается из исходников, кодпоинты парсятся из css
+пакета; только woff2 403 КБ — Chromium-only, ttf-fallback не нужен). Полный
+современный набор: настоящие mdi-cog/mdi-trash-can/mdi-monitor-share/mdi-shield-
+account/mdi-triangle-wave/mdi-headphones-off — алиасов и inline-SVG (MdiSvg.tsx
+удалён) больше нет. **ГРАБЛЯ: в MDI 7.x НЕТ `mdi-settings`** (легаси-дублёр cog
+из 1.7.22 выпилен) — использовать `mdi-cog`. Новая иконка в коде → перегенерить
+`npm run icons`, иначе глиф пустой. Эмодзи-глифы заменены на MDI
 по всему UI: каналы (#/🔊/🔒), композер «+», рейл (home/plus), user-bar (⚙/👤),
 voice/call тумблеры — 30×30 иконочные (mic/-off, headphones-off, video/-off,
 cast-connected, phone-hangup), марки мьюта (11px, self-жёлтый/mod-красный),
@@ -503,6 +505,18 @@ handle), классификация share-аудио по mindex, два про�
 
 ## Грабли, уже пойманные здесь
 
+- **updateRole шлёт `name` ТОЛЬКО при реальном изменении** (иначе `null` = не
+  трогать, partial-PATCH). Сервер валидирует имя `[A-Za-z0-9_-]{1,32}` на create и
+  update (правило приехало с логикой @упоминаний, oak-server d757366 2026-08-02;
+  400 от `ResponseStatusException` В ЛОГ СЕРВЕРА НЕ ПИШЕТСЯ — «лог чистый» ≠
+  «запрос не дошёл»). Легаси-роли до правила носят пробелы — посылка сохранённого
+  имени каждым Save отбивала 400 даже правку только цвета (живой репорт ×2).
+  Дефолт новых ролей — «New-role» (юзер-решение: сервер не трогаем; oak'овское
+  «New role» современный сервер не примет).
+- **Инлайновый `<svg>` в корне App сдвигает весь layout вниз**: даже `width=0
+  height=0` инлайновый svg открывает строку-бокс (~20px) ПЕРЕД `#app` — низ
+  окна (композер/user-bar) уезжал за обрез. SVG-defs в App обязан нести
+  `position: absolute` (вне потока). Живой баг полиш-раунда M7.
 - **Живой краш M6 «UI crashed: Maximum update depth exceeded»**: getSnapshot,
   собирающий литеральный объект на каждый вызов (или селектор с filter/map),
   РВАНУЛ useSyncExternalStore в бесконечный ре-рендер — контракт: селектор

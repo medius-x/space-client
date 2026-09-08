@@ -118,13 +118,22 @@ class NotificationHub {
     body.className = "toast-body";
     body.textContent = payload.body.slice(0, 140);
     card.append(header, author, body);
+    // Dismiss (timeout or click) also PRUNES the stack: with no cards left the
+    // chip and the stack element go too — "Hide all" must not outlive the cards
+    // (live report).
+    const dismiss = () => {
+      card.remove();
+      if (stack.querySelector(".toast-card") === null) {
+        stack.remove();
+      }
+    };
     card.addEventListener("click", () => {
       payload.onClick?.();
-      card.remove();
+      dismiss();
     });
     // Newest on top — right under the Hide-all chip.
     stack.insertBefore(card, this.hideAllChip(stack).nextSibling);
-    window.setTimeout(() => card.remove(), this.toastConfig.dismissSeconds() * 1000);
+    window.setTimeout(dismiss, this.toastConfig.dismissSeconds() * 1000);
   }
 
   /** The stack's persistent "Hide all" chip (created on first use). */
@@ -140,6 +149,7 @@ class NotificationHub {
       for (const card of [...stack.querySelectorAll(".toast-card")]) {
         card.remove();
       }
+      stack.remove(); // everything is dismissed — the chip goes with the stack
     });
     stack.prepend(chip);
     return chip;

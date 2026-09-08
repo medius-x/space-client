@@ -101,6 +101,8 @@ export class SfuSession {
   private readonly callbacks: SfuCallbacks;
   /** Chromium APM on the mic capture; runtime-owned (client settings, M7). Applies to the NEXT start(). */
   apmEnabled = true;
+  /** Picked microphone (client settings, oak Audio); null = system default. Next start(). */
+  microphoneDeviceId: string | null = null;
 
   private publisherPc: RTCPeerConnection | null = null;
   private micTrack: MediaStreamTrack | null = null;
@@ -161,6 +163,7 @@ export class SfuSession {
           echoCancellation: this.apmEnabled,
           noiseSuppression: this.apmEnabled,
           autoGainControl: this.apmEnabled,
+          ...(this.microphoneDeviceId !== null ? { deviceId: { exact: this.microphoneDeviceId } } : {}),
         },
       });
     } catch (error: unknown) {
@@ -310,6 +313,11 @@ export class SfuSession {
   /** The live local camera track — the UI's own preview binds to it. */
   getCameraTrack(): MediaStreamTrack | null {
     return this.cameraTrack;
+  }
+
+  /** The live local share video — the own-tile preview binds to it. */
+  getShareTrack(): MediaStreamTrack | null {
+    return this.screenVideoSender !== null ? this.screenVideoSender.track : null;
   }
 
   /** Best-effort maxBitrate raise on a sender (encodings may be absent pre-negotiation). */

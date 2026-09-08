@@ -19,10 +19,20 @@ export function floatRms(samples: Float32Array): number {
   return samples.length === 0 ? 0 : Math.sqrt(sumSquares / samples.length);
 }
 
+import { LEVEL_POLL_MS } from "../config";
+
 /** Java-client calibration translated to float domain (noise floor 50/32768, full 1100/32768). */
 export const SPEAKING_NOISE_FLOOR = 50 / 32768;
 export const SPEAKING_FULL_SCALE = 1100 / 32768;
-const SPEAKING_DECAY = 0.03;
+
+/**
+ * oak smooths the level on EVERY 10 ms audio frame (the mixer/`onFeedData` cadence),
+ * closing 3% of the gap per frame — its ring fades ~1 s after speech stops. We only
+ * poll the analysers every LEVEL_POLL_MS, so one poll tick must compound LEVEL_POLL_MS/10
+ * frames: a flat 3%-per-100 ms tick left the ring lit for ~9 s (live report).
+ */
+const SPEAKING_DECAY_PER_FRAME = 0.03;
+const SPEAKING_DECAY_PER_POLL = 1 - Math.pow(1 - SPEAKING_DECAY_PER_FRAME, LEVEL_POLL_MS / 10);
 
 /**
  * Short-domain level 0..1 with instant attack / exponential decay — same shape as the
@@ -32,12 +42,12 @@ export function speakingLevel(instantRms: number, previousLevel: number): number
   const instant = instantRms < SPEAKING_NOISE_FLOOR
     ? 0
     : Math.min(1, (instantRms - SPEAKING_NOISE_FLOOR) / SPEAKING_FULL_SCALE);
-  return instant > previousLevel ? instant : previousLevel + (instant - previousLevel) * SPEAKING_DECAY;
+  return instant > previousLevel ? instant : previousLevel + (instant - previousLevel) * SPEAKING_DECAY_PER_POLL;
 }
 
-/** Ring above which a feed counts as SPEAKING (hysteresis-free — decay handles chatter). */
+/** Ring above which a feed counts as SPEAKING — oak's SPEAKING_THRESHOLD (hysteresis-free). */
 export function isSpeaking(level: number): boolean {
-  return level > 0.08;
+  return level > 0.05;
 }
 
 export interface StereoVerdictInput {

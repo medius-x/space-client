@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../hooks/useStore";
+import { log } from "../../logging";
 import {
   appStore,
   closeServerSettings,
@@ -41,6 +42,9 @@ import { argbIntToCss, memberNameColor } from "../../domain/logic/roster-groupin
 import { moveRoleIdTowards } from "../../domain/logic/role-drag";
 import { Modal } from "./Modal";
 import { Avatar } from "./Avatar";
+import { AvatarEditor, serverAvatarApi } from "./ProfileModal";
+import { ChannelGlyph } from "./ChannelGlyph";
+import { ServerIconPreview } from "./ServerRail";
 
 /**
  * The in-app server settings screen (oak's ServerSettingsWindow): section nav on
@@ -93,15 +97,17 @@ const NOT_IMPLEMENTED: ReadonlySet<string> = new Set([
  * oak's EXACT role palette (ServerSettingsWindow.presetColors): 11 hues
  * {0,30,50,90,130,165,190,220,260,300,330} + a grey column, bright row
  * hsb(h,.78,.95) over muted hsb(h,.58,.60) — 12 columns × 2 rows, swatch 28px.
+ * Mapped through `| 0`: the wire carries ARGB as a SIGNED Java int, and the
+ * raw literals (> 0x7fffffff) 400 at the server's JSON parse (live report).
  */
 const ROLE_PALETTE_TOP: readonly number[] = [
   0xfff23535, 0xfff29435, 0xfff2d335, 0xff94f235, 0xff35f255, 0xff35f2c3,
   0xff35d3f2, 0xff3574f2, 0xff7435f2, 0xfff235f2, 0xfff23594, 0xffd9d9d9,
-];
+].map((argb) => argb | 0);
 const ROLE_PALETTE_BOTTOM: readonly number[] = [
   0xff994040, 0xff996d40, 0xff998a40, 0xff6d9940, 0xff40994f, 0xff409983,
   0xff408a99, 0xff405e99, 0xff5e4099, 0xff994099, 0xff99406d, 0xff808080,
-];
+].map((argb) => argb | 0);
 
 function argbToHex(argb: number): string {
   return `#${(argb >>> 0).toString(16).padStart(8, "0").slice(2)}`;
@@ -151,7 +157,6 @@ export function ServerSettingsPane({ session }: { session: ConnectionSession }):
             {entry.label}
           </button>
         ))}
-        <button className="settings-close" title="Close (Esc)" onClick={closeServerSettings}>✕ esc</button>
       </div>
       <div className="settings-body">
         {active === undefined ? (
@@ -200,6 +205,12 @@ function OverviewSection({ session }: { session: ConnectionSession }): React.JSX
   return (
     <div>
       <h2>Overview</h2>
+      <AvatarEditor
+        session={session}
+        api={serverAvatarApi(session)}
+        preview={<ServerIconPreview session={session} size={96} />}
+        hint="The icon shows on the rail; everyone sees the change live (/topic/server)."
+      />
       <label className="settings-field">
         <span>Server name</span>
         <input type="text" value={name} onChange={(event) => setName(event.target.value)}
@@ -250,17 +261,26 @@ function RolesSection({ session }: { session: ConnectionSession }): React.JSX.El
 
   const createRole = async (): Promise<void> => {
     const taken = new Set(custom.map((role) => role.name));
-    let name = "New role";
+    // The server has validated role names as [A-Za-z0-9_-]{1,32} since the mention
+    // logic landed (oak-server d757366, 2026-08-02) — the default must already
+    // match it or the POST bounces with 400 (user decision: fix on the client,
+    // keep the oak server untouched). Renaming in the editor stays free-form.
+    let name = "New-role";
     let counter = 1;
     while (taken.has(name)) {
       counter += 1;
-      name = `New role ${counter}`;
+      name = `New-role-${counter}`;
     }
     try {
       const role = await session.createRole(name);
       setSelectedId(role.id);
     } catch (error: unknown) {
-      window.alert(`Could not create role: ${error instanceof Error ? error.message : String(error)}`);
+      // The alert is momentary — the failure (with the exact name sent) must also
+      // land in space.log; a silent-server 400 here was twice blamed on the client
+      // (ResponseStatusException never reaches the server's own log).
+      const message = error instanceof Error ? error.message : String(error);
+      log.error("settings", `role create failed (name="${name}"): ${message}`);
+      window.alert(`Could not create role: ${message}`);
     }
   };
 
@@ -283,7 +303,12 @@ function RolesSection({ session }: { session: ConnectionSession }): React.JSX.El
     try {
       await session.reorderRoles(ids);
     } catch (error: unknown) {
-      window.alert(`Could not reorder: ${error instanceof Error ? error.message : String(error)}`);
+      // The alert is momentary — the SAME failure must land in space.log (and
+      // the diag panel) or a "periodic reorder error" is undebuggable after
+      // the dialog is dismissed (live report).
+      const message = error instanceof Error ? error.message : String(error);
+      log.error("settings", `role reorder failed (${ids.length} ids): ${message}`);
+      window.alert(`Could not reorder: ${message}`);
     }
   };
 
@@ -309,6 +334,22 @@ function RolesSection({ session }: { session: ConnectionSession }): React.JSX.El
                 + (role.id === selected?.id ? " active" : "")
                 + (isDragged ? " drop-gap" : "")}
               onClick={() => setSelectedId(role.id)}
+              draggable={role.kind === "CUSTOM"}
+              onDragStart={(event) => {
+                // The WHOLE ROW is the drag handle (the grip is the visual cue):
+                // a grip-only handle was unreachable in practice (live report).
+                dropHandledRef.current = false;
+                setDraggedId(role.id);
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("text/plain", String(role.id));
+              }}
+              onDragEnd={() => {
+                // On the ROW (bubbles up from the grip): no drop landed — the
+                // drag was cancelled, back to the store order.
+                if (!dropHandledRef.current) {
+                  clearDrag();
+                }
+              }}
               onDragOver={(event) => {
                 if (draggedId === null || isDragged) {
                   return;
@@ -330,35 +371,19 @@ function RolesSection({ session }: { session: ConnectionSession }): React.JSX.El
                 clearDrag();
               }}
             >
-              {isDragged ? null : (
-                <>
-                  <span
-                    className={"role-grip" + (role.kind === "CUSTOM" ? "" : " pinned")}
-                    title={role.kind === "CUSTOM" ? "Drag to reorder" : undefined}
-                    draggable={role.kind === "CUSTOM"}
-                    onDragStart={(event) => {
-                      dropHandledRef.current = false;
-                      setDraggedId(role.id);
-                      event.dataTransfer.effectAllowed = "move";
-                      event.dataTransfer.setData("text/plain", String(role.id));
-                    }}
-                    onDragEnd={() => {
-                      // No drop landed — the drag was cancelled: back to the store order.
-                      if (!dropHandledRef.current) {
-                        clearDrag();
-                      }
-                    }}
-                  >⠿</span>
-                  <span className="role-color-chip" style={{ background: role.color !== null ? argbIntToCss(role.color) : "var(--sp-control)" }} />
-                  <span className="role-name">{role.name}</span>
-                  {role.kind === "CUSTOM" ? (
-                    <button className="ghost tiny" title="Delete role" onClick={(event) => {
-                      event.stopPropagation();
-                      setDeleteTarget(role);
-                    }}>🗑</button>
-                  ) : null}
-                </>
-              )}
+              {/* The dragged row reads as the drop gap, but its content (the
+                  grip included) stays MOUNTED and merely invisible — unmounting
+                  the drag source kills the HTML5 drag on the spot (the row
+                  turned into dead empty space that accepts no drop, live report). */}
+              <span className={"role-grip" + (role.kind === "CUSTOM" ? "" : " pinned")}>⠿</span>
+              <span className="role-color-chip" style={{ background: role.color !== null ? argbIntToCss(role.color) : "var(--sp-control)" }} />
+              <span className="role-name">{role.name}</span>
+              {role.kind === "CUSTOM" ? (
+                <button className="ghost tiny" title="Delete role" onClick={(event) => {
+                  event.stopPropagation();
+                  setDeleteTarget(role);
+                }}>🗑</button>
+              ) : null}
             </div>
           );
         })}
@@ -403,11 +428,11 @@ function RoleEditor({ session, role, canManageMembers }: {
         </span>
         <span className="settings-hint">{role.kind === "OWNER" ? "Protected role" : role.kind === "EVERYONE" ? "Default permissions" : ""}</span>
       </div>
-      <div className="friends-tabs">
-        <button className={"friends-tab" + (tab === "appearance" ? " active" : "")} onClick={() => setTab("appearance")}>Appearance</button>
-        <button className={"friends-tab" + (tab === "permissions" ? " active" : "")} onClick={() => setTab("permissions")}>Permissions</button>
+      <div className="settings-tabs">
+        <button className={"settings-tab" + (tab === "appearance" ? " active" : "")} onClick={() => setTab("appearance")}>Appearance</button>
+        <button className={"settings-tab" + (tab === "permissions" ? " active" : "")} onClick={() => setTab("permissions")}>Permissions</button>
         {canManageMembers && !builtin ? (
-          <button className={"friends-tab" + (tab === "members" ? " active" : "")} onClick={() => setTab("members")}>Members</button>
+          <button className={"settings-tab" + (tab === "members" ? " active" : "")} onClick={() => setTab("members")}>Members</button>
         ) : null}
       </div>
       {tab === "appearance" ? (
@@ -442,7 +467,12 @@ function RoleAppearance({ session, role }: { session: ConnectionSession; role: R
     setStatus(null);
     try {
       await session.updateRole(role.id, {
-        name: name.trim(),
+        // oak's partial-PATCH contract: the name travels ONLY when the user
+        // actually changed it. The server validates names on update, and legacy
+        // roles (created before that rule) can carry spaces — sending their
+        // stored name on every save bounced color-only edits with 400 (live
+        // report). null leaves the stored name untouched.
+        name: name.trim() !== role.name ? name.trim() : null,
         // color is UNCONDITIONAL on the wire: null resets, so send the picked value.
         color,
         mentionable,
@@ -450,7 +480,12 @@ function RoleAppearance({ session, role }: { session: ConnectionSession; role: R
       });
       setStatus("Saved.");
     } catch (error: unknown) {
-      setStatus(error instanceof Error ? error.message : String(error));
+      // Same contract as reorder: the inline status is momentary — a rejected color
+      // must also land in space.log (with what was actually sent) or the failure is
+      // undebuggable once the selection changes (live report).
+      const message = error instanceof Error ? error.message : String(error);
+      log.error("settings", `role update failed (id=${role.id}, color=${color}, name="${name.trim()}"): ${message}`);
+      setStatus(message);
       setName(role.name); // a rejected name must not look saved
     } finally {
       setBusy(false);
@@ -815,9 +850,8 @@ function ChannelsSection({ session }: { session: ConnectionSession }): React.JSX
         {list.map((channel) => (
           <div key={channel.id} className={"roles-row" + (channel.id === selected?.id ? " active" : "")}
             onClick={() => setSelectedId(channel.id)}>
-            <span className={"icon channel-glyph " + (channel.type === "VOICE" ? "mdi-volume-high" : "mdi-pound")} />
+            <ChannelGlyph voice={channel.type === "VOICE"} locked={channel.locked} />
             <span className="role-name">{channel.name}</span>
-            {channel.locked ? <span className="icon mdi-lock" /> : null}
           </div>
         ))}
       </div>
@@ -839,9 +873,9 @@ function ChannelEditor({ session, channel }: { session: ConnectionSession; chann
       <div className="role-editor-head">
         <span className="role-editor-name"><span className={"icon " + (channel.type === "VOICE" ? "mdi-volume-high" : "mdi-pound")} /> {channel.name}</span>
       </div>
-      <div className="friends-tabs">
-        <button className={"friends-tab" + (tab === "permissions" ? " active" : "")} onClick={() => setTab("permissions")}>Permissions</button>
-        <button className={"friends-tab" + (tab === "access" ? " active" : "")} onClick={() => setTab("access")}>Access</button>
+      <div className="settings-tabs">
+        <button className={"settings-tab" + (tab === "permissions" ? " active" : "")} onClick={() => setTab("permissions")}>Permissions</button>
+        <button className={"settings-tab" + (tab === "access" ? " active" : "")} onClick={() => setTab("access")}>Access</button>
       </div>
       {tab === "permissions" ? (
         <ChannelPermissionsTab session={session} channel={channel} />

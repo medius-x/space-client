@@ -48,11 +48,14 @@ interface ShareChain {
   volume: number;
 }
 
-function playbackElement(track: MediaStreamTrack, initialVolume: number, deafened: boolean): HTMLAudioElement {
+function playbackElement(track: MediaStreamTrack, initialVolume: number, deafened: boolean, outputDeviceId: string | null): HTMLAudioElement {
   const element = new Audio();
   element.autoplay = true;
   element.volume = deafened ? 0 : Math.min(1, Math.max(0, initialVolume));
   element.srcObject = new MediaStream([track]);
+  if (outputDeviceId !== null && typeof element.setSinkId === "function") {
+    void element.setSinkId(outputDeviceId).catch(() => undefined);
+  }
   void element.play().catch(() => undefined);
   return element;
 }
@@ -61,6 +64,9 @@ export class RoomAudio {
   private context: AudioContext | null = null;
   private readonly voiceChains = new Map<number, VoiceChain>();
   private readonly shareChains = new Map<number, ShareChain>();
+  /** The picked output device (client settings, oak Audio); null = default.
+   *  Applied to every NEW playback element and re-applied live on change. */
+  private outputDeviceId: string | null = null;
   private speakingHandler: ((username: string, speaking: boolean) => void) | null = null;
   private readonly speakingNow = new Set<string>();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -101,10 +107,20 @@ export class RoomAudio {
     return this.context?.state ?? "none";
   }
 
+  /** Live output switch (the speaker is an immediate property, oak parity). */
+  setOutputDevice(deviceId: string | null): void {
+    this.outputDeviceId = deviceId;
+    for (const chain of [...this.voiceChains.values(), ...this.shareChains.values()]) {
+      if (typeof chain.element.setSinkId === "function") {
+        void chain.element.setSinkId(deviceId ?? "").catch(() => undefined);
+      }
+    }
+  }
+
   attachVoiceTrack(feedId: number, username: string, track: MediaStreamTrack, volume: number): void {
     this.detachFeed(feedId);
     const context = this.ensureContext();
-    const element = playbackElement(track, volume, this.deafened);
+    const element = playbackElement(track, volume, this.deafened, this.outputDeviceId);
     const analysisSource = context.createMediaStreamSource(new MediaStream([track]));
     const analyser = context.createAnalyser();
     analyser.fftSize = 512;
@@ -124,7 +140,7 @@ export class RoomAudio {
   attachShareTrack(feedId: number, username: string, track: MediaStreamTrack, volume: number): void {
     this.detachFeed(feedId);
     const context = this.ensureContext();
-    const element = playbackElement(track, volume, this.deafened);
+    const element = playbackElement(track, volume, this.deafened, this.outputDeviceId);
     const analysisSource = context.createMediaStreamSource(new MediaStream([track]));
     const splitter = context.createChannelSplitter(2);
     const analyserLeft = context.createAnalyser();
@@ -233,6 +249,16 @@ export class RoomAudio {
 
   setSpeakingHandler(handler: (username: string, speaking: boolean) => void): void {
     this.speakingHandler = handler;
+  }
+
+  /**
+   * The live speaking set as a fresh snapshot (oak's pollSpeakingLevels model):
+   * the room view polls this every 150 ms and repaints the whole set, so a
+   * missed "stopped speaking" edge self-heals on the next tick instead of
+   * leaving a green frame lit forever (live report).
+   */
+  speakingSnapshot(): Set<string> {
+    return new Set(this.speakingNow);
   }
 
   /** Own speaking ring: local mic analysis only, never any playout (that would echo). */

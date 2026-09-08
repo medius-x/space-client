@@ -292,6 +292,47 @@ export class RestClient {
     }
   }
 
+  // --- server icon (instance avatar, MANAGE_SERVER; mirrors the user flow) ---
+
+  async requestServerAvatarUpload(fileName: string): Promise<AttachmentUploadSlot> {
+    return this.request<AttachmentUploadSlot>("/api/server/avatar", {
+      method: "POST",
+      body: JSON.stringify({ fileName }),
+    });
+  }
+
+  async requestServerAvatarOriginalUpload(fileName: string): Promise<AttachmentUploadSlot> {
+    return this.request<AttachmentUploadSlot>("/api/server/avatar/original", {
+      method: "POST",
+      body: JSON.stringify({ fileName }),
+    });
+  }
+
+  /** Binds the freshly uploaded icon objects; /topic/server pushes the new profile. */
+  async confirmServerAvatar(avatarKey: string, originalKey: string | null): Promise<ServerProfile> {
+    return this.request<ServerProfile>("/api/server/avatar/confirm", {
+      method: "POST",
+      body: JSON.stringify({ avatarKey, originalKey }),
+    });
+  }
+
+  async removeServerAvatar(): Promise<ServerProfile> {
+    return this.request<ServerProfile>("/api/server/avatar", { method: "DELETE" });
+  }
+
+  /** Lazy presigned GET of the server icon's pre-crop original; null on 404. */
+  async getServerAvatarOriginalUrl(): Promise<string | null> {
+    try {
+      const link = await this.request<AttachmentLink>("/api/server/avatar/original", { method: "GET" });
+      return link.url;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
   async createChannel(request: { name: string; type?: ChannelType | null }): Promise<Channel> {
     return this.request<Channel>("/api/channels", {
       method: "POST",

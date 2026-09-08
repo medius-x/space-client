@@ -1,9 +1,43 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import type { ConnectionSession } from "../../domain/session/connection-session";
+import type { AttachmentUploadSlot } from "../../types";
 import { Avatar } from "./Avatar";
 import { AvatarCropDialog } from "./AvatarCropDialog";
 
 const ORIGINAL_MAX_SIDE = 2048;
+
+/** The upload endpoints behind an avatar editor — the user avatar and the server
+ *  icon share the exact two-phase flow, only the routes differ. */
+export interface AvatarApi {
+  requestSlot(fileName: string): Promise<AttachmentUploadSlot>;
+  requestOriginalSlot(fileName: string): Promise<AttachmentUploadSlot>;
+  confirm(avatarKey: string, originalKey: string | null): Promise<unknown>;
+  remove(): Promise<unknown>;
+  /** Presigned GET of the stored pre-crop original; null when none exists. */
+  originalUrl(): Promise<string | null>;
+}
+
+/** The user-avatar routes (Settings → General). */
+export function userAvatarApi(session: ConnectionSession): AvatarApi {
+  return {
+    requestSlot: (fileName) => session.rest.requestAvatarUpload(fileName),
+    requestOriginalSlot: (fileName) => session.rest.requestAvatarOriginalUpload(fileName),
+    confirm: (avatarKey, originalKey) => session.rest.confirmAvatar(avatarKey, originalKey),
+    remove: () => session.rest.removeAvatar(),
+    originalUrl: () => session.rest.getAvatarOriginalUrl(),
+  };
+}
+
+/** The server-icon routes (Server Settings → Overview, MANAGE_SERVER). */
+export function serverAvatarApi(session: ConnectionSession): AvatarApi {
+  return {
+    requestSlot: (fileName) => session.rest.requestServerAvatarUpload(fileName),
+    requestOriginalSlot: (fileName) => session.rest.requestServerAvatarOriginalUpload(fileName),
+    confirm: (avatarKey, originalKey) => session.rest.confirmServerAvatar(avatarKey, originalKey),
+    remove: () => session.rest.removeServerAvatar(),
+    originalUrl: () => session.rest.getServerAvatarOriginalUrl(),
+  };
+}
 
 /** Two-phase avatar upload: original (≤2048, kept server-side for re-crops) + the 256 crop. */
 async function downscaleToPngBlob(file: File, maxSide: number): Promise<Blob> {
@@ -25,10 +59,15 @@ async function downscaleToPngBlob(file: File, maxSide: number): Promise<Blob> {
 
 /**
  * The avatar editor (oak's Settings → General): two-phase upload with an
- * interactive crop, re-crop from the stored original, remove. Lives INSIDE the
- * user settings — the user bar carries only the gear.
+ * interactive crop, re-crop from the stored original, remove. The PREVIEW (a
+ * user's round avatar vs the server's squircle icon) is passed in.
  */
-export function AvatarEditor({ session }: { session: ConnectionSession }): React.JSX.Element {
+export function AvatarEditor({ session, api, preview, hint }: {
+  session: ConnectionSession;
+  api: AvatarApi;
+  preview: ReactNode;
+  hint: string;
+}): React.JSX.Element {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [cropSourceUrl, setCropSourceUrl] = useState<string | null>(null);
   const [sourceOwned, setSourceOwned] = useState(false); // blob: URLs we must revoke
@@ -75,15 +114,15 @@ export function AvatarEditor({ session }: { session: ConnectionSession }): React
       const originalBlob = sourceFile !== null ? await downscaleToPngBlob(sourceFile, ORIGINAL_MAX_SIDE) : null;
       let originalKey: string | null = null;
       if (originalBlob !== null && sourceFile !== null) {
-        const originalSlot = await session.rest.requestAvatarOriginalUpload("avatar-original.png");
+        const originalSlot = await api.requestOriginalSlot("avatar-original.png");
         await session.rest.uploadBytes(originalSlot.uploadUrl, await originalBlob.arrayBuffer(), "image/png");
         originalKey = originalSlot.key;
       }
       // 2) the 256 crop
-      const avatarSlot = await session.rest.requestAvatarUpload("avatar.png");
+      const avatarSlot = await api.requestSlot("avatar.png");
       await session.rest.uploadBytes(avatarSlot.uploadUrl, await croppedBlob.arrayBuffer(), "image/png");
-      // 3) confirm — /topic/users pushes the fresh avatar to everyone
-      await session.rest.confirmAvatar(avatarSlot.key, originalKey);
+      // 3) confirm — the push (/topic/users or /topic/server) refreshes everyone
+      await api.confirm(avatarSlot.key, originalKey);
     } catch (applyError) {
       setError(applyError instanceof Error ? applyError.message : String(applyError));
     } finally {
@@ -95,7 +134,7 @@ export function AvatarEditor({ session }: { session: ConnectionSession }): React
     setBusy(true);
     setError(null);
     try {
-      const url = await session.rest.getAvatarOriginalUrl();
+      const url = await api.originalUrl();
       if (url === null) {
         setError("No stored original — pick a new image instead.");
         return;
@@ -122,7 +161,7 @@ export function AvatarEditor({ session }: { session: ConnectionSession }): React
     setBusy(true);
     setError(null);
     try {
-      await session.rest.removeAvatar();
+      await api.remove();
     } catch (removeError) {
       setError(removeError instanceof Error ? removeError.message : String(removeError));
     } finally {
@@ -133,8 +172,7 @@ export function AvatarEditor({ session }: { session: ConnectionSession }): React
   return (
     <div>
       <div className="profile-head">
-        <Avatar session={session} username={session.username()} size={96} />
-        <div className="profile-name">{session.username()}</div>
+        {preview}
         {busy ? <div className="settings-hint">Working…</div> : null}
       </div>
       <div className="modal-actions profile-actions">
@@ -147,7 +185,19 @@ export function AvatarEditor({ session }: { session: ConnectionSession }): React
       {cropSourceUrl !== null ? (
         <AvatarCropDialog imageSourceUrl={cropSourceUrl} onApply={(blob) => void applyCrop(blob)} onClose={closeCrop} />
       ) : null}
-      <div className="settings-hint">The avatar updates live for everyone.</div>
+      <div className="settings-hint">{hint}</div>
     </div>
+  );
+}
+
+/** The user-settings wiring: the round avatar of the logged-in user. */
+export function UserAvatarEditor({ session }: { session: ConnectionSession }): React.JSX.Element {
+  return (
+    <AvatarEditor
+      session={session}
+      api={userAvatarApi(session)}
+      preview={<Avatar session={session} username={session.username()} size={96} />}
+      hint="The avatar updates live for everyone."
+    />
   );
 }

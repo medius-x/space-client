@@ -33,7 +33,8 @@ export function Avatar({ session, username, size, override, showPresence = false
         <img className="avatar" src={imageUrl} alt={username} style={{ width: size, height: size }} draggable={false} />
       ) : (
         <span className="avatar avatar-fallback" style={{ width: size, height: size, background: paletteColor(username) }}>
-          {(username.charAt(0) || "?").toUpperCase()}
+          {/* oak's initials(): the first TWO characters, uppercased ("Al" for "alex"). */}
+          {username.trim().length === 0 ? "?" : username.trim().slice(0, 2).toUpperCase()}
         </span>
       )}
       {showPresence ? <span className={"avatar-presence" + (online ? " online" : "")} /> : null}

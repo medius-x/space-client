@@ -6,30 +6,34 @@ import {
   changeAccountUsername,
   connectionDirectory,
   inVoiceOrCall,
+  roomAudio,
   settingsStore,
   toggleUserSettings,
   updateNotificationPrefs,
 } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import { CHANGE_NICKNAME_PERMISSION } from "../../types";
-import { AvatarEditor } from "./ProfileModal";
+import { UserAvatarEditor } from "./ProfileModal";
 
 /**
- * User settings (M7): six sections — General (avatar), Account (password/username
- * mutations with token rotation), Appearance, Notifications (global + per-server
- * overrides), Voice (APM), Connections (read-only). Instant-apply everywhere:
- * every control writes through to the settings store / the record immediately.
- * Rendered as a full-window overlay (same shell as the server settings).
+ * User settings — oak's SettingsWindow section list: General (avatar), Account
+ * (password/username mutations with token rotation), Audio (processing +
+ * microphone/speaker devices), Video (the default camera), Appearance (input,
+ * display, images), Notifications (global + per-server overrides),
+ * Connections (read-only). Instant-apply everywhere: every control writes
+ * through immediately; mic/camera take effect on the next capture, the
+ * speaker switches live (setSinkId).
  */
 
-type Section = "general" | "account" | "appearance" | "notifications" | "voice" | "connections";
+type Section = "general" | "account" | "audio" | "video" | "appearance" | "notifications" | "connections";
 
 const SECTIONS: { key: Section; label: string }[] = [
   { key: "general", label: "General" },
   { key: "account", label: "Account" },
+  { key: "audio", label: "Audio" },
+  { key: "video", label: "Video" },
   { key: "appearance", label: "Appearance" },
   { key: "notifications", label: "Notifications" },
-  { key: "voice", label: "Voice" },
   { key: "connections", label: "Connections" },
 ];
 
@@ -59,19 +63,125 @@ export function UserSettingsModal({ session }: { session: ConnectionSession }): 
             {entry.label}
           </button>
         ))}
-        <button className="settings-close" title="Close (Esc)" onClick={toggleUserSettings}>✕ esc</button>
       </div>
       <div className="settings-body">
-        {section === "general" ? <AvatarEditor session={session} /> : null}
+        {section === "general" ? <UserAvatarEditor session={session} /> : null}
         {section === "account" ? <AccountSection session={session} /> : null}
+        {section === "audio" ? <AudioSection /> : null}
+        {section === "video" ? <VideoSection /> : null}
         {section === "appearance" ? <AppearanceSection session={session} /> : null}
         {section === "notifications" ? <NotificationsSection session={session} /> : null}
-        {section === "voice" ? <VoiceSection /> : null}
         {section === "connections" ? <ConnectionsSection session={session} /> : null}
       </div>
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Devices (oak Audio/Video pickers over enumerateDevices)
+// ---------------------------------------------------------------------------
+
+/** One "System default + every device" row; labels may be blank before the
+ *  first capture grant (Chromium hides them without permission). */
+function DeviceSelect({ label, kind, value, live, onChange }: {
+  label: string;
+  kind: MediaDeviceKind;
+  value: string | null;
+  live: boolean;
+  onChange(deviceId: string | null): void;
+}): React.JSX.Element {
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  useEffect(() => {
+    void navigator.mediaDevices.enumerateDevices().then((all) => {
+      setDevices(all.filter((device) => device.kind === kind));
+    }).catch(() => undefined);
+  }, [kind]);
+  const rowLabel = (device: MediaDeviceInfo): string =>
+    device.label.length > 0 ? device.label : `${kind} ${device.deviceId.slice(-6)}`;
+  return (
+    <label className="settings-field">
+      <span>{label}{live ? " (applies immediately)" : ""}</span>
+      <select
+        value={value ?? ""}
+        onChange={(event) => onChange(event.target.value === "" ? null : event.target.value)}
+      >
+        <option value="">System default</option>
+        {devices.map((device) => (
+          <option key={device.deviceId} value={device.deviceId}>{rowLabel(device)}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function AudioSection(): React.JSX.Element {
+  const settings = useStore(settingsStore, (snapshot) => snapshot);
+  return (
+    <div>
+      <h3>Processing</h3>
+      <label className="settings-check">
+        <input
+          type="checkbox"
+          checked={settings.apmEnabled}
+          onChange={(event) => settingsStore.apply({ apmEnabled: event.target.checked })}
+        />
+        <span>Built-in audio processing (echo cancellation, noise suppression, AGC)</span>
+      </label>
+      <div className="settings-hint">
+        Chromium's processing on the microphone — this client's noise-suppression
+        engine (the Raw option in the voice-bar selector turns it off). Applies
+        the next time you join voice or start a call.
+      </div>
+      <h3>Devices</h3>
+      <DeviceSelect
+        label="Microphone"
+        kind="audioinput"
+        value={settings.microphoneDeviceId}
+        live={false}
+        onChange={(deviceId) => settingsStore.apply({ microphoneDeviceId: deviceId })}
+      />
+      <DeviceSelect
+        label="Speaker / headphones"
+        kind="audiooutput"
+        value={settings.speakerDeviceId}
+        live
+        onChange={(deviceId) => {
+          settingsStore.apply({ speakerDeviceId: deviceId });
+          roomAudio.setOutputDevice(deviceId);
+        }}
+      />
+      <div className="settings-hint">
+        Microphone and camera take effect on the next call; the speaker switches
+        immediately.
+      </div>
+    </div>
+  );
+}
+
+function VideoSection(): React.JSX.Element {
+  const settings = useStore(settingsStore, (snapshot) => snapshot);
+  return (
+    <div>
+      <h3>Camera</h3>
+      <DeviceSelect
+        label="Default camera"
+        kind="videoinput"
+        value={settings.cameraDeviceId}
+        live={false}
+        onChange={(deviceId) => settingsStore.apply({ cameraDeviceId: deviceId })}
+      />
+      <div className="settings-hint">
+        The camera the voice-bar share picker's Camera tab and the call toggle
+        open; screen and window shares always pick their source explicitly.
+        Changes take effect on the next call.
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Account
+// ---------------------------------------------------------------------------
 
 function AccountSection({ session }: { session: ConnectionSession }): React.JSX.Element {
   const canRename = useStore(session.permissionStore, (state) =>
@@ -198,6 +308,10 @@ function UsernameForm({ current }: { current: string }): React.JSX.Element {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Appearance / Notifications / Connections
+// ---------------------------------------------------------------------------
+
 function AppearanceSection({ session }: { session: ConnectionSession }): React.JSX.Element {
   const settings = useStore(settingsStore, (snapshot) => snapshot);
   return (
@@ -215,6 +329,19 @@ function AppearanceSection({ session }: { session: ConnectionSession }): React.J
         Default: Enter sends, Ctrl+Enter or Shift+Enter insert a newline.
         With this on, the roles swap — Shift+Enter always stays a newline.
         Applies to the composer and the inline editor instantly.
+      </div>
+      <h3>Message display</h3>
+      <label className="settings-check">
+        <input
+          type="checkbox"
+          checked={settings.relativeDates}
+          onChange={(event) => settingsStore.apply({ relativeDates: event.target.checked })}
+        />
+        <span>Relative dates (Today / Yesterday)</span>
+      </label>
+      <div className="settings-hint">
+        When off, message timestamps always show the date (for example,
+        Aug 20 at 14:05) instead of Today / Yesterday.
       </div>
       <h3>Images</h3>
       <label className="settings-field"><span>Disk cache size</span>
@@ -305,25 +432,6 @@ function NotificationsSection({ session }: { session: ConnectionSession }): Reac
       <div className="settings-hint">
         MENTIONS/NOTHING only gate toasts and sounds — the unread badges keep counting.
         Suppress keeps @everyone/@here out of the red badge (still counted unread).
-      </div>
-    </div>
-  );
-}
-
-function VoiceSection(): React.JSX.Element {
-  const settings = useStore(settingsStore, (snapshot) => snapshot);
-  return (
-    <div>
-      <h3>Voice processing</h3>
-      <label className="settings-check">
-        <input type="checkbox" checked={settings.apmEnabled}
-          onChange={(event) => settingsStore.apply({ apmEnabled: event.target.checked })} />
-        <span>Audio processing (echo cancellation, noise suppression, AGC)</span>
-      </label>
-      <div className="settings-hint">
-        Chromium's built-in processing on the microphone. Applies the next time you
-        join a voice channel or start a call. A physical mic-in-front-of-speaker loop
-        is beyond any canceller — use headphones.
       </div>
     </div>
   );
