@@ -989,7 +989,7 @@ function handleVoiceSessionLost(reason: string): void {
 
 function scheduleVoiceRejoin(attempt: number, reason: string): void {
   const delayMs = rejoinDelayMs(attempt);
-  appStore.patch({ voiceState: "reconnecting", stateDetail: `reconnecting ${attempt}/${MAX_VOICE_REJOIN_ATTEMPTS} — ${reason}` });
+  appStore.patch({ voiceState: "reconnecting", stateDetail: `${attempt}/${MAX_VOICE_REJOIN_ATTEMPTS}` });
   log.info("voice", `rejoin attempt ${attempt}/${MAX_VOICE_REJOIN_ATTEMPTS} in ${delayMs} ms (${reason})`);
   const timer = window.setTimeout(() => {
     const rejoin = voiceRejoin;
@@ -1008,7 +1008,7 @@ function scheduleVoiceRejoin(attempt: number, reason: string): void {
         await connectVoiceRoom(channel);
         // Fresh media flips the state to live via onState; the ladder is done.
         voiceRejoin = null;
-        appStore.patch({ stateDetail: "reconnected — waiting for media" });
+        appStore.patch({ stateDetail: "waiting for media" });
         log.info("voice", "rejoin connected");
       } catch (error) {
         log.warn("voice", `rejoin attempt failed: ${errorMessage(error)}`);

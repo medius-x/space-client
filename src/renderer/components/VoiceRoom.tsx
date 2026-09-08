@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useStore } from "../hooks/useStore";
 import {
   appStore,
+  connectionDirectory,
   getCameraTrack,
   getVoiceShareTrack,
   kickVoiceUser,
@@ -28,7 +29,7 @@ import {
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { VoiceMemberMarks } from "../../domain/stores/VoiceControlStore";
 import type { FeedInfo } from "../../types";
-import { memberNameColor } from "../../domain/logic/roster-grouping";
+import { canActOn, memberNameColor, topPosition, type HierarchyView } from "../../domain/logic/roster-grouping";
 import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
 import { SharePickerModal } from "./SharePickerModal";
 import { Avatar } from "./Avatar";
@@ -122,6 +123,8 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
   const apmEnabled = useStore(settingsStore, (settings) => settings.apmEnabled);
   const channel = activeChannelId !== null ? session.channelStore.get(activeChannelId) : null;
   const marksByMember = useStore(session.voiceControlStore, (snapshot) => snapshot.marks);
+  const participants = useStore(appStore, (state) => state.participants);
+  const screenCount = participants.filter((feed) => feed.streams.some((stream) => stream.type === "video")).length;
   const [pickerOpen, setPickerOpen] = useState(false);
   const [nsMenu, setNsMenu] = useState<{ x: number; y: number } | null>(null);
 
@@ -134,7 +137,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
   const selfDeafened = (ownMarks?.selfDeafened ?? false) || (ownMarks?.modDeafened ?? false);
   const statusClass = voiceState === "live" ? "live" : voiceState === "reconnecting" ? "reconnecting" : voiceState === "failed" ? "failed" : "connecting";
   // oak's voice bar texts (setVoiceStatus): "On a call" green / "Connecting"
-  // yellow / "Reconnecting…" yellow — over the "{channel}/{server}" detail line.
+  // yellow / "Reconnecting… N/5" yellow — over the "{channel}/{server}" detail line.
   const statusText = voiceState === "live"
     ? "On a call"
     : voiceState === "reconnecting"
@@ -142,19 +145,32 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
       : voiceState === "failed"
         ? "Connection failed"
         : "Connecting";
+  // oak's serverName (not the host URL) in the detail line — cachedServerName,
+  // hostUrl only as a pre-profile fallback.
+  const serverName = connectionDirectory.get(session.recordId)?.cachedServerName
+    ?? session.hostUrl().replace(/^https?:\/\//, "");
 
   return (
     <div className="voice-bar">
       <div className="voice-bar-info" onClick={toggleRoomView} title="Open / close the room view">
         {/* oak stacks TWO lines: the colored status over the channel/server
-            detail (voiceInfoRow VBox), the chevron sits to the right of both. */}
+            detail (voiceInfoRow VBox). NO chevron — the only chevron in the
+            subsystem is the room header's back button (main.fxml has none here). */}
         <div className="voice-bar-text">
           <span className={"voice-bar-status " + statusClass}>{statusText}</span>
           <span className="voice-bar-details">
-            {channel !== null ? `${channel.name} / ${session.hostUrl().replace(/^https?:\/\//, "")}` : ""}
+            {channel !== null ? `${channel.name} / ${serverName}` : ""}
           </span>
         </div>
-        <span className="voice-bar-open icon mdi-chevron-right" />
+        {screenCount > 0 ? (
+          /* oak's voiceScreenBadge: green pill at the right end of the info row,
+             lit on ANNOUNCE (streams arrive with the publishers list) — visible
+             while reading chat with the room view closed. */
+          <span className="voice-screen-badge">
+            <span className="icon mdi-monitor" />
+            {screenCount}
+          </span>
+        ) : null}
       </div>
       <div className="voice-bar-buttons">
         <button
@@ -176,7 +192,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
         {/* oak: the NS button opens the ENGINE SELECTOR card; the button itself
             is green while an engine is active, grey on Raw (applyNoiseEngineState). */}
         <button
-          className={"voice-toggle icon-button" + (apmEnabled ? " on" : "")}
+          className={"voice-toggle icon-button ns" + (apmEnabled ? " on" : "")}
           title={"Noise suppression: " + (apmEnabled ? "WebRTC (built-in)" : "Raw (off)")}
           onClick={(event) => setNsMenu({ x: event.currentTarget.getBoundingClientRect().left, y: event.currentTarget.getBoundingClientRect().bottom + 4 })}
         >
@@ -186,8 +202,8 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
             SOURCE inside the share picker. This one button is the single
             outgoing-video toggle: stop whatever is live, or open the picker. */}
         <button
-          className={"voice-toggle icon-button" + (sharing || cameraOn ? " on" : "")}
-          title={sharing || cameraOn ? "Stop sharing" : "Share screen or camera"}
+          className={"voice-toggle icon-button share" + (sharing || cameraOn ? " on" : "")}
+          title={sharing || cameraOn ? "Stop screen share" : "Share screen"}
           onClick={() => {
             if (cameraOn) {
               void toggleCamera(); // the toggle IS the camera's stop
@@ -396,12 +412,6 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
               <>
                 <div className="tile-slot-plate"><span className="icon mdi-monitor" /> Sharing screen…</div>
                 <video ref={setShareVideoRef(username)} autoPlay playsInline />
-                <button className="tile-slot-button" title="Open in a window" onClick={() => void openSharePopout()}>
-                  <span className="icon mdi-open-in-new" />
-                </button>
-                <button className="tile-slot-button stop" title="Stop watching" onClick={() => setViewingFeed(feed!.feedId)}>
-                  <span className="icon mdi-eye-off" />
-                </button>
               </>
             ) : (
               <button className="tile-slot-watch" onClick={() => setViewingFeed(feed!.feedId)}>
@@ -415,6 +425,18 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
         <div className="tile-foot">
           <span className="tile-name" style={{ color: nameColor(username) ?? undefined }}>{username}{isSelf ? " (you)" : ""}</span>
           <VoiceMarks marks={marksByMember.get(username)} />
+          {/* oak puts the pop-out / stop-watching buttons in the NAME ROW (right
+              of the mute marks, 22×22 grey) — not floating over the preview. */}
+          {watched ? (
+            <>
+              <button className="tile-action" title="Open in window" onClick={() => void openSharePopout()}>
+                <span className="icon mdi-open-in-new" />
+              </button>
+              <button className="tile-action" title="Stop watching" onClick={() => setViewingFeed(feed!.feedId)}>
+                <span className="icon mdi-eye-off" />
+              </button>
+            </>
+          ) : null}
         </div>
       </div>
     );
@@ -426,19 +448,24 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
   return (
     <div className="room-view">
       <div className="room-view-header">
-        <button className="voice-toggle icon-button" title="Back to chat" onClick={toggleRoomView}>
+        {/* oak's header order: grey voice glyph → title → "N in room · M screens"
+            → stretch → the BACK button at the RIGHT edge (buildRoomView 4261-4276). */}
+        <span className="icon mdi-volume-high" />
+        <span className="pane-title">{channel !== null ? channel.name : "Voice room"}</span>
+        <span className="room-view-sub">{participants.length + 1} in room{screens > 0 ? ` · ${screens} screen${screens > 1 ? "s" : ""}` : ""}</span>
+        <button className="voice-toggle icon-button room-view-back" title="Back to chat" onClick={toggleRoomView}>
           <span className="icon mdi-chevron-left" />
         </button>
-        <span className="icon mdi-volume-high" />
-        <span className="pane-title">{channel !== null ? channel.name : "Voice"}</span>
-        <span className="room-view-sub">{participants.length + 1} in room{screens > 0 ? ` · ${screens} screen${screens > 1 ? "s" : ""}` : ""}</span>
       </div>
       <div className="room-view-body">
         {/* No share panel above the grid (oak): the watched preview lives inside
             the owner's tile; the pop-out pump reads that tile's <video>. */}
         <div className="tile-grid">
           {renderTile(session.username(), true, null)}
-          {participants.map((feed) => renderTile(feed.display, false, feed))}
+          {/* oak's tile order: self FIRST, the rest alphabetical (rebuildRoomParticipants). */}
+          {[...participants]
+            .sort((left, right) => left.display.localeCompare(right.display))
+            .map((feed) => renderTile(feed.display, false, feed))}
         </div>
       </div>
       {memberMenu !== null ? (
@@ -459,9 +486,11 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
 // The member card (right-click a room tile): personal volumes + moderation
 // ---------------------------------------------------------------------------
 
-/** One 0–200% volume row with a 0 ↔ last-positive mute toggle (oak's volume rows). */
+/** One 0–200% volume row with a 0 ↔ last-positive mute toggle (oak's volume rows).
+ *  The caption appears ONLY when both rows are visible (oak shows no caption on
+ *  the lone voice slider) — label=null renders the row uncaptioned. */
 function VolumeRow({ label, initialGain, onChange }: {
-  label: string;
+  label: string | null;
   initialGain: number;
   onChange(gain: number): void;
 }): React.JSX.Element {
@@ -469,7 +498,7 @@ function VolumeRow({ label, initialGain, onChange }: {
   const lastPositiveRef = useRef(initialGain > 0 ? initialGain : 1);
   return (
     <div className="volume-row">
-      <span className="volume-row-label">{label}</span>
+      {label !== null ? <span className="volume-row-label">{label}</span> : null}
       <input
         type="range" min={0} max={200}
         value={Math.round(gain * 100)}
@@ -514,16 +543,28 @@ function VoiceMemberCard({ session, username, hasShare, x, y, onClose }: {
   useOutsideDismiss(cardRef, onClose);
   const permissions = useStore(session.permissionStore, (state) => state.my?.permissions ?? []);
   const marks = useStore(session.voiceControlStore, (snapshot) => snapshot.marks.get(username));
-  const canMute = permissions.includes("MUTE_MEMBERS");
-  const canDeafen = permissions.includes("DEAFEN_MEMBERS");
-  const canKick = permissions.includes("MOVE_MEMBERS");
+  const members = useStore(session.memberStore, (state) => state.members);
+  const roles = useStore(session.memberStore, (state) => state.roles);
+  // oak gates the moderation rows by permission AND the hierarchy hint
+  // (voiceCanActOn: the owner is immune; otherwise strictly higher top position);
+  // disallowed rows are HIDDEN, not disabled.
+  const hierarchyOf = (memberUsername: string): HierarchyView => {
+    const member = members.find((entry) => entry.username === memberUsername);
+    return member === undefined
+      ? { owner: false, topPosition: null }
+      : { owner: member.owner, topPosition: topPosition(member, roles) };
+  };
+  const actable = canActOn(hierarchyOf(session.username()), hierarchyOf(username));
+  const canMute = permissions.includes("MUTE_MEMBERS") && actable;
+  const canDeafen = permissions.includes("DEAFEN_MEMBERS") && actable;
+  const canKick = permissions.includes("MOVE_MEMBERS") && actable;
 
   const left = Math.min(Math.max(8, x), window.innerWidth - 250);
   const top = Math.min(Math.max(8, y), window.innerHeight - 8 - (hasShare ? 190 : 150));
   return (
     <div ref={cardRef} className="member-card" style={{ left, top }}>
       <div className="member-card-title">{username}</div>
-      <VolumeRow label="Voice" initialGain={persistedGain("voice", username)} onChange={(gain) => setVoiceVolume(username, gain)} />
+      <VolumeRow label={hasShare ? "Voice" : null} initialGain={persistedGain("voice", username)} onChange={(gain) => setVoiceVolume(username, gain)} />
       {hasShare ? (
         <VolumeRow label="Share audio" initialGain={persistedGain("share", username)} onChange={(gain) => setShareVolume(username, gain)} />
       ) : null}
