@@ -99,10 +99,14 @@ describe("buildRosterGroups", () => {
     expect(groups[3]!.entries.map((entry) => entry.member.username)).toEqual(["carol", "dave"]); // alphabetical, no hoist
   });
 
-  it("self always sorts first inside every group", () => {
+  it("self sorts first inside ONLINE groups only — offline is plain alphabetical", () => {
     const members = [member(1, "zed"), member(2, "beta"), member(3, "alpha")];
     const groups = buildRosterGroups(members, [], new Set(["zed", "beta", "alpha"]), "zed");
     expect(groups[0]!.entries.map((entry) => entry.member.username)).toEqual(["zed", "alpha", "beta"]);
+    // oak parity: self-first never lifts a row inside the Offline section.
+    const offlineGroups = buildRosterGroups(members, [], new Set(["beta"]), "zed");
+    expect(offlineGroups[offlineGroups.length - 1]!.entries.map((entry) => entry.member.username))
+      .toEqual(["alpha", "zed"]);
   });
 
   it("empty groups never render (all online in hoist buckets → no plain Online header)", () => {

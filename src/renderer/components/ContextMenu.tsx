@@ -4,6 +4,8 @@ import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
 export interface ContextMenuItem {
   label: string;
   danger?: boolean;
+  /** A thin rule instead of a row (oak's popupSeparator) — Call | — | Kick/Ban. */
+  separator?: boolean;
   action: () => void;
 }
 
@@ -21,11 +23,14 @@ export function ContextMenu({ x, y, items, onClose }: {
   const menuRef = useRef<HTMLDivElement | null>(null);
   useOutsideDismiss(menuRef, onClose);
 
+  const rows = items.filter((item) => !item.separator).length;
   const left = Math.min(Math.max(8, x), window.innerWidth - 190);
-  const top = Math.min(Math.max(8, y), window.innerHeight - 8 - items.length * 34);
+  const top = Math.min(Math.max(8, y), window.innerHeight - 8 - rows * 34);
   return (
     <div ref={menuRef} className="context-menu" style={{ left, top }} onClick={(event) => event.stopPropagation()}>
-      {items.map((item) => (
+      {items.map((item, index) => item.separator ? (
+        <div key={`separator-${index}`} className="context-menu-separator" />
+      ) : (
         <button
           key={item.label}
           className={"context-menu-item" + (item.danger ? " danger" : "")}

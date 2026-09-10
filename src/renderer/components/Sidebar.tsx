@@ -2,13 +2,14 @@ import { useState } from "react";
 import { useStore } from "../hooks/useStore";
 import { appStore, connectionDirectory, joinVoiceGuarded, setActiveChannel, toggleRoomView } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
+import { memberNameColor } from "../../domain/logic/roster-grouping";
 import type { Channel } from "../../types";
 import { MANAGE_CHANNELS_PERMISSION } from "../../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { Modal } from "./Modal";
 import { Avatar } from "./Avatar";
 import { ChannelGlyph } from "./ChannelGlyph";
-import { VoiceMarks } from "./VoiceRoom";
+import { VoiceMarks, VoiceMemberCard } from "./VoiceRoom";
 import { DmSidebar } from "./DmSidebar";
 
 /**
@@ -21,6 +22,9 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
   const roster = useStore(session.rosterStore, (roster) => roster);
   const readStates = useStore(session.readStateStore, (states) => states);
   const voiceMarks = useStore(session.voiceControlStore, (snapshot) => snapshot.marks);
+  const members = useStore(session.memberStore, (state) => state.members);
+  const roles = useStore(session.memberStore, (state) => state.roles);
+  const participants = useStore(appStore, (state) => state.participants);
   const dmMode = useStore(appStore, (state) => state.dmMode);
   const canManageChannels = useStore(session.permissionStore, (state) => state.my?.permissions.includes(MANAGE_CHANNELS_PERMISSION) ?? false);
   const activeChannelId = useStore(appStore, (state) => state.activeChannelId);
@@ -31,6 +35,9 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
   const [createType, setCreateType] = useState<"TEXT" | "VOICE" | null>(null);
   const [renameTarget, setRenameTarget] = useState<Channel | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Channel | null>(null);
+  // oak's showVoiceMemberMenu, sidebar surface: the card only fires for a row
+  // under the room the VIEWER is in, and never for self.
+  const [voiceMemberMenu, setVoiceMemberMenu] = useState<{ username: string; hasShare: boolean; x: number; y: number } | null>(null);
 
   const textChannels = channels.filter((channel) => channel.type === "TEXT");
   const voiceChannels = channels.filter((channel) => channel.type === "VOICE");
@@ -41,6 +48,9 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
     }
   };
   const onVoiceChannelClick = (channel: Channel) => {
+    if (channel.locked) {
+      return; // oak: a locked channel's click is dead — no join, no error toast
+    }
     if (channel.id !== activeVoiceChannelId) {
       joinVoiceGuarded(channel); // asks about ending a live call first
     } else {
@@ -89,7 +99,8 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
               >
                 <ChannelGlyph voice={false} locked={channel.locked} />
                 <span className="channel-name">{channel.name}</span>
-                {unread !== undefined && unread.unreadCount > 0 ? (
+                {/* oak: the badge never shows on the SELECTED channel (refresh gating). */}
+                {channel.id !== activeChannelId && unread !== undefined && unread.unreadCount > 0 ? (
                   <span className={"channel-badge" + (unread.mentionCount > 0 ? " mention" : "")}>
                     {unread.unreadCount > 99 ? "99+" : unread.unreadCount}
                   </span>
@@ -98,30 +109,70 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
             );
           })}
           {voiceChannels.map((channel) => (
-            <div key={channel.id}>
-              <div
-                className={"channel-row"
-                  + (channel.id === activeVoiceChannelId ? " active voice-live" : "")
-                  + (channel.locked ? " locked" : "")}
-                onClick={() => onVoiceChannelClick(channel)}
-                onContextMenu={openMenu(channel)}
-              >
+            /* oak's ChannelNode is ONE VBox: the name row AND the member list
+               below it share the hover/active background and form a SINGLE click
+               target — a click on a member row bubbles up as a click on the room. */
+            <div
+              key={channel.id}
+              className={"voice-channel"
+                + (channel.id === activeVoiceChannelId ? " active voice-live" : "")
+                + (channel.locked ? " locked" : "")}
+              title={channel.locked ? "Locked for you" : undefined}
+              onClick={() => onVoiceChannelClick(channel)}
+              onContextMenu={openMenu(channel)}
+            >
+              <div className="channel-row">
                 <ChannelGlyph voice locked={channel.locked} />
                 <span className="channel-name">{channel.name}</span>
               </div>
-              {[...(roster.voiceMembers.get(channel.id) ?? [])].map((username) => (
-                <div key={username} className="voice-member-row">
-                  <Avatar session={session} username={username} size={20} />
-                  <span className="member-name">{username}{username === ownUsername ? " (you)" : ""}</span>
-                  <VoiceMarks marks={voiceMarks.get(username)} />
-                </div>
-              ))}
+              {[...(roster.voiceMembers.get(channel.id) ?? [])].map((username) => {
+                // oak: the voice-row nick is the top colored role, like the roster.
+                const member = members.find((entry) => entry.username === username);
+                const nickColor = member !== undefined ? memberNameColor(member, roles) : null;
+                return (
+                  <div
+                    key={username}
+                    className="voice-member-row"
+                    onContextMenu={(event) => {
+                      // The member card and the CHANNEL menu are separate zones in
+                      // oak (distinct consumers) — stop the bubble so a right-click
+                      // on a member does not also open the channel menu.
+                      event.preventDefault();
+                      event.stopPropagation();
+                      if (channel.id === activeVoiceChannelId && username !== ownUsername) {
+                        setVoiceMemberMenu({
+                          username,
+                          hasShare: participants.some((feed) => feed.display === username && feed.streams.some((stream) => stream.type === "video")),
+                          x: event.clientX,
+                          y: event.clientY,
+                        });
+                      }
+                    }}
+                  >
+                    <Avatar session={session} username={username} size={20} />
+                    <span className="member-name" style={nickColor !== null ? { color: nickColor } : undefined}>
+                      {username}{username === ownUsername ? " (you)" : ""}
+                    </span>
+                    <VoiceMarks marks={voiceMarks.get(username)} />
+                  </div>
+                );
+              })}
             </div>
           ))}
         </>
       )}
 
       {menu !== null ? <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} /> : null}
+      {voiceMemberMenu !== null ? (
+        <VoiceMemberCard
+          session={session}
+          username={voiceMemberMenu.username}
+          hasShare={voiceMemberMenu.hasShare}
+          x={voiceMemberMenu.x}
+          y={voiceMemberMenu.y}
+          onClose={() => setVoiceMemberMenu(null)}
+        />
+      ) : null}
       {createType !== null ? <CreateChannelModal session={session} type={createType} onClose={() => setCreateType(null)} /> : null}
       {renameTarget !== null ? <RenameChannelModal session={session} channel={renameTarget} onClose={() => setRenameTarget(null)} /> : null}
       {deleteTarget !== null ? <DeleteChannelModal session={session} channel={deleteTarget} onClose={() => setDeleteTarget(null)} /> : null}
@@ -147,8 +198,14 @@ function CreateChannelModal({ session, type, onClose }: {
     setBusy(true);
     setError(null);
     try {
-      await session.createChannel({ name: trimmed, type: kind });
+      const channel = await session.createChannel({ name: trimmed, type: kind });
       onClose();
+      // oak opens the fresh channel right away: text → the chat, voice → a join.
+      if (channel.type === "VOICE") {
+        joinVoiceGuarded(channel);
+      } else {
+        setActiveChannel(channel.id);
+      }
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : String(submitError));
     } finally {
@@ -258,8 +315,8 @@ function DeleteChannelModal({ session, channel, onClose }: {
   };
 
   return (
-    <Modal title={`Delete #${channel.name}?`} onClose={onClose}>
-      <div className="modal-note">This deletes the channel and its message history on the server. There is no undo.</div>
+    <Modal title={`Delete channel "${channel.name}"?`} onClose={onClose}>
+      <div className="modal-note">Its messages will be permanently removed.</div>
       <div className="error-line">{error ?? ""}</div>
       <div className="modal-actions">
         <button className="ghost" onClick={onClose}>Cancel</button>

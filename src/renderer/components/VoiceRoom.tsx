@@ -530,8 +530,9 @@ function VolumeRow({ label, initialGain, onChange }: {
  * oak's voice-member card (showVoiceMemberMenu port): personal volumes on top —
  * "Voice" always, a second "Share audio" row while that member has an announced
  * share — and the moderation rows below (hidden without the permission).
+ * Shared by the room-view tiles and the sidebar's voice-member rows.
  */
-function VoiceMemberCard({ session, username, hasShare, x, y, onClose }: {
+export function VoiceMemberCard({ session, username, hasShare, x, y, onClose }: {
   session: ConnectionSession;
   username: string;
   hasShare: boolean;

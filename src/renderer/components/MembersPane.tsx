@@ -50,6 +50,11 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
     ...(roster.presence.has(memberMenu.member.username)
       ? [{ label: "Call", action: () => callUser(memberMenu.member.username) }]
       : []),
+    // oak's member card: a separator rule between the personal action and the
+    // moderation block (showMemberMenu).
+    ...(roster.presence.has(memberMenu.member.username) && moderationMenuItems.length > 0
+      ? [{ label: "", separator: true, action: () => undefined }]
+      : []),
     ...moderationMenuItems.map((entry) => ({
       ...entry,
       action: () => {
@@ -125,7 +130,7 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
   );
 }
 
-/** One roster row: 32px avatar with the presence dot overlaid (oak's MemberNode). */
+/** One roster row: 36px avatar with the presence dot overlaid (oak's MemberNode). */
 function MemberRow({ session, member, online, isSelf, nameColor, onMenu }: {
   session: ConnectionSession;
   member: ServerMember;
@@ -136,7 +141,7 @@ function MemberRow({ session, member, online, isSelf, nameColor, onMenu }: {
 }): React.JSX.Element {
   return (
     <div className={"member-row" + (online ? "" : " offline")} onContextMenu={onMenu}>
-      <Avatar session={session} username={member.username} size={32} showPresence={online} />
+      <Avatar session={session} username={member.username} size={36} showPresence={online} />
       <span className="member-name" style={{ color: nameColor ?? (online ? "var(--sp-text)" : "var(--sp-text-muted)") }}>
         {member.username}{isSelf ? " (you)" : ""}
       </span>

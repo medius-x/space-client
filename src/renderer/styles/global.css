@@ -98,9 +98,24 @@ body {
 
 .channel-row:hover { background: var(--sp-hover); color: var(--sp-text); }
 .channel-row.active { background: var(--sp-selected); color: var(--sp-text); }
-.channel-row.active.voice-live { color: var(--sp-green); }
-.channel-row.locked { opacity: 0.5; cursor: not-allowed; }
+/* oak's locked row keeps its normal look — the ONLY cue is the forbid cursor
+   (a drawn ⊘ ImageCursor there; not-allowed is the web equivalent). */
+.channel-row.locked { cursor: not-allowed; }
 .channel-row .member-list { margin-left: 18px; }
+
+/* oak's ChannelNode: a VOICE channel block is ONE node — the name row and the
+   member list under it share the hover/active background and form a single
+   click target. The state classes live on the wrapper; the inner .channel-row
+   carries no state of its own. */
+.voice-channel { border-radius: 4px; cursor: pointer; user-select: none; }
+.voice-channel:hover { background: var(--sp-hover); }
+.voice-channel:hover .channel-row { color: var(--sp-text); }
+.voice-channel .channel-row:hover { background: transparent; } /* the block owns the hover */
+.voice-channel.active { background: var(--sp-selected); }
+.voice-channel.active .channel-row { color: var(--sp-text); }
+.voice-channel.active.voice-live .channel-row { color: var(--sp-green); }
+.voice-channel.locked { cursor: not-allowed; }
+.voice-channel.locked .channel-row { cursor: not-allowed; }
 
 .channel-hash { font-size: 16px; color: var(--sp-text-dim); }
 
@@ -539,6 +554,12 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 }
 .context-menu-item:hover { background: var(--sp-hover); }
 .context-menu-item.danger:hover { background: var(--sp-red); color: #fff; }
+/* oak's .popup-separator: a hairline splitting action blocks (Call | Kick/Ban). */
+.context-menu-separator {
+  height: 1px;
+  background: var(--sp-control);
+  margin: 4px 6px;
+}
 
 /* ===== Modal (M1) ===== */
 
@@ -580,7 +601,10 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 
 /* ===== Sidebar additions (M1) ===== */
 
-.sidebar-section-title { display: flex; align-items: center; justify-content: space-between; }
+/* oak's .channel-header: the row's height is FIXED (24px) so hiding the "+"
+   button (no MANAGE_CHANNELS) never shrinks it and shifts the channel list.
+   No bottom rule here — oak draws it only under the server-name bar. */
+.sidebar-section-title { display: flex; align-items: center; justify-content: space-between; min-height: 24px; }
 .section-add {
   background: transparent;
   color: var(--sp-text-dim);
@@ -685,8 +709,12 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 
 .channel-row { justify-content: space-between; }
 /* The name takes the free space (glyph left, badge right) — oak's ChannelNode
-   alignment; without flex the space-between pushed the name toward the badge. */
-.channel-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+   alignment; without flex the space-between pushed the name toward the badge.
+   oak pins the NAME to #f2f3f5 in every state (ChannelNode.refresh) — only the
+   glyph stays dim; the row's muted color never washes the name out. */
+.channel-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sp-text); }
+/* ...except the voice room you are IN: oak repaints its name green (MC:8786). */
+.voice-channel.active.voice-live .channel-name { color: var(--sp-green); }
 .channel-badge {
   background: var(--sp-control);
   color: var(--sp-text);
@@ -1179,7 +1207,8 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   justify-content: center;
 }
 
-.member-row { gap: 8px; }
+/* oak's MemberNode carries the HAND cursor — the row is right-clickable. */
+.member-row { gap: 8px; cursor: pointer; }
 .member-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* oak's user-bar: an #383a40 card (44px) floating at the column's bottom.
@@ -1848,15 +1877,21 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 /* Channel glyphs + voice member rows (oak's ChannelNode). */
 .channel-glyph { font-size: 16px; color: var(--sp-text-dim); flex-shrink: 0; width: 18px; }
 .channel-row.active .channel-glyph { color: inherit; }
-.channel-row.active.voice-live .channel-glyph { color: var(--sp-green); }
+.voice-channel.active .channel-glyph { color: inherit; }
+.voice-channel.active.voice-live .channel-glyph { color: var(--sp-green); }
 
 /* oak's locked-channel glyph (Icons.channelGlyph): the #/🔊 glyph loses its
    bottom-right quadrant (CSS clip — oak used Shape.subtract) to a small mdi-lock.
-   The wrapper keeps the plain glyph's 18px slot so rows don't shift on the flag. */
-.channel-glyph-locked { position: relative; flex-shrink: 0; width: 18px; height: 16px; display: inline-flex; }
+   The wrapper keeps the plain glyph's 18px slot so rows don't shift on the flag.
+   The LOCK paints with the glyph's own dim color (oak colors the whole composite
+   once) — it must NOT inherit the row, whose hover repaints it alone (live report). */
+.channel-glyph-locked { position: relative; flex-shrink: 0; width: 18px; height: 16px; display: inline-flex; color: var(--sp-text-dim); }
 .channel-glyph-locked .channel-glyph { width: auto; }
 .channel-glyph-locked .glyph-cut { clip-path: polygon(0 0, 100% 0, 100% 50%, 50% 50%, 50% 100%, 0 100%); }
-.channel-glyph-lock { position: absolute; right: -1px; bottom: -2px; font-size: 9px; }
+.channel-glyph-lock { position: absolute; right: -1px; bottom: -2px; font-size: 9px; color: inherit; }
+.channel-row.active .channel-glyph-locked { color: inherit; }
+.voice-channel.active .channel-glyph-locked { color: inherit; }
+.voice-channel.active.voice-live .channel-glyph-locked { color: var(--sp-green); }
 .voice-member-row {
   display: flex;
   align-items: center;

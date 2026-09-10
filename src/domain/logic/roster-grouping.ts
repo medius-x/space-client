@@ -153,7 +153,9 @@ export function buildRosterGroups(
     groups.push({ key: "online", title: `Online — ${online.length}`, titleColor: null, entries: online });
   }
   if (offline.length > 0) {
-    offline.sort((left, right) => sorter(left.member, right.member));
+    // oak sorts the offline section by PLAIN ALPHABET — self-first applies to
+    // the online buckets only (rebuildMemberNodes: two comparators).
+    offline.sort((left, right) => left.member.username.localeCompare(right.member.username));
     groups.push({ key: "offline", title: `Offline — ${offline.length}`, titleColor: null, entries: offline });
   }
   return groups;
