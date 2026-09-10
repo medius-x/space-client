@@ -1,4 +1,4 @@
-import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, net, screen, session, shell } from "electron";
+import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, ipcMain, net, screen, session, shell } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -22,6 +22,43 @@ const instanceArgument = process.argv.find((arg) => arg.startsWith("--space-inst
 const instanceName = instanceArgument ? instanceArgument.split("=")[1] : process.env.SPACE_INSTANCE;
 if (instanceName) {
   app.setPath("userData", path.join(app.getPath("userData"), `instance-${instanceName}`));
+}
+
+// Optional CDP endpoint for `npm run profile` (scripts/capture-profile.mjs opens it,
+// records a CPU profile of the renderer while you scroll, and closes the app).
+// Opt-in by flag only — never on by default (an open debug port in packaged builds
+// would be a hole).
+const debugPortArgument = process.argv.find((arg) => arg.startsWith("--remote-debugging-port="));
+if (debugPortArgument) {
+  app.commandLine.appendSwitch("remote-debugging-port", debugPortArgument.split("=")[1]!);
+}
+
+// Frame tracing for the scroll-jank hunt: `--trace-frames=<seconds>` starts an
+// Electron contentTracing recording once the window is up and dumps it into the
+// project root as profile-trace.json (paint/raster/composite across ALL threads —
+// what a renderer CPU profile cannot see). Opt-in flag, never default.
+const traceFramesArgument = process.argv.find((arg) => arg.startsWith("--trace-frames="));
+if (traceFramesArgument) {
+  const traceSeconds = Number(traceFramesArgument.split("=")[1]);
+  app.whenReady().then(() => {
+    void contentTracing.startRecording({
+      categoryFilter: "devtools.timeline",
+      traceOptions: "record-until-full",
+    }).then(() => {
+      appendLog(`frame trace recording (${traceSeconds}s)…`);
+      setTimeout(() => {
+        void contentTracing.stopRecording().then((resultPath) => {
+          try {
+            fs.copyFileSync(resultPath, path.join(process.cwd(), "profile-trace.json"));
+            appendLog(`frame trace saved to ${path.join(process.cwd(), "profile-trace.json")}`);
+            console.log(`>>> frame trace saved: profile-trace.json`);
+          } catch (error) {
+            appendLog(`frame trace copy failed: ${String(error)}`);
+          }
+        });
+      }, Math.max(1, traceSeconds) * 1000);
+    });
+  });
 }
 
 // File logging — the same workflow as oak-client's ~/.oak-client/*.log: smoke first,

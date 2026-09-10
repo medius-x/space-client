@@ -624,6 +624,11 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 .message-list { flex: 1; overflow-y: auto; padding: 16px 16px 8px; }
 .message-row { display: flex; gap: 6px; padding: 2px 0; border-radius: 4px; }
 .message-row:hover { background: var(--sp-hover); }
+/* While scrolling is active (the list carries .scrolling) rows ignore the
+   pointer: rows sweeping under a still cursor would otherwise flip hover states
+   dozens of times per second — pure wasted paint during a fling. Still applies
+   only while scrolling; it lifts ~150ms after the last scroll event. */
+.virtual-list.scrolling .message-row { pointer-events: none; }
 .message-row.head { margin-top: 12px; }
 .message-avatar {
   width: 40px;
@@ -693,7 +698,16 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 }
 .channel-badge.mention { background: var(--sp-red); color: #fff; }
 
-.virtual-list { flex: 1; overflow-y: auto; overflow-anchor: none; position: relative; }
+/* will-change: scroll-position promotes the scroller into its own composited
+   layer — scrolling then shifts a ready-made GPU picture instead of re-rastering
+   the whole visible area every frame. CPU profile of the "sticky big groups"
+   showed 84.8% IDLE main thread (no JS culprit) — the cost was pure repaint,
+   heaviest exactly where many short rows are visible at once.
+   overflow-anchor: AUTO (the browser default) — native scroll anchoring pins the
+   visible content when history is prepended above the viewport: the engine
+   compensates the canvas growth by itself. Disabling it (a hand-rolled-list
+   habit) is exactly what let the "chat jumps while it loads" through. */
+.virtual-list { flex: 1; overflow-y: auto; position: relative; will-change: scroll-position; }
 
 .message-row.highlighted { background: rgba(88, 101, 242, 0.15); border-radius: 4px; }
 /* oak: selection tint = #3c3f8c (the same blurple tint as the jump flash) —
@@ -2065,16 +2079,26 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 /* oak's message hover cluster: [forward][react][reply] 20×20 buttons sit
    DIRECTLY on the message tile's top-right (unmanaged nodes in oak, no card
    chrome around them) — each button is bare until its own hover fills it. */
-.message-row { position: relative; }
+/* contain: layout+style isolates each row — a row's own hover/mount mutations
+   (background, buttons, quotes) never invalidate its siblings' layout, and the
+   40+ rows of a virtualized window stay cheap to reflow (perf-traced jank
+   inside big single-author groups, live report). Paint is NOT contained: rows
+   may legitimately draw outside their box (the hover cluster, the NEW divider). */
+.message-row { position: relative; contain: layout style; }
 .message-hover-buttons {
   position: absolute;
   top: 0;
   right: 8px; /* scrollbar clearance — the bar paints over the row's right edge */
-  display: none;
+  /* visibility/opacity, NEVER display:none↔flex: rows sweep under the cursor
+     while scrolling and a layout-flipping hover made each sweep a 100-170ms
+     jank frame (perf-traced, live report). This pair skips layout entirely. */
+  opacity: 0;
+  visibility: hidden;
+  display: flex;
   gap: 2px;
   z-index: 2;
 }
-.message-row:hover .message-hover-buttons { display: flex; }
+.message-row:hover .message-hover-buttons { opacity: 1; visibility: visible; }
 .hover-button {
   width: 20px;
   height: 20px;

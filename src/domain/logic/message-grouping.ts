@@ -27,6 +27,14 @@ export function computeGroupStarts(messages: readonly GroupableMessage[], gapMs:
   return flags;
 }
 
+/** True when `newer` extends `older`'s group — the pair must NOT be split by a
+ *  pagination boundary (a cut mid-group makes the group's head flip to a
+ *  continuation on every back-fill — "the group redraws", live report). */
+export function continuesGroup(older: GroupableMessage, newer: GroupableMessage, gapMs: number = GROUP_GAP_MS): boolean {
+  return older.authorUsername === newer.authorUsername
+    && newer.createdAtEpochMs - older.createdAtEpochMs <= gapMs;
+}
+
 /** Wire createdAt (ISO string) → epoch ms, the grouping input. */
 export function toEpochMs(createdAtIso: string): number {
   const parsed = Date.parse(createdAtIso);

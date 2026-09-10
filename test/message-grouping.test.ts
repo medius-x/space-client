@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GROUP_GAP_MS, computeGroupStarts, toEpochMs } from "../src/domain/logic/message-grouping";
+import { GROUP_GAP_MS, computeGroupStarts, continuesGroup, toEpochMs } from "../src/domain/logic/message-grouping";
 
 const MINUTE = 60_000;
 
@@ -40,6 +40,21 @@ describe("computeGroupStarts", () => {
   it("empty and single-message lists", () => {
     expect(computeGroupStarts([])).toEqual([]);
     expect(computeGroupStarts([entry(1, "alice", 0)])).toEqual([true]);
+  });
+});
+
+describe("continuesGroup (pagination boundary alignment)", () => {
+  it("same author inside the window continues; author change or gap breaks", () => {
+    expect(continuesGroup(entry(1, "alice", 0), entry(2, "alice", 4))).toBe(true);
+    expect(continuesGroup(entry(1, "alice", 0), entry(2, "bob", 1))).toBe(false);
+    expect(continuesGroup(entry(1, "alice", 0), entry(2, "alice", 6))).toBe(false);
+  });
+
+  it("agrees with computeGroupStarts on the boundary flag", () => {
+    const older = entry(1, "alice", 10);
+    const newer = entry(2, "alice", 12);
+    const flags = computeGroupStarts([older, newer]);
+    expect(flags[1]).toBe(!continuesGroup(older, newer));
   });
 
   it("toEpochMs parses ISO strings and maps garbage to 0", () => {

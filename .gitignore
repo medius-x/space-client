@@ -2,3 +2,9 @@ node_modules/
 dist/
 out/
 *.log
+
+# Profiler artifacts (npm run profile)
+profile-trace.json
+profile-hotspots.txt
+profile-raw.bin
+profile.cpuprofile

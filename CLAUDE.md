@@ -369,12 +369,16 @@ server-офсетам); unread/read-states (сеяние из GET /api/read-stat
 bump'ы, ack на open/focus, бейджи в сайдбаре серый/красный, divider NEW с
 auto-dismiss); уведомления (in-app тосты стек ≤3, OS Notification из renderer —
 без IPC, WebAudio-колокольчик E6+квинта только на mention; декайдер:
-none при open+focused); **свой VirtualList** (`domain/logic/virtual-window.ts`
-чистая математика + компонент: estimate→measure высоты, prepend-анкор по старому
-первому ключу с пере-утверждением 3 layout-прохода, jump с бэкфиллом кап 1000 и
-re-assert 4×30мс); пагинация скроллом вверх (HISTORY_PAGE=50, конец по СЫРОЙ
+none при open+focused); **VirtualList** (M7-миграция на **@tanstack/react-virtual
+3.14** после серии джанк-регрессий самодельной математики; публичный API прежний:
+estimate→measure высоты через `measureElement`, prepend-якорь по старому первому
+ключу с пере-утверждением 3 layout-проходов, jump с бэкфиллом кап 1000 и
+re-assert 4×30мс; строки `pointer-events: none` на время активного скролла —
+пролёт под курсором больше не ховерится; `domain/logic/virtual-window.ts` УДАЛЁН
+вместе с его тестами); пагинация скроллом вверх (HISTORY_PAGE=50, конец по СЫРОЙ
 странице); мультиселект (Select → клики тогглят, групповой Forward/Delete);
-perf-гейт: кнопка «seed 10k» в diag. Гейт 104/104.
+perf-гейт: кнопка «seed 10k» в diag + jank-трассировщик в space.log
+(`[perf] <событие> <мс>`, >100мс события / >50мс longtask — renderer/main.tsx).
 
 Отложено (осознанно): контекст-меню «Copy text» есть, markdown-lite нет (oak
 backlog), day-dividers нет, автодополнение @упоминаний нет (M7-полиш), live-трекинг

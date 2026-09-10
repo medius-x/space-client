@@ -14,7 +14,8 @@
     "start2": "npm run build && electron . --space-instance=b",
     "test": "vitest run",
     "watch": "vitest",
-    "icons": "node scripts/regen-icons.mjs"
+    "icons": "node scripts/regen-icons.mjs",
+    "profile": "node scripts/capture-profile.mjs"
   },
   "devDependencies": {
     "@mdi/font": "^7.4.47",
@@ -32,6 +33,7 @@
     "vitest": "^4.1.0"
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.14.11",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   }

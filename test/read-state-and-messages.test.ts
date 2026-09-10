@@ -1,13 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ReadStateStore } from "../src/domain/stores/ReadStateStore";
 import { MessageStore } from "../src/domain/stores/MessageStore";
-import {
-  buildCumulativeOffsets,
-  computeWindow,
-  indexAtOffset,
-  offsetForIndexAlignCenter,
-  offsetForIndexAlignStart,
-} from "../src/domain/logic/virtual-window";
 import type { Message } from "../src/types";
 
 function message(id: number, channelId = 1, mentions: Message["mentions"] = []): Message {
@@ -123,37 +116,3 @@ describe("MessageStore M2 mutations", () => {
   });
 });
 
-describe("virtual-window math", () => {
-  const heights = [40, 60, 40, 100, 40, 40, 40];
-  const offsets = buildCumulativeOffsets(heights);
-
-  it("cumulative offsets", () => {
-    expect(offsets.length).toBe(heights.length + 1);
-    expect(offsets[0]).toBe(0);
-    expect(offsets[2]).toBe(100);
-    expect(offsets[offsets.length - 1]).toBe(heights.reduce((sum, height) => sum + height, 0));
-  });
-
-  it("indexAtOffset binary-searches and clamps", () => {
-    expect(indexAtOffset(offsets, 0)).toBe(0);
-    expect(indexAtOffset(offsets, 99)).toBe(1);
-    expect(indexAtOffset(offsets, 100)).toBe(2);
-    expect(indexAtOffset(offsets, 10_000)).toBe(heights.length - 1); // clamp
-  });
-
-  it("computeWindow covers the viewport plus overscan", () => {
-    const range = computeWindow({ offsets, scrollTop: 100, viewportHeight: 80, overscan: 1 });
-    // Visible raw: items 2..3 (100..280 covers 80px viewport → items 2,3); ±1 overscan.
-    expect(range.startIndex).toBe(1);
-    expect(range.endIndex).toBe(4);
-
-    expect(computeWindow({ offsets: new Float64Array(1), scrollTop: 0, viewportHeight: 100, overscan: 2 }))
-      .toEqual({ startIndex: 0, endIndex: -1 }); // empty list
-  });
-
-  it("alignment offsets", () => {
-    expect(offsetForIndexAlignStart(offsets, 2)).toBe(100);
-    // item 3: top 140, height 100 → centered in a 200px viewport: 140 − (200−100)/2 = 90
-    expect(offsetForIndexAlignCenter(offsets, 3, 200)).toBe(90);
-  });
-});

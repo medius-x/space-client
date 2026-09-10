@@ -1,18 +1,16 @@
-import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
-import {
-  buildCumulativeOffsets,
-  computeWindow,
-  offsetForIndexAlignCenter,
-  offsetForIndexAlignStart,
-} from "../../domain/logic/virtual-window";
+import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { virtualScrollTelemetry } from "../scroll-telemetry";
 
 /**
- * Own virtualized list (the plan's ~300-line bet instead of a dependency):
- * variable heights start from an ESTIMATE and get measured after layout
- * (data-key elements, 0.5px tolerance), the window is the pure math from
- * domain/logic/virtual-window, and a PREPEND restores the scroll anchor on the
- * OLD FIRST ITEM — back-filled history never jumps the viewport.
+ * Virtualized list over @tanstack/react-virtual (the industry-standard headless
+ * engine) — migrated off the hand-rolled window math after a run of scroll-jank
+ * regressions. The public API is unchanged: variable heights start from an
+ * estimate and are measured by the engine (measureElement), and a PREPEND
+ * re-anchors the scroll onto the OLD FIRST ITEM so back-filled history never
+ * jumps the viewport. Rows ignore the pointer while scrolling is active —
+ * rows sweeping under a still cursor flip hover states dozens of times per
+ * second (pure wasted paint during a fling).
  */
 export interface VirtualListHandle {
   scrollToKey(key: string, align?: "start" | "center"): boolean;
@@ -21,21 +19,19 @@ export interface VirtualListHandle {
   scrollToBottom(): void;
 }
 
-export const NEAR_TOP_THRESHOLD = 80;
+// PREFETCH: history loads while the top is still ~3-4 screens away — the page
+// (group-aligned by the caller) lands far above the viewport, so the prepend
+// and its scroll compensation NEVER happen under the reader's eyes (the residual
+// "kick" on back-fill, live report). 80px loaded right at the edge instead.
+export const NEAR_TOP_THRESHOLD = 2500;
 export const NEAR_BOTTOM_THRESHOLD = 80;
 
-const OVERSCAN = 6;
-/**
- * The estimate for never-measured rows FREEZES after this many measurements. A
- * running average would keep sliding totalHeight as new regions get measured
- * (on a 10k list that never converges), and every slide re-maps the scrollbar
- * thumb — the cursor visibly outruns it forever. Frozen, the total only moves
- * on local estimate→measure transitions inside the visible window.
- */
-const ESTIMATE_FREEZE_AFTER = 60;
-/** A scroll event this close after a wheel tick is wheel-driven, not a thumb drag. */
-const WHEEL_FRESHNESS_MS = 150;
-/** Scroll silence that ends an inferred drag and lands the deferred refinements. */
+// Chat rows are SHORT (a continuation line is ~22px), so an overscan counted in
+// rows must be generous in rows to be meaningful in pixels: 6 was ~130px of
+// runway and every wheel tick mounted rows on the fly (the residual stickiness
+// inside big single-author groups — short rows churn the window fastest).
+const OVERSCAN = 14;
+/** Scroll silence that lifts the pointer-events block (.scrolling). */
 const SCROLL_IDLE_MS = 150;
 
 interface VirtualListProps<Item> {
@@ -55,142 +51,57 @@ export function VirtualList<Item>(props: VirtualListProps<Item>): React.JSX.Elem
   const { items, itemKey, estimateHeight, renderItem, onNearTop, onBottomProximity, className, ref } = props;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const measuredHeights = useRef(new Map<string, number>());
-  const measuredCountRef = useRef(0);
-  const measuredSumRef = useRef(0);
-  const frozenEstimateRef = useRef<number | null>(null);
-  const [scrollTop, setScrollTop] = useState(0);
-  const [viewportHeight, setViewportHeight] = useState(600);
-  const [measureVersion, setMeasureVersion] = useState(0);
-  void measureVersion; // bumping it recomputes the offsets memo below
-
-  // Thumb-lock contract: while a scrollbar DRAG is inferred (scrolling without any
-  // recent wheel input), measurement refinements must NOT move the scroll extent —
-  // they accumulate and land as ONE visible jump when the drag stops. Real content
-  // loads (items change) unfreeze immediately, so the thumb jumps at the load —
-  // the Chrome-on-a-lazy-page behavior.
-  const [canvasFrozen, setCanvasFrozen] = useState(false);
-  const frozenTotalRef = useRef(0);
-  const lastWheelAtRef = useRef(0);
+  const [scrolling, setScrolling] = useState(false);
   const scrollIdleTimerRef = useRef<number | null>(null);
 
-  const keyToIndex = useMemo(() => {
-    const map = new Map<string, number>();
-    for (let index = 0; index < items.length; index++) {
-      map.set(itemKey(items[index]!), index);
-    }
-    return map;
-  }, [items, itemKey]);
-
-  const offsets = useMemo(() => {
-    const calibratedEstimate = frozenEstimateRef.current;
-    const heights = items.map((item) =>
-      measuredHeights.current.get(itemKey(item)) ?? calibratedEstimate ?? estimateHeight(item));
-    return buildCumulativeOffsets(heights);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- measureVersion is the heights' identity
-  }, [items, itemKey, estimateHeight, measureVersion]);
-
-  const totalHeight = offsets.length > 0 ? offsets[offsets.length - 1]! : 0;
-  const windowRange = useMemo(
-    () => computeWindow({ offsets, scrollTop, viewportHeight, overscan: OVERSCAN }),
-    [offsets, scrollTop, viewportHeight],
-  );
-
-  // Measure rendered rows BEFORE paint; changed heights recompute offsets in the same frame.
-  useLayoutEffect(() => {
-    const container = containerRef.current;
-    if (container === null) {
-      return;
-    }
-    let changed = false;
-    for (const element of container.querySelectorAll<HTMLElement>("[data-vkey]")) {
-      const key = element.dataset.vkey;
-      if (key === undefined) {
-        continue;
-      }
-      const height = element.offsetHeight;
-      const previous = measuredHeights.current.get(key);
-      if (previous === undefined) {
-        measuredHeights.current.set(key, height);
-        measuredCountRef.current += 1;
-        measuredSumRef.current += height;
-        changed = true;
-      } else if (Math.abs(previous - height) > 0.5) {
-        measuredHeights.current.set(key, height);
-        measuredSumRef.current += height - previous;
-        changed = true;
-      }
-    }
-    if (changed && frozenEstimateRef.current === null && measuredCountRef.current >= ESTIMATE_FREEZE_AFTER) {
-      frozenEstimateRef.current = measuredSumRef.current / measuredCountRef.current;
-    }
-    if (changed) {
-      if (performance.now() - lastWheelAtRef.current > WHEEL_FRESHNESS_MS) {
-        setCanvasFrozen(true); // drag/key-scroll in progress — defer the extent change
-      }
-      setMeasureVersion((version) => version + 1);
-    }
+  const virtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => containerRef.current,
+    estimateSize: (index: number) => estimateHeight(items[index]!),
+    overscan: OVERSCAN,
+    getItemKey: (index: number) => itemKey(items[index]!),
   });
 
-  // Content loads jump immediately; the frozen extent is only for quiet drags.
-  useEffect(() => {
-    setCanvasFrozen(false);
-  }, [items]);
-
-  // Commit the live total while unfrozen (the frozen copy is what a drag pins).
-  useLayoutEffect(() => {
-    if (!canvasFrozen) {
-      frozenTotalRef.current = totalHeight;
-    }
-  }, [totalHeight, canvasFrozen]);
-
-  // Prepend anchor: the offset inside the CURRENT first item is captured while it
-  // is first; when the first key changes but stays in the list, the viewport is
-  // re-anchored onto it for a few layout passes (estimates settle into measured
-  // heights asynchronously — a single restore would drift by their delta).
-  const prevFirstKeyRef = useRef<string | null>(null);
-  const anchorOffsetInFirstRef = useRef(0);
-  const pendingAnchorRef = useRef<{ key: string; offsetInItem: number; passes: number } | null>(null);
+  // ---------------------------------------------------------------------------
+  // Prepend anchor, ADDITIVE: native scroll anchoring never fires for this list
+  // (absolutely-positioned rows moved by transform are invisible to it), so the
+  // viewport must be compensated by hand when history is prepended above it.
+  // The compensation is a DELTA — how much the OLD first item moved DOWN across
+  // the prepend — not an absolute target: an absolute target read from the
+  // engine's not-yet-refreshed measurement cache produced ~0 and THREW the
+  // viewport to the top of the freshly loaded group (live report). The delta is
+  // re-applied on later passes as measurements settle; scrolling by the user
+  // never conflicts (a delta of exact content growth keeps the view still).
+  // ---------------------------------------------------------------------------
+  const lastFirstRef = useRef<{ key: string; start: number } | null>(null);
   useLayoutEffect(() => {
     const container = containerRef.current;
     if (container === null || items.length === 0) {
+      lastFirstRef.current = null;
       return;
     }
     const firstKey = itemKey(items[0]!);
-    const previousFirstKey = prevFirstKeyRef.current;
-    if (previousFirstKey !== null && previousFirstKey !== firstKey) {
-      pendingAnchorRef.current = { key: previousFirstKey, offsetInItem: Math.max(0, anchorOffsetInFirstRef.current), passes: 0 };
-    }
-    anchorOffsetInFirstRef.current = container.scrollTop - offsets[0]!;
-    prevFirstKeyRef.current = firstKey;
-
-    const pending = pendingAnchorRef.current;
-    if (pending !== null) {
-      const restoreIndex = keyToIndex.get(pending.key);
-      if (restoreIndex === undefined) {
-        pendingAnchorRef.current = null; // the anchor left the list (channel switch) — drop it
-      } else {
-        container.scrollTop = offsets[restoreIndex]! + pending.offsetInItem;
-        setScrollTop(container.scrollTop);
-        pending.passes += 1;
-        if (pending.passes >= 3) {
-          pendingAnchorRef.current = null;
+    const previous = lastFirstRef.current;
+    if (previous !== null && previous.key !== firstKey) {
+      const oldIndex = items.findIndex((item) => itemKey(item) === previous.key);
+      const oldStartNow = oldIndex === -1 ? undefined : virtualizer.measurementsCache[oldIndex]?.start;
+      if (oldStartNow !== undefined) {
+        const delta = oldStartNow - previous.start;
+        if (Math.abs(delta) > 0.5) {
+          container.scrollTop += delta;
         }
       }
     }
+    lastFirstRef.current = { key: firstKey, start: virtualizer.measurementsCache[0]?.start ?? 0 };
   });
 
   useImperativeHandle(ref, () => ({
     scrollToKey(key: string, align: "start" | "center" = "start"): boolean {
-      const container = containerRef.current;
-      const index = keyToIndex.get(key);
-      if (container === null || index === undefined) {
+      const index = items.findIndex((item) => itemKey(item) === key);
+      if (index === -1) {
         return false;
       }
-      container.scrollTop = align === "center"
-        ? offsetForIndexAlignCenter(offsets, index, viewportHeight)
-        : Math.max(0, offsetForIndexAlignStart(offsets, index) - 12);
-      setScrollTop(container.scrollTop);
+      virtualizer.scrollToIndex(index, { align });
       return true;
     },
     scrollTop(): number {
@@ -200,80 +111,91 @@ export function VirtualList<Item>(props: VirtualListProps<Item>): React.JSX.Elem
       return containerRef.current?.clientHeight ?? 0;
     },
     scrollToBottom(): void {
-      const container = containerRef.current;
-      if (container !== null) {
-        container.scrollTop = container.scrollHeight;
-        setScrollTop(container.scrollTop);
+      if (items.length > 0) {
+        virtualizer.scrollToIndex(items.length - 1, { align: "end" });
       }
     },
-  }), [keyToIndex, offsets, viewportHeight]);
+  }), [items, itemKey, virtualizer]);
 
+  // Rows ignore the pointer while the list is actively scrolling; lifts after
+  // SCROLL_IDLE_MS of quiet. Set first, clear once — cheap state churn.
+  const armScrolling = () => {
+    if (scrollIdleTimerRef.current !== null) {
+      window.clearTimeout(scrollIdleTimerRef.current);
+    } else {
+      setScrolling(true);
+    }
+    scrollIdleTimerRef.current = window.setTimeout(() => {
+      scrollIdleTimerRef.current = null;
+      setScrolling(false);
+    }, SCROLL_IDLE_MS);
+  };
+
+  // The WHEEL tick arms the block INSTANTLY — scroll events alone were too late
+  // at an intermittent pace (tick… >150ms pause… tick): the block lifted between
+  // ticks and rows swept under the cursor flipped hover states again (perf log:
+  // pointerover bursts at 104-216ms inside big groups, live report).
+  const onWheelCapture = () => {
+    armScrolling();
+  };
+
+  // Geometry for the proximity callbacks comes from the engine's caches (JS
+  // state) — no scrollHeight reads that would force a layout flush per event.
+  // The only DOM reads (clientHeight) are valid-layout reads at event time.
   const onScroll = () => {
     const container = containerRef.current;
     if (container === null) {
       return;
     }
-    setScrollTop(container.scrollTop);
-    virtualScrollTelemetry.scrollTop = container.scrollTop;
-    virtualScrollTelemetry.scrollHeight = container.scrollHeight;
-    virtualScrollTelemetry.viewportHeight = container.clientHeight;
-    virtualScrollTelemetry.thumbFraction = container.scrollHeight - container.clientHeight > 0
-      ? container.scrollTop / (container.scrollHeight - container.clientHeight)
-      : 0;
-    // Drag-stop detector: 150ms of scroll silence = the drag is over → land the
-    // deferred extent refinements as one visible thumb jump.
-    if (scrollIdleTimerRef.current !== null) {
-      window.clearTimeout(scrollIdleTimerRef.current);
-    }
-    scrollIdleTimerRef.current = window.setTimeout(() => {
-      scrollIdleTimerRef.current = null;
-      setCanvasFrozen(false);
-    }, SCROLL_IDLE_MS);
-    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-    onBottomProximity?.(distanceFromBottom < NEAR_BOTTOM_THRESHOLD);
-    if (container.scrollTop < NEAR_TOP_THRESHOLD && container.scrollHeight > container.clientHeight + 100) {
+    const scrollTop = container.scrollTop;
+    const total = virtualizer.getTotalSize();
+    const viewport = container.clientHeight;
+    virtualScrollTelemetry.scrollTop = scrollTop;
+    virtualScrollTelemetry.scrollHeight = total;
+    virtualScrollTelemetry.viewportHeight = viewport;
+    virtualScrollTelemetry.thumbFraction = total - viewport > 0 ? scrollTop / (total - viewport) : 0;
+    onBottomProximity?.(total - scrollTop - viewport < NEAR_BOTTOM_THRESHOLD);
+    if (scrollTop < NEAR_TOP_THRESHOLD && total > viewport + 100) {
       onNearTop?.();
     }
+    armScrolling();
   };
 
-  // Viewport size tracking (window resizes change the visible window).
-  useLayoutEffect(() => {
-    const container = containerRef.current;
-    if (container === null) {
-      return;
-    }
-    const observer = new ResizeObserver(() => {
-      setViewportHeight(container.clientHeight);
-    });
-    observer.observe(container);
-    setViewportHeight(container.clientHeight);
-    return () => observer.disconnect();
+  useEffect(() => {
+    return () => {
+      if (scrollIdleTimerRef.current !== null) {
+        window.clearTimeout(scrollIdleTimerRef.current);
+      }
+    };
   }, []);
 
-  // CANVAS + ABSOLUTE ROWS (react-window style): growing/shrinking spacers mutate the
-  // scrollable layout on EVERY scroll frame, which makes Chromium downgrade a native
-  // scrollbar-thumb drag to relative delta scrolling (thumb visually "freezes" while
-  // the content crawls with the cursor). With a fixed-height canvas the scroll extent
-  // only changes when measurements land — the thumb keeps its cursor lock.
+  const virtualItems = virtualizer.getVirtualItems();
+
   return (
     <div
-      className={className ?? "virtual-list"}
+      className={(className ?? "virtual-list") + (scrolling ? " scrolling" : "")}
       ref={containerRef}
       onScroll={onScroll}
-      onWheel={() => {
-        lastWheelAtRef.current = performance.now();
-      }}
+      onWheelCapture={onWheelCapture}
     >
-      <div style={{ height: canvasFrozen ? frozenTotalRef.current : totalHeight, position: "relative" }}>
-        {items.slice(windowRange.startIndex, windowRange.endIndex + 1).map((item, sliceIndex) => {
-          const key = itemKey(item);
-          const index = windowRange.startIndex + sliceIndex;
-          return (
-            <div key={key} data-vkey={key} style={{ position: "absolute", top: offsets[index] ?? 0, left: 0, right: 0 }}>
-              {renderItem(item, index)}
-            </div>
-          );
-        })}
+      <div style={{ height: virtualizer.getTotalSize(), position: "relative", width: "100%" }}>
+        {virtualItems.map((virtualRow) => (
+          <div
+            key={virtualRow.key}
+            data-index={virtualRow.index}
+            ref={virtualizer.measureElement}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "100%",
+              // translateY keeps positioning on the compositor (no layout on reflow).
+              transform: `translateY(${virtualRow.start}px)`,
+            }}
+          >
+            {renderItem(items[virtualRow.index]!, virtualRow.index)}
+          </div>
+        ))}
       </div>
     </div>
   );

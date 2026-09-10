@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../hooks/useStore";
 import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
 import { ackActiveChannel, appStore, forwardCrossInstance, forwardRequestUpload, forwardUploadBytes } from "../runtime";
@@ -8,7 +8,7 @@ import type { ConnectionSession } from "../../domain/session/connection-session"
 import { HISTORY_PAGE } from "../../domain/session/connection-session";
 import { RestClient } from "../../core/rest";
 import { log } from "../../logging";
-import { computeGroupStarts, formatHeaderStamp, formatTimeOfDay, toEpochMs, type GroupableMessage } from "../../domain/logic/message-grouping";
+import { computeGroupStarts, continuesGroup, formatHeaderStamp, formatTimeOfDay, toEpochMs, type GroupableMessage } from "../../domain/logic/message-grouping";
 import { firstHttpUrl, segmentMessageContent } from "../../domain/logic/mention-segmenter";
 import { linkPreviewFor, type LinkPreview } from "../link-preview";
 import { dmDisplayName } from "../../domain/logic/dm-display";
@@ -40,11 +40,15 @@ const QUOTE_DEPTH_MAX = 5;
  * Content-aware height estimate — the flatter the estimate, the more totalHeight
  * "breathes" when measurement replaces it, and a breathing scrollHeight makes the
  * scrollbar thumb drift off the cursor mid-drag (the mapping denominator moves).
+ * CONTINUATION rows of a group are estimated with a smaller base (~22px reality)
+ * than head rows — inside big single-author groups the old flat 30px base doubled
+ * the estimate→measure delta on every row and the extent never stopped moving
+ * (live report). Grouping knowledge arrives via MessageList's startById map.
  */
-function estimateRowHeight(message: Message): number {
+function estimateRowHeight(message: Message, startsGroup: boolean): number {
   const CHARS_PER_LINE = 72;
   const lines = message.content === null ? 0 : Math.max(1, Math.ceil(message.content.length / CHARS_PER_LINE));
-  let height = 30 + lines * 21;
+  let height = (startsGroup ? 30 : 24) + lines * 21;
   if (message.reply !== null) {
     height += 34;
   }
@@ -628,17 +632,39 @@ function MessageList(props: MessageListProps): React.JSX.Element {
       return;
     }
     loadingOlderRef.current = true;
-    void session.loadOlder(channel.id, messages[0]!.id)
-      .then((rawPageLength) => {
+    void (async () => {
+      try {
+        let rawPageLength = await session.loadOlder(channel.id, messages[0]!.id);
+        // Page alignment (live report, chat 4444): a pagination boundary that CUTS
+        // a group in half made the group "redraw" on every back-fill — its head
+        // flipped to a continuation as older same-author messages arrived above.
+        // Keep fetching (capped) while the top of the list is mid-group, so a
+        // boundary always lands on an author/time change: groups load WHOLE.
+        for (let alignmentPage = 0; alignmentPage < 3; alignmentPage += 1) {
+          if (rawPageLength < HISTORY_PAGE) {
+            break; // history exhausted — nothing above can extend the group anyway
+          }
+          const list = session.messageStore.listFor(channel.id);
+          const asGroupable = (message: Message): GroupableMessage => ({
+            id: message.id,
+            authorUsername: message.authorUsername,
+            createdAtEpochMs: toEpochMs(message.createdAt),
+          });
+          if (list.length < 2 || !continuesGroup(asGroupable(list[1]!), asGroupable(list[0]!))) {
+            break; // the top already sits on a group boundary
+          }
+          rawPageLength = await session.loadOlder(channel.id, list[0]!.id);
+        }
         if (rawPageLength < HISTORY_PAGE) {
           hasOlderRef.current = false; // end of history latches on the RAW page
           setBeginReached(true);
         }
-      })
-      .catch(() => undefined)
-      .finally(() => {
+      } catch {
+        // next near-top pass retries
+      } finally {
         loadingOlderRef.current = false;
-      });
+      }
+    })();
   };
 
   const wiredActions: ChatActions = {
@@ -680,6 +706,16 @@ function MessageList(props: MessageListProps): React.JSX.Element {
     authorUsername: message.authorUsername,
     createdAtEpochMs: toEpochMs(message.createdAt),
   }))), [messages]);
+  // Continuation-aware estimator: the estimate must know whether THIS row is a
+  // group head (30px base) or a continuation (~22px reality) — see estimateRowHeight.
+  const startById = useMemo(
+    () => new Map(messages.map((message, index) => [message.id, groupStarts[index] ?? true])),
+    [messages, groupStarts],
+  );
+  const groupedEstimateHeight = useCallback(
+    (message: Message): number => estimateRowHeight(message, startById.get(message.id) ?? true),
+    [startById],
+  );
 
   const dividerIndex = dividerReadId === null
     ? -1
@@ -691,7 +727,7 @@ function MessageList(props: MessageListProps): React.JSX.Element {
       ref={listRef}
       items={messages}
       itemKey={(message) => String(message.id)}
-      estimateHeight={estimateRowHeight}
+      estimateHeight={groupedEstimateHeight}
       onNearTop={loadOlder}
       onBottomProximity={(nearBottom) => {
         nearBottomRef.current = nearBottom;
@@ -762,7 +798,13 @@ interface MessageRowProps {
   onReactedBy(state: { x: number; y: number; names: readonly string[] }): void;
 }
 
-function MessageRow(props: MessageRowProps): React.JSX.Element {
+/**
+ * Memoized: the VirtualList recomputes its window on every scroll frame, which
+ * re-runs renderItem for the whole visible window — with memo, rows whose props
+ * are unchanged (the overwhelming case while scrolling) skip re-rendering
+ * entirely; only rows entering/leaving the window actually mount/unmount.
+ */
+const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.Element {
   const { session, channel, message, startsGroup, editing, highlighted, selected, actions } = props;
   const [draft, setDraft] = useState(message.content ?? "");
 
@@ -956,7 +998,7 @@ function MessageRow(props: MessageRowProps): React.JSX.Element {
       </div>
     </div>
   );
-}
+});
 
 function QuoteCard({ level, depth, clickable, onJump }: {
   level: ReplyInfo;
