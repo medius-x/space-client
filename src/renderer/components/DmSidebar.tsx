@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useStore } from "../hooks/useStore";
-import { appStore, openDm, setFriendsTab } from "../runtime";
+import { appStore, openDm, setFriendsTab, settingsStore } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { DmChannel, Relationship } from "../../types";
 import { dmDisplayName, dmPreviewText } from "../../domain/logic/dm-display";
@@ -20,6 +20,8 @@ export function DmSidebar({ session }: { session: ConnectionSession }): React.JS
   const readStates = useStore(session.readStateStore, (states) => states);
   const activeDmId = useStore(appStore, (state) => state.activeDmId);
   const ownUsername = useStore(appStore, (state) => state.ownUsername) ?? session.username();
+  // Live badge toggle (oak's onApplied badge rebuild) — see Sidebar.
+  const badgeEnabled = useStore(settingsStore, (settings) => settings.badgeEnabled);
   // Derived arrays live OUTSIDE selectors — a fresh array per getSnapshot call
   // is an infinite re-render under useSyncExternalStore.
   const friends = useMemo(
@@ -95,7 +97,7 @@ export function DmSidebar({ session }: { session: ConnectionSession }): React.JS
               <span className="dm-name">{name}</span>
               <span className="dm-preview">{dmPreviewText(dm)}</span>
             </div>
-            {badgeCount > 0 ? (
+            {badgeEnabled && badgeCount > 0 ? (
               <span className="channel-badge mention">{badgeCount > 99 ? "99+" : badgeCount}</span>
             ) : null}
           </div>

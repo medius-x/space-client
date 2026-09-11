@@ -807,6 +807,9 @@ interface MessageRowProps {
 const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.Element {
   const { session, channel, message, startsGroup, editing, highlighted, selected, actions } = props;
   const [draft, setDraft] = useState(message.content ?? "");
+  // Subscribed (not read-once): the relative-dates toggle must repaint every
+  // stamp the moment it is committed (oak's onApplied → messageList.refresh()).
+  const relativeDates = useStore(settingsStore, (settings) => settings.relativeDates);
 
   useEffect(() => {
     setDraft(message.content ?? "");
@@ -947,7 +950,7 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
         {startsGroup ? (
           <div className="message-meta">
             <span className="message-author" style={{ color: props.authorColor(message.authorUsername) ?? undefined }}>{message.authorUsername}</span>
-            <span className="message-time">{formatHeaderStamp(toEpochMs(message.createdAt), Date.now(), settingsStore.getSnapshot().relativeDates)}</span>
+            <span className="message-time">{formatHeaderStamp(toEpochMs(message.createdAt), Date.now(), relativeDates)}</span>
           </div>
         ) : null}
         {message.forward !== null && !editing ? (
@@ -1038,6 +1041,8 @@ function QuoteCard({ level, depth, clickable, onJump }: {
  * BODY + attachments live INSIDE the card — a forward reads as the quoted original.
  */
 function ForwardCard({ forward, children }: { forward: ForwardInfo; children: React.ReactNode }): React.JSX.Element {
+  // Subscribed like MessageList: a relative-dates toggle repaints the stamp.
+  const relativeDates = useStore(settingsStore, (settings) => settings.relativeDates);
   return (
     <div className="forward-card">
       <div className="forward-head">
@@ -1048,7 +1053,7 @@ function ForwardCard({ forward, children }: { forward: ForwardInfo; children: Re
       </div>
       <div className="forward-author-row">
         <span className="forward-author" style={{ color: paletteColor(forward.authorUsername) }}>{forward.authorUsername}</span>
-        <span className="forward-time">{formatHeaderStamp(toEpochMs(forward.createdAt), Date.now(), settingsStore.getSnapshot().relativeDates)}</span>
+        <span className="forward-time">{formatHeaderStamp(toEpochMs(forward.createdAt), Date.now(), relativeDates)}</span>
       </div>
       {forward.reply !== null ? <QuoteCard level={forward.reply} depth={1} clickable={false} onJump={() => undefined} /> : null}
       {children}

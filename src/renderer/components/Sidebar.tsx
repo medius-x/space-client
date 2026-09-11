@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useStore } from "../hooks/useStore";
-import { appStore, connectionDirectory, joinVoiceGuarded, setActiveChannel, toggleRoomView } from "../runtime";
+import { appStore, connectionDirectory, joinVoiceGuarded, setActiveChannel, settingsStore, toggleRoomView } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import { memberNameColor } from "../../domain/logic/roster-grouping";
 import type { Channel } from "../../types";
@@ -28,6 +28,9 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
   const dmMode = useStore(appStore, (state) => state.dmMode);
   const canManageChannels = useStore(session.permissionStore, (state) => state.my?.permissions.includes(MANAGE_CHANNELS_PERMISSION) ?? false);
   const activeChannelId = useStore(appStore, (state) => state.activeChannelId);
+  // The badge toggle is LIVE (oak's onApplied badge rebuild): hiding the
+  // counters re-renders the column without waiting for the next message.
+  const badgeEnabled = useStore(settingsStore, (settings) => settings.badgeEnabled);
   const activeVoiceChannelId = useStore(appStore, (state) => state.activeVoiceChannelId);
   const ownUsername = useStore(appStore, (state) => state.ownUsername);
 
@@ -100,7 +103,7 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
                 <ChannelGlyph voice={false} locked={channel.locked} />
                 <span className="channel-name">{channel.name}</span>
                 {/* oak: the badge never shows on the SELECTED channel (refresh gating). */}
-                {channel.id !== activeChannelId && unread !== undefined && unread.unreadCount > 0 ? (
+                {channel.id !== activeChannelId && badgeEnabled && unread !== undefined && unread.unreadCount > 0 ? (
                   <span className={"channel-badge" + (unread.mentionCount > 0 ? " mention" : "")}>
                     {unread.unreadCount > 99 ? "99+" : unread.unreadCount}
                   </span>

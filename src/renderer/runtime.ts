@@ -249,7 +249,7 @@ const sessionHooks: SessionHooks = {
   onSessionExpired: (recordId) => {
     log.warn("app", `session expired (record ${recordId}) — back to login`);
     void teardownSession();
-    appStore.patch({ loginFormOpen: true, loginError: "Session expired — log in again" });
+    appStore.patch({ loginFormOpen: true, loginError: "Session expired — log in again", userSettingsOpen: false });
   },
   onStompState: (state) => appStore.patch({
     stompState: state,
@@ -363,6 +363,7 @@ const sessionHooks: SessionHooks = {
         loginFormOpen: true,
         loginError: reason,
         loginPrefill: record !== null ? { url: record.hostUrl, username: record.username } : null,
+        userSettingsOpen: false,
       });
       notifications.showToast({ title: event.banned ? "Banned" : "Removed from server", channelName: event.by, body: reason });
     });
@@ -555,7 +556,9 @@ export async function teardownSession(): Promise<void> {
     viewingFeedId: null,
     viewingUsername: null,
     serverSettingsOpen: false,
-    userSettingsOpen: false,
+    // userSettingsOpen is deliberately NOT reset here: the username rename
+    // restarts the session WITH the settings window open (oak keeps it). Every
+    // path that truly kills the session closes it explicitly (expired, kicked).
   });
 }
 
@@ -682,6 +685,10 @@ export async function changeAccountUsername(newUsername: string): Promise<void> 
     refreshToken: result.auth.refreshToken,
     expiresAt: Date.now() + result.auth.expiresIn * 1000,
   }, previous);
+  // oak keeps the Settings window OPEN across a rename (the field's baseline
+  // moves to the new name): teardownSession deliberately does NOT reset
+  // userSettingsOpen, and App renders the overlay against the previous session
+  // object while the binding blinks through the restart.
   await openSession(session.recordId); // quiet restart: same record, new principal
 }
 

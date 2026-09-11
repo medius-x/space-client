@@ -1748,6 +1748,13 @@ button.wide-add { width: 100%; }
   border-radius: 10px 0 0 0; /* the rounded nav→content corner (rail→sidebar idiom) */
 }
 
+/* oak's amber staged-change warning (Audio/Video): shown ONLY while a draft
+   value differs from the stored one. */
+.settings-warning { color: #f0b232; font-size: 12px; margin-top: 8px; }
+
+/* Breathing room between the section's last hint/warning and the Apply button. */
+.settings-apply { margin-top: 16px; }
+
 /* App-style checkboxes: with color-scheme:dark the NATIVE check renders a dull
    grey-blue — oak's is the blurple fill with a white tick. */
 input[type="checkbox"] {

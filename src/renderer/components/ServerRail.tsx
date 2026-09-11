@@ -10,6 +10,7 @@ import {
   openServerSettings,
   reloginConnection,
   removeConnection,
+  settingsStore,
   switchConnection,
   toggleHomeMode,
 } from "../runtime";
@@ -250,6 +251,8 @@ function HomeRailButton({ session }: { session: ConnectionSession }): React.JSX.
   const dmMode = useStore(appStore, (state) => state.dmMode);
   const dms = useStore(session.socialStore, (state) => state.dms);
   const readStates = useStore(session.readStateStore, (states) => states);
+  // Live badge toggle (oak's onApplied badge rebuild) — see Sidebar.
+  const badgeEnabled = useStore(settingsStore, (settings) => settings.badgeEnabled);
   const dmUnread = dms.reduce(
     (total, dm) => total + (readStates.get(dm.id)?.unreadCount ?? 0),
     0,
@@ -258,7 +261,7 @@ function HomeRailButton({ session }: { session: ConnectionSession }): React.JSX.
     <div className={"rail-wrap home" + (dmMode ? " active" : "")} onClick={toggleHomeMode}>
       {dmMode ? <span className="rail-pill" /> : null}
       <div className="rail-icon home"><span className="icon mdi-home" /></div>
-      {dmUnread > 0 ? <span className="rail-badge">{dmUnread > 99 ? "99+" : dmUnread}</span> : null}
+      {badgeEnabled && dmUnread > 0 ? <span className="rail-badge">{dmUnread > 99 ? "99+" : dmUnread}</span> : null}
     </div>
   );
 }

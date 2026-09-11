@@ -1,7 +1,6 @@
 import { useRef, useState, type ReactNode } from "react";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { AttachmentUploadSlot } from "../../types";
-import { Avatar } from "./Avatar";
 import { AvatarCropDialog } from "./AvatarCropDialog";
 import { Modal } from "./Modal";
 
@@ -211,19 +210,5 @@ export function AvatarEditor({ session, api, preview, hint, removeTitle, removeN
       ) : null}
       {hint !== undefined ? <div className="settings-hint">{hint}</div> : null}
     </div>
-  );
-}
-
-/** The user-settings wiring: the round avatar of the logged-in user. */
-export function UserAvatarEditor({ session }: { session: ConnectionSession }): React.JSX.Element {
-  return (
-    <AvatarEditor
-      session={session}
-      api={userAvatarApi(session)}
-      preview={<Avatar session={session} username={session.username()} size={96} />}
-      hint="The avatar updates live for everyone."
-      removeTitle="Remove avatar"
-      removeNote="Remove your avatar? This cannot be undone."
-    />
   );
 }

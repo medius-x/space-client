@@ -1,5 +1,7 @@
+import { useEffect, useState } from "react";
 import { useStore } from "./hooks/useStore";
 import { appStore, closeServerSettings, sessionBinding, toggleUserSettings } from "./runtime";
+import type { ConnectionSession } from "../domain/session/connection-session";
 import { CaptionBar } from "./components/CaptionBar";
 import { LoginModal } from "./components/LoginModal";
 import { MainScreen } from "./components/MainScreen";
@@ -13,6 +15,17 @@ export function App(): React.JSX.Element {
   const loginFormOpen = useStore(appStore, (state) => state.loginFormOpen);
   const serverSettingsOpen = useStore(appStore, (state) => state.serverSettingsOpen);
   const userSettingsOpen = useStore(appStore, (state) => state.userSettingsOpen);
+  // The user-settings overlay must NOT unmount through a session restart (the
+  // username rename quietly reopens the session while Settings is open — oak
+  // keeps the window): during the gap the binding drops to null, and the
+  // overlay keeps rendering against the previous session object.
+  const [lastSession, setLastSession] = useState<ConnectionSession | null>(null);
+  useEffect(() => {
+    if (session !== null) {
+      setLastSession(session);
+    }
+  }, [session]);
+  const settingsSession = session ?? lastSession;
   return (
     <ErrorBoundary>
       {/* The oak server-icon squircle in objectBoundingBox units — ONE clip for
@@ -49,9 +62,9 @@ export function App(): React.JSX.Element {
             </div>
           </div>
         ) : null}
-        {session !== null && userSettingsOpen ? (
+        {userSettingsOpen && settingsSession !== null ? (
           <div className="settings-overlay">
-            <UserSettingsModal session={session} />
+            <UserSettingsModal session={settingsSession} />
             <div className="settings-close-column">
               <button className="settings-overlay-close" title="Close (Esc)" onClick={toggleUserSettings}>
                 <span className="icon mdi-close" />

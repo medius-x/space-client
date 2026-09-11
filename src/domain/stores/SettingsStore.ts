@@ -5,9 +5,10 @@ import { kv } from "../persistence/kv-client";
  * App-wide client settings (oak's SettingsStore — the M7 subset that maps onto
  * what this client actually has; device pickers and themes do not exist in
  * Chromium-by-default mode, the avatar editor already lives in ProfileModal).
- * Write-through: apply() patches memory + KV immediately; the UI has no Apply
- * button — every control takes effect at once (the staged-Apply dance of the oak
- * client buys nothing with instant-apply Web settings).
+ * apply() is the COMMIT write (memory + KV): the user-settings Audio/Video/
+ * Appearance/Notifications sections stage a draft and call it from the
+ * window-level Apply button, oak's model; the live effects (speaker switch,
+ * cache budget) ride the same commit in the modal.
  */
 export interface ClientSettings {
   /** false = Enter sends, Ctrl/Shift+Enter newline (oak default). */

@@ -113,25 +113,35 @@ hidden=deny VIEW, locked=deny READ/SEND/ADD_REACTIONS (text) или CONNECT/SPEA
 memberRefresh теперь ДОТЯГИВАЕТ refreshPermissions (гейты второго клиента
 флипаются; оверрайды сами пингуют `/topic/channels.changed` → refetch+гейтинг,
 а сервер дополнительно кикает из голоса потерявших CONNECT через
-VoiceAccessEnforcer). **UserSettings** (⚙ в user-bar, 5 секций instant-apply —
-отступление от «7 секций» oak: нет тем/устройств, аватар уже в ProfileModal):
-**Account** (пароль: ротация пары БЕЗ рестарта WS — сервер проверяет JWT только
-на CONNECT; username: гейт CHANGE_NICKNAME + запрет в голосе/звонке; PATCH
-ротирует ВСЕ refresh-семьи и убивает STOMP principal=username → запись+токены
-обновляются, затем ПОЛНЫЙ тихий рестарт сессии openSession; **Appearance**
-(ctrlEnterSends — композер И инлайн-редактор читают на каждом нажатии; disk
-cache Off/64..2048 MB — AttachmentCache.setDiskBudget, 0 = память+пурж диска);
-**Notifications** (мастера notifications/sound/badge, toast TTL/cap, ring
-timeout Off/30..300 c — armRingTimeout читает настройку; per-server
-mode ALL/MENTIONS/NOTHING + suppress @everyone/@here — в записи подключения
-`notifPrefs`, pre-M7 записи дефолтятся при loadAll; декайдер расширен:
-MENTIONS глушит не-mention тосты, NOTHING глушит тосты но НЕ бейджи, suppress
-убирает @everyone из красного, звук только на effective-mention);
-**Voice** (APM-тумблер — echoCancellation/noiseSuppression/AGC в getUserMedia,
-применяется со следующего входа в голос/звонок); **Connections** (read-only).
-**Полиш**: @автодополнение в композере (попап по `@префиксу` — ростер, ≤10,
+VoiceAccessEnforcer). **UserSettings (аудит-раунд 5 = oak-парити SettingsWindow):**
+7 секций General/Account/Audio/Video/Appearance/Notifications/Connections; Audio/
+Video/Appearance/Notifications — oak STAGED-модель (контролы пишут черновик
+`useStagedSettings` в UserSettingsModal, Apply коммитит через `settingsStore.apply`
++ живые эффекты — спикер setSinkId / кеш-бюджет; уход из секции или закрытие без
+Apply = СБРОС черновика; General/Account/Connections — immediate): **General** =
+идиома Server Settings → Overview (заголовок overview-heading + имя в
+role-editor-name без карандаша + AvatarEditor stacked); **Account** — пароль с
+oak-лестницей валидации (длина→совпадение→отличие от текущего), ротация пары БЕЗ
+рестарта WS; username: гейт CHANGE_NICKNAME, ошибки 409/403 → человекотекстовые
+(«Username already taken.»/«no permission») через `ApiError.status`, rename НЕ
+закрывает окно — teardownSession не гасит userSettingsOpen, App держит оверлей
+на прошлой сессии через мигание sessionBinding при тихом рестарте (поле/статус
+живут, baseline едет на новое имя; expiry/kicked закрывают явно); **Audio** —
+устройства mic/speaker, Chromium-синтетика «Default -/Communications -»
+(deviceId `default`/`communications`) СКРЫТА как дубль System default (аналог
+oak-маппера «Первичный звуковой драйвер»); **Video** — дефолтная камера; both
+предупреждают amber-строкой только при несохранённых изменениях; **Appearance** —
+ctrlEnter, relativeDates, кеш Off/64 MB..4 GB с GB-метками (`logic/settings-format.ts`
++ тесты); **Notifications** — мастера+toast TTL/cap+ring timeout+per-server
+mode/suppress, всё staged (пишется в `notifPrefs` записи на том же Apply);
+**Connections** — read-only: advertised-адрес `connectionHost:connectionPort` из
+GET /api/server («not set by the server» при отсутствии), список «имя сервера —
+hostUrl», oak-хинт про future set-up flow. Бейджи (Sidebar/DmSidebar/Home-рейл)
+и штампы дат (MessageRow/ForwardCard) теперь ПОДПИСКи на badgeEnabled/
+relativeDates — до раунда 5 настройки вообще не перекрашивали их до следующего
+сообщения. **Полиш**: @автодополнение в композере (попап по `@префиксу` — ростер, ≤10,
 ↑/↓/Enter/Tab/Esc; Enter при открытом попапе = выбор, не отправка). Гейт
-188/188.
+225/225.
 
 ## M6 (закрыт, 088df95): социальный слой
 
@@ -523,7 +533,13 @@ handle), классификация share-аудио по mindex, два про�
   инстанса остаётся видимым, открытый пункт их чек-листа; тащить не стали); аватары
   в списке Server Settings → Members (oak: только имя + бейджи). «Reset to inherit»
   в канальном редакторе оверрайдов УДАЛЕНА юзером (2026-09-11: лишняя — сброс =
-  выставить всё в Inherit и Save).
+  выставить всё в Inherit и Save). Аудит-раунд 5 (User Settings, 2026-09-12):
+  кнопка Apply ПРИЖАТА к контенту по левому краю (oak: правый-нижний угол окна на
+  двухтоновом футере); APM-тоггл УДАЛЁН из Audio (в oak — тестовый люк legacy-
+  конвейера; флагом управляет только NS-кнопка голосовой панели/звонка); General-
+  аватар = Overview-идиома (без oak-колонки Profile/имя/hint, без dnd и без гейта
+  Re-crop по наличию аватара); mode-комбо Notifications с человеческими подписями
+  «All messages/Mentions only/Nothing» (oak: сырые имена enum).
 - **Бэклог: рабочий Rename участника** (Server Settings → Members; задача #472): сейчас
   кнопка — oak-заглушка (no-op). Реализация требует серверного эндпоинта под
   MANAGE_NICKNAMES + иерархией (парный деплой); модель — displayName-поле, НЕ
