@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useStore } from "../hooks/useStore";
-import { appStore, toggleUserSettings } from "../runtime";
+import { appStore, retryConnection, toggleUserSettings } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import { ServerRail } from "./ServerRail";
 import { Sidebar } from "./Sidebar";
@@ -85,19 +85,46 @@ export function MainScreen({ session }: { session: ConnectionSession }): React.J
   );
 }
 
-/** The lower half of the overlay card: avatar + nick + connection status + the
- *  ONE chrome button (settings) — avatar editing lives in Settings (oak parity). */
+/** The lower half of the overlay card: avatar + nick + connection status (+ the
+ *  ↻ retry while the connection is down) and the ONE chrome button (settings) —
+ *  avatar editing lives in Settings (oak parity). */
 function UserBar({ session }: { session: ConnectionSession }): React.JSX.Element {
   const ownUsername = useStore(appStore, (state) => state.ownUsername) ?? session.username();
   const stompState = useStore(appStore, (state) => state.stompState);
+  const stompAttempt = useStore(appStore, (state) => state.stompAttempt);
+  const stompCountdown = useStore(appStore, (state) => state.stompCountdown);
   const voiceConnected = useStore(appStore, (state) => state.activeVoiceChannelId !== null);
-  const status = STOMP_STATUS[stompState] ?? STOMP_STATUS.off!;
+  const base = STOMP_STATUS[stompState] ?? STOMP_STATUS.off!;
+  // oak's label exactly: "Reconnecting in Ns… M/10" while the attempt is
+  // scheduled (the per-second countdown), "Reconnecting… M/10" while it flies.
+  const status = stompState === "connecting" && stompAttempt > 0
+    ? {
+      text: stompCountdown !== null
+        ? `Reconnecting in ${stompCountdown}s… ${stompAttempt}/10`
+        : `Reconnecting… ${stompAttempt}/10`,
+      className: "connecting",
+    }
+    : base;
+  const retryable = stompState === "lost" || stompState === "connecting";
   return (
     <div className={"user-bar" + (voiceConnected ? " with-voice" : "")}>
       <Avatar session={session} username={ownUsername} size={32} />
       <div className="user-bar-text">
         <span className="user-bar-name">{ownUsername}</span>
-        <span className={"user-bar-status " + status.className}>{status.text}</span>
+        <span className="user-bar-status-row">
+          <span className={"user-bar-status " + status.className}>{status.text}</span>
+          {/* oak's retryButton: visible only while the connection is down; the
+              slot stays reserved so the row never jumps when it appears. */}
+          {retryable ? (
+            <button
+              className={"user-bar-retry " + status.className}
+              title="Reconnect now"
+              onClick={retryConnection}
+            >
+              <span className="icon mdi-refresh" />
+            </button>
+          ) : <span className="user-bar-retry-slot" />}
+        </span>
       </div>
       <button className="ghost user-bar-button" title="Settings" onClick={toggleUserSettings}>
         <span className="icon mdi-cog" />

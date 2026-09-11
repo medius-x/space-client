@@ -86,6 +86,10 @@ export interface AppState {
   roomViewOpen: boolean;
   diagOpen: boolean;
   stompState: "off" | "connecting" | "connected" | "lost";
+  /** 1-based while a reconnect is scheduled/flying (0 = none) — "M/10". */
+  stompAttempt: number;
+  /** Seconds left until the scheduled attempt fires (null = no countdown). */
+  stompCountdown: number | null;
   /** Server settings screen (in-app, replaces the content area) — M7. */
   serverSettingsOpen: boolean;
   serverSettingsSection: "overview" | "roles" | "members" | "channels";
@@ -129,6 +133,8 @@ class AppStore extends Emitter {
     roomViewOpen: false,
     diagOpen: false,
     stompState: "off",
+    stompAttempt: 0,
+    stompCountdown: null,
     serverSettingsOpen: false,
     serverSettingsSection: "overview",
     userSettingsOpen: false,
@@ -245,7 +251,13 @@ const sessionHooks: SessionHooks = {
     void teardownSession();
     appStore.patch({ loginFormOpen: true, loginError: "Session expired — log in again" });
   },
-  onStompState: (state) => appStore.patch({ stompState: state }),
+  onStompState: (state) => appStore.patch({
+    stompState: state,
+    ...(state === "connected" ? { stompAttempt: 0, stompCountdown: null } : {}),
+  }),
+  onStompAttempt: (attempt) => appStore.patch({ stompState: "connecting", stompAttempt: attempt, stompCountdown: null }),
+  onStompCountdown: (secondsLeft, attempt) => appStore.patch({ stompState: "connecting", stompAttempt: attempt, stompCountdown: secondsLeft }),
+  onStompExhausted: () => appStore.patch({ stompState: "lost", stompAttempt: 0, stompCountdown: null }),
   onStompConnected: () => {
     const channelId = appStore.getSnapshot().activeVoiceChannelId;
     if (channelId !== null) {
@@ -447,6 +459,36 @@ export async function removeConnection(recordId: string): Promise<void> {
   await connectionDirectory.remove(recordId);
 }
 
+/** The ↻ in the user bar (oak's onRetryReconnect): attempt immediately. */
+export function retryConnection(): void {
+  activeSession?.stomp.reconnectNow();
+}
+
+/**
+ * oak's reloginFor: re-enter the password for a SAVED server — a fresh login
+ * rotates the record's token family in place and reopens the session. Used
+ * when the refresh family died (ban+unban, long offline) and the click path
+ * can no longer recover silently.
+ */
+export async function reloginConnection(recordId: string, password: string): Promise<void> {
+  const record = connectionDirectory.get(recordId);
+  if (!record || password.length === 0) {
+    return;
+  }
+  const bootstrapStorage = new MemoryTokenStorage();
+  const loginClient = new RestClient({ baseUrl: record.hostUrl, tokenStorage: bootstrapStorage });
+  await loginClient.login(record.username, password);
+  const tokens = bootstrapStorage.load();
+  if (!tokens) {
+    throw new Error("login returned no tokens");
+  }
+  const previous = record.refreshToken !== ""
+    ? { token: record.token, refreshToken: record.refreshToken, expiresAt: record.expiresAt }
+    : null;
+  await connectionDirectory.applyTokens(recordId, tokens, previous);
+  await openSession(recordId);
+}
+
 /** "+" on the rail: the login modal with an empty form (the live session stays alive). */
 export function beginAddServer(): void {
   appStore.patch({ loginFormOpen: true, loginError: null, loginPrefill: null });
@@ -496,6 +538,8 @@ export async function teardownSession(): Promise<void> {
   sessionBinding.set(null);
   appStore.patch({
     stompState: "off",
+    stompAttempt: 0,
+    stompCountdown: null,
     ownUsername: null,
     activeChannelId: null,
     dmMode: false,

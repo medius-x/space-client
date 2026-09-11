@@ -8,6 +8,7 @@ import {
   connectionDirectory,
   exitHomeMode,
   openServerSettings,
+  reloginConnection,
   removeConnection,
   switchConnection,
   toggleHomeMode,
@@ -18,6 +19,7 @@ import { EXPIRED_MARKER } from "../../domain/session/connection-record";
 import { paletteColor } from "../../domain/logic/user-palette";
 import { serverInitials } from "../../domain/logic/server-initials";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
+import { Modal } from "./Modal";
 
 /**
  * The Discord-style server rail: the Home button (friends + DMs) on top, then
@@ -33,14 +35,32 @@ export function ServerRail({ activeRecordId, session }: {
   const busy = useStore(appStore, (state) => state.loginBusy);
   const dmMode = useStore(appStore, (state) => state.dmMode);
   const [menu, setMenu] = useState<{ recordId: string; x: number; y: number } | null>(null);
+  // oak's reloginFor/showReloginDialog + deleteServer confirm — both ride the
+  // same right-click card as everything else.
+  const [reloginTarget, setReloginTarget] = useState<ConnectionRecord | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ConnectionRecord | null>(null);
 
   const menuItems: ContextMenuItem[] = menu === null ? [] : [
     // Gated live: without any settings permission the entry never appears (oak parity).
     ...(menu.recordId === session?.recordId && session !== null && canManageServerSettings(session)
-      ? [{ label: "Server Settings", action: () => openServerSettings() }]
+      ? [
+        { label: "Server Settings", action: () => openServerSettings() },
+        // oak's single separator — between the settings entry and the rest.
+        { label: "", separator: true, action: () => undefined },
+      ]
       : []),
-    { label: "Switch here", action: () => void switchConnection(menu.recordId) },
-    { label: "Forget this server", danger: true, action: () => void removeConnection(menu.recordId) },
+    { label: "Re-login", action: () => {
+      const record = connectionDirectory.get(menu.recordId);
+      if (record !== null) {
+        setReloginTarget(record);
+      }
+    } },
+    { label: "Delete", danger: true, action: () => {
+      const record = connectionDirectory.get(menu.recordId);
+      if (record !== null) {
+        setDeleteTarget(record);
+      }
+    } },
   ];
 
   return (
@@ -76,7 +96,74 @@ export function ServerRail({ activeRecordId, session }: {
       {menu !== null ? (
         <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />
       ) : null}
+      {reloginTarget !== null ? (
+        <ReloginModal record={reloginTarget} onClose={() => setReloginTarget(null)} />
+      ) : null}
+      {deleteTarget !== null ? (
+        <Modal title="Delete server" onClose={() => setDeleteTarget(null)}>
+          {/* oak's ConfirmDialog wording verbatim. */}
+          <div className="modal-note">
+            {`Remove the connection to "${deleteTarget.cachedServerName ?? deleteTarget.hostUrl}"? The account is not affected, you can re-add it later.`}
+          </div>
+          <div className="modal-actions left">
+            <button className="ghost" onClick={() => setDeleteTarget(null)}>Cancel</button>
+            <button className="danger" onClick={() => {
+              void removeConnection(deleteTarget.id);
+              setDeleteTarget(null);
+            }}>Delete</button>
+          </div>
+        </Modal>
+      ) : null}
     </nav>
+  );
+}
+
+/** oak's showReloginDialog: one password field, "Log in", no persistence. */
+function ReloginModal({ record, onClose }: {
+  record: ConnectionRecord;
+  onClose(): void;
+}): React.JSX.Element {
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const serverName = record.cachedServerName ?? record.hostUrl.replace(/^https?:\/\//, "");
+
+  const submit = async (): Promise<void> => {
+    if (busy || password.length === 0) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await reloginConnection(record.id, password);
+      onClose();
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : String(submitError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title="Re-login" onClose={onClose}>
+      <div className="modal-note">{`Re-enter the password for "${record.username}" on ${serverName}.`}</div>
+      <input
+        autoFocus
+        type="password"
+        value={password}
+        onChange={(event) => setPassword(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            void submit();
+          }
+        }}
+      />
+      <div className="error-line">{error ?? ""}</div>
+      <div className="modal-actions left">
+        <button className="ghost" onClick={onClose}>Cancel</button>
+        <button className="primary" disabled={busy || password.length === 0} onClick={() => void submit()}>Log in</button>
+      </div>
+    </Modal>
   );
 }
 

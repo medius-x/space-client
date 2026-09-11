@@ -41,6 +41,12 @@ import { ConnectionDirectory, RecordTokenStorage } from "./connection-record";
 export interface SessionHooks {
   onSessionExpired(recordId: string): void;
   onStompState(state: "connecting" | "connected" | "lost"): void;
+  /** Per-second while an attempt is scheduled: oak's "Reconnecting in Ns… M/10". */
+  onStompCountdown?(secondsLeft: number, attempt: number): void;
+  /** A reconnect attempt is leaving (1-based). */
+  onStompAttempt?(attempt: number): void;
+  /** The 10-attempt ladder stopped — terminal "Connection lost" until ↻. */
+  onStompExhausted?(): void;
   /** After every (re)connect — the runtime re-sends /app/voice.join if a room is live. */
   onStompConnected(): void;
   /** A channel vanished (deleted or hidden) — the runtime re-homes the active chat/voice. */
@@ -136,6 +142,15 @@ export class ConnectionSession {
         onLost: (reason) => {
           log.warn("session", `STOMP lost: ${reason} (auto-reconnecting)`);
           this.hooks.onStompState("lost");
+        },
+        onAttempt: (attempt) => {
+          this.hooks.onStompAttempt?.(attempt);
+        },
+        onCountdown: (secondsLeft, attempt) => {
+          this.hooks.onStompCountdown?.(secondsLeft, attempt);
+        },
+        onExhausted: () => {
+          this.hooks.onStompExhausted?.();
         },
         onConnected: () => {
           this.hooks.onStompState("connected");

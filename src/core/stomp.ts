@@ -117,6 +117,14 @@ export interface StompHandlers {
   onLost(reason: string): void;
   /** Fires after every (re)connect — subscriptions are replayed before this. */
   onConnected?(): void;
+  /** Every second while an attempt is SCHEDULED: the seconds left and the
+   *  1-based attempt number — oak's "Reconnecting in Ns… M/10" label. */
+  onCountdown?(secondsLeft: number, attempt: number): void;
+  /** Fires as a reconnect attempt actually leaves (1-based). */
+  onAttempt?(attempt: number): void;
+  /** The 10-attempt ladder is exhausted — the cycle STOPS (oak's terminal
+   *  "Connection lost"); only a manual reconnectNow() restarts it. */
+  onExhausted?(): void;
 }
 
 export interface StompClientOptions {
@@ -128,6 +136,9 @@ export interface StompClientOptions {
 }
 
 const MAX_BACKOFF_SECONDS = 30;
+/** oak's MAX_RECONNECT_ATTEMPTS: after this many failed attempts the ladder
+ *  STOPS (terminal "Connection lost") — only a manual ↻ restarts the cycle. */
+export const MAX_RECONNECT_ATTEMPTS = 10;
 
 export class StompClient {
   private readonly url: string;
@@ -144,7 +155,13 @@ export class StompClient {
   private readonly subscriptions = new Map<string, (body: string) => void>();
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private watchdogTimer: ReturnType<typeof setInterval> | null = null;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** oak's 1-second countdown Timeline: ticks the "Reconnecting in Ns…" label
+   *  and fires the attempt at zero. */
+  private countdownTimer: ReturnType<typeof setInterval> | null = null;
+  /** True while a (scheduled or manual) reconnect attempt's connect() promise
+   *  is unsettled — a ↻ in this window is a no-op: the attempt is already
+   *  flying and the counter must not reset (live report). */
+  private attemptInFlight = false;
   private reconnectAttempt = 0;
   private lastSentAt = 0;
   private lastReceivedAt = 0;
@@ -245,10 +262,7 @@ export class StompClient {
 
   disconnect(): void {
     this.manuallyClosed = true;
-    if (this.reconnectTimer !== null) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
+    this.stopCountdown();
     if (this.socket) {
       try {
         this.socket.close();
@@ -257,6 +271,29 @@ export class StompClient {
       }
     }
     this.teardownSocket();
+  }
+
+  /**
+   * The manual ↻ retry (oak's onRetryReconnect), by state:
+   *  - countdown running → cancel it and attempt IMMEDIATELY. The attempt was
+   *    already counted when planned ("spent early", oak semantics) — the label
+   *    keeps its M/10 and a failure continues from the NEXT backoff interval.
+   *  - no countdown (terminal "Connection lost" after 10 failures, or a lost
+   *    socket not yet scheduled) → restart the ladder FROM ZERO (oak resets
+   *    reconnectAttempt on the terminal-state retry).
+   * No-op when connected or manually closed.
+   */
+  reconnectNow(): void {
+    if (this.connected || this.manuallyClosed || this.attemptInFlight) {
+      return;
+    }
+    if (this.countdownTimer !== null) {
+      this.stopCountdown();
+      this.fireAttempt();
+      return;
+    }
+    this.reconnectAttempt = 0;
+    this.scheduleReconnect();
   }
 
   // ---------------------------------------------------------------------------
@@ -290,14 +327,19 @@ export class StompClient {
         const message = frame.headers.message ?? frame.body ?? "STOMP error";
         log.error("stomp", `ERROR frame: ${message}`);
         if (!this.connected) {
-          // auth failure at CONNECT — surface to the connect() caller, stay down
-          this.manuallyClosed = true;
+          // A pre-CONNECT error (e.g. auth rejection): surface it to the
+          // connect() caller and close the socket. NO manuallyClosed here —
+          // that flag permanently silenced the reconnect ladder (its guard),
+          // so a server that answers ERROR once (auth hiccup, token rotation
+          // window) left the client dead until a manual ↻ (live report).
+          // Reject FIRST — the synchronous close() below re-enters onclose,
+          // whose own reject would otherwise win the promise race.
+          reject(new Error(message));
           try {
             this.socket?.close();
           } catch {
             // already closing
           }
-          reject(new Error(message));
         }
         break;
       }
@@ -366,18 +408,54 @@ export class StompClient {
   }
 
   private scheduleReconnect(): void {
-    if (this.manuallyClosed || this.reconnectTimer !== null) {
+    if (this.manuallyClosed || this.countdownTimer !== null) {
+      return;
+    }
+    if (this.reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+      // oak's terminal state: the ladder STOPS — "Connection lost" until the
+      // user presses ↻ (which resets the attempt counter from zero).
+      log.warn("stomp", `reconnect ladder exhausted (${MAX_RECONNECT_ATTEMPTS} attempts) — stopped`);
+      this.handlers.onExhausted?.();
       return;
     }
     const delaySeconds = Math.min(2 ** this.reconnectAttempt, MAX_BACKOFF_SECONDS);
     this.reconnectAttempt += 1;
-    log.info("stomp", `reconnecting in ${delaySeconds}s (attempt ${this.reconnectAttempt})`);
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      void this.connect().catch((error: unknown) => {
+    const attempt = this.reconnectAttempt;
+    log.info("stomp", `reconnecting in ${delaySeconds}s (attempt ${attempt}/${MAX_RECONNECT_ATTEMPTS})`);
+    // oak's 1-second Timeline: tick the label every second, fire at zero.
+    let secondsLeft = delaySeconds;
+    this.handlers.onCountdown?.(secondsLeft, attempt);
+    this.countdownTimer = setInterval(() => {
+      secondsLeft -= 1;
+      if (secondsLeft > 0) {
+        this.handlers.onCountdown?.(secondsLeft, attempt);
+        return;
+      }
+      this.stopCountdown();
+      this.fireAttempt();
+    }, 1000);
+  }
+
+  /** Launches attempt #reconnectAttempt NOW (the countdown hit zero, or the
+   *  manual ↻ spent it early); guards with attemptInFlight so a ↻ inside the
+   *  flight window is a no-op instead of a counter reset. */
+  private fireAttempt(): void {
+    this.attemptInFlight = true;
+    this.handlers.onAttempt?.(this.reconnectAttempt);
+    void this.connect()
+      .catch((error: unknown) => {
         log.warn("stomp", `reconnect failed: ${error instanceof Error ? error.message : String(error)}`);
         this.scheduleReconnect();
+      })
+      .finally(() => {
+        this.attemptInFlight = false;
       });
-    }, delaySeconds * 1000);
+  }
+
+  private stopCountdown(): void {
+    if (this.countdownTimer !== null) {
+      clearInterval(this.countdownTimer);
+      this.countdownTimer = null;
+    }
   }
 }

@@ -2247,6 +2247,26 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 .user-bar-status.connected { color: var(--sp-green); }
 .user-bar-status.connecting { color: var(--sp-yellow); }
 .user-bar-status.lost { color: var(--sp-red); }
+/* oak's retryButton row: the ↻ sits right of the status text, in the status's
+   own color; the slot stays reserved while hidden so the row never jumps. */
+.user-bar-status-row { display: flex; align-items: center; gap: 4px; min-height: 16px; }
+.user-bar-retry-slot { width: 16px; flex-shrink: 0; }
+.user-bar-retry {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.user-bar-retry .icon { font-size: 11px; line-height: 1; }
+.user-bar-retry.connecting { color: var(--sp-yellow); }
+.user-bar-retry.lost { color: var(--sp-red); }
+.user-bar-retry:hover { background: var(--sp-card-hover); border-radius: 4px; }
 .user-bar-button { padding: 4px 8px; flex-shrink: 0; }
 .user-bar-button:hover { background: var(--sp-card-hover); }
 
