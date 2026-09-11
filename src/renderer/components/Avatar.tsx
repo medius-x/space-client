@@ -32,7 +32,18 @@ export function Avatar({ session, username, size, override, showPresence = false
       {imageUrl !== null ? (
         <img className="avatar" src={imageUrl} alt={username} style={{ width: size, height: size }} draggable={false} />
       ) : (
-        <span className="avatar avatar-fallback" style={{ width: size, height: size, background: paletteColor(username) }}>
+        <span
+          className="avatar avatar-fallback"
+          style={{
+            width: size,
+            height: size,
+            background: paletteColor(username),
+            // The initials SCALE with the circle (oak paints them onto the canvas
+            // at the avatar's size) — a fixed font made small fallbacks (20-26px
+            // in Server Settings) carry roster-sized letters spilling out.
+            fontSize: Math.max(8, Math.round(size * 0.4)),
+          }}
+        >
           {/* oak's initials(): the first TWO characters, uppercased ("Al" for "alex"). */}
           {username.trim().length === 0 ? "?" : username.trim().slice(0, 2).toUpperCase()}
         </span>

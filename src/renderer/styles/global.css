@@ -17,12 +17,16 @@
 }
 
 :root {
+  /* Native chrome follows the app theme: dropdown SELECT lists and default
+     scrollbars render dark instead of the OS-white (live report). */
+  color-scheme: dark;
   /* Surfaces, darkest → lightest. */
   --sp-darkest: #1e1f22;   /* server rail, toasts, darkest chrome */
   --sp-surface: #2b2d31;   /* window, channel column, cards, popups */
   --sp-pane: #313338;      /* content pane, settings content */
   --sp-input: #383a40;     /* text inputs, composer card, user-bar card */
   --sp-control: #4e5058;   /* default grey button, dividers under headers */
+  --sp-role-chip-default: #99aab5; /* oak's colorless-role chip (RoleListCell) */
   --sp-hover: #35373c;     /* row hover */
   --sp-selected: #404249;  /* row selected */
   --sp-card-hover: #2e3035;/* hover for buttons ON --sp-input cards (oak literal) */
@@ -572,6 +576,9 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   align-items: center;
   justify-content: center;
 }
+/* No dark backdrop — the dialog dims its own content (the crop's unselected
+   image area) instead of the whole window (live report). */
+.modal-overlay.bare { background: transparent; }
 .modal-card {
   background: var(--sp-surface);
   border: 1px solid var(--sp-input);
@@ -586,6 +593,11 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 .modal-title { font-size: 18px; font-weight: 700; }
 .modal-note { color: var(--sp-text-muted); font-size: 13px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+/* oak's member-actions HBox sits at the LEFT (dialog-style right alignment is
+   for Cancel/Confirm rows only). */
+.modal-actions.left { justify-content: flex-start; }
+/* oak's .add-button: a full-width row button (Add member / Add role…). */
+button.wide-add { width: 100%; }
 .modal-row { display: flex; gap: 8px; }
 .kind-choice {
   flex: 1;
@@ -1230,9 +1242,46 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 
 .profile-head { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px 0; }
 .profile-name { font-size: 18px; font-weight: 700; }
-.profile-actions { justify-content: center; }
+/* Settings save/cancel rows align LEFT (user decision, audit round 4). */
+.profile-actions { justify-content: flex-start; }
+/* Overview layout: the preview on the left, the action buttons stacked in a
+   column beside it (user decision). */
+.avatar-editor-block.stacked {
+  display: flex;
+  align-items: center; /* the button column centers against the avatar itself */
+  gap: 16px;
+  margin-top: 16px; /* breathing room below the server name */
+}
+.avatar-editor-block.stacked .profile-actions {
+  flex-direction: column;
+  align-items: stretch;
+  width: max-content;
+  margin: 0;
+}
+/* Compact action buttons beside the preview (~half the default button size).
+   Change/Re-crop wear the filled control-grey look of Default/Custom (the
+   ghost/primary variants melted into the pane); Remove keeps its danger red. */
+.avatar-editor-block.stacked .profile-actions button {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.avatar-editor-block.stacked .profile-actions button.primary,
+.avatar-editor-block.stacked .profile-actions button.ghost {
+  background: var(--sp-control);
+  color: var(--sp-text);
+  border: none;
+  border-radius: 4px;
+}
+.avatar-editor-block.stacked .profile-actions button.primary:hover,
+.avatar-editor-block.stacked .profile-actions button.ghost:hover {
+  background: var(--sp-hover);
+}
+/* The Overview heading — pixel-identical to the roles-list-header label. */
+.overview-heading { margin-bottom: 8px; }
 
-.crop-stage { position: relative; margin: 0 auto; user-select: none; }
+/* overflow:hidden CLIPS the crop square's 9999px dim shadow to the image — the
+   shadow used to spill over the card and grey out the Apply/Cancel buttons. */
+.crop-stage { position: relative; margin: 0 auto; user-select: none; overflow: hidden; }
 .crop-stage img { display: block; max-width: 100%; }
 .crop-square {
   position: absolute;
@@ -1636,8 +1685,20 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   display: flex;
   overflow: hidden;
 }
+/* The close button's own narrow panel: same surface as the content pane (an
+   invisible seam) — the content's scrollbar stops at its left edge and can
+   never run under the round ✕ (live report ×3). */
+.settings-close-column {
+  width: 44px;
+  flex-shrink: 0;
+  position: relative;
+  background: var(--sp-pane);
+}
 
-.settings-screen { display: flex; flex: 1; width: 100%; height: 100%; min-width: 0; background: var(--sp-pane); }
+/* The screen's own background is the NAV color (darkest, like the rail on the
+   main screen): the content pane rounds its TOP-LEFT corner over it, so the
+   caption bar flows into the settings nav the same way it flows into the rail. */
+.settings-screen { display: flex; flex: 1; width: 100%; height: 100%; min-width: 0; background: var(--sp-darkest); }
 .settings-nav {
   width: 200px;
   flex-shrink: 0;
@@ -1665,7 +1726,7 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 .settings-overlay-close {
   position: absolute;
   top: 12px;
-  right: 12px;
+  right: 12px; /* inside the close column — the visual spot matches the old edge position */
   width: 32px;
   height: 32px;
   padding: 0;
@@ -1678,7 +1739,59 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   z-index: 2;
 }
 .settings-overlay-close:hover { background: var(--sp-red); color: #fff; }
-.settings-body { flex: 1; min-width: 0; overflow-y: auto; padding: 20px 24px; }
+.settings-body {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 20px 24px;
+  background: var(--sp-pane);
+  border-radius: 10px 0 0 0; /* the rounded nav→content corner (rail→sidebar idiom) */
+}
+
+/* App-style checkboxes: with color-scheme:dark the NATIVE check renders a dull
+   grey-blue — oak's is the blurple fill with a white tick. */
+input[type="checkbox"] {
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  margin: 0;
+  border-radius: 4px;
+  border: 1px solid var(--sp-control);
+  background: var(--sp-input);
+  cursor: pointer;
+  position: relative;
+}
+input[type="checkbox"]:hover { border-color: var(--sp-text-dim); }
+input[type="checkbox"]:checked {
+  background: var(--sp-accent);
+  border-color: var(--sp-accent);
+}
+input[type="checkbox"]:checked::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 2px;
+  width: 5px;
+  height: 9px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+input[type="checkbox"]:disabled { opacity: 0.5; cursor: default; }
+
+/* The save button keeps its width while showing "Saved": the real label stays
+   as an invisible underlay, the marker overlays it centered (a shorter label
+   used to shrink the button — live report). */
+.save-button { position: relative; }
+.save-button-underlay { visibility: hidden; }
+.save-button-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 .settings-empty { color: var(--sp-text-dim); padding: 24px; text-align: center; }
 .settings-field { display: flex; flex-direction: column; gap: 4px; margin: 12px 0; max-width: 420px; }
 .settings-field > span { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--sp-text-muted); }
@@ -1714,7 +1827,6 @@ input:focus { outline: none; border-color: var(--sp-accent); }
    dragged role renders as a visible drop GAP that live-previews the position. */
 .role-grip {
   color: var(--sp-text-dim);
-  cursor: grab;
   flex-shrink: 0;
   padding: 0 6px 0 0;
   user-select: none;
@@ -1722,9 +1834,30 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 }
 .role-grip:active { cursor: grabbing; }
 .role-grip.pinned { opacity: 0.35; cursor: default; }
-/* The dragged role's row IS the gap, but its content (the drag source) stays
-   mounted — hidden, not unmounted: removing the source node mid-drag cancels
-   the HTML5 drag outright. */
+/* Pointer-drag: the whole draggable row carries the grab cursor; while the
+   drag is live the entire app shows grabbing (a body class toggled by the
+   component — no system drag cursor is involved at all). */
+.roles-row.draggable { cursor: grab; touch-action: none; }
+body.role-dragging,
+body.role-dragging * { cursor: grabbing !important; }
+/* The floating snapshot of the dragged row — rides beside the pointer via an
+   imperative transform; hover/pointer never touch it. Hidden until the first
+   transform lands (a frame at 0,0 before the first pointermove would flash). */
+.roles-row.drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 200;
+  pointer-events: none;
+  background: var(--sp-selected);
+  border-radius: 4px;
+  opacity: 0;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  width: max-content;
+}
+.roles-row.drag-ghost.positioned { opacity: 0.95; }
+/* The dragged role's row IS the gap: its content hides in place (the layout
+   keeps the row's slot — the list never reflows around a vanished row). */
 .roles-row.drop-gap {
   height: 26px;
   min-height: 26px;
@@ -1737,21 +1870,96 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 .roles-row.drag-over { outline: 1px dashed var(--sp-control); outline-offset: -1px; }
 .role-color-chip { width: 14px; height: 14px; border-radius: 4px; flex-shrink: 0; display: inline-block; }
 .role-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.role-editor { flex: 1; overflow-y: auto; min-width: 0; }
-.role-editor-inner { display: flex; flex-direction: column; gap: 8px; }
-.role-editor-head { display: flex; align-items: baseline; gap: 12px; }
-.role-editor-name { font-size: 20px; font-weight: 800; }
-.role-palette { display: flex; flex-wrap: wrap; gap: 6px; max-width: 340px; }
-.swatch {
-  width: 26px;
-  height: 26px;
-  border-radius: 6px;
-  border: 2px solid transparent;
-  cursor: pointer;
+/* The editor column does NOT scroll as a whole: the head and the tab row stay
+   pinned and only the TAB CONTENT scrolls — the scrollbar's top starts at the
+   content's own top edge (what bounds the tab is what bounds its scroll). */
+.role-editor { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.role-editor-inner { flex: 1; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.role-editor-head, .settings-tabs { flex-shrink: 0; }
+.role-tab-body { flex: 1; min-height: 0; overflow-y: auto; }
+/* oak's role editor column: "Role details" caption, the big colored name, the
+   kind line — stacked, not inline. */
+.role-editor-head { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.role-editor-caption { padding: 0; min-height: 24px; display: flex; align-items: center; }
+.role-editor-title-row { display: flex; align-items: center; gap: 8px; }
+/* Fixed line height: a tall glyph in a name (the "@" of @everyone) used to
+   stretch the row and shove the editor content down (live report). */
+.role-editor-name { font-size: 20px; font-weight: 800; line-height: 24px; }
+/* The pencil appears on HOVER only (its slot stays reserved — the title never
+   shifts when it shows up). */
+.role-editor-pencil { color: var(--sp-text-dim); display: inline-flex; visibility: hidden; }
+.role-editor-title-row:hover .role-editor-pencil { visibility: visible; }
+.role-editor-pencil:hover { color: var(--sp-text); }
+/* The editing field IS the label: identical typography, transparent, no border
+   or padding — the caret is the only difference from the static name. */
+.role-editor-name-input {
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 24px;
+  font-family: inherit;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 0;
+  margin: 0;
+  color: var(--sp-text);
+  caret-color: var(--sp-accent);
+  min-width: 0;
 }
-.swatch.chosen { border-color: #fff; }
-.swatch.default { background: transparent; border: 2px dashed var(--sp-control); color: var(--sp-text-dim); }
-.role-hex-row { display: flex; align-items: center; gap: 8px; }
+/* oak's color section: a 22×22 live preview beside the "Color" label, then the
+   picker row — a Default/Custom button column beside the 12×2 swatch grid. */
+.role-color-preview { width: 22px; height: 22px; border-radius: 4px; display: inline-block; }
+.role-field-label { display: flex; align-items: center; gap: 8px; }
+.role-picker-row { display: flex; align-items: flex-start; gap: 12px; margin-top: 6px; }
+/* oak: the Default/Custom column is a VISUAL CONTINUATION of the swatch grid —
+   same height (28px) and radius, only wider; one smooth two-row block. */
+.role-picker-buttons { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; align-items: stretch; }
+.role-picker-buttons button {
+  height: 28px;
+  min-width: 76px;
+  padding: 0 10px;
+  background: var(--sp-control);
+  color: var(--sp-text);
+  border: none;
+  border-radius: 4px;
+}
+.role-picker-buttons button:hover { background: var(--sp-hover); color: var(--sp-text); }
+.role-flags-row { display: flex; gap: 16px; }
+/* oak's row trash (role-trash-button + Icons.close): a small quiet glyph button
+   pinned to the row's right edge. */
+.role-remove { margin-left: auto; color: var(--sp-text-dim); display: inline-flex; align-items: center; }
+.role-remove:hover { color: var(--sp-text); }
+.role-remove .icon { font-size: 12px; }
+
+/* oak's CustomColorDialog, web edition: SV square over a hue strip + HEX. */
+.picker-sv {
+  position: relative;
+  height: 160px;
+  border-radius: 6px;
+  cursor: crosshair;
+  touch-action: none;
+}
+.picker-hue {
+  position: relative;
+  height: 14px;
+  margin-top: 10px;
+  border-radius: 7px;
+  cursor: crosshair;
+  touch-action: none;
+  background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+}
+.picker-marker {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.picker-hex-row { display: flex; align-items: center; gap: 8px; }
+.picker-preview { width: 28px; height: 28px; border-radius: 4px; flex-shrink: 0; }
 .permission-row { display: flex; gap: 10px; padding: 6px 4px; align-items: flex-start; max-width: 560px; }
 .permission-label { display: flex; flex-direction: column; font-weight: 600; }
 .permission-label small { font-weight: 400; color: var(--sp-text-dim); font-size: 11px; }
@@ -1773,17 +1981,57 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
   border-radius: 4px;
   padding: 0 4px;
 }
-.tri-row { max-width: 480px; }
-.tri-control { display: flex; align-items: center; justify-content: space-between; padding: 5px 4px; }
-.tri-label { font-weight: 600; }
-.tri-buttons { display: flex; gap: 4px; }
-.tri-button { width: 34px; height: 26px; border-radius: 6px; font-weight: 700; }
-.tri-button.allow { color: var(--sp-green); }
-.tri-button.allow.chosen { background: var(--sp-green); color: #fff; }
-.tri-button.inherit { color: var(--sp-text-dim); }
-.tri-button.inherit.chosen { background: var(--sp-control); color: #fff; }
-.tri-button.deny { color: var(--sp-red); }
-.tri-button.deny.chosen { background: var(--sp-red); color: #fff; }
+/* oak's permissions-scroll: ONLY the permission list scrolls (340px tall),
+   the caption/role picker/buttons stay pinned around it. */
+.permissions-scroll-box { max-height: 340px; overflow-y: auto; }
+/* The tri rows are the ROLE-permissions rows (permission-row / permission-label
+   verbatim): box left, label column right, same gaps and padding. */
+.tri-control { display: flex; gap: 10px; padding: 6px 4px; align-items: flex-start; max-width: 560px; }
+/* oak's tri-state CheckBox (allowIndeterminate): ONE box the click cycles —
+   Inherit = empty dark square, Allow = blurple fill + white check, Deny = red
+   fill + white cross (oak: selected / indeterminate / unchecked). The check
+   and cross are CSS SHAPES (perfectly centered — the font glyph sat high). */
+.tri-check {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  border: 1px solid var(--sp-control);
+  background: var(--sp-input);
+  flex-shrink: 0;
+  padding: 0;
+}
+.tri-check.allow { background: var(--sp-accent); border-color: var(--sp-accent); }
+.tri-check.allow::after {
+  content: "";
+  position: absolute;
+  left: 5.5px;
+  top: 2.5px;
+  width: 5px;
+  height: 9px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.tri-check.deny { background: var(--sp-red); border-color: var(--sp-red); }
+.tri-check.deny::before,
+.tri-check.deny::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2px;
+  height: 10px;
+  background: #fff;
+  border-radius: 1px;
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+.tri-check.deny::after { transform: translate(-50%, -50%) rotate(-45deg); }
+.tri-check:hover { border-color: var(--sp-text-dim); }
+/* The tri row's label column: name (+ the not-implemented note) over the
+   grey description line, mirroring the role-permissions list. */
+.tri-label { display: flex; flex-direction: column; min-width: 0; font-weight: 600; }
+.tri-label small { font-size: 11px; color: var(--sp-text-dim); font-weight: 400; }
 
 .modal-card.wide { width: 720px; max-width: 92vw; }
 
@@ -1832,26 +2080,14 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 }
 .chat-stack { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
 
-/* oak-style overlay scrollbars: thin, translucent, visible on container hover. */
-.sidebar::-webkit-scrollbar,
-.members-pane::-webkit-scrollbar,
-.message-list::-webkit-scrollbar,
-.virtual-list::-webkit-scrollbar,
-.settings-body::-webkit-scrollbar,
-.roles-list::-webkit-scrollbar,
-
-.friend-picker-list::-webkit-scrollbar {
-  width: 12px;
-}
-.sidebar::-webkit-scrollbar-thumb,
-.members-pane::-webkit-scrollbar-thumb,
-.message-list::-webkit-scrollbar-thumb,
-.virtual-list::-webkit-scrollbar-thumb,
-.settings-body::-webkit-scrollbar-thumb,
-.roles-list::-webkit-scrollbar-thumb,
-
-.friend-picker-list::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.08);
+/* oak-style overlay scrollbars: nearly invisible at rest, brightening on hover
+   of the scrolling container. NOTE: the hover reveal needs EXPLICIT container
+   selectors — `*:hover::-webkit-scrollbar-thumb` never matches in Chromium
+   (scrollbar pseudo-elements ignore the universal+hover chain), which left the
+   bar fully invisible (live report). */
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
   border-radius: 6px;
   border: 2px solid transparent;
   background-clip: padding-box;
@@ -1860,19 +2096,22 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 .members-pane:hover::-webkit-scrollbar-thumb,
 .message-list:hover::-webkit-scrollbar-thumb,
 .virtual-list:hover::-webkit-scrollbar-thumb,
+.content-body:hover::-webkit-scrollbar-thumb,
+.diag-log:hover::-webkit-scrollbar-thumb,
+.forward-column:hover::-webkit-scrollbar-thumb,
+.picker-grid:hover::-webkit-scrollbar-thumb,
+.picker-list:hover::-webkit-scrollbar-thumb,
+.friends-body:hover::-webkit-scrollbar-thumb,
+.friend-picker-list:hover::-webkit-scrollbar-thumb,
 .settings-body:hover::-webkit-scrollbar-thumb,
 .roles-list:hover::-webkit-scrollbar-thumb,
-
-.friend-picker-list:hover::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.18);
+.role-tab-body:hover::-webkit-scrollbar-thumb,
+.room-view-body:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.28);
   background-clip: padding-box;
 }
-.sidebar::-webkit-scrollbar-track,
-.members-pane::-webkit-scrollbar-track,
-.message-list::-webkit-scrollbar-track,
-.virtual-list::-webkit-scrollbar-track {
-  background: transparent;
-}
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-corner { background: transparent; }
 
 /* Channel glyphs + voice member rows (oak's ChannelNode). */
 .channel-glyph { font-size: 16px; color: var(--sp-text-dim); flex-shrink: 0; width: 18px; }

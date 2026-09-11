@@ -3,6 +3,7 @@ import type { ConnectionSession } from "../../domain/session/connection-session"
 import type { AttachmentUploadSlot } from "../../types";
 import { Avatar } from "./Avatar";
 import { AvatarCropDialog } from "./AvatarCropDialog";
+import { Modal } from "./Modal";
 
 const ORIGINAL_MAX_SIDE = 2048;
 
@@ -62,16 +63,22 @@ async function downscaleToPngBlob(file: File, maxSide: number): Promise<Blob> {
  * interactive crop, re-crop from the stored original, remove. The PREVIEW (a
  * user's round avatar vs the server's squircle icon) is passed in.
  */
-export function AvatarEditor({ session, api, preview, hint }: {
+export function AvatarEditor({ session, api, preview, hint, removeTitle, removeNote, stacked = false }: {
   session: ConnectionSession;
   api: AvatarApi;
   preview: ReactNode;
-  hint: string;
+  hint?: string;
+  /** The confirm dialog's wording — oak confirms destructive icon/avatar removal. */
+  removeTitle: string;
+  removeNote: string;
+  /** Overview layout: the preview on the left, the buttons stacked beside it. */
+  stacked?: boolean;
 }): React.JSX.Element {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [cropSourceUrl, setCropSourceUrl] = useState<string | null>(null);
   const [sourceOwned, setSourceOwned] = useState(false); // blob: URLs we must revoke
   const [cropFromFile, setCropFromFile] = useState<File | null>(null);
+  const [removeArmed, setRemoveArmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -142,7 +149,12 @@ export function AvatarEditor({ session, api, preview, hint }: {
       // Route through the attachment cache (fetch → blob URL): the same pipeline
       // every other image uses. A raw presigned URL in <img> proved flaky, and a
       // blob: source also keeps the crop canvas untainted.
-      const objectUrl = await session.attachmentCache.loadImage({ key: "avatar-original", url });
+      // The cache key is the OBJECT PATH from the presigned URL, never a constant:
+      // a constant key ("avatar-original") made the cache serve the PREVIOUS
+      // avatar's original after a change — re-crop opened the wrong image (live
+      // report). The path is stable across re-signatures and distinct per upload.
+      const objectPath = new URL(url).pathname;
+      const objectUrl = await session.attachmentCache.loadImage({ key: `avatar-original:${objectPath}`, url });
       if (objectUrl === null) {
         setError("Could not load the stored original.");
         return;
@@ -166,26 +178,38 @@ export function AvatarEditor({ session, api, preview, hint }: {
       setError(removeError instanceof Error ? removeError.message : String(removeError));
     } finally {
       setBusy(false);
+      setRemoveArmed(false);
     }
   };
 
   return (
     <div>
-      <div className="profile-head">
-        {preview}
-        {busy ? <div className="settings-hint">Working…</div> : null}
-      </div>
-      <div className="modal-actions profile-actions">
-        <button className="primary" disabled={busy} onClick={pickFile}>Change avatar…</button>
-        <button className="ghost" disabled={busy} onClick={() => void beginRecrop()}>Re-crop</button>
-        <button className="danger" disabled={busy} onClick={() => void removeCurrent()}>Remove</button>
+      <div className={"avatar-editor-block" + (stacked ? " stacked" : "")}>
+        <div className="profile-head">
+          {preview}
+          {busy ? <div className="settings-hint">Working…</div> : null}
+        </div>
+        <div className="modal-actions left profile-actions">
+          <button className="primary" disabled={busy} onClick={pickFile}>Change avatar…</button>
+          <button className="ghost" disabled={busy} onClick={() => void beginRecrop()}>Re-crop</button>
+          <button className="danger" disabled={busy} onClick={() => setRemoveArmed(true)}>Remove</button>
+        </div>
       </div>
       <input ref={fileInputRef} type="file" accept="image/*" hidden onChange={onFileChosen} />
       <div className="error-line">{error ?? ""}</div>
+      {removeArmed ? (
+        <Modal title={removeTitle} onClose={() => setRemoveArmed(false)}>
+          <div className="modal-note">{removeNote}</div>
+          <div className="modal-actions">
+            <button className="ghost" onClick={() => setRemoveArmed(false)}>Cancel</button>
+            <button className="danger" disabled={busy} onClick={() => void removeCurrent()}>Remove</button>
+          </div>
+        </Modal>
+      ) : null}
       {cropSourceUrl !== null ? (
         <AvatarCropDialog imageSourceUrl={cropSourceUrl} onApply={(blob) => void applyCrop(blob)} onClose={closeCrop} />
       ) : null}
-      <div className="settings-hint">{hint}</div>
+      {hint !== undefined ? <div className="settings-hint">{hint}</div> : null}
     </div>
   );
 }
@@ -198,6 +222,8 @@ export function UserAvatarEditor({ session }: { session: ConnectionSession }): R
       api={userAvatarApi(session)}
       preview={<Avatar session={session} username={session.username()} size={96} />}
       hint="The avatar updates live for everyone."
+      removeTitle="Remove avatar"
+      removeNote="Remove your avatar? This cannot be undone."
     />
   );
 }

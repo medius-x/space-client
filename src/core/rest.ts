@@ -677,6 +677,11 @@ export class RestClient {
     if (response.status === 204) {
       return undefined as T;
     }
-    return (await response.json()) as T;
+    // Spring answers void endpoints (kick/ban/unban/...) with 200 + an EMPTY
+    // body — response.json() throws "Unexpected end of JSON input" on it (live
+    // report: the ban landed, the badge arrived, the call still "failed").
+    // Parse only when there is actually something to parse.
+    const text = await response.text();
+    return (text.length === 0 ? undefined : JSON.parse(text)) as T;
   }
 }

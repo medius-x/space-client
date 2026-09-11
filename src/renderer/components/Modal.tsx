@@ -1,13 +1,16 @@
 import { useEffect } from "react";
 
 /** Overlay + card; the close button sits in the card's TOP-RIGHT corner (oak
- *  window chrome idiom), Escape and backdrop clicks close too. */
-export function Modal({ title, children, onClose, wide }: {
+ *  window chrome idiom), Escape and backdrop clicks close too. `bare` drops
+ *  the dark backdrop — for dialogs whose own content does the dimming (crop). */
+export function Modal({ title, children, onClose, wide, bare = false }: {
   title: string;
   children: React.ReactNode;
   onClose: () => void;
   /** Wider card for multi-pane settings surfaces (M7). */
   wide?: boolean;
+  /** No dark backdrop (the dialog dims its own content instead). */
+  bare?: boolean;
 }): React.JSX.Element {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -21,7 +24,7 @@ export function Modal({ title, children, onClose, wide }: {
 
   return (
     <div
-      className="modal-overlay"
+      className={"modal-overlay" + (bare ? " bare" : "")}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {
           onClose();

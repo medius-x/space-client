@@ -44,6 +44,18 @@ describe("RestClient message mutations", () => {
     expect(fake.requests[0]?.path).toBe("/api/channels/5/messages/3");
   });
 
+  it("void endpoints tolerate Spring's 200-with-empty-body (kick/ban/unban)", async () => {
+    // A void controller method answers 200 with NO body — not 204. response.json()
+    // used to throw "Unexpected end of JSON input" after the action had already
+    // landed (live report on banMember).
+    const fake = new FakeFetch(() => ({ status: 200 }));
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: new MemoryTokenStorage(), fetchImpl: fake.call });
+
+    await client.banMember(7);
+    expect(fake.requests[0]?.method).toBe("POST");
+    expect(fake.requests[0]?.path).toBe("/api/members/7/ban");
+  });
+
   it("reactions PUT/DELETE the slug route and return the snapshot", async () => {
     const fake = new FakeFetch(() => ({ status: 200, body: [{ reaction: "heart", count: 1, userIds: [10], usernames: ["alice"] }] }));
     const client = new RestClient({ baseUrl: "http://x", tokenStorage: new MemoryTokenStorage(), fetchImpl: fake.call });

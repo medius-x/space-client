@@ -91,7 +91,7 @@ export function AvatarCropDialog({ imageSourceUrl, onApply, onClose }: {
   };
 
   return (
-    <Modal title="Crop avatar" onClose={onClose}>
+    <Modal title="Crop avatar" onClose={onClose} bare>
       <div
         className="crop-stage"
         style={{ width: imageSize.width, height: imageSize.height }}

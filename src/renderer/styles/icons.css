@@ -36,11 +36,13 @@
 .icon.mdi-monitor::before { content: "\F0379"; }
 .icon.mdi-open-in-new::before { content: "\F03CC"; }
 .icon.mdi-paperclip::before { content: "\F03E2"; }
+.icon.mdi-pencil::before { content: "\F03EB"; }
 .icon.mdi-phone-hangup::before { content: "\F03F5"; }
 .icon.mdi-plus::before { content: "\F0415"; }
 .icon.mdi-pound::before { content: "\F0423"; }
 .icon.mdi-refresh::before { content: "\F0450"; }
 .icon.mdi-reply::before { content: "\F045A"; }
+.icon.mdi-trash-can::before { content: "\F0A79"; }
 .icon.mdi-triangle-wave::before { content: "\F147C"; }
 .icon.mdi-video::before { content: "\F0567"; }
 .icon.mdi-video-off::before { content: "\F0568"; }

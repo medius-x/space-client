@@ -36,21 +36,27 @@ export function App(): React.JSX.Element {
         </div>
         {/* Settings overlays are DIRECT children of #app: they cover the whole
             window below the caption, nothing in between can constrain them.
-            The round ✕ is the settings window's close (top-right, oak chrome). */}
+            The close ✕ lives on its OWN narrow right panel (same surface color
+            — an invisible seam): the content pane's scrollbar stops LEFT of it
+            and can never run under the button (oak chrome). */}
         {session !== null && serverSettingsOpen ? (
           <div className="settings-overlay">
             <ServerSettingsPane session={session} />
-            <button className="settings-overlay-close" title="Close (Esc)" onClick={closeServerSettings}>
-              <span className="icon mdi-close" />
-            </button>
+            <div className="settings-close-column">
+              <button className="settings-overlay-close" title="Close (Esc)" onClick={closeServerSettings}>
+                <span className="icon mdi-close" />
+              </button>
+            </div>
           </div>
         ) : null}
         {session !== null && userSettingsOpen ? (
           <div className="settings-overlay">
             <UserSettingsModal session={session} />
-            <button className="settings-overlay-close" title="Close (Esc)" onClick={toggleUserSettings}>
-              <span className="icon mdi-close" />
-            </button>
+            <div className="settings-close-column">
+              <button className="settings-overlay-close" title="Close (Esc)" onClick={toggleUserSettings}>
+                <span className="icon mdi-close" />
+              </button>
+            </div>
           </div>
         ) : null}
       </div>
