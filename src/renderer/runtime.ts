@@ -20,6 +20,7 @@ import { dmDisplayName } from "../domain/logic/dm-display";
 import { SettingsStore } from "../domain/stores/SettingsStore";
 import type { NotificationPrefs } from "../types";
 import { notifications } from "./notifications";
+import { loadBackgroundSocial, socialDirectory } from "./social-aggregate";
 import { virtualScrollTelemetry } from "./scroll-telemetry";
 import type {
   CallConfig,
@@ -95,6 +96,9 @@ export interface AppState {
   serverSettingsSection: "overview" | "roles" | "members" | "channels";
   /** User settings modal — M7. */
   userSettingsOpen: boolean;
+  /** A DM on a NON-active instance the user clicked in the aggregated list:
+   *  consumed by openSession once that instance is up (oak's pendingOpenDm). */
+  pendingOpenDm: { recordId: string; dmId: number } | null;
 }
 
 class AppStore extends Emitter {
@@ -138,6 +142,7 @@ class AppStore extends Emitter {
     serverSettingsOpen: false,
     serverSettingsSection: "overview",
     userSettingsOpen: false,
+    pendingOpenDm: null,
   };
 
   getSnapshot = (): AppState => this.state;
@@ -286,16 +291,26 @@ const sessionHooks: SessionHooks = {
     if (dm === null && channel === null) {
       return; // a channel we closed/left — a frame still in flight after the unsubscribe
     }
+    // One's OWN message must never count as unread or ring the bell. It can
+    // still reach this hook: sent into a channel whose history hadn't loaded
+    // yet (fresh switch), the REST echo is dropped by the store and the STOMP
+    // echo later arrives as an "insert" (live report: a DM sent right after
+    // switching to an inactive server raised a mention toast for the sender).
+    const ownMessage = message.authorUsername === state.ownUsername;
+    // A channel is "open" only when its view is actually ON SCREEN: in Home
+    // mode the server channel is not displayed (its id merely survives the
+    // round-trip) — treating it as open swallowed mention toasts while the
+    // user sat in Friends (oak nulls selectedChannelId on enterDmMode).
     const inOpenChannel = (dm !== null
       ? state.dmMode && state.activeDmId === message.channelId
-      : state.activeChannelId === message.channelId);
+      : !state.dmMode && state.activeChannelId === message.channelId);
     const windowFocused = document.hasFocus();
     const settings = settingsStore.getSnapshot();
     const serverPrefs = notificationPrefsFor(session.recordId);
     // DM rule: EVERY direct message is a mention equivalent (oak parity) — the
     // badge is red and the bell rings even without an @. suppressEveryoneHere
     // keeps an @everyone ping out of the red counter (it still counts unread).
-    if (settings.badgeEnabled) {
+    if (settings.badgeEnabled && !ownMessage) {
       session.readStateStore.bumpLive(
         message,
         state.ownUsername,
@@ -308,7 +323,7 @@ const sessionHooks: SessionHooks = {
     if (dm !== null) {
       session.socialStore.updateDmLastMessage(message); // float the row + refresh the preview
     }
-    if (inOpenChannel && windowFocused) {
+    if (ownMessage || (inOpenChannel && windowFocused)) {
       return;
     }
     const channelName = dm !== null
@@ -457,6 +472,7 @@ export async function removeConnection(recordId: string): Promise<void> {
     // "+" stays) — no login modal: the user deliberately dropped the server.
     await teardownSession();
   }
+  socialDirectory.drop(recordId);
   await connectionDirectory.remove(recordId);
 }
 
@@ -520,7 +536,18 @@ async function openSession(recordId: string): Promise<void> {
       ownUsername: record.username,
       baseUrl: record.hostUrl,
     });
-    restoreLastChannel(session);
+    // A DM clicked on a NON-active instance in the aggregated list: open it
+    // instead of the restored last channel (oak's pendingOpenDm).
+    const pendingDm = appStore.getSnapshot().pendingOpenDm;
+    if (pendingDm !== null && pendingDm.recordId === session.recordId) {
+      appStore.patch({ pendingOpenDm: null });
+      openDm(pendingDm.dmId);
+    } else {
+      restoreLastChannel(session);
+    }
+    // Refresh the cross-instance friends/DM snapshots (the old active record
+    // became a background candidate; the new one left the background set).
+    void loadBackgroundSocial(connectionDirectory, session.recordId);
     roomAudio.startLevelPolling();
     await roomAudio.resume();
   } catch (error) {
@@ -556,6 +583,8 @@ export async function teardownSession(): Promise<void> {
     viewingFeedId: null,
     viewingUsername: null,
     serverSettingsOpen: false,
+    // pendingOpenDm deliberately survives too — a switch that lands on the login
+    // modal should still open the clicked DM once the user re-logs in.
     // userSettingsOpen is deliberately NOT reset here: the username rename
     // restarts the session WITH the settings window open (oak keeps it). Every
     // path that truly kills the session closes it explicitly (expired, kicked).
@@ -588,6 +617,16 @@ export function setActiveChannel(channelId: number): void {
 export function toggleHomeMode(): void {
   const next = !appStore.getSnapshot().dmMode;
   appStore.patch({ dmMode: next, activeDmId: next ? appStore.getSnapshot().activeDmId : null });
+  if (next && activeSession !== null) {
+    // Entering the aggregated view refreshes every other instance's snapshot.
+    void loadBackgroundSocial(connectionDirectory, activeSession.recordId);
+  }
+}
+
+/** A DM row of a NON-active instance: switch there and open it once up (oak). */
+export function openDmOnInstance(recordId: string, dmId: number): void {
+  appStore.patch({ pendingOpenDm: { recordId, dmId } });
+  void switchConnection(recordId);
 }
 
 /** Clicking the ACTIVE server icon while in Home = go back to the server view. */

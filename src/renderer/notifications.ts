@@ -94,7 +94,11 @@ class NotificationHub {
     if (action === "toast-sound") {
       this.playBell();
     }
-    if (!windowFocused) {
+    // The OS banner is the INTRUSIVE channel — it goes out only for effective
+    // mentions (a direct @ or a DM). A plain unfocused-window toast stays
+    // IN-APP (oak has no OS notifications at all; a Windows banner for every
+    // background message read as a mention ping — live report).
+    if (!windowFocused && effectiveMention) {
       this.showSystem(message.authorUsername, channelName, message.content);
     }
   }

@@ -17,10 +17,26 @@ import {
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { ConnectionRecord } from "../../domain/session/connection-record";
 import { EXPIRED_MARKER } from "../../domain/session/connection-record";
+import type { SocialState } from "../../domain/stores/SocialStore";
+import type { UnreadState } from "../../domain/stores/ReadStateStore";
 import { paletteColor } from "../../domain/logic/user-palette";
 import { serverInitials } from "../../domain/logic/server-initials";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { Modal } from "./Modal";
+import { socialDirectory } from "../social-aggregate";
+
+/** Stable EMPTY store surrogates for the non-active rows — useStore needs a
+ *  live store on every branch (hook rules). */
+const EMPTY_READ_STATES: ReadonlyMap<number, UnreadState> = new Map();
+const nullReadStateStore = {
+  subscribe: (): (() => void) => () => undefined,
+  getSnapshot: (): ReadonlyMap<number, UnreadState> => EMPTY_READ_STATES,
+};
+const EMPTY_SOCIAL: SocialState = { relationships: [], dms: [] };
+const nullSocialStore = {
+  subscribe: (): (() => void) => () => undefined,
+  getSnapshot: (): SocialState => EMPTY_SOCIAL,
+};;
 
 /**
  * The Discord-style server rail: the Home button (friends + DMs) on top, then
@@ -227,6 +243,7 @@ function RailRow({ record, active, expired, busy, session, onActivate, onMenu }:
     session,
     record.cachedServerAvatarKey !== null ? { key: record.cachedServerAvatarKey, url: liveAvatarUrl } : null,
   );
+  const badge = useServerBadge(record.id, session);
 
   return (
     <div
@@ -242,26 +259,83 @@ function RailRow({ record, active, expired, busy, session, onActivate, onMenu }:
       <div className={"rail-icon" + (expired ? " expired" : "")}>
         <ServerIconBody iconUrl={iconUrl} name={name} />
       </div>
+      {/* A SIBLING of the icon, like the Home badge: inside .rail-icon the
+          squircle clip-path would cut it (live report). */}
+      {badge !== null ? (
+        <span className={"rail-badge" + (badge.mention > 0 ? "" : " plain")}>
+          {badge.unread > 99 ? "99+" : badge.unread}
+        </span>
+      ) : null}
     </div>
   );
 }
 
-/** Home button + the DM-unread badge (mounted only while a session is live). */
+/**
+ * oak's ServerNode unread badge: grey = unread server-channel messages, red =
+ * mentioned; shown on EVERY server (the active one included). The ACTIVE
+ * instance counts live from its read-state store (DM channels excluded — those
+ * feed the Home badge); inactive instances read the snapshot totals, refreshed
+ * on switch and on entering the DM view.
+ */
+function useServerBadge(recordId: string, session: ConnectionSession | null): { unread: number; mention: number } | null {
+  const badgeEnabled = useStore(settingsStore, (settings) => settings.badgeEnabled);
+  const active = session !== null && session.recordId === recordId;
+  // Both hooks run unconditionally (hook rules); the active flag picks the winner.
+  const liveStates = useStore(active && session !== null ? session.readStateStore : nullReadStateStore, (states) => states);
+  const liveDms = useStore(active && session !== null ? session.socialStore : nullSocialStore, (state) => state.dms);
+  const background = useStore(socialDirectory, (snapshots) => snapshots);
+  if (!badgeEnabled) {
+    return null;
+  }
+  if (active) {
+    const dmIds = new Set(liveDms.map((dm) => dm.id));
+    let unread = 0;
+    let mention = 0;
+    for (const [channelId, state] of liveStates) {
+      if (!dmIds.has(channelId)) {
+        unread += state.unreadCount;
+        mention += state.mentionCount;
+      }
+    }
+    return unread > 0 ? { unread, mention } : null;
+  }
+  const snapshot = background.find((entry) => entry.recordId === recordId) ?? null;
+  return snapshot !== null && snapshot.serverCounts.unread > 0 ? snapshot.serverCounts : null;
+}
+
+/** Home button + the DM-unread badge (mounted only while a session is live).
+ *  The badge counts the ACTIVE instance's DMs plus every background snapshot's
+ *  seeded counts, PLUS the incoming friend requests across instances (user
+ *  decision), and hides while the DM view is open (oak's HomeNode). */
 function HomeRailButton({ session }: { session: ConnectionSession }): React.JSX.Element {
   const dmMode = useStore(appStore, (state) => state.dmMode);
   const dms = useStore(session.socialStore, (state) => state.dms);
+  const relationships = useStore(session.socialStore, (state) => state.relationships);
   const readStates = useStore(session.readStateStore, (states) => states);
+  const background = useStore(socialDirectory, (snapshots) => snapshots);
   // Live badge toggle (oak's onApplied badge rebuild) — see Sidebar.
   const badgeEnabled = useStore(settingsStore, (settings) => settings.badgeEnabled);
-  const dmUnread = dms.reduce(
+  const activeUnread = dms.reduce(
     (total, dm) => total + (readStates.get(dm.id)?.unreadCount ?? 0),
     0,
   );
+  const backgroundUnread = background.reduce(
+    (total, snapshot) => total + [...snapshot.dmCounts.values()].reduce((sum, counts) => sum + counts.unread, 0),
+    0,
+  );
+  const pendingTotal = relationships.filter((entry) => entry.type === "PENDING_INCOMING").length
+    + background.reduce(
+      (total, snapshot) => total + snapshot.relationships.filter((entry) => entry.type === "PENDING_INCOMING").length,
+      0,
+    );
+  const dmUnread = activeUnread + backgroundUnread + pendingTotal;
   return (
     <div className={"rail-wrap home" + (dmMode ? " active" : "")} onClick={toggleHomeMode}>
       {dmMode ? <span className="rail-pill" /> : null}
       <div className="rail-icon home"><span className="icon mdi-home" /></div>
-      {badgeEnabled && dmUnread > 0 ? <span className="rail-badge">{dmUnread > 99 ? "99+" : dmUnread}</span> : null}
+      {!dmMode && badgeEnabled && dmUnread > 0 ? (
+        <span className="rail-badge">{dmUnread > 99 ? "99+" : dmUnread}</span>
+      ) : null}
     </div>
   );
 }

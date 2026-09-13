@@ -1,58 +1,91 @@
 import { useMemo, useState } from "react";
 import { useStore } from "../hooks/useStore";
-import { appStore, openDm, setFriendsTab, settingsStore } from "../runtime";
+import { appStore, connectionDirectory, openDm, openDmOnInstance, setFriendsTab, settingsStore } from "../runtime";
+import { socialDirectory } from "../social-aggregate";
+import { mergeDmRows, type DmRowModel } from "../../domain/logic/social-aggregation";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { DmChannel, Relationship } from "../../types";
 import { dmDisplayName, dmPreviewText } from "../../domain/logic/dm-display";
+import { paletteColor } from "../../domain/logic/user-palette";
 import { Avatar } from "./Avatar";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
+import { InstanceTag } from "./InstanceTag";
 import { Modal } from "./Modal";
 
 /**
- * The Home-mode sidebar: the Friends entry + the DM list (lastMessageAt desc —
- * the store keeps the server order). Rows carry the context menu (group add /
- * rename / leave / close, 1:1 close) and the unread badge (every DM unread is
- * mention-red — the oak rule).
+ * The Home-mode sidebar: the Friends entry + the DM list, AGGREGATED across
+ * every saved instance (oak's rebuildDmList): rows of the active instance open
+ * in place; rows of other instances carry an instance tag and switch there
+ * first. Rows carry the context menu (group add/rename/leave/close, 1:1 close)
+ * and the unread badge (every DM unread is mention-red — the oak rule; hidden
+ * on the open conversation).
  */
 export function DmSidebar({ session }: { session: ConnectionSession }): React.JSX.Element {
   const dms = useStore(session.socialStore, (state) => state.dms);
   const relationships = useStore(session.socialStore, (state) => state.relationships);
   const readStates = useStore(session.readStateStore, (states) => states);
+  const background = useStore(socialDirectory, (snapshots) => snapshots);
+  const record = useStore(connectionDirectory, (records) =>
+    records.find((entry) => entry.id === session.recordId) ?? null);
   const activeDmId = useStore(appStore, (state) => state.activeDmId);
   const ownUsername = useStore(appStore, (state) => state.ownUsername) ?? session.username();
   // Live badge toggle (oak's onApplied badge rebuild) — see Sidebar.
   const badgeEnabled = useStore(settingsStore, (settings) => settings.badgeEnabled);
-  // Derived arrays live OUTSIDE selectors — a fresh array per getSnapshot call
-  // is an infinite re-render under useSyncExternalStore.
   const friends = useMemo(
     () => relationships.filter((entry) => entry.type === "FRIEND"),
     [relationships],
   );
-  const [menu, setMenu] = useState<{ dm: DmChannel; x: number; y: number } | null>(null);
+  const [menu, setMenu] = useState<{ row: DmRowModel; x: number; y: number } | null>(null);
   const [createGroup, setCreateGroup] = useState(false);
+  const [notEnoughFriends, setNotEnoughFriends] = useState(false);
   const [addToGroup, setAddToGroup] = useState<DmChannel | null>(null);
   const [renameTarget, setRenameTarget] = useState<DmChannel | null>(null);
 
-  const openMenu = (dm: DmChannel) => (event: React.MouseEvent) => {
-    event.preventDefault();
-    setMenu({ dm, x: event.clientX, y: event.clientY });
-  };
+  const serverName = record?.cachedServerName ?? session.hostUrl();
+  const serverAvatar = session.serverProfile !== null && session.serverProfile.avatarKey !== null && session.serverProfile.avatarUrl !== null
+    ? { key: session.serverProfile.avatarKey, url: session.serverProfile.avatarUrl }
+    : null;
+  const rows = useMemo(
+    () => mergeDmRows(
+      {
+        recordId: session.recordId,
+        serverName,
+        serverAvatar,
+        selfUsername: ownUsername,
+        dms,
+        unreadOf: (dm) => ({
+          unread: readStates.get(dm.id)?.unreadCount ?? 0,
+          mention: readStates.get(dm.id)?.mentionCount ?? 0,
+        }),
+      },
+      background,
+    ),
+    [session.recordId, serverName, serverAvatar, ownUsername, dms, readStates, background],
+  );
+
   const leaveGroup = (dm: DmChannel): void => {
     const selfId = session.selfUserId();
     if (selfId !== null) {
       void session.removeDmParticipant(dm.id, selfId);
     }
   };
-  const menuItems: ContextMenuItem[] = menu === null ? [] : menu.dm.type === "GROUP_DM"
+
+  // oak: the group/DM mutations are scoped to the ACTIVE instance — rows of
+  // other instances get no context menu at all (a plain click switches first).
+  const menuRow = menu !== null && menu.row.active ? menu.row : null;
+  const isOwner = menuRow !== null && menuRow.dm.ownerId !== null && menuRow.dm.ownerId === session.selfUserId();
+  const menuItems: ContextMenuItem[] = menuRow === null ? [] : menuRow.dm.type === "GROUP_DM"
     ? [
-        { label: "Add member…", action: () => setAddToGroup(menu.dm) },
-        { label: "Rename…", action: () => setRenameTarget(menu.dm) },
-        { label: "Leave group", danger: true, action: () => leaveGroup(menu.dm) },
-        ...(menu.dm.ownerId !== null && menu.dm.ownerId === session.selfUserId()
-          ? [{ label: "Close group", danger: true, action: () => void session.closeDm(menu.dm.id) }]
+        // Add member is the OWNER's tool in oak; Rename is everyone's.
+        ...(isOwner ? [{ label: "Add member…", action: () => setAddToGroup(menuRow.dm) }] : []),
+        { label: "Rename…", action: () => setRenameTarget(menuRow.dm) },
+        { label: "", separator: true, action: () => undefined },
+        { label: "Leave group", danger: true, action: () => leaveGroup(menuRow.dm) },
+        ...(isOwner
+          ? [{ label: "Close group", danger: true, action: () => void session.closeDm(menuRow.dm.id) }]
           : []),
       ]
-    : [{ label: "Close DM", danger: true, action: () => void session.closeDm(menu.dm.id) }];
+    : [{ label: "Close DM", danger: true, action: () => void session.closeDm(menuRow.dm.id) }];
 
   return (
     <>
@@ -61,8 +94,7 @@ export function DmSidebar({ session }: { session: ConnectionSession }): React.JS
         <button
           className="section-add"
           title="Start a group DM"
-          disabled={friends.length < 2}
-          onClick={() => setCreateGroup(true)}
+          onClick={() => (friends.length < 2 ? setNotEnoughFriends(true) : setCreateGroup(true))}
         >+</button>
       </div>
       <div
@@ -72,38 +104,54 @@ export function DmSidebar({ session }: { session: ConnectionSession }): React.JS
         <span className="icon mdi-account-multiple" />
         <span className="channel-name">Friends</span>
       </div>
-      {dms.map((dm) => {
-        const name = dmDisplayName(dm, ownUsername);
-        const unread = readStates.get(dm.id);
-        const badgeCount = unread?.unreadCount ?? 0;
+      {rows.map((row) => {
+        const name = dmDisplayName(row.dm, row.selfUsername);
+        const selected = row.active && row.dm.id === activeDmId;
+        const showBadge = badgeEnabled && row.unread > 0 && !selected;
+        const peerOverride = row.dm.participants.find((participant) => participant.username !== row.selfUsername)
+          ?? row.dm.participants[0] ?? null;
         return (
           <div
-            key={dm.id}
-            className={"dm-row" + (dm.id === activeDmId ? " active" : "")}
-            onClick={() => openDm(dm.id)}
-            onContextMenu={openMenu(dm)}
+            key={`${row.recordId}:${row.dm.id}`}
+            className={"dm-row" + (selected ? " active" : "")}
+            onClick={() => (row.active ? openDm(row.dm.id) : openDmOnInstance(row.recordId, row.dm.id))}
+            onContextMenu={row.active ? (event) => {
+              event.preventDefault();
+              setMenu({ row, x: event.clientX, y: event.clientY });
+            } : undefined}
           >
-            {dm.type === "GROUP_DM" ? (
-              <span className="avatar avatar-fallback dm-group-avatar">{name.charAt(0).toUpperCase()}</span>
+            {row.dm.type === "GROUP_DM" ? (
+              <span
+                className="avatar avatar-fallback dm-group-avatar"
+                style={{ background: paletteColor(name), fontSize: 14 }}
+              >
+                {name.trim().length === 0 ? "?" : name.trim().slice(0, 2).toUpperCase()}
+              </span>
             ) : (
-              <Avatar
-                session={session}
-                username={name}
-                size={26}
-                override={dm.participants.find((participant) => participant.username === name) ?? null}
-              />
+              <Avatar session={row.active ? session : null} username={name} size={36} override={peerOverride} />
             )}
             <div className="dm-text">
               <span className="dm-name">{name}</span>
-              <span className="dm-preview">{dmPreviewText(dm)}</span>
+              <span className="dm-preview">{dmPreviewText(row.dm)}</span>
             </div>
-            {badgeEnabled && badgeCount > 0 ? (
-              <span className="channel-badge mention">{badgeCount > 99 ? "99+" : badgeCount}</span>
+            <InstanceTag serverName={row.serverName} icon={row.serverAvatar} />
+            {showBadge ? (
+              <span className="channel-badge mention">{row.unread > 99 ? "99+" : row.unread}</span>
             ) : null}
           </div>
         );
       })}
-      {menu !== null ? <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} /> : null}
+      {menuRow !== null && menu !== null ? (
+        <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />
+      ) : null}
+      {notEnoughFriends ? (
+        <Modal title="Not enough friends" onClose={() => setNotEnoughFriends(false)}>
+          <div className="modal-note">You need at least 2 friends to start a group DM.</div>
+          <div className="modal-actions">
+            <button className="primary" onClick={() => setNotEnoughFriends(false)}>OK</button>
+          </div>
+        </Modal>
+      ) : null}
       {createGroup ? (
         <FriendPickerModal
           session={session}
@@ -243,6 +291,7 @@ function RenameGroupModal({ session, dm, onClose }: {
 
   return (
     <Modal title="Rename group" onClose={onClose}>
+      <div className="modal-note">Enter a new name for this group DM.</div>
       <input
         autoFocus
         type="text"

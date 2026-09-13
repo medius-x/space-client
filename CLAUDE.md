@@ -143,6 +143,46 @@ relativeDates — до раунда 5 настройки вообще не пе�
 ↑/↓/Enter/Tab/Esc; Enter при открытом попапе = выбор, не отправка). Гейт
 225/225.
 
+**Аудит-раунд 6 (друзья/DM, 2026-09-13) — oak-парити + кросс-инстанс
+агрегация (phase 1):** FriendsPane/DmSidebar перестроены на объединённые
+списки по ВСЕМ инстансам (`domain/logic/social-aggregation.ts` — mergeFriendRows
+глобальная сорт-по-имени без дедупа «одно имя на двух серверах = два человека»,
+mergeDmRows глобальная сорт-по-свежести nulls-last, чистые + тесты).
+**Агрегация phase 1** = REST-снапшоты неактивных рекордов (`renderer/social-aggregate.ts`:
+relationships+dms+presence+read-states+GET /api/server на запись через
+RecordTokenStorage-каспередачу; СТОР `socialDirectory` — снапшот-массив
+КЕШИРУЕТСЯ в поле, пересборка только в apply/drop — свежий массив из
+getSnapshot() рвёт useSyncExternalStore в бесконечный ре-рендер, ГРАБЛЯ M6
+повторена вживую); освежение при входе в DM-вид/свитче/старте; сбой записи
+держит предыдущий снапшот. Чужие строки: InstanceTag (14px диск — иконка
+сервера из профиля, фолбэк инициалы) + «Open <server>» (френды) / клик =
+`openDmOnInstance` (DM-строки: pendingOpenDm в appStore, потребляется в
+openSession ПОСЛЕ start вместо restoreLastChannel, переживает логин-модал по
+пути); контекст-меню DM только на активных строках. Аватары чужих строк:
+`Avatar` принимает `session: null` → `useUncachedImage` (presigned fetch →
+blob, без кеша). **Бейджи-раунд:** Home = DM-unread активного + фоновые
+dmCounts + ВХОДЯЩИЕ pending-запросы (юзер-решение), прячется в открытом
+DM-виде (oak); СЕРВЕРНЫЕ иконки рейла получили бейджи (дыра против oak):
+серый = plain unread, красный = mention, число = unread 99+; активный сервер
+— живой readStateStore МИНУС DM-каналы (badge-сепарация), неактивные —
+serverCounts снапшота; бейдж — СИБЛИНГ `.rail-icon` внутри `.rail-wrap`
+(внутри иконки его `clip-path: squircle` ОБРЕЗАЕТ бейдж — грабля).
+**oak-фиксы раунда:** автодополнение username в Add Friend (попап ПОД полем,
+↑/↓/Enter/Esc); DM-меню: «Add member…» owner-only + разделитель перед Leave;
+«+» кликабельна всегда → при <2 друзей модал; аватары DM 36px c ДВУМЯ
+инициалами (группа — круг), френда 40px; табы Friends подчёркнутые
+(.settings-tab идиома), Add Friend справа без зелёного; Rename-хинт;
+confirm-модали на Remove friend/Block (space-добавка, oak бьёт сразу).
+**Фиксы уведомлений:** OS-баннер Windows теперь ТОЛЬКО на эффективные
+mentions (@/DM) — раньше летел на каждый нефокусный тост и читался как
+mention-ping (живой репорт); inOpenChannel серверных каналов учитывает dmMode
+(сидя в Home, mention-тост в «активном» канале больше не глотается — oak
+нулит selectedChannelId в enterDmMode); СВОЁ сообщение не бампит unread/тост
+(STOMP-эхо гонит REST-эхо при !isLoaded — вставлялось как «новое», звенело
+отправителю в DM); NEW-divider рендерится над первым ЧУЖИМ непрочитанным
+(own-сообщение не бывает NEW — указатель lastRead регулярно стоит под своим
+же сообщением после ack-на-отправке). Гейт 231/231.
+
 ## M6 (закрыт, 088df95): социальный слой
 
 M5 закрыт и закоммичен (`b14b2a6`). M6: **друзья** —
@@ -539,7 +579,12 @@ handle), классификация share-аудио по mindex, два про�
   конвейера; флагом управляет только NS-кнопка голосовой панели/звонка); General-
   аватар = Overview-идиома (без oak-колонки Profile/имя/hint, без dnd и без гейта
   Re-crop по наличию аватара); mode-комбо Notifications с человеческими подписями
-  «All messages/Mentions only/Nothing» (oak: сырые имена enum).
+  «All messages/Mentions only/Nothing» (oak: сырые имена enum). Аудит-раунд 6
+  (2026-09-13): Home-бейдж считает входящие pending-запросы друзей вместе с
+  DM-unread (oak: только DM); OS-оповещения Windows только на эффективные
+  mentions (oak: OS-нотификаций нет вовсе); confirm-модали на Remove
+  friend/Block (oak бьёт из меню сразу); агрегация друзей/DM — phase 1
+  REST-снапшоты (oak phase 2 = фоновые STOMP-сессии — задача #473).
 - **Бэклог: рабочий Rename участника** (Server Settings → Members; задача #472): сейчас
   кнопка — oak-заглушка (no-op). Реализация требует серверного эндпоинта под
   MANAGE_NICKNAMES + иерархией (парный деплой); модель — displayName-поле, НЕ

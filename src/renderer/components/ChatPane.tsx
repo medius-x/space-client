@@ -561,7 +561,8 @@ function MessageList(props: MessageListProps): React.JSX.Element {
     if (dividerReadId !== null) {
       window.setTimeout(() => listRef.current?.scrollToBottom(), 30); // let heights settle, then…
       window.setTimeout(() => {
-        const index = messages.findIndex((message) => message.id > dividerReadId);
+        const index = messages.findIndex((message) => message.id > dividerReadId
+          && message.authorUsername !== session.username());
         if (index > 0) {
           listRef.current?.scrollToKey(String(messages[index]?.id), "center");
         }
@@ -717,9 +718,14 @@ function MessageList(props: MessageListProps): React.JSX.Element {
     [startById],
   );
 
+  // Discord/oak rule: your OWN message is never "new" for you — the divider
+  // only rides above someone ELSE's first unread message. The pointer below
+  // can legitimately sit right under an own message (the send-time ack moves
+  // it there), which used to render the divider above the sender's own DM
+  // message (live report).
   const dividerIndex = dividerReadId === null
     ? -1
-    : messages.findIndex((message) => message.id > dividerReadId);
+    : messages.findIndex((message) => message.id > dividerReadId && message.authorUsername !== session.username());
 
   return (
     <VirtualList
