@@ -44,7 +44,6 @@ export interface ToastPayload {
 }
 
 class NotificationHub {
-  private stackElement: HTMLDivElement | null = null;
   private audioContext: AudioContext | null = null;
   private ringbackTimer: number | null = null;
   /** The CURRENT burst's master gain — stopRingback cuts it instead of letting it play out. */
@@ -53,6 +52,20 @@ class NotificationHub {
     dismissSeconds: () => 5,
     maxToasts: () => 3,
   };
+  /** Card ids → their onClick callbacks (they close over runtime state, so they
+   *  run HERE in the main window; the toast window only knows the id). */
+  private readonly cardCallbacks = new Map<number, (() => void) | null>();
+  private nextCardId = 1;
+
+  constructor() {
+    // The toast window reports card clicks by id — run the stored callback.
+    window.spaceToast?.onClicked((cardId) => {
+      const callback = this.cardCallbacks.get(cardId) ?? null;
+      this.cardCallbacks.delete(cardId);
+      window.focus(); // bring the app forward first (oak's toast click)
+      callback?.();
+    });
+  }
 
   setToastConfig(config: ToastConfig): void {
     this.toastConfig = config;
@@ -94,90 +107,29 @@ class NotificationHub {
     if (action === "toast-sound") {
       this.playBell();
     }
-    // The OS banner is the INTRUSIVE channel — it goes out only for effective
-    // mentions (a direct @ or a DM). A plain unfocused-window toast stays
-    // IN-APP (oak has no OS notifications at all; a Windows banner for every
-    // background message read as a mention ping — live report).
-    if (!windowFocused && effectiveMention) {
-      this.showSystem(message.authorUsername, channelName, message.content);
-    }
   }
 
+  /** Cards render in the ALWAYS-ON-TOP toast window (oak's NotificationToast):
+   *  visible above every window, even with the app minimized. The callback stays
+   *  here — the toast window reports the click by id. Without the bridge (tests,
+   *  plain browsers) the toast is dropped silently. */
   showToast(payload: ToastPayload): void {
-    const stack = this.ensureStack();
-    // Cards only (the Hide-all chip sits at the top of the stack, oak layout).
-    const cards = [...stack.children].filter((child) => child.classList.contains("toast-card"));
-    while (cards.length >= this.toastConfig.maxToasts()) {
-      cards.shift()?.remove();
-    }
-    const card = document.createElement("div");
-    card.className = "toast-card" + (payload.mention === true ? " mention" : "");
-    const header = document.createElement("div");
-    header.className = "toast-header";
-    header.textContent = payload.channelName;
-    const author = document.createElement("div");
-    author.className = "toast-author";
-    author.textContent = payload.title;
-    const body = document.createElement("div");
-    body.className = "toast-body";
-    body.textContent = payload.body.slice(0, 140);
-    card.append(header, author, body);
-    // Dismiss (timeout or click) also PRUNES the stack: with no cards left the
-    // chip and the stack element go too — "Hide all" must not outlive the cards
-    // (live report).
-    const dismiss = () => {
-      card.remove();
-      if (stack.querySelector(".toast-card") === null) {
-        stack.remove();
-      }
-    };
-    card.addEventListener("click", () => {
-      payload.onClick?.();
-      dismiss();
-    });
-    // Newest on top — right under the Hide-all chip.
-    stack.insertBefore(card, this.hideAllChip(stack).nextSibling);
-    window.setTimeout(dismiss, this.toastConfig.dismissSeconds() * 1000);
-  }
-
-  /** The stack's persistent "Hide all" chip (created on first use). */
-  private hideAllChip(stack: HTMLDivElement): HTMLElement {
-    const existing = stack.querySelector<HTMLElement>(".toast-hide-all");
-    if (existing !== null) {
-      return existing;
-    }
-    const chip = document.createElement("button");
-    chip.className = "toast-hide-all";
-    chip.textContent = "Hide all";
-    chip.addEventListener("click", () => {
-      for (const card of [...stack.querySelectorAll(".toast-card")]) {
-        card.remove();
-      }
-      stack.remove(); // everything is dismissed — the chip goes with the stack
-    });
-    stack.prepend(chip);
-    return chip;
-  }
-
-  showSystem(author: string, channelName: string, body: string | null): void {
-    if (typeof Notification === "undefined" || Notification.permission === "denied") {
+    const toastBridge = window.spaceToast;
+    if (toastBridge === undefined) {
       return;
     }
-    const show = () => {
-      const notification = new Notification(`${author} · #${channelName}`, { body: (body ?? "").slice(0, 200), silent: true });
-      notification.addEventListener("click", () => {
-        window.focus();
-      });
-    };
-    if (Notification.permission === "granted") {
-      show();
-    } else {
-      void Notification.requestPermission().then((permission) => {
-        if (permission === "granted") {
-          show();
-        }
-      });
-    }
+    const cardId = this.nextCardId;
+    this.nextCardId += 1;
+    this.cardCallbacks.set(cardId, payload.onClick ?? null);
+    toastBridge.show({
+      id: cardId,
+      title: payload.title,
+      channelName: payload.channelName,
+      body: payload.body,
+      mention: payload.mention === true,
+      dismissSeconds: this.toastConfig.dismissSeconds(),
+      maxToasts: this.toastConfig.maxToasts(),
+    });
   }
 
   /** The voice-room knock (oak's tuned "tuk … tuk"): bare sines, 3 ms attack,
@@ -321,15 +273,6 @@ class NotificationHub {
     } catch {
       // audio must never take the app down
     }
-  }
-
-  private ensureStack(): HTMLDivElement {
-    if (this.stackElement === null || !document.body.contains(this.stackElement)) {
-      this.stackElement = document.createElement("div");
-      this.stackElement.className = "toast-stack";
-      document.body.appendChild(this.stackElement);
-    }
-    return this.stackElement;
   }
 }
 

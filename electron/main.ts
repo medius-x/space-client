@@ -415,6 +415,131 @@ ipcMain.on("popout:frame", (_event, dataUrl: unknown) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Toast window (oak's NotificationToast): a frameless TRANSPARENT always-on-top
+// overlay at the main window's screen bottom-right, hosting the toast stack —
+// visible above every window, even with the app minimized (oak's whole point;
+// its system-tray notifications never worked on Win10/11). Click-through
+// everywhere except the cards: setIgnoreMouseEvents stays on and flips off only
+// while the cursor hovers actual content (the overlay pattern). The window is
+// NOT focusable — a card click routes through IPC to the MAIN window.
+// ---------------------------------------------------------------------------
+
+let toastWindow: BrowserWindow | null = null;
+const TOAST_WINDOW_WIDTH = 320;
+/** The toast page signals readiness after its IPC subscription is up — cards
+ *  sent before that are LOST (the first toast never rendered, only its bell
+ *  played — live report), so main buffers them until the signal. */
+let toastWindowReady = false;
+const pendingToastPayloads: unknown[] = [];
+
+function ensureToastWindow(): BrowserWindow | null {
+  if (toastWindow && !toastWindow.isDestroyed()) {
+    return toastWindow;
+  }
+  if (!mainWindowRef || mainWindowRef.isDestroyed()) {
+    return null;
+  }
+  toastWindowReady = false;
+  const height = 480; // generous ceiling; the content reports its real height
+  const area = screen.getDisplayMatching(mainWindowRef.getBounds()).workArea;
+  const toast = new BrowserWindow({
+    width: TOAST_WINDOW_WIDTH,
+    height,
+    x: area.x + area.width - TOAST_WINDOW_WIDTH - 12,
+    y: area.y + area.height - height - 12,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    focusable: false,
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, "..", "preload", "preload.js"),
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+      // TTL timers must run while the main window is unfocused/minimized.
+      backgroundThrottling: false,
+    },
+  });
+  toastWindow = toast;
+  toast.setAlwaysOnTop(true, "screen-saver");
+  toast.setIgnoreMouseEvents(true, { forward: true }); // transparent areas click through
+  toast.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  toast.on("closed", () => {
+    toastWindow = null;
+  });
+  void loadRendererTarget(toast, "toasts").catch((error: unknown) => {
+    appendLog(`[main] toast window load failed: ${error instanceof Error ? error.message : String(error)}`);
+    toast.close();
+  });
+  return toast;
+}
+
+ipcMain.on("space-toast:show", (_event, payload: unknown) => {
+  const toast = ensureToastWindow();
+  if (!toast) {
+    return;
+  }
+  if (!toastWindowReady) {
+    pendingToastPayloads.push(payload);
+    return; // shown once the page is ready — showing an unloaded window paints nothing
+  }
+  toast.showInactive(); // visible, never stealing focus
+  toast.webContents.send("toast:show", payload);
+});
+
+ipcMain.on("space-toast:ready", () => {
+  const toast = toastWindow;
+  if (!toast || toast.isDestroyed()) {
+    return;
+  }
+  toastWindowReady = true;
+  if (pendingToastPayloads.length > 0) {
+    toast.showInactive();
+    for (const payload of pendingToastPayloads) {
+      toast.webContents.send("toast:show", payload);
+    }
+    pendingToastPayloads.length = 0;
+  }
+});
+
+ipcMain.on("space-toast:hover", (_event, interactive: unknown) => {
+  // Interactive = the cursor is over actual content — only then the window
+  // accepts clicks; everywhere else it stays click-through.
+  toastWindow?.setIgnoreMouseEvents(interactive !== true, { forward: true });
+});
+
+ipcMain.on("space-toast:geometry", (_event, contentHeight: unknown) => {
+  const toast = toastWindow;
+  if (toast && !toast.isDestroyed() && typeof contentHeight === "number" && contentHeight > 0) {
+    const bounds = toast.getBounds();
+    const nextHeight = Math.max(48, Math.min(Math.ceil(contentHeight), 600));
+    // Keep the BOTTOM-RIGHT corner anchored while the stack grows/shrinks.
+    toast.setBounds({
+      x: bounds.x,
+      y: bounds.y + bounds.height - nextHeight,
+      width: bounds.width,
+      height: nextHeight,
+    });
+  }
+});
+
+ipcMain.on("space-toast:empty", () => {
+  // No cards left — hide (kept alive for the next toast; it is click-through).
+  if (toastWindow && !toastWindow.isDestroyed()) {
+    toastWindow.hide();
+  }
+});
+
+ipcMain.on("space-toast:clicked", (_event, id: unknown) => {
+  if (typeof id === "number") {
+    mainWindowRef?.webContents.send("toast:clicked", id);
+  }
+});
+
 async function createWindow(): Promise<void> {
   const mainWindow = new BrowserWindow({
     width: 1080,
@@ -435,6 +560,12 @@ async function createWindow(): Promise<void> {
   // The caption's maximize glyph flips on restore (oak's ▢↔❐).
   mainWindow.on("maximize", () => mainWindow.webContents.send("space-window:maximized", true));
   mainWindow.on("unmaximize", () => mainWindow.webContents.send("space-window:maximized", false));
+  // The auxiliary windows die with the main one — otherwise the app lingers
+  // with an invisible toast overlay / a pop-out viewer.
+  mainWindow.on("closed", () => {
+    toastWindow?.close();
+    popoutWindow?.close();
+  });
 
   // Security: this spike never navigates anywhere except its own local page.
   mainWindowRef = mainWindow;

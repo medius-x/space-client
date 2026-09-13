@@ -68,6 +68,48 @@ contextBridge.exposeInMainWorld("spaceNet", {
   },
 });
 
+/** Toast-window bridge (oak's NotificationToast): the MAIN window sends cards,
+ *  the TOAST window reports clicks/geometry and receives them. */
+contextBridge.exposeInMainWorld("spaceToast", {
+  show(payload: Record<string, unknown>): void {
+    ipcRenderer.send("space-toast:show", payload);
+  },
+  /** A card was clicked — main relays it back to the MAIN window renderer. */
+  clicked(id: number): void {
+    ipcRenderer.send("space-toast:clicked", id);
+  },
+  /** True while the cursor is over actual content — the window accepts clicks. */
+  hover(interactive: boolean): void {
+    ipcRenderer.send("space-toast:hover", interactive);
+  },
+  /** The stack's real rendered height — main resizes the window (bottom anchored). */
+  geometry(contentHeight: number): void {
+    ipcRenderer.send("space-toast:geometry", contentHeight);
+  },
+  /** No cards left — main hides the window. */
+  empty(): void {
+    ipcRenderer.send("space-toast:empty");
+  },
+  /** The toast page's subscription is up — main flushes the buffered cards. */
+  ready(): void {
+    ipcRenderer.send("space-toast:ready");
+  },
+  onShow(callback: (payload: unknown) => void): void {
+    // Single-subscriber channel: replace any previous listener — a remount
+    // (HMR, StrictMode) must not stack a second one and duplicate cards.
+    ipcRenderer.removeAllListeners("toast:show");
+    ipcRenderer.on("toast:show", (_event, payload: unknown) => callback(payload));
+  },
+  onClicked(callback: (id: number) => void): void {
+    ipcRenderer.removeAllListeners("toast:clicked");
+    ipcRenderer.on("toast:clicked", (_event, id: unknown) => {
+      if (typeof id === "number") {
+        callback(id);
+      }
+    });
+  },
+});
+
 /** Capture-picker bridge (M4): desktop sources with previews + the grant hint. */
 contextBridge.exposeInMainWorld("spaceCapture", {
   sources(): Promise<unknown> {

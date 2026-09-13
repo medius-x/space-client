@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { PopoutScreen } from "./components/PopoutScreen";
+import { ToastStackScreen } from "./components/ToastStackScreen";
 import { bootstrapApp } from "./runtime";
 import { log } from "../logging";
 import "./styles/global.css";
@@ -36,7 +37,13 @@ if (!container) {
   throw new Error("#root not found");
 }
 
-if (window.location.hash === "#popout") {
+if (window.location.hash === "#toasts") {
+  // The always-on-top toast overlay window: a card stack only — no sessions,
+  // no bootstrap (oak's NotificationToast). Deliberately NOT under StrictMode
+  // (like the pop-out): its double-mounted effects would double-subscribe the
+  // IPC card sink and every toast would arrive twice (live report).
+  createRoot(container).render(<ToastStackScreen />);
+} else if (window.location.hash === "#popout") {
   // The share pop-out window: a frame viewer only — no sessions, no bootstrap.
   createRoot(container).render(<PopoutScreen />);
 } else {

@@ -581,9 +581,34 @@ handle), классификация share-аудио по mindex, два про�
   Re-crop по наличию аватара); mode-комбо Notifications с человеческими подписями
   «All messages/Mentions only/Nothing» (oak: сырые имена enum). Аудит-раунд 6
   (2026-09-13): Home-бейдж считает входящие pending-запросы друзей вместе с
-  DM-unread (oak: только DM); OS-оповещения Windows только на эффективные
-  mentions (oak: OS-нотификаций нет вовсе); confirm-модали на Remove
-  friend/Block (oak бьёт из меню сразу).
+  DM-unread (oak: только DM); confirm-модали на Remove
+  friend/Block (oak бьёт из меню сразу); OS-нотификации вовсе УДАЛЕНЫ — канал
+  «поверх всего» один, наше always-on-top окно тостов (2026-09-13).
+
+**Окно тостов поверх всего (oak NotificationToast, 2026-09-13):** тосты
+переехали из DOM главного окна в ОТДЕЛЬНОЕ always-on-top окно (юзер-решение:
+OS-нотификации отклонены — в oak окно было воркэраундом мёртвого TrayIcon, у
+нас это архитектурный выбор). Main: frameless+transparent+`alwaysOnTop
+("screen-saver")`+skipTaskbar+**нефокусируемое**, lazy-create на первом тосте,
+`hide()` при пустом стеке, умирает вместе с главным окном; позиция — правый-
+нижний угол экрана главного окна; высота подстраивается под стек
+(bottom-anchored setBounds по репорту геометрии). **Клик-сквозность**:
+`setIgnoreMouseEvents(true, {forward:true})` всегда, экран тостов хит-тестит
+mousemove по карточкам/чипу и репортит hover → main флипает интерактивность
+(оверлей-паттерн: прозрачные зоны не едят клики окон ниже). Контент — тот же
+бандл по маршруту `#toasts` (`ToastStackScreen`: стек+«Hide all»+TTL+трим
+maxToasts); клики маршрутизируются ПО id через main в главный renderer (реестр
+`cardCallbacks` в NotificationHub — колбэки замыкаются на runtime главного
+окна; клик = window.focus() + действие). `showSystem`/OS-Notification путь
+УДАЛЁН целиком. ГРАБЛИ (все живые): StrictMode на #toasts-маршруте удваивал
+подписку IPC → дубль-карточки (popout-окна тоже без StrictMode; preload'
+каналы toast:* делают removeAllListeners перед подпиской — одноканальная
+идемпотентность); `empty()` на монтажном прогоне с нулём карточек прятал
+freshly-shown окно → первый тост невидим до второго сообщения (теперь empty
+только на ПЕРЕХОДЕ к пустому, seenCardsRef); карточки посланные до загрузки
+страницы терялись → буфер в main до `space-toast:ready` (showInactive тоже
+только после ready); геометрия рапортится как высота+16 (стек на bottom:8px —
+голая высота смещала окно вверх и резала чип «Hide all»).
 
 **Фоновые STOMP-сессии (задача #473, oak phase 2, 2026-09-13):** каждая
 записанная учётка держит ЖИВУЮ `ConnectionSession` (runtime `sessionMap` +
