@@ -20,7 +20,12 @@ import { dmDisplayName } from "../domain/logic/dm-display";
 import { SettingsStore } from "../domain/stores/SettingsStore";
 import type { NotificationPrefs } from "../types";
 import { notifications } from "./notifications";
-import { loadBackgroundSocial, socialDirectory } from "./social-aggregate";
+import {
+  bindLiveBackgroundSession,
+  loadBackgroundSocial,
+  socialDirectory,
+  unbindLiveBackgroundSession,
+} from "./social-aggregate";
 import { virtualScrollTelemetry } from "./scroll-telemetry";
 import type {
   CallConfig,
@@ -170,6 +175,10 @@ export const settingsStore = new SettingsStore();
 
 /** The single active session (v1). Login flow and the rail re-point it. */
 let activeSession: ConnectionSession | null = null;
+/** oak phase 2: every saved record holds a LIVE session; the map carries the
+ *  BACKGROUND ones. Switching PROMOTES a background session in place — its
+ *  socket and subscriptions survive the switch (no teardown, no handshake). */
+const sessionMap = new Map<string, ConnectionSession>();
 
 class SessionBinding extends Emitter {
   getSnapshot = (): ConnectionSession | null => activeSession;
@@ -250,140 +259,248 @@ export async function runDisplayMediaSelfTest(): Promise<void> {
 // Session lifecycle: bootstrap → login/resume → open → teardown
 // ---------------------------------------------------------------------------
 
-const sessionHooks: SessionHooks = {
-  onSessionExpired: (recordId) => {
-    log.warn("app", `session expired (record ${recordId}) — back to login`);
-    void teardownSession();
-    appStore.patch({ loginFormOpen: true, loginError: "Session expired — log in again", userSettingsOpen: false });
-  },
-  onStompState: (state) => appStore.patch({
-    stompState: state,
-    ...(state === "connected" ? { stompAttempt: 0, stompCountdown: null } : {}),
-  }),
-  onStompAttempt: (attempt) => appStore.patch({ stompState: "connecting", stompAttempt: attempt, stompCountdown: null }),
-  onStompCountdown: (secondsLeft, attempt) => appStore.patch({ stompState: "connecting", stompAttempt: attempt, stompCountdown: secondsLeft }),
-  onStompExhausted: () => appStore.patch({ stompState: "lost", stompAttempt: 0, stompCountdown: null }),
-  onStompConnected: () => {
-    const channelId = appStore.getSnapshot().activeVoiceChannelId;
-    if (channelId !== null) {
-      activeSession?.stomp.send("/app/voice.join", { channelId });
-    }
-  },
-  onChannelGone: (channelId) => {
-    if (appStore.getSnapshot().activeChannelId === channelId) {
-      pickFallbackTextChannel();
-    }
-    if (appStore.getSnapshot().activeVoiceChannelId === channelId) {
-      void leaveVoice();
-    }
-  },
-  onChannelsChanged: () => {
-    ensureActiveChannelExists();
-  },
-  onLiveMessage: (message) => {
-    const session = activeSession;
-    const state = appStore.getSnapshot();
-    if (!session || state.ownUsername === null) {
-      return;
-    }
-    const dm = session.socialStore.getDm(message.channelId);
-    const channel = dm === null ? session.channelStore.get(message.channelId) : null;
-    if (dm === null && channel === null) {
-      return; // a channel we closed/left — a frame still in flight after the unsubscribe
-    }
-    // One's OWN message must never count as unread or ring the bell. It can
-    // still reach this hook: sent into a channel whose history hadn't loaded
-    // yet (fresh switch), the REST echo is dropped by the store and the STOMP
-    // echo later arrives as an "insert" (live report: a DM sent right after
-    // switching to an inactive server raised a mention toast for the sender).
-    const ownMessage = message.authorUsername === state.ownUsername;
-    // A channel is "open" only when its view is actually ON SCREEN: in Home
-    // mode the server channel is not displayed (its id merely survives the
-    // round-trip) — treating it as open swallowed mention toasts while the
-    // user sat in Friends (oak nulls selectedChannelId on enterDmMode).
-    const inOpenChannel = (dm !== null
-      ? state.dmMode && state.activeDmId === message.channelId
-      : !state.dmMode && state.activeChannelId === message.channelId);
-    const windowFocused = document.hasFocus();
-    const settings = settingsStore.getSnapshot();
-    const serverPrefs = notificationPrefsFor(session.recordId);
-    // DM rule: EVERY direct message is a mention equivalent (oak parity) — the
-    // badge is red and the bell rings even without an @. suppressEveryoneHere
-    // keeps an @everyone ping out of the red counter (it still counts unread).
-    if (settings.badgeEnabled && !ownMessage) {
-      session.readStateStore.bumpLive(
+/**
+ * Per-record hooks (oak phase 2): every session — the ACTIVE one and each
+ * BACKGROUND one — gets its own hook set. The `isActive()` gate keeps global
+ * UI state (connection status, voice, calls, channel routing) owned by the
+ * active session alone; background sessions only feed their OWN stores, the
+ * aggregated badges and (with their record's prefs) toasts.
+ */
+function makeSessionHooks(recordId: string): SessionHooks {
+  const isActive = (): boolean => activeSession?.recordId === recordId;
+  return {
+    onSessionExpired: (expiredRecordId) => {
+      if (!isActive()) {
+        // A background family died — drop that session quietly; the REST
+        // fallback cannot cover it either (same tokens), the rows just leave.
+        log.warn("app", `background session expired (record ${expiredRecordId}) — dropping`);
+        disposeBackgroundSession(expiredRecordId);
+        return;
+      }
+      log.warn("app", `session expired (record ${expiredRecordId}) — back to login`);
+      void teardownSession();
+      appStore.patch({ loginFormOpen: true, loginError: "Session expired — log in again", userSettingsOpen: false });
+    },
+    onStompState: (state) => {
+      if (isActive()) {
+        appStore.patch({
+          stompState: state,
+          ...(state === "connected" ? { stompAttempt: 0, stompCountdown: null } : {}),
+        });
+      }
+    },
+    onStompAttempt: (attempt) => {
+      if (isActive()) {
+        appStore.patch({ stompState: "connecting", stompAttempt: attempt, stompCountdown: null });
+      }
+    },
+    onStompCountdown: (secondsLeft, attempt) => {
+      if (isActive()) {
+        appStore.patch({ stompState: "connecting", stompAttempt: attempt, stompCountdown: secondsLeft });
+      }
+    },
+    onStompExhausted: () => {
+      if (isActive()) {
+        appStore.patch({ stompState: "lost", stompAttempt: 0, stompCountdown: null });
+        return;
+      }
+      // A background server's ladder restarts QUIETLY from zero (oak's
+      // per-session reconnect loops forever off-screen); the 30 s pause keeps
+      // a dead server from being probed in a tight 10-attempt cycle.
+      window.setTimeout(() => {
+        const background = sessionMap.get(recordId);
+        if (background !== undefined && !background.isDisposed() && !background.stomp.isConnected()) {
+          background.stomp.reconnectNow();
+        }
+      }, 30_000);
+    },
+    onStompConnected: () => {
+      if (!isActive()) {
+        return; // the voice re-announce belongs to the ACTIVE session's socket only
+      }
+      const channelId = appStore.getSnapshot().activeVoiceChannelId;
+      if (channelId !== null) {
+        activeSession?.stomp.send("/app/voice.join", { channelId });
+      }
+    },
+    onChannelGone: (channelId) => {
+      if (!isActive()) {
+        return; // the background session's own stores already forgot the channel
+      }
+      if (appStore.getSnapshot().activeChannelId === channelId) {
+        pickFallbackTextChannel();
+      }
+      if (appStore.getSnapshot().activeVoiceChannelId === channelId) {
+        void leaveVoice();
+      }
+    },
+    onChannelsChanged: () => {
+      if (isActive()) {
+        ensureActiveChannelExists();
+      }
+    },
+    onLiveMessage: (message) => {
+      const session = sessionMap.get(recordId) ?? activeSession;
+      const recordUsername = connectionDirectory.get(recordId)?.username ?? "?";
+      if (!session) {
+        return;
+      }
+      const dm = session.socialStore.getDm(message.channelId);
+      const channel = dm === null ? session.channelStore.get(message.channelId) : null;
+      if (dm === null && channel === null) {
+        return; // a channel we closed/left — a frame still in flight after the unsubscribe
+      }
+      // One's OWN message must never count as unread or ring the bell. It can
+      // still reach this hook: sent into a channel whose history hadn't loaded
+      // yet (fresh switch), the REST echo is dropped by the store and the STOMP
+      // echo later arrives as an "insert" (live report: a DM sent right after
+      // switching to an inactive server raised a mention toast for the sender).
+      const ownMessage = message.authorUsername === recordUsername;
+      const settings = settingsStore.getSnapshot();
+      const serverPrefs = notificationPrefsFor(recordId);
+      if (isActive()) {
+        const state = appStore.getSnapshot();
+        // A channel is "open" only when its view is actually ON SCREEN: in Home
+        // mode the server channel is not displayed (its id merely survives the
+        // round-trip) — treating it as open swallowed mention toasts while the
+        // user sat in Friends (oak nulls selectedChannelId on enterDmMode).
+        const inOpenChannel = (dm !== null
+          ? state.dmMode && state.activeDmId === message.channelId
+          : !state.dmMode && state.activeChannelId === message.channelId);
+        const windowFocused = document.hasFocus();
+        // DM rule: EVERY direct message is a mention equivalent (oak parity) — the
+        // badge is red and the bell rings even without an @. suppressEveryoneHere
+        // keeps an @everyone ping out of the red counter (it still counts unread).
+        if (settings.badgeEnabled && !ownMessage) {
+          session.readStateStore.bumpLive(
+            message,
+            recordUsername,
+            inOpenChannel,
+            windowFocused,
+            dm !== null,
+            !serverPrefs.suppressEveryoneHere,
+          );
+        }
+        if (dm !== null) {
+          session.socialStore.updateDmLastMessage(message); // float the row + refresh the preview
+        }
+        if (ownMessage || (inOpenChannel && windowFocused)) {
+          return;
+        }
+        const channelName = dm !== null
+          ? dmDisplayName(dm, recordUsername)
+          : channel !== null ? `#${channel.name}` : `#${message.channelId}`;
+        notifications.handleMessage(
+          message,
+          recordUsername,
+          channelName,
+          windowFocused,
+          inOpenChannel,
+          {
+            serverMode: serverPrefs.mode,
+            suppressEveryoneHere: serverPrefs.suppressEveryoneHere,
+            notificationsEnabled: settings.notificationsEnabled,
+            soundEnabled: settings.soundEnabled,
+          },
+          dm !== null ? () => openDm(dm.id) : undefined,
+          dm !== null, // every DM is a mention equivalent
+        );
+        return;
+      }
+      // BACKGROUND instance (oak's evaluateNotification for non-active cids):
+      // the message is never "open on screen" — bump that instance's counters,
+      // float its DM row, and toast with ITS prefs; the click switches there.
+      if (settings.badgeEnabled && !ownMessage) {
+        session.readStateStore.bumpLive(
+          message,
+          recordUsername,
+          false,
+          false,
+          dm !== null,
+          !serverPrefs.suppressEveryoneHere,
+        );
+      }
+      if (dm !== null) {
+        session.socialStore.updateDmLastMessage(message);
+      }
+      if (ownMessage) {
+        return;
+      }
+      const channelName = dm !== null
+        ? dmDisplayName(dm, recordUsername)
+        : channel !== null ? `#${channel.name}` : `#${message.channelId}`;
+      notifications.handleMessage(
         message,
-        state.ownUsername,
-        inOpenChannel,
-        windowFocused,
+        recordUsername,
+        channelName,
+        false,
+        false,
+        {
+          serverMode: serverPrefs.mode,
+          suppressEveryoneHere: serverPrefs.suppressEveryoneHere,
+          notificationsEnabled: settings.notificationsEnabled,
+          soundEnabled: settings.soundEnabled,
+        },
+        dm !== null ? () => openDmOnInstance(recordId, dm.id) : undefined,
         dm !== null,
-        !serverPrefs.suppressEveryoneHere,
       );
-    }
-    if (dm !== null) {
-      session.socialStore.updateDmLastMessage(message); // float the row + refresh the preview
-    }
-    if (ownMessage || (inOpenChannel && windowFocused)) {
-      return;
-    }
-    const channelName = dm !== null
-      ? dmDisplayName(dm, state.ownUsername)
-      : channel !== null ? `#${channel.name}` : `#${message.channelId}`;
-    notifications.handleMessage(
-      message,
-      state.ownUsername,
-      channelName,
-      windowFocused,
-      inOpenChannel,
-      {
-        serverMode: serverPrefs.mode,
-        suppressEveryoneHere: serverPrefs.suppressEveryoneHere,
-        notificationsEnabled: settings.notificationsEnabled,
-        soundEnabled: settings.soundEnabled,
-      },
-      dm !== null ? () => openDm(dm.id) : undefined,
-      dm !== null, // every DM is a mention equivalent
-    );
-  },
-  onOwnVoiceControlState: (state) => {
-    // The union drives our mic and our speakers; ONLY a moderator mute cuts the
-    // share audio too (a self-mute must leave the music playing — Discord semantics).
-    voiceCompliance.micMuted = state.muted;
-    voiceCompliance.shareAudioMuted = state.modMuted;
-    voiceCompliance.deafened = state.deafened;
-    applyComplianceToLiveSession();
-    log.info("voice", `compliance: mic=${state.muted ? "muted" : "open"} (self=${state.selfMuted} mod=${state.modMuted})`
-      + ` deafened=${state.deafened} shareAudio=${state.modMuted ? "muted" : "open"}`);
-  },
-  onVoiceKicked: (byUsername) => {
-    cancelVoiceRejoin();
-    void leaveVoice();
-    notifications.showToast({ title: "Voice", channelName: byUsername, body: "You were kicked from the voice channel." });
-  },
-  onCallSignal: (signal) => handleCallSignal(signal),
-  onDmClosed: (channelId) => {
-    if (appStore.getSnapshot().activeDmId === channelId) {
-      appStore.patch({ activeDmId: null }); // back to the Friends pane
-    }
-  },
-  onMemberKicked: (event) => {
-    // Tokens survive a kick (only a BAN kills them at the REST layer) — dropping
-    // to the login modal keeps the record one click away, oak's ErrorDialog parity.
-    const reason = event.banned
-      ? `You were banned by ${event.by}. A moderator must unban you before reconnecting.`
-      : `You were removed from the server by ${event.by}. Click the server again to reconnect.`;
-    const record = activeSession !== null ? connectionDirectory.get(activeSession.recordId) : null;
-    void teardownSession().finally(() => {
-      appStore.patch({
-        loginFormOpen: true,
-        loginError: reason,
-        loginPrefill: record !== null ? { url: record.hostUrl, username: record.username } : null,
-        userSettingsOpen: false,
+    },
+    onOwnVoiceControlState: (state) => {
+      if (!isActive()) {
+        return; // only the active session is ever in voice
+      }
+      // The union drives our mic and our speakers; ONLY a moderator mute cuts the
+      // share audio too (a self-mute must leave the music playing — Discord semantics).
+      voiceCompliance.micMuted = state.muted;
+      voiceCompliance.shareAudioMuted = state.modMuted;
+      voiceCompliance.deafened = state.deafened;
+      applyComplianceToLiveSession();
+      log.info("voice", `compliance: mic=${state.muted ? "muted" : "open"} (self=${state.selfMuted} mod=${state.modMuted})`
+        + ` deafened=${state.deafened} shareAudio=${state.modMuted ? "muted" : "open"}`);
+    },
+    onVoiceKicked: (byUsername) => {
+      if (!isActive()) {
+        return;
+      }
+      cancelVoiceRejoin();
+      void leaveVoice();
+      notifications.showToast({ title: "Voice", channelName: byUsername, body: "You were kicked from the voice channel." });
+    },
+    onCallSignal: (signal) => {
+      if (isActive()) {
+        handleCallSignal(signal);
+      }
+    },
+    onDmClosed: (channelId) => {
+      if (isActive() && appStore.getSnapshot().activeDmId === channelId) {
+        appStore.patch({ activeDmId: null }); // back to the Friends pane
+      }
+    },
+    onMemberKicked: (event) => {
+      const reason = event.banned
+        ? `You were banned by ${event.by}. A moderator must unban you before reconnecting.`
+        : `You were removed from the server by ${event.by}. Click the server again to reconnect.`;
+      if (!isActive()) {
+        log.warn("app", `${event.banned ? "banned" : "kicked"} on a background server (record ${recordId}) — dropping the session`);
+        disposeBackgroundSession(recordId);
+        notifications.showToast({ title: event.banned ? "Banned" : "Removed from server", channelName: event.by, body: reason });
+        return;
+      }
+      // Tokens survive a kick (only a BAN kills them at the REST layer) — dropping
+      // to the login modal keeps the record one click away, oak's ErrorDialog parity.
+      const record = connectionDirectory.get(recordId);
+      void teardownSession().finally(() => {
+        appStore.patch({
+          loginFormOpen: true,
+          loginError: reason,
+          loginPrefill: record !== null ? { url: record.hostUrl, username: record.username } : null,
+          userSettingsOpen: false,
+        });
+        notifications.showToast({ title: event.banned ? "Banned" : "Removed from server", channelName: event.by, body: reason });
       });
-      notifications.showToast({ title: event.banned ? "Banned" : "Removed from server", channelName: event.by, body: reason });
-    });
-  },
-};
+    },
+  };
+}
 
 /** App entry: load the directory, auto-resume the most recently used connection. */
 export async function bootstrapApp(): Promise<void> {
@@ -402,6 +519,8 @@ export async function bootstrapApp(): Promise<void> {
       log.info("app", `auto-resume failed (${errorMessage(error)}) — login screen`);
     }
   }
+  // Every other record comes up as a LIVE background session (oak phase 2).
+  startBackgroundSessions();
 }
 
 export async function startSession(baseUrl: string, mode: "login" | "register", username: string, password: string): Promise<void> {
@@ -471,6 +590,8 @@ export async function removeConnection(recordId: string): Promise<void> {
     // Removing the ACTIVE server leaves an empty main window (the rail with its
     // "+" stays) — no login modal: the user deliberately dropped the server.
     await teardownSession();
+  } else {
+    disposeBackgroundSession(recordId);
   }
   socialDirectory.drop(recordId);
   await connectionDirectory.remove(recordId);
@@ -517,12 +638,50 @@ export function closeLoginForm(): void {
 }
 
 async function openSession(recordId: string): Promise<void> {
-  await teardownSession();
   const record = connectionDirectory.get(recordId);
   if (!record) {
     return;
   }
-  const session = new ConnectionSession({ directory: connectionDirectory, recordId, hooks: sessionHooks });
+  // PROMOTE: a live background session for this record switches in place —
+  // no teardown, no fresh handshake (oak's promoteActiveSession). The demoted
+  // session stays alive in the map as a background listener.
+  const existing = sessionMap.get(recordId) ?? null;
+  if (existing !== null && !existing.isDisposed()) {
+    await teardownVoice();
+    teardownCall();
+    roomAudio.stopLevelPolling();
+    roomAudio.detachOwnMic();
+    const demoted = activeSession;
+    activeSession = existing;
+    sessionMap.delete(recordId);
+    if (demoted !== null && demoted !== existing && !demoted.isDisposed()) {
+      sessionMap.set(demoted.recordId, demoted);
+    }
+    sessionBinding.set(existing);
+    appStore.patch({
+      loginFormOpen: false,
+      loginError: null,
+      loginPrefill: null,
+      ownUsername: record.username,
+      baseUrl: record.hostUrl,
+      stompState: existing.stomp.isConnected() ? "connected" : "connecting",
+      stompAttempt: 0,
+      stompCountdown: null,
+    });
+    const pendingDm = appStore.getSnapshot().pendingOpenDm;
+    if (pendingDm !== null && pendingDm.recordId === existing.recordId) {
+      appStore.patch({ pendingOpenDm: null });
+      openDm(pendingDm.dmId);
+    } else {
+      restoreLastChannel(existing);
+    }
+    roomAudio.startLevelPolling();
+    await roomAudio.resume();
+    void startBackgroundSessions();
+    return;
+  }
+  await teardownSession();
+  const session = new ConnectionSession({ directory: connectionDirectory, recordId, hooks: makeSessionHooks(recordId) });
   activeSession = session;
   sessionBinding.set(session);
   try {
@@ -545,15 +704,47 @@ async function openSession(recordId: string): Promise<void> {
     } else {
       restoreLastChannel(session);
     }
-    // Refresh the cross-instance friends/DM snapshots (the old active record
-    // became a background candidate; the new one left the background set).
-    void loadBackgroundSocial(connectionDirectory, session.recordId);
     roomAudio.startLevelPolling();
     await roomAudio.resume();
+    // Bring every other record up as a LIVE background session; the REST
+    // snapshot loader only covers records that cannot hold a session.
+    void startBackgroundSessions();
   } catch (error) {
     await teardownSession();
     throw error;
   }
+}
+
+/** Start (once) a background session for every saved record that has none. */
+function startBackgroundSessions(): void {
+  for (const record of connectionDirectory.getSnapshot()) {
+    if (record.token === EXPIRED_MARKER || record.refreshToken === "" || record.id === activeSession?.recordId) {
+      continue;
+    }
+    if (sessionMap.has(record.id)) {
+      continue;
+    }
+    const session = new ConnectionSession({ directory: connectionDirectory, recordId: record.id, hooks: makeSessionHooks(record.id) });
+    sessionMap.set(record.id, session);
+    bindLiveBackgroundSession(session, connectionDirectory);
+    void session.start().catch((error: unknown) => {
+      log.warn("app", `background session for ${record.username} @ ${record.hostUrl} failed (${errorMessage(error)}) — REST snapshots only`);
+      disposeBackgroundSession(record.id);
+    });
+  }
+}
+
+/** Dispose ONE background session (expired/kicked/failed start); the active
+ *  one goes through teardownSession. */
+function disposeBackgroundSession(recordId: string): void {
+  const session = sessionMap.get(recordId);
+  if (session === undefined || session === activeSession) {
+    return;
+  }
+  sessionMap.delete(recordId);
+  session.dispose();
+  unbindLiveBackgroundSession(recordId);
+  void loadBackgroundSocial(connectionDirectory, activeSession?.recordId ?? "");
 }
 
 export async function teardownSession(): Promise<void> {
@@ -561,9 +752,13 @@ export async function teardownSession(): Promise<void> {
   await teardownVoice();
   roomAudio.stopLevelPolling();
   roomAudio.detachOwnMic();
-  activeSession?.dispose();
+  const dying = activeSession;
   activeSession = null;
   sessionBinding.set(null);
+  if (dying !== null) {
+    sessionMap.delete(dying.recordId);
+    dying.dispose();
+  }
   appStore.patch({
     stompState: "off",
     stompAttempt: 0,
