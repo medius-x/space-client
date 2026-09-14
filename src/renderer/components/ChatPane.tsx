@@ -11,6 +11,7 @@ import { log } from "../../logging";
 import { computeGroupStarts, continuesGroup, formatHeaderStamp, formatTimeOfDay, toEpochMs, type GroupableMessage } from "../../domain/logic/message-grouping";
 import { firstHttpUrl, segmentMessageContent } from "../../domain/logic/mention-segmenter";
 import { linkPreviewFor, type LinkPreview } from "../link-preview";
+import { notifications } from "../notifications";
 import { dmDisplayName } from "../../domain/logic/dm-display";
 import { memberNameColor } from "../../domain/logic/roster-grouping";
 import { paletteColor } from "../../domain/logic/user-palette";
@@ -698,6 +699,10 @@ function MessageList(props: MessageListProps): React.JSX.Element {
           }
           loaded += raw;
         }
+        if (!session.messageStore.listFor(channel.id).some((message) => message.id === messageId)) {
+          pendingJumpRef.current = null; // the backfill cap gave up — say so (oak's toast)
+          notifications.showToast({ title: "space", channelName: "", body: "Message is too far back to jump to" });
+        }
       })().catch(() => undefined);
     },
   };
@@ -1150,20 +1155,39 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
   const [mentionQuery, setMentionQuery] = useState<{ token: string; caret: number } | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const users = useStore(session.rosterStore, (state) => state.users);
+  const roles = useStore(session.memberStore, (state) => state.roles);
   const ownUsername = useStore(appStore, (state) => state.ownUsername);
   const ctrlEnterSends = useStore(settingsStore, (settings) => settings.ctrlEnterSends);
 
+  // oak's MentionSuggester order: @everyone/@here first, then MENTIONABLE roles,
+  // then users — one flat list the keyboard walks (live report: roles and the
+  // broad pings were missing from the popup entirely).
   const mentionCandidates = useMemo(() => {
     if (mentionQuery === null) {
       return [];
     }
     const prefix = mentionQuery.token.slice(1).toLowerCase(); // after the @
-    return users
-      .filter((user) => user.username !== ownUsername)
-      .filter((user) => user.username.toLowerCase().startsWith(prefix))
-      .slice(0, 10);
-  }, [mentionQuery, users, ownUsername]);
+    const matches = (label: string): boolean => label.toLowerCase().startsWith(prefix);
+    const candidates: { key: string; insert: string; label: string; kind: "broad" | "role" | "user"; userId?: number }[] = [];
+    for (const broad of ["everyone", "here"]) {
+      if (matches(broad)) {
+        candidates.push({ key: `broad:${broad}`, insert: broad, label: `@${broad}`, kind: "broad" });
+      }
+    }
+    for (const role of roles) {
+      if (role.kind === "CUSTOM" && role.mentionable && matches(role.name)) {
+        candidates.push({ key: `role:${role.id}`, insert: role.name, label: `@${role.name}`, kind: "role" });
+      }
+    }
+    for (const user of users) {
+      if (user.username !== ownUsername && matches(user.username)) {
+        candidates.push({ key: `user:${user.id}`, insert: user.username, label: user.username, kind: "user", userId: user.id });
+      }
+    }
+    return candidates.slice(0, 10);
+  }, [mentionQuery, roles, users, ownUsername]);
 
   // Track the @token ending at the caret — the popup's query.
   const updateMentionQuery = (value: string, caret: number): void => {
@@ -1173,14 +1197,25 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
     setMentionIndex(0);
   };
 
-  const applyMention = (username: string): void => {
+  const applyMention = (insert: string): void => {
     if (mentionQuery === null) {
       return;
     }
     const start = mentionQuery.caret - mentionQuery.token.length;
-    const replaced = `${text.slice(0, start)}@${username} ${text.slice(mentionQuery.caret)}`;
+    const replaced = `${text.slice(0, start)}@${insert} ${text.slice(mentionQuery.caret)}`;
     setText(replaced);
     setMentionQuery(null);
+    // A MOUSE click on a suggestion row moved the focus out of the field — the
+    // user expects to keep typing (or press Enter) right away (live report).
+    // rAF: let the re-render land first, then place the caret after the insert.
+    const caret = start + insert.length + 2; // after "@name "
+    window.requestAnimationFrame(() => {
+      const node = composerInputRef.current;
+      if (node !== null) {
+        node.focus();
+        node.setSelectionRange(caret, caret);
+      }
+    });
   };
 
   const submit = async (): Promise<void> => {
@@ -1206,14 +1241,18 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
     <div className="composer">
       {mentionQuery !== null && mentionCandidates.length > 0 ? (
         <div className="mention-popup">
-          {mentionCandidates.map((user, index) => (
+          {mentionCandidates.map((candidate, index) => (
             <div
-              key={user.id}
+              key={candidate.key}
               className={"mention-row" + (index === mentionIndex ? " chosen" : "")}
-              onClick={() => applyMention(user.username)}
+              onClick={() => applyMention(candidate.insert)}
             >
-              <Avatar session={session} username={user.username} size={20} />
-              <span>{user.username}</span>
+              {candidate.kind === "user" ? (
+                <Avatar session={session} username={candidate.insert} size={20} />
+              ) : (
+                <span className="icon mdi-account-multiple mention-row-glyph" />
+              )}
+              <span>{candidate.label}</span>
             </div>
           ))}
         </div>
@@ -1239,6 +1278,7 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
           }}
         />
         <textarea
+          ref={composerInputRef}
           value={text}
           rows={Math.min(10, Math.max(1, text.split("\n").length))}
           placeholder={placeholder}
@@ -1272,7 +1312,7 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
             }
             if (event.key === "Enter" || event.key === "Tab") {
               event.preventDefault();
-              applyMention(mentionCandidates[mentionIndex]!.username);
+              applyMention(mentionCandidates[mentionIndex]!.insert);
               return;
             }
             if (event.key === "Escape") {

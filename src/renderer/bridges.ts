@@ -40,6 +40,9 @@ export interface ToastCardPayload {
   title: string;
   channelName: string;
   body: string;
+  /** Optional pre-split body: mention spans render tinted, plain text doesn't.
+   *  Absent on system toasts (Voice/Call/jump) — they render `body` as is. */
+  segments?: { text: string; mention: boolean }[];
   mention: boolean;
   dismissSeconds: number;
   maxToasts: number;

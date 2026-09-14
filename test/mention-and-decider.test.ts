@@ -3,7 +3,8 @@ import { firstHttpUrl, segmentMessageContent } from "../src/domain/logic/mention
 import {
   decideNotification,
   messageHasEveryoneHere,
-  messageMentionsUserDirect,
+  messageMentionsRole,
+  messageMentionsUser,
   type NotificationInput,
 } from "../src/domain/logic/notification-decider";
 import { buildReplyPreview } from "../src/domain/logic/reply-tree";
@@ -121,11 +122,20 @@ describe("decideNotification", () => {
   });
 
   it("direct vs broad mention detection", () => {
-    expect(messageMentionsUserDirect([{ type: "USER", name: "alice" }], "alice")).toBe(true);
-    expect(messageMentionsUserDirect([{ type: "USER", name: "alice" }], "bob")).toBe(false);
-    expect(messageMentionsUserDirect([{ type: "EVERYONE", name: "@everyone" }], "bob")).toBe(false);
+    expect(messageMentionsUser([{ type: "USER", id: 7 }], 7)).toBe(true);
+    expect(messageMentionsUser([{ type: "USER", id: 7 }], 8)).toBe(false);
+    expect(messageMentionsUser([{ type: "USER", id: 7 }], null)).toBe(false); // roster not loaded yet
+    expect(messageMentionsUser([{ type: "EVERYONE", id: null }], 7)).toBe(false);
     expect(messageHasEveryoneHere([{ type: "EVERYONE", name: "@everyone" }])).toBe(true);
     expect(messageHasEveryoneHere([{ type: "HERE", name: "@here" }])).toBe(true);
     expect(messageHasEveryoneHere([{ type: "ROLE", name: "admin" }])).toBe(false);
+  });
+
+  it("an @role the user holds is a full mention (oak parity)", () => {
+    expect(messageMentionsRole([{ type: "ROLE", id: 3 }], [1, 3])).toBe(true);
+    expect(messageMentionsRole([{ type: "ROLE", id: 3 }], [1, 2])).toBe(false);
+    expect(messageMentionsRole([{ type: "ROLE", id: 3 }], [])).toBe(false); // no roles resolved yet
+    expect(messageMentionsRole([{ type: "ROLE", id: null }], [3])).toBe(false); // malformed mention
+    expect(messageMentionsRole([{ type: "USER", id: 3 }], [3])).toBe(false); // user ids are not role ids
   });
 });

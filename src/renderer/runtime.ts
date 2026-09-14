@@ -10,6 +10,7 @@ import { stereoVerdict } from "../core/audio-math";
 import { RoomAudio } from "../media/RoomAudio";
 import {
   ConnectionDirectory,
+  DEFAULT_NOTIFICATION_PREFS,
   EXPIRED_MARKER,
   normalizeHostUrl,
   RecordTokenStorage,
@@ -17,6 +18,8 @@ import {
 import { ConnectionSession, type SessionHooks } from "../domain/session/connection-session";
 import { MAX_VOICE_REJOIN_ATTEMPTS, rejoinDelayMs, rejoinExhausted } from "../domain/logic/rejoin-ladder";
 import { dmDisplayName } from "../domain/logic/dm-display";
+import type { MentionIdentity } from "../domain/logic/notification-decider";
+import { dmToastHeader, toastServerHeader } from "../domain/logic/toast-preview";
 import { SettingsStore } from "../domain/stores/SettingsStore";
 import type { NotificationPrefs } from "../types";
 import { notifications } from "./notifications";
@@ -104,6 +107,9 @@ export interface AppState {
   /** A DM on a NON-active instance the user clicked in the aggregated list:
    *  consumed by openSession once that instance is up (oak's pendingOpenDm). */
   pendingOpenDm: { recordId: string; dmId: number } | null;
+  /** A SERVER channel on a NON-active instance (a background toast click) —
+   *  consumed by openSession after start, same contract as pendingOpenDm. */
+  pendingOpenChannel: { recordId: string; channelId: number } | null;
 }
 
 class AppStore extends Emitter {
@@ -148,6 +154,7 @@ class AppStore extends Emitter {
     serverSettingsSection: "overview",
     userSettingsOpen: false,
     pendingOpenDm: null,
+    pendingOpenChannel: null,
   };
 
   getSnapshot = (): AppState => this.state;
@@ -368,13 +375,16 @@ function makeSessionHooks(recordId: string): SessionHooks {
           ? state.dmMode && state.activeDmId === message.channelId
           : !state.dmMode && state.activeChannelId === message.channelId);
         const windowFocused = document.hasFocus();
+        const self = selfIdentityFor(session);
         // DM rule: EVERY direct message is a mention equivalent (oak parity) — the
         // badge is red and the bell rings even without an @. suppressEveryoneHere
         // keeps an @everyone ping out of the red counter (it still counts unread).
-        if (settings.badgeEnabled && !ownMessage) {
+        // The counters ALWAYS move (oak gates only the badge RENDER) — hiding them
+        // must not freeze the unread state for when they come back on.
+        if (!ownMessage) {
           session.readStateStore.bumpLive(
             message,
-            recordUsername,
+            self,
             inOpenChannel,
             windowFocused,
             dm !== null,
@@ -387,12 +397,14 @@ function makeSessionHooks(recordId: string): SessionHooks {
         if (ownMessage || (inOpenChannel && windowFocused)) {
           return;
         }
+        // oak's toast header: "Server  #channel" for server channels; a DM group
+        // shows its name, a 1:1 shows none (the author line is the peer already).
         const channelName = dm !== null
-          ? dmDisplayName(dm, recordUsername)
-          : channel !== null ? `#${channel.name}` : `#${message.channelId}`;
+          ? dmToastHeader("", dm, dmDisplayName(dm, recordUsername))
+          : toastServerHeader(serverDisplayName(recordId), channel !== null ? `#${channel.name}` : `#${message.channelId}`);
         notifications.handleMessage(
           message,
-          recordUsername,
+          self,
           channelName,
           windowFocused,
           inOpenChannel,
@@ -402,7 +414,7 @@ function makeSessionHooks(recordId: string): SessionHooks {
             notificationsEnabled: settings.notificationsEnabled,
             soundEnabled: settings.soundEnabled,
           },
-          dm !== null ? () => openDm(dm.id) : undefined,
+          dm !== null ? () => openDm(dm.id) : () => setActiveChannel(message.channelId),
           dm !== null, // every DM is a mention equivalent
         );
         return;
@@ -410,10 +422,10 @@ function makeSessionHooks(recordId: string): SessionHooks {
       // BACKGROUND instance (oak's evaluateNotification for non-active cids):
       // the message is never "open on screen" — bump that instance's counters,
       // float its DM row, and toast with ITS prefs; the click switches there.
-      if (settings.badgeEnabled && !ownMessage) {
+      if (!ownMessage) { // counters always move (oak); badgeEnabled only gates the render
         session.readStateStore.bumpLive(
           message,
-          recordUsername,
+          selfIdentityFor(session),
           false,
           false,
           dm !== null,
@@ -426,12 +438,14 @@ function makeSessionHooks(recordId: string): SessionHooks {
       if (ownMessage) {
         return;
       }
+      // Same oak header shapes, but the instance is NOT the active one — its
+      // server name tags the toast so the user sees where the message came from.
       const channelName = dm !== null
-        ? dmDisplayName(dm, recordUsername)
-        : channel !== null ? `#${channel.name}` : `#${message.channelId}`;
+        ? dmToastHeader(serverDisplayName(recordId), dm, dmDisplayName(dm, recordUsername))
+        : toastServerHeader(serverDisplayName(recordId), channel !== null ? `#${channel.name}` : `#${message.channelId}`);
       notifications.handleMessage(
         message,
-        recordUsername,
+        selfIdentityFor(session),
         channelName,
         false,
         false,
@@ -441,7 +455,7 @@ function makeSessionHooks(recordId: string): SessionHooks {
           notificationsEnabled: settings.notificationsEnabled,
           soundEnabled: settings.soundEnabled,
         },
-        dm !== null ? () => openDmOnInstance(recordId, dm.id) : undefined,
+        dm !== null ? () => openDmOnInstance(recordId, dm.id) : () => openChannelOnInstance(recordId, message.channelId),
         dm !== null,
       );
     },
@@ -668,13 +682,7 @@ async function openSession(recordId: string): Promise<void> {
       stompAttempt: 0,
       stompCountdown: null,
     });
-    const pendingDm = appStore.getSnapshot().pendingOpenDm;
-    if (pendingDm !== null && pendingDm.recordId === existing.recordId) {
-      appStore.patch({ pendingOpenDm: null });
-      openDm(pendingDm.dmId);
-    } else {
-      restoreLastChannel(existing);
-    }
+    consumePendingOpen(existing);
     roomAudio.startLevelPolling();
     await roomAudio.resume();
     void startBackgroundSessions();
@@ -688,6 +696,7 @@ async function openSession(recordId: string): Promise<void> {
     await session.start();
     session.attachmentCache.setDiskBudget(settingsStore.getSnapshot().imageCacheMegabytes * 1024 * 1024);
     roomAudio.setOutputDevice(settingsStore.getSnapshot().speakerDeviceId); // the saved sink, before any chain attaches
+    notifications.setOutputDevice(settingsStore.getSnapshot().speakerDeviceId); // UI sounds follow the same speaker (oak's playout line)
     appStore.patch({
       loginFormOpen: false,
       loginError: null,
@@ -695,15 +704,9 @@ async function openSession(recordId: string): Promise<void> {
       ownUsername: record.username,
       baseUrl: record.hostUrl,
     });
-    // A DM clicked on a NON-active instance in the aggregated list: open it
-    // instead of the restored last channel (oak's pendingOpenDm).
-    const pendingDm = appStore.getSnapshot().pendingOpenDm;
-    if (pendingDm !== null && pendingDm.recordId === session.recordId) {
-      appStore.patch({ pendingOpenDm: null });
-      openDm(pendingDm.dmId);
-    } else {
-      restoreLastChannel(session);
-    }
+    // A DM/channel clicked on a NON-active instance: open it instead of the
+    // restored last channel (oak's pendingOpenDm).
+    consumePendingOpen(session);
     roomAudio.startLevelPolling();
     await roomAudio.resume();
     // Bring every other record up as a LIVE background session; the REST
@@ -778,7 +781,7 @@ export async function teardownSession(): Promise<void> {
     viewingFeedId: null,
     viewingUsername: null,
     serverSettingsOpen: false,
-    // pendingOpenDm deliberately survives too — a switch that lands on the login
+    // pendingOpenDm/pendingOpenChannel deliberately survive too — a switch that lands on the login
     // modal should still open the clicked DM once the user re-logs in.
     // userSettingsOpen is deliberately NOT reset here: the username rename
     // restarts the session WITH the settings window open (oak keeps it). Every
@@ -795,6 +798,7 @@ export function setActiveChannel(channelId: number): void {
   if (!session) {
     return;
   }
+  ackActiveChannel(); // oak acks the channel being LEFT before the switch lands
   appStore.patch({ activeChannelId: channelId, dmMode: false, activeDmId: null, roomViewOpen: false });
   void session.loadHistory(channelId)
     .then(() => ackActiveChannel())
@@ -822,6 +826,35 @@ export function toggleHomeMode(): void {
 export function openDmOnInstance(recordId: string, dmId: number): void {
   appStore.patch({ pendingOpenDm: { recordId, dmId } });
   void switchConnection(recordId);
+}
+
+/** A server channel of a NON-active instance (a background toast click): switch
+ *  there and open the channel once the session is up — same contract as the DM. */
+export function openChannelOnInstance(recordId: string, channelId: number): void {
+  appStore.patch({ pendingOpenChannel: { recordId, channelId } });
+  void switchConnection(recordId);
+}
+
+/** Consumes a pending open for the just-activated session: the clicked target
+ *  (a DM, then a server channel) replaces the restored last channel; a channel
+ *  deleted while away falls through to the ordinary restore. */
+function consumePendingOpen(session: ConnectionSession): void {
+  const state = appStore.getSnapshot();
+  const pendingDm = state.pendingOpenDm;
+  if (pendingDm !== null && pendingDm.recordId === session.recordId) {
+    appStore.patch({ pendingOpenDm: null });
+    openDm(pendingDm.dmId);
+    return;
+  }
+  const pendingChannel = state.pendingOpenChannel;
+  if (pendingChannel !== null && pendingChannel.recordId === session.recordId) {
+    appStore.patch({ pendingOpenChannel: null });
+    if (session.channelStore.get(pendingChannel.channelId) !== null) {
+      setActiveChannel(pendingChannel.channelId);
+      return;
+    }
+  }
+  restoreLastChannel(session);
 }
 
 /** Clicking the ACTIVE server icon while in Home = go back to the server view. */
@@ -867,7 +900,25 @@ export function toggleUserSettings(): void {
 }
 
 function notificationPrefsFor(recordId: string): NotificationPrefs {
-  return connectionDirectory.get(recordId)?.notifPrefs ?? { mode: "ALL", suppressEveryoneHere: false };
+  return connectionDirectory.get(recordId)?.notifPrefs ?? DEFAULT_NOTIFICATION_PREFS;
+}
+
+/** The signed-in user's id + held role ids on THIS instance — the mention match
+ *  key for @user/@role. Resolved from the member roster (oak extracts self the
+ *  same way); before the roster lands nothing matches, oak's "safe before the
+ *  roster" rule. Works for background sessions too — each keeps its own stores. */
+function selfIdentityFor(session: ConnectionSession): MentionIdentity {
+  const username = session.username();
+  const member = session.memberStore.getSnapshot().members
+    .find((entry) => entry.username === username);
+  return { userId: member?.userId ?? null, roleIds: member?.roleIds ?? [] };
+}
+
+/** The instance's display name for toast headers (cached server name, host URL
+ *  as the offline fallback — same source the rail and Connections show). */
+function serverDisplayName(recordId: string): string {
+  const record = connectionDirectory.get(recordId);
+  return record?.cachedServerName ?? record?.hostUrl ?? "";
 }
 
 export async function updateNotificationPrefs(recordId: string, patch: Partial<NotificationPrefs>): Promise<void> {
@@ -951,6 +1002,9 @@ export function openDm(channelId: number): void {
   const session = activeSession;
   if (!session) {
     return;
+  }
+  if (appStore.getSnapshot().activeDmId !== channelId) {
+    ackActiveChannel(); // oak acks the chat being LEFT before the switch lands
   }
   appStore.patch({ dmMode: true, activeDmId: channelId, roomViewOpen: false });
   void session.loadHistory(channelId)
@@ -1149,7 +1203,9 @@ export async function joinVoice(channel: Channel): Promise<void> {
 
   try {
     await connectVoiceRoom(channel);
-    notifications.playKnock("join");
+    if (settingsStore.getSnapshot().soundEnabled) { // the app sound switch (ding + knocks)
+      notifications.playKnock("join");
+    }
   } catch (error) {
     appStore.patch({ voiceState: "failed", stateDetail: errorMessage(error) });
     await teardownVoice();
@@ -1317,7 +1373,7 @@ async function detachVoiceAfterLoss(reason: string): Promise<void> {
   }
   resetVoiceCompliance();
   appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", stateDetail: null, participants: [], viewingFeedId: null, viewingUsername: null, roomViewOpen: false });
-  if (hadSession) {
+  if (hadSession && settingsStore.getSnapshot().soundEnabled) { // the app sound switch (ding + knocks)
     notifications.playKnock("leave");
     notifications.showToast({ title: "Voice", channelName: "Connection lost", body: `You were disconnected from the room — ${reason}.` });
   }
@@ -1372,7 +1428,7 @@ export async function leaveVoice(): Promise<void> {
   }
   resetVoiceCompliance();
   appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", stateDetail: null, participants: [], viewingFeedId: null, viewingUsername: null, roomViewOpen: false });
-  if (hadSession) {
+  if (hadSession && settingsStore.getSnapshot().soundEnabled) { // the app sound switch (ding + knocks)
     notifications.playKnock("leave");
   }
 }

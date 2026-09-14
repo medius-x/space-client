@@ -18,7 +18,9 @@ export interface ClientSettings {
   /** 0 = disk cache off (memory-only); LRU cap otherwise. */
   imageCacheMegabytes: number;
   notificationsEnabled: boolean;
-  /** Mention bell; toasts stay on when off. */
+  /** The app's sound switch: the mention ding AND the voice-room join/leave
+   *  knocks ride it (one switch, explicit label — user decision 2026-09-15);
+   *  toasts stay on when off. */
   soundEnabled: boolean;
   /** Unread counters in the sidebar/Home badge. */
   badgeEnabled: boolean;

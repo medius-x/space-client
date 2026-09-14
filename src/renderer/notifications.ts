@@ -1,4 +1,5 @@
-import { decideNotification, messageHasEveryoneHere, messageMentionsUserDirect } from "../domain/logic/notification-decider";
+import { decideNotification, messageHasEveryoneHere, messageMentionsRole, messageMentionsUser, type MentionIdentity } from "../domain/logic/notification-decider";
+import { toastPreviewSegments } from "../domain/logic/toast-preview";
 import { knockSchedule } from "../domain/logic/knock-sound";
 import {
   CHIME_DURATION_SECONDS,
@@ -17,7 +18,15 @@ import type { Message } from "../types";
  * fast decay — deliberately NOT a pure sine, which read as a Windows system sound).
  */
 
-const BELL_PARTIALS = [1_318.51, 1_975.53]; // E6 + B6
+/** oak's message ding (NotificationSound.buildMessagePcm): two bell partials,
+ *  C6 + a fifth above, the upper one ~7 dB quieter, ONE shared exponential
+ *  decay — setTargetAtTime is exactly that curve (τ = 0.10 s) — 4 ms attack,
+ *  0.35 s long. Not a pure sine: that read as a Windows system sound. */
+const BELL_PARTIALS_HZ = [1046.5, 1570.9];
+const BELL_PARTIAL_GAINS = [0.32, 0.14];
+const BELL_DECAY_TAU_S = 0.10;
+const BELL_ATTACK_S = 0.004;
+const BELL_MASTER_GAIN = 0.3;
 const BELL_DURATION_S = 0.35;
 
 /** Per-server + master switches the decider needs (assembled by the runtime). */
@@ -38,6 +47,9 @@ export interface ToastPayload {
   title: string;
   channelName: string;
   body: string;
+  /** Pre-split body: mention spans tint soft-blurple (user decision); absent on
+   *  system toasts. */
+  segments?: { text: string; mention: boolean }[];
   onClick?: () => void;
   /** Draws the 2px blurple frame (oak's mention toast). */
   mention?: boolean;
@@ -45,6 +57,10 @@ export interface ToastPayload {
 
 class NotificationHub {
   private audioContext: AudioContext | null = null;
+  /** The selected output device (Settings → Audio), applied to the context sink —
+   *  oak plays every UI sound through the playout line so it follows the chosen
+   *  speaker; the WebAudio shape of that rule is AudioContext.setSinkId. */
+  private outputDeviceId: string | null = null;
   private ringbackTimer: number | null = null;
   /** The CURRENT burst's master gain — stopRingback cuts it instead of letting it play out. */
   private ringbackGain: GainNode | null = null;
@@ -71,11 +87,50 @@ class NotificationHub {
     this.toastConfig = config;
   }
 
-  /** The full decision path for one live message. forceMention = the DM rule
-   *  (every direct message counts as a mention); onClick routes the toast click. */
+  /** Re-points every UI sound at the chosen speaker; remembered for the lazy
+   *  context creation. null = the system default (the empty sink id). */
+  setOutputDevice(deviceId: string | null): void {
+    this.outputDeviceId = deviceId;
+    if (this.audioContext !== null) {
+      this.setContextSink(this.audioContext, deviceId);
+    }
+  }
+
+  /** AudioContext.setSinkId exists in Chromium but not in every TS lib —
+   *  feature-detect through a narrow structural type (RoomAudio's media-element
+   *  trick, applied to the context). */
+  private setContextSink(context: AudioContext, deviceId: string | null): void {
+    const sinkCapable = context as AudioContext & { setSinkId?: (deviceId: string) => Promise<void> };
+    if (typeof sinkCapable.setSinkId === "function") {
+      try {
+        sinkCapable.setSinkId(deviceId ?? "").catch(() => undefined);
+      } catch {
+        // a failed sink switch must never take the app down
+      }
+    }
+  }
+
+  /** Lazily creates the shared context ON THE SELECTED DEVICE and wakes it. */
+  private ensureAudioContext(): AudioContext {
+    if (this.audioContext === null) {
+      this.audioContext = new AudioContext();
+      if (this.outputDeviceId !== null) {
+        this.setContextSink(this.audioContext, this.outputDeviceId);
+      }
+    }
+    const context = this.audioContext;
+    if (context.state === "suspended") {
+      void context.resume();
+    }
+    return context;
+  }
+
+  /** The full decision path for one live message. self = the signed-in user's
+   *  id/roles on the sending instance (mention match key). forceMention = the DM
+   *  rule (every direct message counts as a mention); onClick routes the toast click. */
   handleMessage(
     message: Message,
-    ownUsername: string,
+    self: MentionIdentity,
     channelName: string,
     windowFocused: boolean,
     inOpenChannel: boolean,
@@ -83,7 +138,14 @@ class NotificationHub {
     onClick?: () => void,
     forceMention = false,
   ): void {
-    const effectiveMention = forceMention || messageMentionsUserDirect(message.mentions, ownUsername);
+    // ONE mention formula shared by the decision AND the toast frame: a direct
+    // @user, a held @role, or an UNSUPPRESSED @everyone/@here (live report: the
+    // sound fired for @everyone while the frame stayed neutral — the local flag
+    // missed the everyone branch the decider adds internally).
+    const effectiveMention = forceMention
+      || messageMentionsUser(message.mentions, self.userId)
+      || messageMentionsRole(message.mentions, self.roleIds)
+      || (messageHasEveryoneHere(message.mentions) && !prefs.suppressEveryoneHere);
     const action = decideNotification({
       mention: effectiveMention,
       everyoneHere: messageHasEveryoneHere(message.mentions),
@@ -97,12 +159,22 @@ class NotificationHub {
     if (action === "none") {
       return;
     }
+    // Tint ONLY spans that ping the recipient — my @user, a role I hold, an
+    // unsuppressed @everyone (live report: every valid mention lit up grey-equal).
+    const segments = toastPreviewSegments(message.content, message.mentions, {
+      userId: self.userId,
+      roleIds: self.roleIds,
+      suppressEveryoneHere: prefs.suppressEveryoneHere,
+    });
     this.showToast({
       title: message.authorUsername,
       channelName,
-      body: (message.content?.length ?? 0) > 0 ? message.content! : "(attachment)",
+      body: segments.length > 0 ? segments.map((segment) => segment.text).join("") : "(attachment)",
+      segments: segments.length > 0 ? segments : undefined,
       onClick,
-      mention: action === "toast-sound" && effectiveMention,
+      // The blurple frame follows the MENTION, not the sound decision (oak passes
+      // the mention flag into the toast; a mention with sound off still frames).
+      mention: effectiveMention,
     });
     if (action === "toast-sound") {
       this.playBell();
@@ -126,6 +198,7 @@ class NotificationHub {
       title: payload.title,
       channelName: payload.channelName,
       body: payload.body,
+      segments: payload.segments, // the tinted spans (dropped here once — everything rendered grey)
       mention: payload.mention === true,
       dismissSeconds: this.toastConfig.dismissSeconds(),
       maxToasts: this.toastConfig.maxToasts(),
@@ -136,11 +209,7 @@ class NotificationHub {
    *  τ=20 ms decay — dry thumps, not beeps. Join goes up, leave goes down. */
   playKnock(direction: "join" | "leave"): void {
     try {
-      this.audioContext ??= new AudioContext();
-      const context = this.audioContext;
-      if (context.state === "suspended") {
-        void context.resume();
-      }
+      const context = this.ensureAudioContext();
       const now = context.currentTime;
       const master = context.createGain();
       master.gain.value = 0.5;
@@ -219,11 +288,7 @@ class NotificationHub {
   /** Callee's chime: ONE long fading bell per incoming call (not a repeating ring). */
   playChime(): void {
     try {
-      this.audioContext ??= new AudioContext();
-      const context = this.audioContext;
-      if (context.state === "suspended") {
-        void context.resume();
-      }
+      const context = this.ensureAudioContext();
       const now = context.currentTime;
       const master = context.createGain();
       master.gain.value = 0.12;
@@ -246,30 +311,28 @@ class NotificationHub {
     }
   }
 
-  /** Two-partial bell: quick attack, exponential decay — a "ding", not a beep. */
+  /** The mention/DM ding — oak's bell recipe (see BELL_* constants). */
   playBell(): void {
     try {
-      this.audioContext ??= new AudioContext();
-      const context = this.audioContext;
-      if (context.state === "suspended") {
-        void context.resume();
-      }
+      const context = this.ensureAudioContext();
       const now = context.currentTime;
       const master = context.createGain();
-      master.gain.value = 0.12;
+      master.gain.value = BELL_MASTER_GAIN;
       master.connect(context.destination);
-      for (const frequency of BELL_PARTIALS) {
+      BELL_PARTIALS_HZ.forEach((frequency, index) => {
+        const peak = BELL_PARTIAL_GAINS[index] ?? 1;
         const oscillator = context.createOscillator();
         oscillator.frequency.value = frequency;
         const envelope = context.createGain();
         envelope.gain.setValueAtTime(0, now);
-        envelope.gain.linearRampToValueAtTime(1, now + 0.003);
-        envelope.gain.exponentialRampToValueAtTime(0.001, now + BELL_DURATION_S);
+        envelope.gain.linearRampToValueAtTime(peak, now + BELL_ATTACK_S);
+        // setTargetAtTime IS the exponential decay e^(-t/τ) — oak's shared envelope
+        envelope.gain.setTargetAtTime(0, now + BELL_ATTACK_S, BELL_DECAY_TAU_S);
         oscillator.connect(envelope);
         envelope.connect(master);
         oscillator.start(now);
         oscillator.stop(now + BELL_DURATION_S);
-      }
+      });
     } catch {
       // audio must never take the app down
     }

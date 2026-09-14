@@ -183,6 +183,86 @@ mention-ping (живой репорт); inOpenChannel серверных кан�
 (own-сообщение не бывает NEW — указатель lastRead регулярно стоит под своим
 же сообщением после ack-на-отправке). Гейт 231/231.
 
+**Аудит-раунд 7 (уведомления, 2026-09-13) — oak-парити:** **ROLE-упоминания** —
+полные mention'ы (@роль, которую держишь = красный бейдж + дзинь + blurple,
+oak mentionsMe); матч по ID: `MentionIdentity {userId, roleIds}` собирается из
+member-ростра СВОЕЙ сессии (`selfIdentityFor`, фон тоже), USER тоже по id
+(rename не ломает), до загрузки ростера ничего не матчится (oak «safe before
+the roster»); сигнатуры `ReadStateStore.bumpLive`/`NotificationHub.
+handleMessage` принимают identity вместо username-строки. **Тосты:**
+mention-рамка следует за MENTION, а не за решением звука (mention при
+выключенном звуке — blurple, oak передаёт флаг отдельно); заголовки oak-формата
+(`toastServerHeader`/`dmToastHeader` в `logic/toast-preview.ts`): серверный
+«Server  #channel» (два пробела), DM-группа — имя, 1:1 — БЕЗ заголовка (автор
+и есть пир; раньше был дубль), чужой инстанс тегается именем сервера, пустой
+header не рендерится; превью = `toastPreview` (strip @токенов, схлопывание
+пробелов, 80 символов + «…» — oak previewText; пустой → «(attachment)», наше);
+**TTL карточки пазится ховером** с дозапуском на ОСТАТОК (oak timer.pause;
+курсор ушёл из окна целиком — resume всех пауз, mouseleave через пустоту не
+стреляет); jump за кап 1000 → тост «Message is too far back to jump to» (oak).
+**Фон:** дефолт per-server режима = MENTIONS (юзер-решение, oak: ALL — спам
+фоновых серверных тостов; единая `DEFAULT_NOTIFICATION_PREFS` в
+connection-record, модалка читает её); клик фонового СЕРВЕРНОГО тоста работает:
+`pendingOpenChannel` (симметрично pendingOpenDm: свитч+открытие после старта,
+переживает teardown/логин-модал, удалённый канал → фолбэк restoreLastChannel;
+`openChannelOnInstance`; оба pendings потребляет общий `consumePendingOpen`).
+**Звук:** стук входа/выхода под гейтом soundEnabled (oak гейтит каждый); весь
+UI-звук (динь/стук/рингбек/чайм) следует ВЫБРАННОМУ СПИКЕРУ —
+`NotificationHub.setOutputDevice` → AudioContext.setSinkId (feature-detect
+через структурный тип — в TS-lib метода нет; вызовы: Settings→Audio Apply +
+openSession, рядом с roomAudio.setOutputDevice); дзинь перетембрен под oak
+`buildMessagePcm`: парциали 1046.5+1570.9 Гц (C6+квинта), амплитуды 0.32/0.14,
+атака 4 мс, общий экспо-декей τ=0.10 с (setTargetAtTime — точная кривая), 0.35
+с. **Read-state:** badgeEnabled больше НЕ глушит счётчики (bumpLive ходит
+всегда; рендер-гейт и так во всех бейджах — повторное включение сразу
+показывает накопленное, oak гейтит только отрисовку); ack при СМЕНЕ открытого
+чата — `ackActiveChannel()` ДО patch в setActiveChannel/openDm (страховка от
+бампа в полёте, oak switch-away). Гейт 237/237.
+
+**Смоук-фиксы раунда 7 (живой смоук юзера, 2026-09-15):** (1) тост-окно стало
+ЧЁРНЫМ непрозрачным прямоугольником — при чистовой перезаписи ToastStackScreen
+потерялся ЭФФЕКТ ПРОЗРАЧНОСТИ (documentElement/body → transparent; global.css
+красит body в --sp-darkest ТОЛЬКО для главного окна); восстановлен + CSS-страховка
+`body:has(.toast-stack) { background: transparent }`; в тост-окно добавлена
+диагностика `[toast] show/card N clicked/hide-all clicked` в space.log. (2)
+@everyone/@here: звук был, blurple-рамки нет — локальный effectiveMention в
+handleMessage не включал everyone-ветку (её досчитывал только декайдер); теперь
+ОДНА формула (user/role/DM/unsuppressed-everyone) кормит и решение, и рамку.
+(3) клик по СЕРВЕРНОМУ тосту активного инстанса не открывал канал (onClick
+undefined): теперь `setActiveChannel(message.channelId)` (гасит dmMode из Home).
+(4) превью тостов больше НЕ срезает @ники (юзер-решение: видеть, КОГО пинговали;
+отступление от oak previewText) — только схлопывание пробелов + 80 символов.
+(5) СТУК входа/выхода голосовых комнат переехал под ОТДЕЛЬНЫЙ тоггл
+`voiceSoundsEnabled` (дефолт true) в Settings → Audio → Sounds (юзер-решение:
+связка с «Play mention sound» в Notifications непрозрачна; oak гейтит одним
+soundEnabled). (6) @автодополнение композера расширено до oak-набора:
+@everyone/@here + MENTIONABLE-роли (memberStore.roles, kind CUSTOM) + юзеры,
+одним плоским списком (broad → role → user, кап 10; роли/пинги — глиф
+mdi-account-multiple в слоте аватара). Гейт 236/237.
+
+**Смоук-фиксы раунда 7, итерация 2 (2026-09-15):** (1) мышиный выбор в @-попапе
+ВОЗВРАЩАЕТ ФОКУС композеру с кареткой ПОСЛЕ вставки (`composerInputRef` +
+requestAnimationFrame — рендер должен лечь раньше setSelectionRange; live
+report: после клика по варианту приходилось тыкать в поле). (2) Превью тоста
+СЕГМЕНТИРОВАНО по mention-офсетам (`toastPreviewSegments` в
+logic/toast-preview.ts): ВАЛИДНЫЕ пинги рендерятся `.toast-mention`
+(soft-blurple + лёгкий фон, как в чате), прочие @-слова — обычным текстом;
+бюджет 80 общий, «…» — отдельный plain-сегмент; сегменты едут в payload
+необязательным полем (системные тосты — без), ToastStackScreen рендерит
+сегментами при наличии. (3) Откат отдельного voiceSoundsEnabled-тоггла
+(юзер-решение): стук снова под ЕДИНЫМ звуковым выключателем, подпись сделана
+явной — «Play application sounds» + hint «динь упоминаний И стуки входа/выхода
+голосовой комнаты; тосты остаются». Гейт 240/240.
+
+**Итерация 3 (2026-09-15, live-репорты):** (а) segments не доезжали до
+тост-окна — showToast строит ДРУГОЙ объект для IPC и поле не пробрасывалось
+(все спаны серые); (б) подсветка сужена до ПИНГОВ ПОЛУЧАТЕЛЯ (юзер-решение:
+светится только МОЙ ник): `toastPreviewSegments(content, mentions, self)` —
+флаг спана = USER-by-id / ROLE-held / unsuppressed @everyone-@here; без
+identity (ростер не загружен) не светится ничего; ГРАБЛЯ IPC: каждое новое
+поле payload обязано пробрасываться в ручном объекте `toastBridge.show({...})`
+в showToast — типизация ToastCardPayload не ловит пропуск. Гейт 242/242.
+
 ## M6 (закрыт, 088df95): социальный слой
 
 M5 закрыт и закоммичен (`b14b2a6`). M6: **друзья** —
@@ -583,7 +663,13 @@ handle), классификация share-аудио по mindex, два про�
   (2026-09-13): Home-бейдж считает входящие pending-запросы друзей вместе с
   DM-unread (oak: только DM); confirm-модали на Remove
   friend/Block (oak бьёт из меню сразу); OS-нотификации вовсе УДАЛЕНЫ — канал
-  «поверх всего» один, наше always-on-top окно тостов (2026-09-13).
+  «поверх всего» один, наше always-on-top окно тостов (2026-09-13). Аудит-раунд
+  7 (2026-09-13): дефолт per-server notification-режима — Mentions only (oak:
+  All messages) — юзер-решение против спама фоновых серверных тостов, юзер
+  включает ALL осознанно; не-mention в ФОКУСНОМ окне не тостит (oak показывает
+  тихую карточку на не-открытый канал) — юзер-решение «не дёргать
+  сфокусированное окно»; фоновые сессии применяют suppressEveryoneHere к
+  красному бейджу (oak в фоне prefs не применяет — ограничение их фона).
 
 **Окно тостов поверх всего (oak NotificationToast, 2026-09-13):** тосты
 переехали из DOM главного окна в ОТДЕЛЬНОЕ always-on-top окно (юзер-решение:

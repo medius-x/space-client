@@ -1,5 +1,5 @@
 import { Emitter } from "../lib/store";
-import { messageHasEveryoneHere, messageMentionsUserDirect } from "../logic/notification-decider";
+import { messageHasEveryoneHere, messageMentionsRole, messageMentionsUser, type MentionIdentity } from "../logic/notification-decider";
 import type { ChannelReadState, Message } from "../../types";
 
 export interface UnreadState {
@@ -36,18 +36,22 @@ export class ReadStateStore extends Emitter {
   }
 
   /** A live message landed; returns true when the receiving channel's counters moved.
+   *  self = the signed-in user's id/roles on this instance (mention match key —
+   *  @user by id, @role by held ids; null identity before the roster lands
+   *  matches nothing, oak's "safe before the roster" rule).
    *  forceMention = the DM rule: every direct message counts as a mention (oak parity).
    *  everyoneCounts = false implements suppressEveryoneHere (the message still
    *  counts as unread, just never red).
    *  A channel with no seeded row (a DM created after the read-states snapshot)
    *  seeds itself from zero — the first unread message must still count. */
-  bumpLive(message: Message, ownUsername: string, channelOpen: boolean, windowFocused: boolean, forceMention = false, everyoneCounts = true): boolean {
+  bumpLive(message: Message, self: MentionIdentity, channelOpen: boolean, windowFocused: boolean, forceMention = false, everyoneCounts = true): boolean {
     if (channelOpen && windowFocused) {
       return false; // the user is watching — not unread
     }
     const state = this.states.get(message.channelId) ?? { unreadCount: 0, mentionCount: 0, lastReadMessageId: null };
     const mention = forceMention
-      || messageMentionsUserDirect(message.mentions, ownUsername)
+      || messageMentionsUser(message.mentions, self.userId)
+      || messageMentionsRole(message.mentions, self.roleIds)
       || (everyoneCounts && messageHasEveryoneHere(message.mentions));
     this.states.set(message.channelId, {
       ...state,

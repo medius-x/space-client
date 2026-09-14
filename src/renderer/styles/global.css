@@ -62,6 +62,14 @@ body {
   overflow: hidden;
 }
 
+/* The toast overlay window (route #toasts) must stay TRANSPARENT — the dark
+   body background above belongs to the main window only. CSS-side guard next
+   to the runtime inline reset (a lost effect once painted the whole overlay
+   black, live report). */
+body:has(.toast-stack) {
+  background: transparent;
+}
+
 #app { height: 100vh; display: flex; flex-direction: column; }
 
 /* ===== Layout shells ===== */
@@ -1328,6 +1336,15 @@ button.wide-add { width: 100%; }
   animation: toast-in 0.15s ease-out;
 }
 .toast-card.mention { border-width: 2px; border-color: var(--sp-accent); }
+/* A VALID ping inside the preview tints like chat mentions; plain @words stay
+   unlit (user decision). */
+.toast-body .toast-mention {
+  color: var(--sp-mention-text);
+  background: rgba(88, 101, 242, 0.2);
+  border-radius: 3px;
+  padding: 0 1px;
+  font-weight: 600;
+}
 .toast-hide-all {
   background: var(--sp-darkest);
   border: 1px solid var(--sp-control);
@@ -2110,6 +2127,16 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
   padding: 4px 8px;
   border-radius: 6px;
   cursor: pointer;
+  color: var(--sp-text-muted);
+}
+
+/* The role/@everyone slot occupies the avatar's 20px square (a group glyph). */
+.mention-row-glyph {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--sp-text-muted);
 }
 .mention-row:hover, .mention-row.chosen { background: var(--sp-selected); color: var(--sp-text); }

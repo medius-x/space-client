@@ -30,11 +30,12 @@ export interface ConnectionRecord {
   /** username → gain multiplier (1.0 = 100%). */
   voiceVolumes: Record<string, number>;
   shareVolumes: Record<string, number>;
-  /** Per-server notification overrides; records written before M7 default to ALL. */
+  /** Per-server notification overrides; the default is MENTIONS (user decision,
+   *  audit round 7 — oak ships ALL, which spams background-instance toasts). */
   notifPrefs: NotificationPrefs;
 }
 
-export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = { mode: "ALL", suppressEveryoneHere: false };
+export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = { mode: "MENTIONS", suppressEveryoneHere: false };
 
 export interface NewConnection {
   hostUrl: string;

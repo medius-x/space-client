@@ -11,10 +11,12 @@ import {
   toggleUserSettings,
   updateNotificationPrefs,
 } from "../runtime";
+import { notifications } from "../notifications";
 import { ApiError } from "../../core/rest";
 import type { ClientSettings } from "../../domain/stores/SettingsStore";
 import { advertisedAddress, DISK_CACHE_CHOICES, diskCacheLabel } from "../../domain/logic/settings-format";
 import type { ConnectionSession } from "../../domain/session/connection-session";
+import { DEFAULT_NOTIFICATION_PREFS } from "../../domain/session/connection-record";
 import { CHANGE_NICKNAME_PERMISSION, type NotificationPrefs } from "../../types";
 import { Avatar } from "./Avatar";
 import { AvatarEditor, userAvatarApi } from "./ProfileModal";
@@ -44,11 +46,6 @@ const SECTIONS: { key: Section; label: string }[] = [
 
 /** The sections that stage their edits behind the window-level Apply button. */
 const STAGED_SECTIONS: ReadonlySet<Section> = new Set(["audio", "video", "appearance", "notifications"]);
-
-/** A referentially STABLE never-configured default (a literal in a selector
- *  re-creates itself on every emit and rips useSyncExternalStore into a
- *  re-render loop — the M6 lesson). */
-const DEFAULT_NOTIF_PREFS: NotificationPrefs = { mode: "ALL", suppressEveryoneHere: false };
 
 /** oak's pane heading — the same chrome Server Settings sections carry. */
 function SectionHeading({ title }: { title: string }): React.JSX.Element {
@@ -136,7 +133,7 @@ function useStagedSettings(session: ConnectionSession): StagedSettings {
   const [notifDraft, setNotifDraft] = useState<NotificationPrefs | null>(null);
   const stored = useStore(settingsStore, (snapshot) => snapshot);
   const storedNotif = useStore(connectionDirectory, (records) =>
-    records.find((entry) => entry.id === session.recordId)?.notifPrefs ?? DEFAULT_NOTIF_PREFS);
+    records.find((entry) => entry.id === session.recordId)?.notifPrefs ?? DEFAULT_NOTIFICATION_PREFS);
 
   const value = <K extends keyof ClientSettings>(key: K): ClientSettings[K] =>
     (key in draft ? draft[key] : stored[key]) as ClientSettings[K];
@@ -161,6 +158,7 @@ function useStagedSettings(session: ConnectionSession): StagedSettings {
       // speaker re-points the playout graph now; the cache budget trims/wipes now.
       if (applied.speakerDeviceId !== undefined) {
         roomAudio.setOutputDevice(applied.speakerDeviceId);
+        notifications.setOutputDevice(applied.speakerDeviceId); // UI sounds follow the chosen speaker (oak's playout line)
       }
       if (applied.imageCacheMegabytes !== undefined) {
         session.attachmentCache.setDiskBudget(applied.imageCacheMegabytes * 1024 * 1024); // 0 purges the disk layer
@@ -485,7 +483,7 @@ function NotificationsSection({ session, staged }: {
 }): React.JSX.Element {
   const record = useStore(connectionDirectory, (records) =>
     records.find((entry) => entry.id === session.recordId) ?? null);
-  const prefs = staged.notif ?? record?.notifPrefs ?? DEFAULT_NOTIF_PREFS;
+  const prefs = staged.notif ?? record?.notifPrefs ?? DEFAULT_NOTIFICATION_PREFS;
 
   return (
     <div>
@@ -498,8 +496,12 @@ function NotificationsSection({ session, staged }: {
       <label className="settings-check">
         <input type="checkbox" checked={staged.value("soundEnabled")}
           onChange={(event) => staged.set("soundEnabled", event.target.checked)} />
-        <span>Play mention sound</span>
+        <span>Play application sounds</span>
       </label>
+      <div className="settings-hint">
+        Every sound the app makes: the mention/notification ding and the short knocks when
+        someone joins or leaves a voice room. Toasts stay visible when this is off.
+      </div>
       <label className="settings-check">
         <input type="checkbox" checked={staged.value("badgeEnabled")}
           onChange={(event) => staged.set("badgeEnabled", event.target.checked)} />

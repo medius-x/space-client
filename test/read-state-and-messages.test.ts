@@ -21,6 +21,9 @@ function message(id: number, channelId = 1, mentions: Message["mentions"] = []):
 }
 
 describe("ReadStateStore", () => {
+  // Self identity: userId 2 matches the USER mention below; role 11 feeds the ROLE case.
+  const SELF = { userId: 2, roleIds: [11] };
+
   it("seeds from the server snapshot, bumps on live, acks to zero", () => {
     const store = new ReadStateStore();
     store.applySnapshot([
@@ -29,17 +32,17 @@ describe("ReadStateStore", () => {
     expect(store.get(1)).toEqual({ unreadCount: 5, mentionCount: 2, lastReadMessageId: 10 });
 
     // Watching the channel in a focused window — nothing counts.
-    expect(store.bumpLive(message(16, 1), "alice", true, true)).toBe(false);
+    expect(store.bumpLive(message(16, 1), SELF, true, true)).toBe(false);
     expect(store.get(1).unreadCount).toBe(5);
 
     // Channel open but window unfocused (reading something else) — still unread.
-    expect(store.bumpLive(message(17, 1), "alice", true, false)).toBe(true);
+    expect(store.bumpLive(message(17, 1), SELF, true, false)).toBe(true);
     expect(store.get(1).unreadCount).toBe(6);
 
     // A mention bumps the red counter too.
     store.bumpLive(
       message(18, 1, [{ type: "USER", id: 2, name: "alice", start: 0, end: 6 }]),
-      "alice",
+      SELF,
       false,
       false,
     );
@@ -51,8 +54,19 @@ describe("ReadStateStore", () => {
 
     // A channel never seeded (a DM created after the read-states snapshot) seeds
     // itself from zero — the first unread message still counts (live M6 smoke).
-    expect(store.bumpLive(message(50, 9), "alice", false, false)).toBe(true);
+    expect(store.bumpLive(message(50, 9), SELF, false, false)).toBe(true);
     expect(store.get(9)).toEqual({ unreadCount: 1, mentionCount: 0, lastReadMessageId: null });
+  });
+
+  it("an @role the user holds bumps the red counter (oak parity)", () => {
+    const store = new ReadStateStore();
+    store.applySnapshot([{ channelId: 1, unreadCount: 0, mentionCount: 0, lastReadMessageId: 3, lastMessageId: 3 }]);
+    store.bumpLive(message(4, 1, [{ type: "ROLE", id: 11, name: "admin", start: 0, end: 6 }]), SELF, false, false);
+    expect(store.get(1).mentionCount).toBe(1);
+    // A role the user does NOT hold stays grey.
+    store.bumpLive(message(5, 1, [{ type: "ROLE", id: 99, name: "mods", start: 0, end: 5 }]), SELF, false, false);
+    expect(store.get(1).mentionCount).toBe(1);
+    expect(store.get(1).unreadCount).toBe(2);
   });
 
   it("emits only on real changes", () => {
@@ -67,11 +81,11 @@ describe("ReadStateStore", () => {
   it("DM rule: forceMention bumps the red counter even without an @ (mention-equivalent)", () => {
     const store = new ReadStateStore();
     store.applySnapshot([{ channelId: 7, unreadCount: 0, mentionCount: 0, lastReadMessageId: 3, lastMessageId: 3 }]);
-    store.bumpLive(message(4, 7), "alice", false, false, true); // DM, no mention inside
+    store.bumpLive(message(4, 7), SELF, false, false, true); // DM, no mention inside
     expect(store.get(7)).toEqual({ unreadCount: 1, mentionCount: 1, lastReadMessageId: 3 });
     // Same message in a normal channel stays grey (no @, no force flag).
     store.applySnapshot([{ channelId: 8, unreadCount: 0, mentionCount: 0, lastReadMessageId: 3, lastMessageId: 3 }]);
-    store.bumpLive(message(4, 8), "alice", false, false, false);
+    store.bumpLive(message(4, 8), SELF, false, false, false);
     expect(store.get(8).mentionCount).toBe(0);
   });
 });
