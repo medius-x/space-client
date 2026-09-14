@@ -540,6 +540,14 @@ ipcMain.on("space-toast:clicked", (_event, id: unknown) => {
   }
 });
 
+// The incoming-call card's Accept/Decline — routed to the MAIN window renderer,
+// where the runtime answers the call machine (same relay shape as card clicks).
+ipcMain.on("space-toast:callAction", (_event, action: unknown) => {
+  if (action === "accept" || action === "decline") {
+    mainWindowRef?.webContents.send("toast:callAction", action);
+  }
+});
+
 async function createWindow(): Promise<void> {
   const mainWindow = new BrowserWindow({
     width: 1080,

@@ -918,6 +918,13 @@ button.wide-add { width: 100%; }
 }
 .emoji-choice:hover { background: var(--sp-selected); }
 
+/* oak's edit hint (applyEditHint): the keys line under the inline editor. */
+.inline-editor-hint {
+  color: var(--sp-text-dim);
+  font-size: 11px;
+  margin-top: 3px;
+}
+
 .inline-editor {
   width: 100%;
   background: var(--sp-input);
@@ -1059,8 +1066,10 @@ button.wide-add { width: 100%; }
 
 .attachment-block { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
 .mosaic-row { display: flex; }
-.mosaic-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+/* oak's TILE_GAP = 4 (a straight port — we had 8). */
+.mosaic-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
 .mosaic-tile {
+  position: relative; /* the edit-mode "×" anchors to the corner */
   border-radius: 8px;
   background: #000;
   overflow: hidden;
@@ -1068,7 +1077,32 @@ button.wide-add { width: 100%; }
   flex-shrink: 0;
 }
 .mosaic-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* The SINGLE image's box already HUGS its aspect ratio (singleTileBox) — no
+   letterbox bars inside (user decision; oak keeps the square bounding box). */
 .mosaic-loading { width: 100%; height: 100%; background: var(--sp-control); }
+/* oak's edit-mode tile removal: the tile dims when marked; the 16×16 "×" sits
+   in the top-right corner and does NOT open the lightbox. */
+.mosaic-tile.removal-marked { opacity: 0.4; }
+.mosaic-tile .attachment-remove-button {
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+.mosaic-tile .attachment-remove-button:hover { background: var(--sp-danger, #da373c); }
+.mosaic-tile .attachment-remove-button.marked { background: var(--sp-accent); }
 
 .file-name {
   color: var(--sp-text-muted);
@@ -1091,8 +1125,11 @@ button.wide-add { width: 100%; }
   text-overflow: ellipsis;
 }
 
+/* oak's video card: the preview keeps its OWN aspect ratio, height capped at
+   320 (portrait grabs don't dominate the row), width never upscaled past the
+   row (fitWidth = min(usable, natural)). */
 .video-card {
-  width: 320px;
+  max-width: 100%;
   background: var(--sp-surface);
   border: 1px solid var(--sp-control);
   border-radius: 8px;
@@ -1100,8 +1137,12 @@ button.wide-add { width: 100%; }
   cursor: pointer;
   align-self: flex-start;
 }
-.video-thumb { position: relative; border-radius: 6px; overflow: hidden; background: #000; aspect-ratio: 16 / 9; }
-.video-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* The thumb box hugs the frame's own aspect ratio — NO minimum width (a min
+   lefted a black bar on the right of narrow vertical videos, live report). */
+.video-thumb { position: relative; border-radius: 6px; overflow: hidden; background: #000; width: fit-content; }
+.video-thumb img { display: block; max-height: 320px; max-width: 100%; width: auto; height: auto; }
+/* The no-preview fallback keeps a standard 16:9 plate. */
+.video-thumb-fallback { width: 320px; height: 180px; }
 .video-thumb-glyph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 32px; }
 .video-play-overlay {
   position: absolute;
@@ -1179,8 +1220,26 @@ button.wide-add { width: 100%; }
   justify-content: center;
   cursor: grab;
 }
-.lightbox-image { max-width: 90vw; max-height: 85vh; user-select: none; }
+/* The image is positioned/sized by the viewer transform math (image-viewer-transform):
+   absolute offsets + explicit drawn width/height — no CSS max-rules fighting it. */
+.lightbox-image { user-select: none; }
 .lightbox-status { color: var(--sp-text-muted); font-size: 16px; }
+/* oak's Details card: Name / Type / Dimensions / Size — anchored to the Details
+   button (inline left/bottom), NOT pinned to the viewer corner. */
+.lightbox-details {
+  position: absolute;
+  background: rgba(30, 31, 34, 0.92);
+  border: 1px solid var(--sp-control);
+  border-radius: 8px;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--sp-text-muted);
+  pointer-events: none;
+}
+.lightbox-details span { color: var(--sp-text-dim); display: inline-block; min-width: 80px; }
 .lightbox-toolbar {
   position: absolute;
   bottom: 16px;
@@ -1190,7 +1249,22 @@ button.wide-add { width: 100%; }
   gap: 8px;
   align-items: center;
 }
-.lightbox-counter { color: var(--sp-text-muted); font-size: 13px; }
+/* Contrast against a LIGHT image: every control sits on a translucent grey
+   pill (a bare white glyph vanished on bright pictures, live report). */
+.lightbox-toolbar .ghost {
+  background: rgba(128, 128, 128, 0.45);
+  color: #fff;
+  border-radius: 6px;
+}
+.lightbox-toolbar .ghost:hover:not(:disabled) { background: rgba(128, 128, 128, 0.7); }
+.lightbox-toolbar .ghost:disabled { opacity: 0.45; }
+.lightbox-counter {
+  color: #fff;
+  font-size: 13px;
+  background: rgba(128, 128, 128, 0.45);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
 
 .video-modal {
   position: fixed;
@@ -1488,92 +1562,67 @@ button.wide-add { width: 100%; }
 .popout-waiting { color: var(--sp-text-dim); font-size: 14px; }
 
 /* ===== M5: 1:1 P2P calls ===== */
+/* Round 8 (oak parity): a call does NOT take the chat pane — it renders through
+   the same room view as a voice room (VoiceRoom.tsx, .tile styles above) with
+   the voice bar in call mode. The only call-specific chrome left is the sticky
+   INCOMING-CALL card in the always-on-top toast window (oak's CallOverlay). */
 
-.call-pane {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  background: var(--sp-darker);
-}
-.call-status {
-  padding: 8px 16px;
-  font-size: 13px;
-  color: var(--sp-text-muted);
-  background: var(--sp-surface);
-  flex-shrink: 0;
-}
-.call-status.reconnecting { color: var(--sp-yellow); }
-
-.call-tiles {
-  flex: 1;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  padding: 16px;
-  min-height: 0;
-}
-/* oak's ParticipantTile: constant 2px #4e5058 frame — speaking only recolors it. */
-.call-tile {
-  background: var(--sp-surface);
-  border: 2px solid var(--sp-control);
+.toast-call-card {
+  width: 300px;
+  box-sizing: border-box;
+  background: #1e1f22;
+  border: 1px solid #4e5058;
   border-radius: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 8px;
-  min-height: 0;
-}
-.call-tile.self { border-color: var(--sp-control); }
-.call-tile-head { display: flex; align-items: center; gap: 8px; }
-.call-tile-name { font-weight: 600; }
-.call-tile-video {
-  flex: 1;
-  min-height: 0;
-  width: 100%;
-  border-radius: 6px;
-  background: var(--sp-darkest);
-  object-fit: contain;
-}
-.call-tile-placeholder {
-  flex: 1;
-  min-height: 0;
-  border-radius: 6px;
-  background: var(--sp-darkest);
+  padding: 12px;
   display: flex;
   align-items: center;
-  justify-content: center;
-  font-size: 56px;
-  font-weight: 700;
-  color: var(--sp-text-dim);
-}
-
-.call-peer-volumes {
-  display: flex;
-  gap: 24px;
-  padding: 0 16px 8px;
-}
-.call-peer-volumes .tile-controls { flex: 1; }
-
-.call-card {
-  position: fixed;
-  right: 16px;
-  bottom: 60px;
-  z-index: 55;
-  width: 280px;
-  background: #2b2d31;
-  border: 1px solid var(--sp-control);
-  border-radius: 8px;
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  gap: 12px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
 }
-.call-card-title { color: var(--sp-text-dim); font-size: 11px; }
-.call-card-peer { font-weight: 700; font-size: 15px; }
-.call-card-actions { display: flex; gap: 8px; margin-top: 4px; }
-.call-card-actions button { flex: 1; }
+.toast-call-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.toast-call-avatar-initial {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 20px;
+  color: #fff;
+}
+.toast-call-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.toast-call-status { color: #80848e; font-size: 11px; }
+.toast-call-name { color: #f2f3f5; font-size: 14px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toast-call-server { color: #80848e; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toast-call-actions { display: flex; gap: 10px; }
+/* oak's .call-accept-button / .call-decline-button: green/red round icon buttons. */
+.toast-call-accept,
+.toast-call-decline {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #fff;
+  font-size: 18px;
+}
+.toast-call-accept { background: #23a55a; }
+.toast-call-accept:hover { background: #1d944d; }
+.toast-call-decline { background: #da373c; }
+.toast-call-decline:hover { background: #a12828; }
 
 /* ===== Social layer (M6): home rail, DM list, friends pane, hoisted roster ===== */
 
@@ -2362,7 +2411,11 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 37px;
+  /* FIXED height — the 30×30 back button must not stretch the header: its
+     divider stays twinned with the sidebar-server-header/chat-header line
+     (live report: the button inflated it to 46px and dropped the divider). */
+  height: 37px;
+  box-sizing: border-box;
   padding: 8px 12px;
   border-bottom: 1px solid var(--sp-control);
   flex-shrink: 0;

@@ -48,11 +48,36 @@ export interface ToastCardPayload {
   maxToasts: number;
 }
 
+/** The sticky INCOMING-CALL card (oak's CallOverlay, living in the toast
+ *  window): the caller's avatar, the server the call comes from, and the
+ *  status that flips to "Connecting…" after Accept. No TTL — the call machine
+ *  tears it down. */
+export interface ToastCallCardPayload {
+  peer: string;
+  serverName: string;
+  /** Presigned avatar URL (auth-free) — null renders the palette-initial fallback. */
+  avatarUrl: string | null;
+  /** The palette color for the initial fallback (the palette lives in domain). */
+  avatarColor: string;
+  status: "Incoming call" | "Connecting…";
+}
+
+/** Everything the MAIN window can push into the toast window. The call card
+ *  outranks message toasts: while it is up, the stack drops its cards and
+ *  refuses new ones (user decision — a ringing call is the louder event). */
+export type ToastShowPayload =
+  | { kind: "message"; card: ToastCardPayload }
+  | { kind: "call"; card: ToastCallCardPayload }
+  | { kind: "call-status"; status: ToastCallCardPayload["status"] }
+  | { kind: "call-end" };
+
 export interface ToastBridge {
-  /** MAIN window → the toast window: show one card. */
-  show(payload: ToastCardPayload): void;
+  /** MAIN window → the toast window: show a card / drive the call card. */
+  show(payload: ToastShowPayload): void;
   /** TOAST window → main: a card was clicked (main relays to the main window). */
   clicked(id: number): void;
+  /** TOAST window → main: the call card's Accept/Decline was pressed. */
+  callAction(action: "accept" | "decline"): void;
   /** TOAST window → main: the cursor is (not) over actual content. */
   hover(interactive: boolean): void;
   /** TOAST window → main: the stack's rendered height (window resize). */
@@ -62,9 +87,11 @@ export interface ToastBridge {
   /** TOAST window → main: the IPC subscription is up — flush buffered cards. */
   ready(): void;
   /** The toast window's card sink. */
-  onShow(callback: (payload: ToastCardPayload) => void): void;
+  onShow(callback: (payload: ToastShowPayload) => void): void;
   /** The main window's card-click sink (runs the stored onClick callback). */
   onClicked(callback: (id: number) => void): void;
+  /** The main window's call-action sink (Accept/Decline run in the runtime). */
+  onCallAction(callback: (action: "accept" | "decline") => void): void;
 }
 
 declare global {

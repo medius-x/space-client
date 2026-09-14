@@ -339,8 +339,22 @@ export class ConnectionSession {
     this.messageStore.applyLive(created);
   }
 
-  async editMessage(channelId: number, messageId: number, content: string): Promise<void> {
-    const edited = await this.rest.editMessage(channelId, messageId, { content });
+  /** An edit may also drop attachments: remainingAttachments ABSENT = a plain
+   *  text edit (the server leaves the list untouched); a list = replace with
+   *  exactly these (validated as a subset server-side — oak's edit flow). */
+  async editMessage(channelId: number, messageId: number, content: string,
+    remainingAttachments?: readonly { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null }[]): Promise<void> {
+    const edited = await this.rest.editMessage(channelId, messageId, remainingAttachments === undefined
+      ? { content }
+      : {
+        content,
+        attachments: remainingAttachments.map((reference) => ({
+          key: reference.key,
+          fileName: reference.fileName,
+          thumbnailKey: reference.thumbnailKey,
+          durationMillis: reference.durationMillis,
+        })),
+      });
     this.messageStore.applyEdited(edited);
   }
 

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { log } from "../../logging";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { Attachment } from "../../types";
@@ -7,6 +8,10 @@ import type { Attachment } from "../../types";
  * Video player modal — the presigned URL goes straight into <video>; Chromium's
  * native streaming does the range requests. A dead link (played past its hour)
  * re-mints ONCE through /api/attachments/link and resumes at the death position.
+ * Rendered through a PORTAL onto document.body: the modal mounts inside a
+ * VirtualList row, and `position: fixed` is CLIPPED to any transformed ancestor
+ * (tanstack virtual rows translate) — without the portal it is stuck to the
+ * row instead of covering the window (live report).
  */
 export function VideoModal({ session, attachment, onClose }: {
   session: ConnectionSession;
@@ -51,7 +56,7 @@ export function VideoModal({ session, attachment, onClose }: {
     }
   };
 
-  return (
+  return createPortal(
     <div className="video-modal" onMouseDown={(event) => {
       if (event.target === event.currentTarget) {
         onClose();
@@ -72,6 +77,7 @@ export function VideoModal({ session, attachment, onClose }: {
           <button className="ghost" onClick={onClose}>✕</button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

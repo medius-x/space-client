@@ -158,8 +158,15 @@ export class RestClient {
     });
   }
 
-  /** PATCH returns the edited message; the .edited topic echo dedups by id upstream. */
-  async editMessage(channelId: number, messageId: number, request: { content: string }): Promise<Message> {
+  /** PATCH returns the edited message; the .edited topic echo dedups by id upstream.
+   *  The edit body is oak's EditMessageRequest: `attachments` ABSENT/null = leave
+   *  the message's attachments untouched (the plain text edit); a list = replace
+   *  with exactly these — the server validates it is a subset of the currently
+   *  attached keys. Content may be blank while an attachment remains. */
+  async editMessage(channelId: number, messageId: number, request: {
+    content: string;
+    attachments?: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null }[] | null;
+  }): Promise<Message> {
     return this.request<Message>(`/api/channels/${channelId}/messages/${messageId}`, {
       method: "PATCH",
       body: JSON.stringify(request),

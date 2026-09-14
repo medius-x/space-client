@@ -2,8 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <!-- Dev-permissive CSP: vite HMR (localhost ws) + the local server stack. Tightened per-origin at packaging (M7). -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:* ws://localhost:*; media-src mediastream: blob: 'self' http://localhost:*; img-src 'self' data: blob:">
+  <!-- Dev-permissive CSP: vite HMR (localhost ws) + the local server stack. Tightened per-origin at packaging (M7).
+       connect-src carries blob: — the attachment cache hands out blob: object URLs
+       and the incoming-call card re-reads them with fetch() to mint a cross-window
+       data: URL (a missing blob: read as a bare "Failed to fetch", live report). -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' blob: http://localhost:* ws://localhost:*; media-src mediastream: blob: 'self' http://localhost:*; img-src 'self' data: blob:">
   <title>space</title>
 </head>
 <body>

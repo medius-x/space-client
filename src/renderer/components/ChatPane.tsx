@@ -21,6 +21,7 @@ import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { Modal } from "./Modal";
 import { VirtualList, type VirtualListHandle } from "./VirtualList";
 import { AttachmentView } from "./AttachmentView";
+import { isAudioFile, isImageFile, isVideoFile } from "../../domain/logic/attachment-layout";
 import { Avatar } from "./Avatar";
 import { NowPlayingBar } from "./NowPlayingBar";
 
@@ -59,9 +60,31 @@ function estimateRowHeight(message: Message, startsGroup: boolean): number {
   if (message.reactions.length > 0) {
     height += 26;
   }
-  if (message.attachments.length > 0) {
-    height += 22;
+  // Media-aware attachment estimate (live report: a flat +22 made every
+  // picture/video row JUMP on measure — the real mosaic is 200-500px, and the
+  // estimate→fact delta shifted everything below it). Rough by design: the
+  // natural image size is unknown before the decode; the point is the ORDER
+  // of magnitude, not the pixel.
+  let attachmentEstimate = 0;
+  let imageTiles = 0;
+  for (const attachment of message.attachments) {
+    if (isImageFile(attachment.fileName)) {
+      imageTiles += 1;
+    } else if (isVideoFile(attachment.fileName)) {
+      attachmentEstimate += 340; // the card: preview capped at 320 high + name
+    } else if (isAudioFile(attachment.fileName)) {
+      attachmentEstimate += 56;
+    } else {
+      attachmentEstimate += 40; // the file chip
+    }
   }
+  if (imageTiles > 0) {
+    const tiles = Math.min(imageTiles, 10);
+    // Mosaic rows: 1 → a bounded square (~300), 2–3 → one row (~210),
+    // 4+ → a 2-column grid of square crops.
+    attachmentEstimate += tiles === 1 ? 300 : tiles <= 3 ? 210 : Math.ceil(tiles / 2) * 220;
+  }
+  height += attachmentEstimate;
   return height;
 }
 
@@ -818,21 +841,48 @@ interface MessageRowProps {
 const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.Element {
   const { session, channel, message, startsGroup, editing, highlighted, selected, actions } = props;
   const [draft, setDraft] = useState(message.content ?? "");
+  /** Image keys marked for removal in the editor (oak's markedAttachmentKeys). */
+  const [removedKeys, setRemovedKeys] = useState<ReadonlySet<string>>(new Set());
   // Subscribed (not read-once): the relative-dates toggle must repaint every
   // stamp the moment it is committed (oak's onApplied → messageList.refresh()).
   const relativeDates = useStore(settingsStore, (settings) => settings.relativeDates);
 
   useEffect(() => {
     setDraft(message.content ?? "");
+    setRemovedKeys(new Set());
   }, [message.id, message.content]);
+
+  const toggleRemovedKey = (key: string): void => {
+    setRemovedKeys((previous) => {
+      const next = new Set(previous);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
 
   const commitEdit = () => {
     const trimmed = draft.trim();
-    if (trimmed.length === 0 || trimmed === (message.content ?? "")) {
+    const attachmentChange = removedKeys.size > 0;
+    const remaining = message.attachments.filter((attachment) => !removedKeys.has(attachment.key));
+    // oak's guards: a blank that guts the message (no text AND no attachment
+    // left) and a no-op edit (text unchanged, nothing marked) cancel silently.
+    if ((trimmed.length === 0 && remaining.length === 0)
+      || (trimmed === (message.content ?? "") && !attachmentChange)) {
       props.setEditing(null);
       return;
     }
-    void session.editMessage(channel.id, message.id, trimmed).catch(() => undefined);
+    void session.editMessage(channel.id, message.id, trimmed, attachmentChange
+      ? remaining.map((attachment) => ({
+        key: attachment.key,
+        fileName: attachment.fileName,
+        thumbnailKey: attachment.thumbnailKey,
+        durationMillis: attachment.durationMillis,
+      }))
+      : undefined).catch(() => undefined);
     props.setEditing(null);
   };
 
@@ -841,13 +891,14 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
   const canReact = dmContext || session.permissionStore.can("ADD_REACTIONS");
 
   const body = editing ? (
-    <textarea
-      className="inline-editor"
-      autoFocus
-      value={draft}
-      onChange={(event) => setDraft(event.target.value)}
-      onBlur={commitEdit}
-      onKeyDown={(event) => {
+    <>
+      <textarea
+        className="inline-editor"
+        autoFocus
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commitEdit}
+        onKeyDown={(event) => {
         // Same settings-owned Enter semantics as the composer (M7).
         const plainEnter = event.key === "Enter" && !event.ctrlKey && !event.shiftKey && !event.altKey;
         const ctrlEnter = event.key === "Enter" && event.ctrlKey && !event.shiftKey && !event.altKey;
@@ -867,7 +918,17 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
           props.setEditing(null);
         }
       }}
-    />
+      />
+      {/* oak's applyEditHint ladder: the base keys, the removal affordance while
+          images exist, and the pending-removal count once something is marked. */}
+      <div className="inline-editor-hint">
+        {removedKeys.size > 0
+          ? `${removedKeys.size} image${removedKeys.size > 1 ? "s" : ""} will be removed · enter to save · esc to cancel`
+          : message.attachments.some((attachment) => isImageFile(attachment.fileName))
+            ? "enter to save · esc to cancel · click × to remove an image"
+            : "enter to save · esc to cancel"}
+      </div>
+    </>
   ) : (
     <div className="message-content">
       {segmentMessageContent(message.content, message.mentions).map((segment, segmentIndex) =>
@@ -892,7 +953,14 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
       {message.editedAt !== null ? <span className="message-edited">(edited)</span> : null}
     </div>
   );
-  const attachmentView = <AttachmentView session={session} message={message} />;
+  const attachmentView = (
+    <AttachmentView
+      session={session}
+      message={message}
+      onForwardBegin={editing === null ? () => actions.beginForward([message]) : undefined}
+      removal={editing ? { markedKeys: removedKeys, toggle: toggleRemovedKey } : undefined}
+    />
+  );
   const previewUrl = firstHttpUrl(message.content); // oak: only the FIRST link gets a card
 
   return (

@@ -18,7 +18,10 @@ export function ringbackCycleSeconds(): number {
   return RINGBACK_BURST_SECONDS + RINGBACK_PAUSE_SECONDS;
 }
 
-/** Bell partials 1 : 1.5 : 2.5 over C6 — fundamental, fifth, sparkle. */
-export const CHIME_PARTIALS_HZ = [1_046.5, 1_568.0, 2_637.0];
-export const CHIME_PARTIAL_GAINS = [1, 0.5, 0.25];
+/** oak's CallChime: three bell partials over C6 — 1046.5 / 1570.9 / 2616.3 Hz,
+ *  amplitudes 0.25 / 0.12 / 0.06 — sharing ONE exponential decay τ = 0.55 s. */
+export const CHIME_PARTIALS_HZ = [1_046.5, 1_570.9, 2_616.3];
+export const CHIME_PARTIAL_GAINS = [0.25, 0.12, 0.06];
 export const CHIME_DURATION_SECONDS = 2.6;
+/** The shared exponential-decay time constant (oak's per-sample e^(-t/τ) envelope). */
+export const CHIME_DECAY_TAU_S = 0.55;

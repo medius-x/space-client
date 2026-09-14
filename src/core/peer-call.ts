@@ -92,6 +92,9 @@ export class PeerCallSession {
     const PeerConnectionClass = options.peerConnectionImpl ?? RTCPeerConnection;
     this.peerConnection = new PeerConnectionClass({ iceServers: options.iceServers });
     this.micTrack = options.micStream.getAudioTracks()[0] ?? null;
+    // A PRE-ACCEPT mute (the runtime gates the captured track while the callee
+    // is still ringing) must survive the session: read the gate, don't assume on.
+    this.micEnabled = this.micTrack?.enabled ?? true;
 
     // The m-line contract: voice carries the real track; video and share audio are
     // pre-negotiated EMPTY sendrecv slots activated later by replaceTrack.

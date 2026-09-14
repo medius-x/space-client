@@ -263,6 +263,128 @@ identity (ростер не загружен) не светится ничего
 поле payload обязано пробрасываться в ручном объекте `toastBridge.show({...})`
 в showToast — типизация ToastCardPayload не ловит пропуск. Гейт 242/242.
 
+**Аудит-раунд 8 (аттачи + звонки, 2026-09-15) — oak-парити + юзер-требования:**
+**ЗВОНКИ — главное открытие аудита: в oak звонок НЕ занимает чат-область**
+(MainController: «A 1-on-1 call does NOT take the pane»); его поверхности =
+sticky-карточка CallOverlay в углу ЭКРАНА (ringing) + ТА ЖЕ voiceBar + тот же
+room view с 2 плитками (accepted). Перестроено так же: **CallPane.tsx УДАЛЁН**
+(жил в контент-области со своим тулбаром); звонок рендерится ЧЕРЕЗ RoomView
+(call-режим: плитки self-первым + peer, те же .tile/планки «Your camera/Your
+screen»/«Sharing screen…», speaking-рамки через roomAudio.speakingSnapshot —
+звонковые фиды именованы пиром, свой мик теперь attachOwnMic'ом в roomAudio;
+шапка = ник пира + «2 in room · N screens»; ПКМ по плитке пира = VoiceMemberCard
+ТОЛЬКО громкости, проп moderation); **VoiceBar получил call-режим**: у caller
+на ringing-out — жёлтый «Calling…» + ТОЛЬКО красная трубка (юзер-решение:
+исходящей стороне НИКАКОЙ экранной карточки — отступление от oak, где у caller
+тоже карточка «Ringing…»+Cancel); connecting → «Connecting…» (честная фаза
+accept→negotiated — у oak её нет, IN_CALL сразу); in-call → зелёный «On a
+call» → «On a call — MM:SS» (тик 1 с, пауза при reconnecting, жёлтый
+«Reconnecting…»); детали «peer/server»; КНОПКА Camera УДАЛЕНА (oak: камера —
+источник внутри шар-пикера); клик по статус-строке = toggle room view,
+авто-открытие на accept (roomViewOpen:true), гасится на teardownCall.
+**ЗВОНОЧНАЯ КАРТОЧКА в тост-окне** (oak CallOverlay = отдельный always-on-top
+Stage в углу экрана — у нас ТО ЖЕ тост-окно): расширенный payload-union
+`ToastShowPayload` ({kind: message|call|call-status|call-end}); карточка =
+аватар 48 (presigned URL из ростера — авторизации не нужно; фолбэк =
+палитра-инициал), статус «Incoming call» → ник → сервер dim, кнопки Accept
+зелёная/Decline красная (mdi-phone/phone-hangup), БЕЗ TTL — живёт до
+accept/reject/timeout/HANGUP; после Accept НЕ исчезает — статус «Connecting…»
+до OFFER (кнопки скрыты; oak оставляет мёртвые кнопки — мы прячем). Кнопки
+маршрутизируются IPC `toast:callAction` → notifications.setCallActionHandler →
+runtime accept/reject. **ПРИОРИТЕТ НАД ТОСТАМИ** (юзер-решение): пока call-card
+жива, ToastStackScreen дропает стек message-карточек и гасит новые (лог
+«suppressed»), чип Hide all скрыт. **Механика:** дубль-RING от того же пира в
+ringing-in ИГНОРИРУЕТСЯ (раньше слал авто-REJECT и убивал звонок — oak
+swallow); ring-timeout дефолт 120 c (oak; было 60) и ПЕРЕАРМИРУЕТСЯ на callee
+после Accept (баундит accept→OFFER; отдельного 30-с gap-timeout больше нет);
+playback.stop() на старте in-call («one audible stream»); chime перетембрен
+дословно: 1046.5/1570.9/2616.3 Гц, амплитуды 0.25/0.12/0.06, общий
+setTargetAtTime τ=0.55 c. Статусные тосты звонка («Declined your call.»/«The
+call ended.»/«No answer.»/«Could not connect.») — НАШИ добавки, oak молчит
+(юзер-решение оставить). **АТТАЧИ:** мозаика = ПОРТ AttachmentLayout.java
+(квадраты: 1 = сторона min(usable, min(natW,natH)) c no-upscale и contain
+внутри квадрата — 64×64 остаётся 64×64; 2–3 = ряд квадратных кроп-тайлов;
+4–10 = грид 2 колонки; GAP 4, было 8; до декода плейсхолдер на весь usable);
+**лайтбокс** — математика зума/пана вынесена в чистый `logic/
+image-viewer-transform.ts` (порт 1:1 + тесты): зум К КУРСОРУ, пан С КЛАМПОМ
+(влезающая ось пиннится центром), scale 1..10 (было 8), dbl-reset; тулбар =
+Download/Forward/Open in browser/Copy (canvas→PNG→clipboard)/Details
+(Name/Type/Dimensions/Size — размер докачивается по клику, DTO его не несёт);
+Forward = форвард ВСЕГО сообщения (oak шлёт subset-одиночный аттач — наше
+отступление, без wire-расширения); видео-карточка по пропорциям превью
+(max-height 320, ширина auto — портретные не доминируют); файл-чип =
+mdi-attachment (последний эмодзи-глиф выпилен); NowPlayingBar: mute-кнопка
+0↔lastPositive + «--:--» до известной длительности (seek disabled), то же в
+аудио-карточке; **edit-удаление картинок** (oak attachmentRemovalActive): в
+редакторе у каждого image-тайла «×» (16×16, тайл гаснет 0.4), хинт-лестница
+«enter to save · esc to cancel [+ click × to remove an image | N image(s)
+will be removed]»; коммит — PATCH с remaining-ключами (EditMessageRequest.
+attachments: отсутствует = не трогать, список = заменить — сервер валидирует
+subset); гварды: blank-оголяющий и no-op = тихий cancel. B9 (рестор при
+провале + «Uploading…») оказался уже реализован (композер хранит текст,
+стейджинг чистится только по успеху). Гейт 252/252.
+
+**Смоук-фиксы раунда 8 (живой смоук, 2026-09-15):** (1) аватар звоночной
+карточки показывался БИТЫМ глифом — ростерный presigned avatarUrl мог протухнуть
+(снапшот при коннекте, звонок позже), а blob:-objectURL кеша не живёт в чужом
+рендер-контексте; теперь карточка красится СРАЗУ палитра-инициалом, затем аватар
+докачивается через attachmentCache.loadImage (со fresh-link recovery) и
+уезжает в тост-окно как **data: URL** (гвард: обновляем только пока этот ring
+жив — поздний декод не воскрешает карточку и не понижает «Connecting…»);
+ГРАБЛЯ: аватары живут в rosterStore.users (UserSummary.avatarKey/Url), НЕ в
+ServerMember. (2) divider шапки room view/звонка УЕЗЖАЛ ниже divider'а
+сайдбара: кнопка «назад» 30×30 раздувала min-height:37 шапку до 46px —
+.room-view-header переведён на ФИКС height:37px + box-sizing:border-box (кнопка
+центрируется и чуть вылезает за слот, не задевая divider; шапка остаётся
+«близнецом» sidebar-server-header/chat-header). Гейт 252/252. Итерация 2:
+аватар так и не доезжал — лог показал `avatar cache: hit` → `Failed to fetch`:
+**ГРАБЛЯ CSP: index.html дев-CSP не содержал `blob:` в connect-src** (аттачи
+везло — MinIO на localhost:* подпадал под http-правило; <img> с blob:/data:
+шёл через img-src и потому работал) — fetch(objectURL) из кеша блокировался
+браузером с голым «Failed to fetch»; фикс = `connect-src 'self' blob: …`;
+фолбэк-инициалы переведены на oak-две-буквы; цепочка загрузки аватара
+остаётся залогирована ([call] incoming-card avatar cache/dataUrl/failed).
+Итерация 3 (юзер-запрос): у caller'а на ringing-out voiceBar теперь показывает
+mute/deafen/NS (раньше только трубку) — микрофон УЖЕ захвачен при наборе,
+поэтому `toggleCallMic` без сессии гейтит ТРЕК напрямую; PeerCallSession
+наследует гейт (конструктор читает track.enabled — не предполагает true) и
+ПЕРЕАНОНСИРУЕТ пред-accept-состояние пиру при создании (MIC_OFF/DEAFEN_ON
+летят до OFFER, буферизуются у callee pendingCallSignals); кнопка share
+появляется только с connecting — видео-слот договаривается в offer, до accept
+шарить не с кем. Итерация 4 (юзер-решения): (а) share-кнопка на ringing-out
+ВИДНА но disabled (title «Available once the call connects»); (б) accept НЕ
+открывает call view — чат остаётся как при join комнаты, room view только по
+явному клику на статус-строку voiceBar (убрано roomViewOpen:true из обоих
+establish-путей); (в) ГРАБЛЯ FIXED-В-TRANSFORM: лайтбокс и видео-модал рендерятся
+внутри строк VirtualList (tanstack virtual трансформит строки) — `position:
+fixed` КЛИПАЕТСЯ к трансформ-предку, модал прилипал к строке чата вместо окна;
+фикс = createPortal(…, document.body) для обоих. Известное ограничение (oak
+парити): звонок 1-на-1 с НЕфокусного сервера НЕ дойдёт — фоновые сессии
+глотают call.signal (подписка ведёт только активная). Итерация 5 (live-репорты):
+(а) ОДИНОЧНАЯ картинка больше НЕ сидит в квадратном боксе с чёрным
+letterbox'ом (oak держит квадратный bounding — поля читались как сломанный
+рендер): бокс = вписанная в oak-квадрат картинка С ОБРЕЗАННЫМИ поляМИ
+(`singleTileBox` = side/max(natW,natH), side прежний min(usable, min-сторона);
+вертикальная 400×900 → 178×400; тесты). (б) видео-карточка: убран
+min-width:200 у .video-thumb (у узких вертикальных превью справа оставалась
+чёрная ПОЛОСА — картинка 180 в контейнере 200); бокс = ровно кадр превью,
+фолбэк без превью — отдельный фикс-плейт 320×180. Итерация 6: тулбар лайтбокса
+— каждый контрол на полупрозрачно-СЕРОЙ пилюле rgba(128,128,128,.45) (+ счётчик
+тем же стилем): голая белая иконка исчезала на светлой картинке (live).
+Итерация 7: (а) Details-карточка лайтбокса — ТОГЛ (повторный клик закрывает) и
+якорится К КНОПКЕ (inline left/bottom над тулбаром), а не в углу вьюера;
+(б) «×» удаления картинки в редакторе — onMouseDown preventDefault: редактор
+коммитится по blur, а blur стреляет ДО click — редактор закрывался, пометка
+не успевала ставиться (классическая фокус-грабля кликабельных детей
+blur-коммитящих полей). Итерация 8 (scroll-jank): медиа-aware ОЦЕНКА высоты
+строки — аттачи раньше оценивались плоско +22px, а реальная мозаика 200-500px:
+входящая в окно строка с картинкой сменяла оценку фактом и сдвигала контент
+под собой (оставшийся «прыжок при прокрутке»). Теперь: картинка-одна ~300,
+2-3 ~210, 4+ ceil(n/2)*220, видео 340, аудио 56, чип 40 (порядок величины, не
+пиксель — натуральный размер до декода неизвестен). ПРЕДЗАГРУЗКА: старт 100
+(oak INITIAL_HISTORY_LIMIT), страницы вверх по 50 (HISTORY_PAGE) + до 3
+alignment-страниц (граница не режет группу), jump-бэкфилл кап 1000.
+
 ## M6 (закрыт, 088df95): социальный слой
 
 M5 закрыт и закоммичен (`b14b2a6`). M6: **друзья** —

@@ -2,6 +2,7 @@ import { decideNotification, messageHasEveryoneHere, messageMentionsRole, messag
 import { toastPreviewSegments } from "../domain/logic/toast-preview";
 import { knockSchedule } from "../domain/logic/knock-sound";
 import {
+  CHIME_DECAY_TAU_S,
   CHIME_DURATION_SECONDS,
   CHIME_PARTIALS_HZ,
   CHIME_PARTIAL_GAINS,
@@ -10,6 +11,7 @@ import {
   ringbackCycleSeconds,
 } from "../domain/logic/call-sounds";
 import type { Message } from "../types";
+import type { ToastCallCardPayload } from "./bridges";
 
 /**
  * Notification hub: in-app toast stack (bottom-right of the window), OS
@@ -72,6 +74,9 @@ class NotificationHub {
    *  run HERE in the main window; the toast window only knows the id). */
   private readonly cardCallbacks = new Map<number, (() => void) | null>();
   private nextCardId = 1;
+  /** The incoming-call card's Accept/Decline handler (the runtime answers the
+   *  call machine — the toast window only knows the button that was pressed). */
+  private callActionHandler: ((action: "accept" | "decline") => void) | null = null;
 
   constructor() {
     // The toast window reports card clicks by id — run the stored callback.
@@ -80,6 +85,10 @@ class NotificationHub {
       this.cardCallbacks.delete(cardId);
       window.focus(); // bring the app forward first (oak's toast click)
       callback?.();
+    });
+    window.spaceToast?.onCallAction((action) => {
+      window.focus(); // answering a call brings the app forward too
+      this.callActionHandler?.(action);
     });
   }
 
@@ -194,15 +203,41 @@ class NotificationHub {
     this.nextCardId += 1;
     this.cardCallbacks.set(cardId, payload.onClick ?? null);
     toastBridge.show({
-      id: cardId,
-      title: payload.title,
-      channelName: payload.channelName,
-      body: payload.body,
-      segments: payload.segments, // the tinted spans (dropped here once — everything rendered grey)
-      mention: payload.mention === true,
-      dismissSeconds: this.toastConfig.dismissSeconds(),
-      maxToasts: this.toastConfig.maxToasts(),
+      kind: "message",
+      card: {
+        id: cardId,
+        title: payload.title,
+        channelName: payload.channelName,
+        body: payload.body,
+        segments: payload.segments, // the tinted spans (dropped here once — everything rendered grey)
+        mention: payload.mention === true,
+        dismissSeconds: this.toastConfig.dismissSeconds(),
+        maxToasts: this.toastConfig.maxToasts(),
+      },
     });
+  }
+
+  /** The sticky incoming-call card (oak's CallOverlay): bottom-right of the
+   *  SCREEN, above every window, no TTL — it outranks message toasts (the stack
+   *  clears and goes quiet while it is up) and dies only when the call machine
+   *  tears it down. */
+  showCallCard(card: ToastCallCardPayload): void {
+    window.spaceToast?.show({ kind: "call", card });
+  }
+
+  /** The call card survives Accept — it just stops offering buttons and reads
+   *  "Connecting…" until the offer arrives (oak keeps the card through the gap). */
+  updateCallCardStatus(status: ToastCallCardPayload["status"]): void {
+    window.spaceToast?.show({ kind: "call-status", status });
+  }
+
+  dismissCallCard(): void {
+    window.spaceToast?.show({ kind: "call-end" });
+  }
+
+  /** The runtime's Accept/Decline answer point for the call card. */
+  setCallActionHandler(handler: (action: "accept" | "decline") => void): void {
+    this.callActionHandler = handler;
   }
 
   /** The voice-room knock (oak's tuned "tuk … tuk"): bare sines, 3 ms attack,
@@ -285,22 +320,24 @@ class NotificationHub {
     }
   }
 
-  /** Callee's chime: ONE long fading bell per incoming call (not a repeating ring). */
+  /** Callee's chime: ONE long fading bell per incoming call (not a repeating ring).
+   *  oak's CallChime recipe: the three partials share ONE exponential decay —
+   *  setTargetAtTime IS that e^(-t/τ) curve with τ = 0.55 s. */
   playChime(): void {
     try {
       const context = this.ensureAudioContext();
       const now = context.currentTime;
       const master = context.createGain();
-      master.gain.value = 0.12;
+      master.gain.value = 1;
       master.connect(context.destination);
       CHIME_PARTIALS_HZ.forEach((frequency, index) => {
         const oscillator = context.createOscillator();
         oscillator.frequency.value = frequency;
         const envelope = context.createGain();
-        const peak = CHIME_PARTIAL_GAINS[index] ?? 1;
+        const peak = CHIME_PARTIAL_GAINS[index] ?? 0;
         envelope.gain.setValueAtTime(0, now);
         envelope.gain.linearRampToValueAtTime(peak, now + 0.004);
-        envelope.gain.exponentialRampToValueAtTime(0.001 * peak, now + CHIME_DURATION_SECONDS);
+        envelope.gain.setTargetAtTime(0, now + 0.004, CHIME_DECAY_TAU_S);
         oscillator.connect(envelope);
         envelope.connect(master);
         oscillator.start(now);

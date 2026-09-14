@@ -26,7 +26,8 @@ export interface ClientSettings {
   badgeEnabled: boolean;
   toastDismissSeconds: number;
   maxToasts: number;
-  /** Outgoing ring timeout; 0 = ring forever (still ends on any hangup signal). */
+  /** Ring timeout; 0 = ring forever (still ends on any hangup signal). Also
+   *  bounds the callee's accept→offer gap (re-armed on Accept — oak). */
   ringTimeoutSeconds: number;
   /** Chromium APM (echo cancellation et al) on the mic path. */
   apmEnabled: boolean;
@@ -46,7 +47,7 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   badgeEnabled: true,
   toastDismissSeconds: 5,
   maxToasts: 3,
-  ringTimeoutSeconds: 60,
+  ringTimeoutSeconds: 120, // oak's default (SettingsStore.java)
   apmEnabled: true,
   microphoneDeviceId: null,
   speakerDeviceId: null,

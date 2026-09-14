@@ -2,14 +2,20 @@ import { useEffect, useRef, useState } from "react";
 import { useStore } from "../hooks/useStore";
 import {
   appStore,
+  callShareTarget,
+  callView,
   connectionDirectory,
+  getCallLocalVideoTrack,
+  getCallPeerVideoTrack,
   getCameraTrack,
   getVoiceShareTrack,
+  hangUpCall,
   kickVoiceUser,
   leaveVoice,
   openSharePopout,
   persistedGain,
   popoutClosed,
+  resolveCallConflict,
   roomAudio,
   sendPopoutFrame,
   serverDeafenUser,
@@ -19,7 +25,11 @@ import {
   setViewingFeed,
   settingsStore,
   shareTarget,
+  stopCallShare,
   stopShare,
+  toggleCallCamera,
+  toggleCallDeafen,
+  toggleCallMic,
   toggleCamera,
   toggleRoomView,
   toggleSelfDeafen,
@@ -33,10 +43,17 @@ import { canActOn, memberNameColor, topPosition, type HierarchyView } from "../.
 import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
 import { SharePickerModal } from "./SharePickerModal";
 import { Avatar } from "./Avatar";
+import { Modal } from "./Modal";
 
 /** Pop-out frame pump: ~12 JPEG frames/s, capped at 1280 wide (IPC, not raw bitmaps). */
 const POPOUT_FRAME_INTERVAL_MS = 80;
 const POPOUT_MAX_WIDTH = 1280;
+
+function formatCallSeconds(total: number): string {
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
 
 /** MOD wins over SELF when both hold (oak convention: red beats yellow). */
 function markTone(modFlag: boolean, selfFlag: boolean): "none" | "self" | "mod" {
@@ -69,12 +86,39 @@ export function VoiceMarks({ marks }: { marks: VoiceMemberMarks | undefined }): 
   );
 }
 
+/** oak's CALL badges: in a 1:1 both endpoints read as SELF-yellow — there is no
+ *  moderator in a P2P call (MainController: the call's mute states are its own). */
+export function CallMarks({ micOn, deafenedOn }: { micOn: boolean; deafenedOn: boolean }): React.JSX.Element | null {
+  if (micOn && !deafenedOn) {
+    return null;
+  }
+  return (
+    <span className="voice-marks">
+      {!micOn ? (
+        <span className="voice-mark voice-mark-self" title="Muted">
+          <span className="icon mdi-microphone-off" />
+        </span>
+      ) : null}
+      {deafenedOn ? (
+        <span className="voice-mark voice-mark-self" title="Deafened">
+          <span className="icon mdi-headphones-off" />
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 /**
  * THE voice bar — the upper half of the bottom-left overlay card (oak parity):
  * the voice connection lives in the LEFT COLUMN over the rail+channels, it never
  * occupies the chat. Clicking the status row toggles the room view (the tiles)
  * in the chat area. Buttons are oak's 30×30 icon toggles: mute, deafen,
  * noise suppression (Chromium APM), share, leave.
+ *
+ * A 1:1 CALL owns the same bar (oak: showCallVoiceBar) — the call never takes
+ * the chat pane, its surfaces are this bar + the room view. The CALLER's ring
+ * lives here too (user decision: no screen-corner card for the outgoing side,
+ * the bar reads "Calling…" until answered).
  */
 /**
  * oak's NS-engine selector card (showNoiseEngineMenu port): one option row per
@@ -118,19 +162,143 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
   const stateDetail = useStore(appStore, (state) => state.stateDetail);
   const sharing = useStore(appStore, (state) => state.sharing);
   const cameraOn = useStore(appStore, (state) => state.cameraOn);
-  const roomViewOpen = useStore(appStore, (state) => state.roomViewOpen);
   const activeChannelId = useStore(appStore, (state) => state.activeVoiceChannelId);
   const apmEnabled = useStore(settingsStore, (settings) => settings.apmEnabled);
-  const channel = activeChannelId !== null ? session.channelStore.get(activeChannelId) : null;
-  const marksByMember = useStore(session.voiceControlStore, (snapshot) => snapshot.marks);
   const participants = useStore(appStore, (state) => state.participants);
-  const screenCount = participants.filter((feed) => feed.streams.some((stream) => stream.type === "video")).length;
+  const marksByMember = useStore(session.voiceControlStore, (snapshot) => snapshot.marks);
+  const callState = useStore(appStore, (state) => state.callState);
+  const callPeer = useStore(appStore, (state) => state.callPeer);
+  const callHealthy = useStore(appStore, (state) => state.callHealthy);
+  const callSeconds = useStore(appStore, (state) => state.callSeconds);
+  const callMicOn = useStore(appStore, (state) => state.callMicOn);
+  const callDeafenedOn = useStore(appStore, (state) => state.callDeafenedOn);
+  const callCameraOn = useStore(appStore, (state) => state.callCameraOn);
+  const callSharing = useStore(appStore, (state) => state.callSharing);
+  const peerMicOn = useStore(appStore, (state) => state.peerMicOn);
+  const peerCameraOn = useStore(appStore, (state) => state.peerCameraOn);
+  const peerScreenOn = useStore(appStore, (state) => state.peerScreenOn);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [nsMenu, setNsMenu] = useState<{ x: number; y: number } | null>(null);
 
-  if (activeChannelId === null) {
-    return null; // no voice session — the card shrinks to the user bar alone
+  // The bar owns the CALLER's ring (user decision) and the accepted call — but
+  // NOT the callee's ring: oak's RINGING states own no surface, the callee's
+  // ring lives in the toast-window card alone.
+  const inCall = callState === "ringing-out" || callState === "connecting" || callState === "in-call";
+  if (activeChannelId === null && !inCall) {
+    return null; // no voice session and no call — the card shrinks to the user bar alone
   }
+
+  // oak's serverName (not the host URL) in the detail line — cachedServerName,
+  // hostUrl only as a pre-profile fallback.
+  const serverName = connectionDirectory.get(session.recordId)?.cachedServerName
+    ?? session.hostUrl().replace(/^https?:\/\//, "");
+
+  if (inCall) {
+    // The call bar (oak's showCallVoiceBar): "Calling…" while the caller rings
+    // (user decision — the outgoing side gets NO screen-corner card), then the
+    // oak statuses. The short accept→offer phase reads "Connecting…" (honest —
+    // oak skips the stage entirely; our timer starts on "On a call").
+    const ringingOut = callState === "ringing-out";
+    const statusClass = callState === "in-call"
+      ? (callHealthy ? "live" : "reconnecting")
+      : "connecting";
+    const statusText = ringingOut
+      ? "Calling…"
+      : callState === "connecting"
+        ? "Connecting…"
+        : callState === "in-call"
+          ? (callHealthy ? (callSeconds > 0 ? `On a call — ${formatCallSeconds(callSeconds)}` : "On a call") : "Reconnecting…")
+          : "On a call";
+    // oak's voiceScreenBadge equivalent: the peer's announced camera/screen.
+    const peerScreens = (peerScreenOn || peerCameraOn) ? 1 : 0;
+    return (
+      <div className="voice-bar">
+        <div className="voice-bar-info" onClick={toggleRoomView} title="Open / close the call view">
+          <div className="voice-bar-text">
+            <span className={"voice-bar-status " + statusClass}>{statusText}</span>
+            <span className="voice-bar-details">{callPeer !== null ? `${callPeer} / ${serverName}` : ""}</span>
+          </div>
+          {peerScreens > 0 ? (
+            <span className="voice-screen-badge">
+              <span className="icon mdi-monitor" />
+              {peerScreens}
+            </span>
+          ) : null}
+        </div>
+        {/* The caller's ring keeps the local toggles usable (user decision:
+            mute/deafen/NS act on the ALREADY-captured mic). Camera/screen
+            sharing can only be NEGOTIATED in the offer — that button waits
+            for the connection. */}
+        <div className="voice-bar-buttons">
+          <button
+            className={"voice-toggle icon-button" + (callMicOn ? "" : " on")}
+            title={callMicOn ? "Mute" : "Unmute"}
+            onClick={toggleCallMic}
+          >
+            <span className={"icon " + (callMicOn ? "mdi-microphone" : "mdi-microphone-off")} />
+          </button>
+          <button
+            className={"voice-toggle icon-button" + (callDeafenedOn ? " on" : "")}
+            title={callDeafenedOn ? "Undeafen" : "Deafen"}
+            onClick={toggleCallDeafen}
+          >
+            <span className={"icon " + (callDeafenedOn ? "mdi-headphones-off" : "mdi-headphones")} />
+          </button>
+          <button
+            className={"voice-toggle icon-button ns" + (apmEnabled ? " on" : "")}
+            title={"Noise suppression: " + (apmEnabled ? "WebRTC (built-in)" : "Raw (off)")}
+            onClick={(event) => setNsMenu({ x: event.currentTarget.getBoundingClientRect().left, y: event.currentTarget.getBoundingClientRect().bottom + 4 })}
+          >
+            <span className="icon mdi-triangle-wave" />
+          </button>
+          {/* oak has NO separate camera button — the camera is a SOURCE inside
+              the share picker; one toggle stops whatever is live. While the
+              callee is still RINGING the button is visible but disabled: the
+              video slot is only negotiated in the offer that follows ACCEPT. */}
+          <button
+            className={"voice-toggle icon-button share" + (callSharing || callCameraOn ? " on" : "")}
+            disabled={ringingOut}
+            title={ringingOut ? "Available once the call connects" : callSharing || callCameraOn ? "Stop screen share" : "Share screen"}
+            onClick={() => {
+              if (callCameraOn) {
+                void toggleCallCamera(); // the toggle IS the camera's stop
+              } else if (callSharing) {
+                void stopCallShare();
+              } else {
+                setPickerOpen(true);
+              }
+            }}
+          >
+            <span className="icon mdi-cast-connected" />
+          </button>
+          <button className="voice-toggle icon-button leave" title={ringingOut ? "Cancel" : "Hang up"} onClick={hangUpCall}>
+            <span className="icon mdi-phone-hangup" />
+          </button>
+        </div>
+        {pickerOpen ? (
+          <SharePickerModal
+            onClose={() => setPickerOpen(false)}
+            onTarget={(target) => {
+              setPickerOpen(false);
+              void callShareTarget(target);
+            }}
+          />
+        ) : null}
+        {nsMenu !== null ? (
+          <NsEngineMenu
+            apmEnabled={apmEnabled}
+            x={nsMenu.x}
+            y={nsMenu.y}
+            onPick={(next) => settingsStore.apply({ apmEnabled: next })}
+            onClose={() => setNsMenu(null)}
+          />
+        ) : null}
+      </div>
+    );
+  }
+
+  const channel = activeChannelId !== null ? session.channelStore.get(activeChannelId) : null;
+  const screenCount = participants.filter((feed) => feed.streams.some((stream) => stream.type === "video")).length;
 
   const ownMarks = marksByMember.get(session.username());
   const selfMuted = (ownMarks?.selfMuted ?? false) || (ownMarks?.modMuted ?? false);
@@ -145,10 +313,6 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
       : voiceState === "failed"
         ? "Connection failed"
         : "Connecting";
-  // oak's serverName (not the host URL) in the detail line — cachedServerName,
-  // hostUrl only as a pre-profile fallback.
-  const serverName = connectionDirectory.get(session.recordId)?.cachedServerName
-    ?? session.hostUrl().replace(/^https?:\/\//, "");
 
   return (
     <div className="voice-bar">
@@ -244,7 +408,9 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
 
 /**
  * The ROOM VIEW — the tile grid that swaps into the chat area while the voice
- * bar keeps the connection controls (oak's chatPane swap). HOT PATHS ARE
+ * bar keeps the connection controls (oak's chatPane swap). A 1:1 CALL renders
+ * through the SAME view as a degenerate two-participant room (oak: one
+ * showRoomView/ParticipantTile, dispatched by roomIsCall). HOT PATHS ARE
  * IMPERATIVE: speaking rings and meters update via refs on the 10 Hz audio
  * poll — no React re-render per frame (a re-render would rip the range
  * sliders out from under the cursor).
@@ -257,14 +423,32 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
   const viewingFeedId = useStore(appStore, (state) => state.viewingFeedId);
   const viewingUsername = useStore(appStore, (state) => state.viewingUsername);
   const activeChannelId = useStore(appStore, (state) => state.activeVoiceChannelId);
+  const callState = useStore(appStore, (state) => state.callState);
+  const callPeer = useStore(appStore, (state) => state.callPeer);
+  const callMicOn = useStore(appStore, (state) => state.callMicOn);
+  const callDeafenedOn = useStore(appStore, (state) => state.callDeafenedOn);
+  const callCameraOn = useStore(appStore, (state) => state.callCameraOn);
+  const callSharing = useStore(appStore, (state) => state.callSharing);
+  const peerMicOn = useStore(appStore, (state) => state.peerMicOn);
+  const peerDeafenedOn = useStore(appStore, (state) => state.peerDeafenedOn);
+  const peerCameraOn = useStore(appStore, (state) => state.peerCameraOn);
+  const peerScreenOn = useStore(appStore, (state) => state.peerScreenOn);
   const marksByMember = useStore(session.voiceControlStore, (snapshot) => snapshot.marks);
   const members = useStore(session.memberStore, (state) => state.members);
   const roles = useStore(session.memberStore, (state) => state.roles);
 
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const callSelfVideoRef = useRef<HTMLVideoElement | null>(null);
+  const callPeerVideoRef = useRef<HTMLVideoElement | null>(null);
   const shareVideoRefs = useRef(new Map<string, HTMLVideoElement>());
   const [speakingUsers, setSpeakingUsers] = useState<ReadonlySet<string>>(new Set());
   const [memberMenu, setMemberMenu] = useState<{ username: string; x: number; y: number } | null>(null);
+  /** True once the peer's video track actually landed in the <video> element —
+   *  the "Sharing screen…" plate reads until then (oak's renameRemoteScreen). */
+  const [callPeerVideoReady, setCallPeerVideoReady] = useState(false);
+
+  const callMode = callState === "connecting" || callState === "in-call";
+  const callPeerMedia = peerScreenOn || peerCameraOn;
 
   // Wire the runtime's imperative view hooks. The watched share binds INTO THE
   // OWNER'S TILE (oak's ParticipantTile) — there is no separate share panel.
@@ -286,6 +470,33 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
       voiceView.dropShareVideo = () => undefined;
     };
   }, []);
+
+  // The call's peer-video hook (the runtime routes the remote track here) —
+  // mounted only in call mode; the track may have arrived before this render.
+  useEffect(() => {
+    if (!callMode) {
+      return;
+    }
+    callView.attachPeerVideo = (track: MediaStreamTrack) => {
+      const element = callPeerVideoRef.current;
+      setCallPeerVideoReady(true);
+      if (element) {
+        element.srcObject = new MediaStream([track]);
+        void element.play().catch(() => undefined);
+      }
+    };
+    callView.dropPeerVideo = () => {
+      setCallPeerVideoReady(false);
+      const element = callPeerVideoRef.current;
+      if (element) {
+        element.srcObject = null;
+      }
+    };
+    return () => {
+      callView.attachPeerVideo = () => undefined;
+      callView.dropPeerVideo = () => undefined;
+    };
+  }, [callMode]);
 
   // oak's speaking poll (pollSpeakingLevels): every 150 ms take the SNAPSHOT of
   // who is speaking and repaint the set — self-healing against a missed
@@ -312,7 +523,7 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
     window.spaceWindow?.onClosed(() => popoutClosed());
   }, []);
 
-  // Own tile preview: the live LOCAL track — the camera OR the shared screen.
+  // Own tile preview (VOICE ROOM): the live LOCAL track — the camera OR the shared screen.
   useEffect(() => {
     const element = localVideoRef.current;
     if (!element) {
@@ -321,6 +532,33 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
     const track = cameraOn ? getCameraTrack() : sharing ? getVoiceShareTrack() : null;
     element.srcObject = track !== null ? new MediaStream([track]) : null;
   }, [cameraOn, sharing]);
+
+  // Own tile preview (CALL): same rule, the call's local track.
+  useEffect(() => {
+    const element = callSelfVideoRef.current;
+    if (!element) {
+      return;
+    }
+    const track = callCameraOn || callSharing ? getCallLocalVideoTrack() : null;
+    element.srcObject = track !== null ? new MediaStream([track]) : null;
+  }, [callCameraOn, callSharing]);
+
+  // The peer's video may have arrived before the <video> element mounted — re-bind on flip.
+  useEffect(() => {
+    if (!callMode || !callPeerMedia) {
+      return;
+    }
+    const element = callPeerVideoRef.current;
+    if (!element || element.srcObject !== null) {
+      return;
+    }
+    const track = getCallPeerVideoTrack();
+    if (track !== null) {
+      element.srcObject = new MediaStream([track]);
+      void element.play().catch(() => undefined);
+      setCallPeerVideoReady(true);
+    }
+  }, [callMode, callPeerMedia]);
 
   // Pop-out frame pump: grabs the WATCHED tile's <video> into a canvas → JPEG → IPC.
   useEffect(() => {
@@ -442,6 +680,51 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
     );
   };
 
+  // The CALL tiles — the same ParticipantTile shape, fed by the call machine
+  // instead of the SFU (oak: roomParticipants() = {self, callPeer}). No Watch
+  // mechanics: one video m-line, frames flow on their own.
+  const renderCallTile = (username: string, isSelf: boolean) => {
+    const ownMedia = isSelf && (callCameraOn || callSharing);
+    return (
+      <div
+        key={isSelf ? "call-self" : "call-peer"}
+        className={"tile"
+          + (isSelf ? " self" : "")
+          + (speakingUsers.has(username) ? " speaking" : "")}
+        onContextMenu={isSelf ? undefined : (event) => {
+          event.preventDefault();
+          setMemberMenu({ username, x: event.clientX, y: event.clientY });
+        }}
+      >
+        <div className="tile-screen-slot">
+          {isSelf && ownMedia ? (
+            <>
+              <div className="tile-slot-plate">{callSharing ? "Your screen" : "Your camera"}</div>
+              <video ref={callSelfVideoRef} autoPlay playsInline muted />
+            </>
+          ) : isSelf ? (
+            <Avatar session={session} username={username} size={100} />
+          ) : callPeerMedia ? (
+            <>
+              {callPeerVideoReady ? null : (
+                <div className="tile-slot-plate"><span className="icon mdi-monitor" /> Sharing screen…</div>
+              )}
+              <video ref={callPeerVideoRef} autoPlay playsInline />
+            </>
+          ) : (
+            <Avatar session={session} username={username} size={100} />
+          )}
+        </div>
+        <div className="tile-foot">
+          <span className="tile-name" style={{ color: nameColor(username) ?? undefined }}>{username}{isSelf ? " (you)" : ""}</span>
+          {isSelf
+            ? <CallMarks micOn={callMicOn} deafenedOn={callDeafenedOn} />
+            : <CallMarks micOn={peerMicOn} deafenedOn={peerDeafenedOn} />}
+        </div>
+      </div>
+    );
+  };
+
   const channel = activeChannelId !== null ? session.channelStore.get(activeChannelId) : null;
   const screens = participants.filter((feed) => feed.streams.some((stream) => stream.type === "video")).length;
 
@@ -449,10 +732,15 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
     <div className="room-view">
       <div className="room-view-header">
         {/* oak's header order: grey voice glyph → title → "N in room · M screens"
-            → stretch → the BACK button at the RIGHT edge (buildRoomView 4261-4276). */}
+            → stretch → the BACK button at the RIGHT edge (buildRoomView 4261-4276).
+            In a call the title is the PEER's name (roomTitleLabel = callPeer). */}
         <span className="icon mdi-volume-high" />
-        <span className="pane-title">{channel !== null ? channel.name : "Voice room"}</span>
-        <span className="room-view-sub">{participants.length + 1} in room{screens > 0 ? ` · ${screens} screen${screens > 1 ? "s" : ""}` : ""}</span>
+        <span className="pane-title">{callMode ? (callPeer ?? "Call") : channel !== null ? channel.name : "Voice room"}</span>
+        <span className="room-view-sub">
+          {callMode
+            ? `2 in room${callPeerMedia ? " · 1 screen" : ""}`
+            : `${participants.length + 1} in room${screens > 0 ? ` · ${screens} screen${screens > 1 ? "s" : ""}` : ""}`}
+        </span>
         <button className="voice-toggle icon-button room-view-back" title="Back to chat" onClick={toggleRoomView}>
           <span className="icon mdi-chevron-left" />
         </button>
@@ -461,18 +749,30 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
         {/* No share panel above the grid (oak): the watched preview lives inside
             the owner's tile; the pop-out pump reads that tile's <video>. */}
         <div className="tile-grid">
-          {renderTile(session.username(), true, null)}
-          {/* oak's tile order: self FIRST, the rest alphabetical (rebuildRoomParticipants). */}
-          {[...participants]
-            .sort((left, right) => left.display.localeCompare(right.display))
-            .map((feed) => renderTile(feed.display, false, feed))}
+          {callMode ? (
+            <>
+              {renderCallTile(session.username(), true)}
+              {callPeer !== null ? renderCallTile(callPeer, false) : null}
+            </>
+          ) : (
+            <>
+              {renderTile(session.username(), true, null)}
+              {/* oak's tile order: self FIRST, the rest alphabetical (rebuildRoomParticipants). */}
+              {[...participants]
+                .sort((left, right) => left.display.localeCompare(right.display))
+                .map((feed) => renderTile(feed.display, false, feed))}
+            </>
+          )}
         </div>
       </div>
       {memberMenu !== null ? (
         <VoiceMemberCard
           session={session}
           username={memberMenu.username}
-          hasShare={participants.some((feed) => feed.display === memberMenu.username && feed.streams.some((stream) => stream.type === "video"))}
+          hasShare={callMode
+            ? peerScreenOn
+            : participants.some((feed) => feed.display === memberMenu.username && feed.streams.some((stream) => stream.type === "video"))}
+          moderation={!callMode}
           x={memberMenu.x}
           y={memberMenu.y}
           onClose={() => setMemberMenu(null)}
@@ -529,13 +829,15 @@ function VolumeRow({ label, initialGain, onChange }: {
 /**
  * oak's voice-member card (showVoiceMemberMenu port): personal volumes on top —
  * "Voice" always, a second "Share audio" row while that member has an announced
- * share — and the moderation rows below (hidden without the permission).
+ * share — and the moderation rows below (hidden without the permission). In a
+ * CALL the card is volumes ONLY (oak's showCallVolumeMenu — no moderation in P2P).
  * Shared by the room-view tiles and the sidebar's voice-member rows.
  */
-export function VoiceMemberCard({ session, username, hasShare, x, y, onClose }: {
+export function VoiceMemberCard({ session, username, hasShare, moderation = true, x, y, onClose }: {
   session: ConnectionSession;
   username: string;
   hasShare: boolean;
+  moderation?: boolean;
   x: number;
   y: number;
   onClose(): void;
@@ -556,9 +858,9 @@ export function VoiceMemberCard({ session, username, hasShare, x, y, onClose }: 
       : { owner: member.owner, topPosition: topPosition(member, roles) };
   };
   const actable = canActOn(hierarchyOf(session.username()), hierarchyOf(username));
-  const canMute = permissions.includes("MUTE_MEMBERS") && actable;
-  const canDeafen = permissions.includes("DEAFEN_MEMBERS") && actable;
-  const canKick = permissions.includes("MOVE_MEMBERS") && actable;
+  const canMute = moderation && permissions.includes("MUTE_MEMBERS") && actable;
+  const canDeafen = moderation && permissions.includes("DEAFEN_MEMBERS") && actable;
+  const canKick = moderation && permissions.includes("MOVE_MEMBERS") && actable;
 
   const left = Math.min(Math.max(8, x), window.innerWidth - 250);
   const top = Math.min(Math.max(8, y), window.innerHeight - 8 - (hasShare ? 190 : 150));
@@ -586,5 +888,27 @@ export function VoiceMemberCard({ session, username, hasShare, x, y, onClose }: 
         </button>
       ) : null}
     </div>
+  );
+}
+
+/** The room↔call exclusivity question (oak parity: both directions ask). */
+export function CallConflictModal(): React.JSX.Element | null {
+  const conflict = useStore(appStore, (state) => state.callConflict);
+  if (conflict === null) {
+    return null;
+  }
+  const description = conflict.kind === "start-call"
+    ? `Calling ${conflict.peer} will disconnect you from the voice room.`
+    : conflict.kind === "accept-call"
+      ? `Accepting ${conflict.peer}'s call will disconnect you from the voice room.`
+      : `Joining the voice room will end your call with ${conflict.peer}.`;
+  return (
+    <Modal title="Are you sure?" onClose={() => resolveCallConflict(false)}>
+      <div className="modal-note">{description}</div>
+      <div className="modal-actions">
+        <button className="ghost" onClick={() => resolveCallConflict(false)}>Cancel</button>
+        <button className="danger" onClick={() => resolveCallConflict(true)}>Continue</button>
+      </div>
+    </Modal>
   );
 }

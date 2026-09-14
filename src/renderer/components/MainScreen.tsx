@@ -7,8 +7,7 @@ import { Sidebar } from "./Sidebar";
 import { ChatPane } from "./ChatPane";
 import { FriendsPane } from "./FriendsPane";
 import { MembersPane } from "./MembersPane";
-import { VoiceBar, RoomView } from "./VoiceRoom";
-import { CallConflictModal, CallOverlayCard, CallPane } from "./CallPane";
+import { VoiceBar, RoomView, CallConflictModal } from "./VoiceRoom";
 import { Diagnostics } from "./Diagnostics";
 import { Avatar } from "./Avatar";
 
@@ -22,6 +21,7 @@ const STOMP_STATUS: Record<string, { text: string; className: string }> = {
 export function MainScreen({ session }: { session: ConnectionSession }): React.JSX.Element {
   const diagOpen = useStore(appStore, (state) => state.diagOpen);
   const callState = useStore(appStore, (state) => state.callState);
+  const activeVoiceChannelId = useStore(appStore, (state) => state.activeVoiceChannelId);
   const dmMode = useStore(appStore, (state) => state.dmMode);
   const activeDmId = useStore(appStore, (state) => state.activeDmId);
   const roomViewOpen = useStore(appStore, (state) => state.roomViewOpen);
@@ -39,15 +39,14 @@ export function MainScreen({ session }: { session: ConnectionSession }): React.J
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // The live call takes over the content area (oak's call room view); a RING does
-  // not — the card overlay leaves chat usable while the phone "rings".
-  const callOccupiesContent = callState === "connecting" || callState === "in-call";
+  // A 1:1 call does NOT take the chat pane (oak): its surfaces are the voice
+  // bar + the room view (a degenerate 2-tile room). The room view is a
+  // chat-area swap opened by the voice-bar click (auto-opened on accept);
+  // the roster is its own 190px column — hidden in Home mode and under the view.
   const friendsOccupiesContent = dmMode && activeDmId === null;
-  // oak layout: the room view is a chat-area swap (voice bar click); the roster
-  // is its own 190px column beside the chat — hidden in Home mode and under the
-  // full-width call view.
-  const roomViewOccupiesContent = roomViewOpen && !callOccupiesContent && !friendsOccupiesContent;
-  const rosterVisible = !dmMode && !callOccupiesContent && !roomViewOccupiesContent;
+  const voiceSurfaceLive = callState !== "idle" || activeVoiceChannelId !== null;
+  const roomViewOccupiesContent = roomViewOpen && voiceSurfaceLive && !friendsOccupiesContent;
+  const rosterVisible = !dmMode && !roomViewOccupiesContent;
 
   return (
     <>
@@ -65,9 +64,7 @@ export function MainScreen({ session }: { session: ConnectionSession }): React.J
           </div>
         </div>
         <main className="content">
-          {callOccupiesContent ? (
-            <CallPane session={session} />
-          ) : friendsOccupiesContent ? (
+          {friendsOccupiesContent ? (
             <FriendsPane session={session} />
           ) : roomViewOccupiesContent ? (
             <RoomView session={session} />
@@ -78,7 +75,6 @@ export function MainScreen({ session }: { session: ConnectionSession }): React.J
         </main>
       </div>
       {/* The settings overlays live in App (direct children of #app) — see App.tsx. */}
-      <CallOverlayCard />
       <CallConflictModal />
       {diagOpen ? <Diagnostics /> : null}
     </>

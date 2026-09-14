@@ -20,6 +20,7 @@ import { MAX_VOICE_REJOIN_ATTEMPTS, rejoinDelayMs, rejoinExhausted } from "../do
 import { dmDisplayName } from "../domain/logic/dm-display";
 import type { MentionIdentity } from "../domain/logic/notification-decider";
 import { dmToastHeader, toastServerHeader } from "../domain/logic/toast-preview";
+import { paletteColor } from "../domain/logic/user-palette";
 import { SettingsStore } from "../domain/stores/SettingsStore";
 import type { NotificationPrefs } from "../types";
 import { notifications } from "./notifications";
@@ -82,6 +83,10 @@ export interface AppState {
   callSeconds: number;
   callCameraOn: boolean;
   callSharing: boolean;
+  /** OWN call-local mic/deafen state (reactive mirror of the PeerCallSession,
+   *  so the voice bar and the self tile don't poll the session). */
+  callMicOn: boolean;
+  callDeafenedOn: boolean;
   peerMicOn: boolean;
   peerDeafenedOn: boolean;
   peerCameraOn: boolean;
@@ -137,6 +142,8 @@ class AppStore extends Emitter {
     callSeconds: 0,
     callCameraOn: false,
     callSharing: false,
+    callMicOn: true,
+    callDeafenedOn: false,
     peerMicOn: true,
     peerDeafenedOn: false,
     peerCameraOn: false,
@@ -1684,27 +1691,25 @@ export function sendPopoutFrame(dataUrl: string): void {
 
 const CALL_VOICE_FEED_ID = -1;
 const CALL_SHARE_FEED_ID = -2;
-const CALL_GAP_TIMEOUT_MS = 30_000;
 
 let callSession: PeerCallSession | null = null;
 let callMicStream: MediaStream | null = null;
 let callCameraStream: MediaStream | null = null;
 let callDisplayStream: MediaStream | null = null;
 let ringTimeoutTimer: number | null = null;
-let gapTimeoutTimer: number | null = null;
 let callTickerTimer: number | null = null;
 /** The mic state to restore when a self-deafen ends (oak's implied-mute survival). */
 let callMicStateBeforeDeafen = true;
 /** Signals that raced ahead of the session (OFFER while the callee's mic was still starting). */
 const pendingCallSignals: IncomingCallSignal[] = [];
 
-/** Wiring point for the call pane's imperative peer-video view. */
+/** Wiring point for the room view's imperative peer-video element (call mode). */
 export const callView = {
   attachPeerVideo(_track: MediaStreamTrack): void {
-    // replaced by CallPane at mount
+    // replaced by RoomView at mount (call mode)
   },
   dropPeerVideo(): void {
-    // replaced by CallPane at mount
+    // replaced by RoomView at mount (call mode)
   },
 };
 
@@ -1746,6 +1751,15 @@ async function fetchIceServers(): Promise<RTCIceServer[]> {
   }
 }
 
+/** The call's own-mic speaking analysis (the self tile's green frame): the same
+ *  roomAudio own-mic chain the voice room uses, fed by the call's mic track. */
+function attachOwnCallMic(micStream: MediaStream): void {
+  const track = micStream.getAudioTracks()[0];
+  if (track) {
+    roomAudio.attachOwnMic(appStore.getSnapshot().ownUsername ?? "you", track);
+  }
+}
+
 function callCallbacks(peer: string): PeerCallOptions["callbacks"] {
   return {
     onRemoteTrack: (kind: PeerTrackKind, track: MediaStreamTrack) => {
@@ -1774,7 +1788,8 @@ function callCallbacks(peer: string): PeerCallOptions["callbacks"] {
     onPeerScreen: (enabled) => appStore.patch({ peerScreenOn: enabled }),
     onConnectionHealth: (healthy) => appStore.patch({ callHealthy: healthy }),
     onNegotiated: () => {
-      clearGapTimeout();
+      clearRingTimeout(); // the re-armed callee gap (accept→offer) is closed
+      notifications.dismissCallCard();
       appStore.patch({ callState: "in-call", callHealthy: true });
       startCallTicker();
       log.info("call", `media up with ${peer}`);
@@ -1787,12 +1802,16 @@ function handleCallSignal(signal: IncomingCallSignal): void {
   const state = appStore.getSnapshot();
   switch (signal.type) {
     case "RING": {
+      if (state.callState === "ringing-in" && state.callPeer === signal.from) {
+        return; // redelivery of the SAME ring — the card is already up (oak swallows it too)
+      }
       if (state.callState !== "idle") {
         // Busy — the polite auto-reject (oak parity: a duplicate RING never reaches the card).
         activeSession?.sendCallSignal({ type: "REJECT", to: signal.from, sdp: null, candidate: null });
         return;
       }
       appStore.patch({ callState: "ringing-in", callPeer: signal.from, callHealthy: true, callSeconds: 0 });
+      showIncomingCallCard(signal.from);
       notifications.playChime();
       armRingTimeout();
       log.info("call", `incoming RING from ${signal.from}`);
@@ -1841,6 +1860,68 @@ function drainPendingCallSignals(): void {
   }
 }
 
+/** The incoming-call card in the always-on-top TOAST WINDOW (oak's CallOverlay
+ *  lived in its own screen-corner stage; ours reuses the toast window). The
+ *  avatar paints as the palette-initial fallback FIRST (the card must not wait
+ *  on the network), then the real image follows: the toast window is a SEPARATE
+ *  renderer context, so neither the roster's presigned URL (it may have aged
+ *  out — live report: a broken-image glyph) nor our blob: object URLs cross
+ *  over — the image is re-fetched through the attachment cache (fresh-link
+ *  recovery included) and re-sent as a data: URL. */
+function showIncomingCallCard(peer: string): void {
+  const session = activeSession;
+  // The avatar rides the ROSTER's UserSummary (rosterStore), not ServerMember.
+  const user = session?.rosterStore.getSnapshot().users.find((entry) => entry.username === peer) ?? null;
+  const serverName = serverDisplayName(session?.recordId ?? "");
+  const paint = (avatarUrl: string | null): void => {
+    notifications.showCallCard({
+      peer,
+      serverName,
+      avatarUrl,
+      avatarColor: paletteColor(peer),
+      status: "Incoming call",
+    });
+  };
+  paint(null);
+  const avatarKey = user?.avatarKey ?? null;
+  const avatarUrl = user?.avatarUrl ?? null;
+  if (session !== null && avatarKey !== null && avatarUrl !== null) {
+    // Diagnosed step by step into space.log — a silent catch here left the card
+    // on the fallback with nothing to go on (live report).
+    void (async () => {
+      try {
+        const objectUrl = await session.attachmentCache.loadImage({ key: avatarKey, url: avatarUrl });
+        log.info("call", `incoming-card avatar cache: ${objectUrl !== null ? "hit" : "null"}`);
+        if (objectUrl === null || activeSession !== session) {
+          return;
+        }
+        const blob = await fetch(objectUrl).then((response) => response.blob());
+        const dataUrl = await new Promise<string | null>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);
+          reader.onerror = () => resolve(null);
+          reader.readAsDataURL(blob);
+        });
+        log.info("call", `incoming-card avatar dataUrl: ${dataUrl !== null ? `${Math.round(dataUrl.length / 1024)} KB` : "null"}`);
+        const state = appStore.getSnapshot();
+        // Only while THIS ring is still the live one — a late decode must not
+        // resurrect the card or downgrade a "Connecting…" status.
+        if (dataUrl !== null && state.callState === "ringing-in" && state.callPeer === peer) {
+          paint(dataUrl);
+        }
+      } catch (error) {
+        log.warn("call", `incoming-card avatar failed: ${errorMessage(error)}`);
+      }
+    })();
+  } else {
+    log.info("call", `incoming-card avatar: no roster image for ${peer} (user=${user !== null}, key=${user?.avatarKey ?? "—"})`);
+  }
+}
+
+/** One timeout drives all bounded call phases (oak): RINGING_OUT → hang up
+ *  ("No answer"), RINGING_IN → missed, and — RE-ARMED on the callee after
+ *  Accept — the accept→OFFER gap: a caller that died between the two must not
+ *  leave a "Connecting…" card hanging forever. "Off" (0) rings until someone acts. */
 function armRingTimeout(): void {
   clearRingTimeout();
   const timeoutSeconds = settingsStore.getSnapshot().ringTimeoutSeconds;
@@ -1855,6 +1936,9 @@ function armRingTimeout(): void {
       notifications.showToast({ title: "Call", channelName: state.callPeer ?? "", body: "No answer." });
     } else if (state.callState === "ringing-in") {
       teardownCall(); // missed call — the caller's own timeout sends HANGUP
+    } else if (state.callState === "connecting") {
+      teardownCall(); // the callee's re-armed gap: ACCEPT flew, the offer never came
+      notifications.showToast({ title: "Call", channelName: state.callPeer ?? "", body: "Could not connect." });
     }
   }, timeoutSeconds * 1000);
 }
@@ -1863,24 +1947,6 @@ function clearRingTimeout(): void {
   if (ringTimeoutTimer !== null) {
     window.clearTimeout(ringTimeoutTimer);
     ringTimeoutTimer = null;
-  }
-}
-
-/** accept→media window: if the peer vanished after ACCEPT, do not hang in "connecting". */
-function armGapTimeout(): void {
-  clearGapTimeout();
-  gapTimeoutTimer = window.setTimeout(() => {
-    if (appStore.getSnapshot().callState === "connecting") {
-      teardownCall();
-      notifications.showToast({ title: "Call", channelName: appStore.getSnapshot().callPeer ?? "", body: "Could not connect." });
-    }
-  }, CALL_GAP_TIMEOUT_MS);
-}
-
-function clearGapTimeout(): void {
-  if (gapTimeoutTimer !== null) {
-    window.clearTimeout(gapTimeoutTimer);
-    gapTimeoutTimer = null;
   }
 }
 
@@ -1935,7 +2001,11 @@ async function establishCallerSession(peer: string): Promise<void> {
     teardownCall();
     return;
   }
+  session.playback.stop(); // one audible stream — the call owns the playout now (oak)
+  // Like a voice room join: the CHAT STAYS — the call view opens only by an
+  // explicit click on the voice bar's status row (user decision).
   appStore.patch({ callState: "connecting" });
+  attachOwnCallMic(micStream);
   const iceServers = await fetchIceServers();
   callSession = new PeerCallSession({
     isCaller: true,
@@ -1945,9 +2015,16 @@ async function establishCallerSession(peer: string): Promise<void> {
     sendSignal: (signal) => session.sendCallSignal(signal),
     callbacks: callCallbacks(peer),
   });
+  // Re-announce the pre-accept toggles (the user muted/deafened while the
+  // callee was still ringing) — the peer's badges must start truthful.
+  if (!callSession.isMicEnabled()) {
+    callSession.setMicEnabled(false); // rides MIC_OFF to the peer
+  }
+  if (roomAudio.isDeafened()) {
+    callSession.setDeafened(true); // rides DEAFEN_ON
+  }
   drainPendingCallSignals();
   await callSession.startOffer();
-  armGapTimeout();
 }
 
 /** The incoming card's Accept — asks about the room conflict first. */
@@ -1971,7 +2048,13 @@ async function acceptCallNow(): Promise<void> {
     return;
   }
   clearRingTimeout();
+  session.playback.stop(); // one audible stream — the call owns the playout now (oak)
+  // Like a voice room join: the CHAT STAYS — the call view opens only by an
+  // explicit click on the voice bar's status row (user decision).
   appStore.patch({ callState: "connecting" });
+  // oak keeps the card through the accept→OFFER gap — it just stops offering
+  // buttons and reads "Connecting…" until the offer lands.
+  notifications.updateCallCardStatus("Connecting…");
   try {
     callMicStream = await captureCallMic();
   } catch (error) {
@@ -1979,6 +2062,7 @@ async function acceptCallNow(): Promise<void> {
     teardownCall();
     return;
   }
+  attachOwnCallMic(callMicStream);
   const iceServers = await fetchIceServers();
   callSession = new PeerCallSession({
     isCaller: false,
@@ -1990,7 +2074,9 @@ async function acceptCallNow(): Promise<void> {
   });
   session.sendCallSignal({ type: "ACCEPT", to: peer, sdp: null, candidate: null });
   drainPendingCallSignals();
-  armGapTimeout();
+  // The ring timeout re-arms ON THE CALLEE: it now bounds the accept→OFFER gap
+  // (a caller that died between the two leaves nothing hanging forever — oak).
+  armRingTimeout();
 }
 
 export function rejectIncomingCall(): void {
@@ -2001,6 +2087,15 @@ export function rejectIncomingCall(): void {
   activeSession?.sendCallSignal({ type: "REJECT", to: state.callPeer, sdp: null, candidate: null });
   teardownCall();
 }
+
+// The toast window's call-card buttons land here (relayed by main).
+notifications.setCallActionHandler((action) => {
+  if (action === "accept") {
+    acceptIncomingCall();
+  } else {
+    rejectIncomingCall();
+  }
+});
 
 export function hangUpCall(): void {
   const state = appStore.getSnapshot();
@@ -2049,8 +2144,8 @@ export function joinVoiceGuarded(channel: Channel): void {
 
 function teardownCall(): void {
   notifications.stopRingback();
+  notifications.dismissCallCard();
   clearRingTimeout();
-  clearGapTimeout();
   stopCallTicker();
   if (callSession !== null) {
     callSession.close();
@@ -2064,6 +2159,7 @@ function teardownCall(): void {
   callDisplayStream = null;
   roomAudio.detachFeed(CALL_VOICE_FEED_ID);
   roomAudio.detachFeed(CALL_SHARE_FEED_ID);
+  roomAudio.detachOwnMic();
   roomAudio.setDeafened(false); // call-local deafen dies with the call
   callPeerVideoTrack = null;
   callView.dropPeerVideo();
@@ -2075,17 +2171,33 @@ function teardownCall(): void {
     callSeconds: 0,
     callCameraOn: false,
     callSharing: false,
+    callMicOn: true,
+    callDeafenedOn: false,
     peerMicOn: true,
     peerDeafenedOn: false,
     peerCameraOn: false,
     peerScreenOn: false,
+    // oak's closeCall → restoreChatFromRoom: the call's room view dies with it.
+    roomViewOpen: false,
   });
   callMicStateBeforeDeafen = true;
 }
 
 export function toggleCallMic(): void {
-  if (callSession !== null) {
-    callSession.setMicEnabled(!callSession.isMicEnabled());
+  const session = callSession;
+  if (session !== null) {
+    const next = !session.isMicEnabled();
+    session.setMicEnabled(next);
+    appStore.patch({ callMicOn: next });
+    return;
+  }
+  // Pre-accept (ringing-out): the mic is ALREADY captured — gate the track
+  // directly; the PeerCallSession inherits the gate (its micEnabled reads the
+  // track) and re-announces it to the peer once the offer flies.
+  const track = callMicStream?.getAudioTracks()[0] ?? null;
+  if (track) {
+    track.enabled = !track.enabled;
+    appStore.patch({ callMicOn: track.enabled });
   }
 }
 
@@ -2103,6 +2215,7 @@ export function toggleCallDeafen(): void {
   const nowDeafened = !roomAudio.isDeafened();
   roomAudio.setDeafened(nowDeafened);
   if (session === null) {
+    appStore.patch({ callDeafenedOn: nowDeafened });
     return;
   }
   if (nowDeafened) {
@@ -2114,6 +2227,7 @@ export function toggleCallDeafen(): void {
     session.setMicEnabled(true);
   }
   session.setDeafened(nowDeafened);
+  appStore.patch({ callDeafenedOn: nowDeafened, callMicOn: session.isMicEnabled() });
 }
 
 export async function toggleCallCamera(): Promise<void> {

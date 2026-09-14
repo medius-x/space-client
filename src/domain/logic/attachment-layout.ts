@@ -1,7 +1,11 @@
 /**
- * Discord-style mosaic for message images — pure math, unit-tested. 1 image:
- * one large tile; 2–3: a row; 4+: a 2-column grid of squares. The caller caps
- * the count at 10 (the server's MAX_ATTACHMENTS).
+ * oak's image mosaic (AttachmentLayout.java), pure math, unit-tested:
+ * 1 image renders as a SQUARE bounded by the row's usable width and its OWN
+ * smaller natural side — NEVER upscaled past its natural size (64×64 stays
+ * 64×64); 2–3 images render in ONE row of square, center-cropped tiles; 4–10
+ * render in a 2-column grid of square, center-cropped tiles (a crop — not a
+ * fit — is what keeps the grid compact; the Discord way). The caller caps the
+ * count at MAX_ATTACHMENTS (the server's limit).
  */
 
 export interface MosaicTile {
@@ -9,25 +13,60 @@ export interface MosaicTile {
   height: number;
 }
 
-const GAP = 8;
-const SINGLE_MAX_WIDTH = 420;
-const SINGLE_HEIGHT = 280;
-const ROW_HEIGHT = 200;
+export const MAX_ATTACHMENTS = 10;
+/** oak's TILE_GAP = 4 (we had 8 — this is a straight port). */
+export const TILE_GAP = 4;
 
-export function computeMosaicTiles(count: number, containerWidth: number): MosaicTile[] {
-  const usable = Math.max(120, Math.floor(containerWidth));
-  if (count <= 0) {
-    return [];
-  }
-  if (count === 1) {
-    return [{ width: Math.min(usable, SINGLE_MAX_WIDTH), height: SINGLE_HEIGHT }];
+/** oak's columnsFor: 1 → 1, 2–3 → count, 4+ → 2. */
+export function mosaicColumns(count: number): number {
+  if (count <= 1) {
+    return 1;
   }
   if (count <= 3) {
-    const width = Math.floor((usable - GAP * (count - 1)) / count);
-    return Array.from({ length: count }, () => ({ width, height: ROW_HEIGHT }));
+    return count;
   }
-  const width = Math.floor((usable - GAP) / 2);
-  return Array.from({ length: count }, () => ({ width, height: width }));
+  return 2;
+}
+
+/** The square side of a grid/row tile: the gap is only BETWEEN columns. */
+export function gridTileSide(usableWidth: number, columns: number): number {
+  return Math.floor((usableWidth - TILE_GAP * (columns - 1)) / columns);
+}
+
+/** The SINGLE image's square side: the row width capped by the image's own
+ *  SMALLER natural side — no upscale (a negative natural side = unknown → the
+ *  full usable width, the decode replaces it). Aspect ratio is PRESERVED
+ *  inside the square (contain, not cover — the caller's CSS). */
+export function singleTileSide(usableWidth: number, naturalWidth: number, naturalHeight: number): number {
+  const naturalSide = naturalWidth > 0 && naturalHeight > 0 ? Math.min(naturalWidth, naturalHeight) : usableWidth;
+  return Math.min(usableWidth, naturalSide);
+}
+
+/** The single image's actual BOX (user decision, 2026-09-15): the image as it
+ *  fits into the singleTileSide square — the letterbox padding TRIMMED, so the
+ *  box hugs the visible image exactly (oak keeps the square bounding box; the
+ *  black bars read as broken rendering). One side equals the square side. */
+export function singleTileBox(usableWidth: number, naturalWidth: number, naturalHeight: number): { width: number; height: number } {
+  const side = singleTileSide(usableWidth, naturalWidth, naturalHeight);
+  if (naturalWidth <= 0 || naturalHeight <= 0) {
+    return { width: side, height: side }; // unknown yet — the square placeholder
+  }
+  const larger = Math.max(naturalWidth, naturalHeight);
+  return {
+    width: Math.max(1, Math.round((side * naturalWidth) / larger)),
+    height: Math.max(1, Math.round((side * naturalHeight) / larger)),
+  };
+}
+
+/** The 2+ tiles — all square, all the same side. The single image is NOT here:
+ *  it is sized by singleTileSide against its own natural dimensions. */
+export function computeMosaicTiles(count: number, containerWidth: number): MosaicTile[] {
+  const usable = Math.max(120, Math.floor(containerWidth));
+  if (count <= 1) {
+    return [];
+  }
+  const side = gridTileSide(usable, mosaicColumns(count));
+  return Array.from({ length: count }, () => ({ width: side, height: side }));
 }
 
 export function mosaicHeight(tiles: readonly MosaicTile[]): number {
@@ -39,7 +78,7 @@ export function mosaicHeight(tiles: readonly MosaicTile[]): number {
   }
   const rows = Math.ceil(tiles.length / 2);
   const rowHeight = tiles[0]?.height ?? 0;
-  return rows * rowHeight + (rows - 1) * GAP;
+  return rows * rowHeight + (rows - 1) * TILE_GAP;
 }
 
 /** File-type sniffing by extension (the DTO carries no content type). */

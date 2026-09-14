@@ -78,6 +78,10 @@ contextBridge.exposeInMainWorld("spaceToast", {
   clicked(id: number): void {
     ipcRenderer.send("space-toast:clicked", id);
   },
+  /** The call card's Accept/Decline — main relays to the MAIN window renderer. */
+  callAction(action: "accept" | "decline"): void {
+    ipcRenderer.send("space-toast:callAction", action);
+  },
   /** True while the cursor is over actual content — the window accepts clicks. */
   hover(interactive: boolean): void {
     ipcRenderer.send("space-toast:hover", interactive);
@@ -105,6 +109,14 @@ contextBridge.exposeInMainWorld("spaceToast", {
     ipcRenderer.on("toast:clicked", (_event, id: unknown) => {
       if (typeof id === "number") {
         callback(id);
+      }
+    });
+  },
+  onCallAction(callback: (action: "accept" | "decline") => void): void {
+    ipcRenderer.removeAllListeners("toast:callAction");
+    ipcRenderer.on("toast:callAction", (_event, action: unknown) => {
+      if (action === "accept" || action === "decline") {
+        callback(action);
       }
     });
   },
