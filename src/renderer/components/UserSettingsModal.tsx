@@ -23,14 +23,15 @@ import { Avatar } from "./Avatar";
 import { AvatarEditor, userAvatarApi } from "./ProfileModal";
 
 /**
- * User settings — oak's SettingsWindow: General (avatar), Account (password +
- * username mutations with token rotation), Audio (processing + microphone/
- * speaker devices), Video (the default camera), Appearance (input, display,
- * images), Notifications (global + per-server overrides), Connections
- * (read-only). oak's STAGED model for Audio/Video/Appearance/Notifications:
- * the controls write a draft in memory, the window-level Apply button commits,
- * leaving the section (or closing the window) without Apply discards. General/
- * Account/Connections are immediate (oak parity — their buttons act directly).
+ * User settings — oak's SettingsWindow. The sections split by SCOPE (user
+ * decision): General (avatar + nickname) and Account (password/login) are
+ * SERVER-related — they edit THIS instance's account, and the panel heading
+ * carries " — {server name}" for them; Audio/Video/Appearance/Notifications/
+ * Connections are CLIENT-related (one set for every server). oak's STAGED
+ * model for the client sections: the controls write a draft in memory, the
+ * window-level Apply button commits, leaving the section (or closing the
+ * window) without Apply discards. General/Account/Connections are immediate
+ * (oak parity — their buttons act directly).
  */
 
 type Section = "general" | "account" | "audio" | "video" | "appearance" | "notifications" | "connections";
@@ -48,6 +49,10 @@ const SECTIONS: { key: Section; label: string }[] = [
 /** The sections that stage their edits behind the window-level Apply button. */
 const STAGED_SECTIONS: ReadonlySet<Section> = new Set(["audio", "video", "appearance", "notifications"]);
 
+/** The SERVER-related sections: the panel heading appends " — {server name}"
+ *  so the scope is visible right in the chrome (user decision). */
+const SERVER_SCOPED_SECTIONS: ReadonlySet<Section> = new Set(["general", "account"]);
+
 /** oak's pane heading — the same chrome Server Settings sections carry. */
 function SectionHeading({ title }: { title: string }): React.JSX.Element {
   return <div className="roles-list-header overview-heading"><span>{title}</span></div>;
@@ -56,6 +61,12 @@ function SectionHeading({ title }: { title: string }): React.JSX.Element {
 export function UserSettingsModal({ session }: { session: ConnectionSession }): React.JSX.Element {
   const [section, setSection] = useState<Section>("general");
   const staged = useStagedSettings(session);
+  const serverName = useStore(connectionDirectory, (records) =>
+    records.find((entry) => entry.id === session.recordId)?.cachedServerName ?? session.hostUrl());
+  const sectionLabel = SECTIONS.find((entry) => entry.key === section)?.label ?? "";
+  const headingTitle = SERVER_SCOPED_SECTIONS.has(section)
+    ? `${sectionLabel} — ${serverName}`
+    : sectionLabel;
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -89,12 +100,12 @@ export function UserSettingsModal({ session }: { session: ConnectionSession }): 
         ))}
       </div>
       <div className="settings-body">
-        <SectionHeading title={SECTIONS.find((entry) => entry.key === section)?.label ?? ""} />
+        <SectionHeading title={headingTitle} />
         {section === "general" ? <GeneralSection session={session} /> : null}
         {section === "account" ? <AccountSection session={session} /> : null}
         {section === "audio" ? <AudioSection staged={staged} /> : null}
         {section === "video" ? <VideoSection staged={staged} /> : null}
-        {section === "appearance" ? <AppearanceSection session={session} staged={staged} /> : null}
+        {section === "appearance" ? <AppearanceSection staged={staged} /> : null}
         {section === "notifications" ? <NotificationsSection session={session} staged={staged} /> : null}
         {section === "connections" ? <ConnectionsSection session={session} /> : null}
         {/* The Apply button hugs the section content (staged sections only) and
@@ -181,7 +192,7 @@ function useStagedSettings(session: ConnectionSession): StagedSettings {
 }
 
 // ---------------------------------------------------------------------------
-// General — the avatar, in the Server Settings → Overview idiom
+// General — the avatar + the nickname, in the Server Settings → Overview idiom
 // ---------------------------------------------------------------------------
 
 function GeneralSection({ session }: { session: ConnectionSession }): React.JSX.Element {
@@ -189,10 +200,12 @@ function GeneralSection({ session }: { session: ConnectionSession }): React.JSX.
   // The rename model: what General shows is the NICKNAME (the name people see);
   // the login never surfaces here.
   const ownDisplayName = useDisplayName(session, ownUsername);
+  const canChangeNickname = useStore(session.permissionStore, (state) =>
+    state.my?.permissions.includes(CHANGE_NICKNAME_PERMISSION) ?? false);
   return (
     <div>
       {/* Overview idiom: the identity name rides under the heading in the
-          role-editor typography — no pencil, the nickname edits in Appearance. */}
+          role-editor typography — no pencil, the nickname edits below. */}
       <div className="role-editor-title-row">
         <span className="role-editor-name">{ownDisplayName}</span>
       </div>
@@ -204,6 +217,16 @@ function GeneralSection({ session }: { session: ConnectionSession }): React.JSX.
         removeTitle="Remove avatar"
         removeNote="Remove your avatar? This cannot be undone."
       />
+      {canChangeNickname ? (
+        <>
+          <h3>Nickname</h3>
+          <div className="settings-hint">
+            The name everyone sees next to your messages, in the roster and in voice. Mentions
+            resolve against nicknames — letters, digits, underscore and dash, no spaces.
+          </div>
+          <NicknameForm session={session} current={ownDisplayName} />
+        </>
+      ) : null}
     </div>
   );
 }
@@ -301,14 +324,12 @@ function AccountSection({ session }: { session: ConnectionSession }): React.JSX.
     state.my?.permissions.includes(CHANGE_NICKNAME_PERMISSION) ?? false);
   const ownUsername = useStore(appStore, (state) => state.ownUsername) ?? session.username();
   const ownDisplayName = useDisplayName(session, ownUsername);
-  const record = connectionDirectory.get(session.recordId);
 
   return (
     <div>
       <h3>Change password</h3>
       <div className="settings-hint">
-        Changes the password for {ownDisplayName} on {record?.cachedServerName ?? session.hostUrl()}.
-        The session stays connected.
+        Changes the password for {ownDisplayName}. The session stays connected.
       </div>
       <PasswordForm />
       {canChangeLogin ? (
@@ -433,7 +454,7 @@ function LoginForm({ current }: { current: string }): React.JSX.Element {
   );
 }
 
-/** The nickname form (Appearance): the DISPLAY name everyone sees — an instant
+/** The nickname form (General): the DISPLAY name everyone sees — an instant
  *  self-rename through the member endpoint (409 = the nickname is taken). */
 function NicknameForm({ session, current }: { session: ConnectionSession; current: string }): React.JSX.Element {
   const [nickname, setNickname] = useState(current);
@@ -504,23 +525,12 @@ function NicknameForm({ session, current }: { session: ConnectionSession; curren
 // Appearance / Notifications (staged) / Connections (read-only)
 // ---------------------------------------------------------------------------
 
-function AppearanceSection({ session, staged }: { session: ConnectionSession; staged: StagedSettings }): React.JSX.Element {
-  const canChangeNickname = useStore(session.permissionStore, (state) =>
-    state.my?.permissions.includes(CHANGE_NICKNAME_PERMISSION) ?? false);
-  const ownUsername = useStore(appStore, (state) => state.ownUsername) ?? session.username();
-  const ownDisplayName = useDisplayName(session, ownUsername);
+/** Appearance is CLIENT-related (user decision): input/display/image prefs that
+ *  apply to every server — no server context header, no nickname (that lives
+ *  in General with the rest of the server-scoped identity). */
+function AppearanceSection({ staged }: { staged: StagedSettings }): React.JSX.Element {
   return (
     <div>
-      {canChangeNickname ? (
-        <>
-          <h3>Nickname</h3>
-          <div className="settings-hint">
-            The name everyone sees next to your messages, in the roster and in voice. Mentions
-            resolve against nicknames — letters, digits, underscore and dash, no spaces.
-          </div>
-          <NicknameForm session={session} current={ownDisplayName} />
-        </>
-      ) : null}
       <h3>Message input</h3>
       <label className="settings-check">
         <input

@@ -98,7 +98,8 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
           <div className="pane-title">Online — {roster.users.filter((user) => roster.presence.has(user.username)).length}</div>
           {roster.users.map((user) => (
             <div key={user.id} className="member-row">
-              <Avatar session={session} username={user.username} size={32} showPresence={roster.presence.has(user.username)} />
+              {/* The dot rides EVERY avatar (Discord): green = online, grey = offline. */}
+              <Avatar session={session} username={user.username} size={32} showPresence online={roster.presence.has(user.username)} />
               <span className="member-name">{user.displayName ?? user.username}</span>
             </div>
           ))}
@@ -141,7 +142,9 @@ function MemberRow({ session, member, online, isSelf, nameColor, onMenu }: {
 }): React.JSX.Element {
   return (
     <div className={"member-row" + (online ? "" : " offline")} onContextMenu={onMenu}>
-      <Avatar session={session} username={member.username} size={36} showPresence={online} />
+      {/* Discord: the presence dot rides EVERY avatar — green online, grey
+          offline (a missing dot read as "no status", live report). */}
+      <Avatar session={session} username={member.username} size={36} showPresence online={online} />
       <span className="member-name" style={{ color: nameColor ?? (online ? "var(--sp-text)" : "var(--sp-text-muted)") }}>
         {member.nickname}{isSelf ? " (you)" : ""}
       </span>
