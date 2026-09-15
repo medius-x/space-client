@@ -426,6 +426,14 @@ displayName, DM-participants и lastMessageAuthorName по старому име
 getUsername() на displayName() (превью DM-строки ПАЛИЛО ЛОГИН), live-путь `updateDmLastMessage` получил
 authorName-параметр (runtime резолвит через ростер обеих — активной и фоновой — веток). Смоук продолжается.
 
+**Смоук-фиксы итерации 2 (2026-09-16, юзер-решения):** (1) presence-точки ростера — Discord-стиль:
+точка у ВСЕХ аватаров (зелёная онлайн / СЕРая оффлайн; отсутствие точки читается как «статус неизвестен»);
+первичный баг: fallback-ветка MembersPane (пока memberStore пуст) передавала showPresence БЕЗ online-флага
+→ у онлайн рендерилась серая. (2) UserSettings-секции поделены по SCOPE (юзер): General (аватар+НИК —
+NicknameForm переехала из Appearance) и Account — SERVER-related: шапка контент-панели дописывает
+« — {имя сервера}» к названию раздела (SERVER_SCOPED_SECTIONS); Audio/Video/Appearance/Notifications/
+Connections — CLIENT-related, без суффикса. Гейт 256/256.
+
 M5 закрыт и закоммичен (`b14b2a6`). M6: **друзья** —
 `GET /api/users/me/relationships` (типы `FRIEND|BLOCKED|PENDING_INCOMING|
 PENDING_OUTGOING` — сервер сам сворачивает направление в caller-view); запрос
