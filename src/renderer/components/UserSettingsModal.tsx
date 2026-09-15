@@ -18,6 +18,7 @@ import { advertisedAddress, DISK_CACHE_CHOICES, diskCacheLabel } from "../../dom
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import { DEFAULT_NOTIFICATION_PREFS } from "../../domain/session/connection-record";
 import { CHANGE_NICKNAME_PERMISSION, type NotificationPrefs } from "../../types";
+import { useDisplayName } from "../hooks/useDisplayName";
 import { Avatar } from "./Avatar";
 import { AvatarEditor, userAvatarApi } from "./ProfileModal";
 
@@ -93,7 +94,7 @@ export function UserSettingsModal({ session }: { session: ConnectionSession }): 
         {section === "account" ? <AccountSection session={session} /> : null}
         {section === "audio" ? <AudioSection staged={staged} /> : null}
         {section === "video" ? <VideoSection staged={staged} /> : null}
-        {section === "appearance" ? <AppearanceSection staged={staged} /> : null}
+        {section === "appearance" ? <AppearanceSection session={session} staged={staged} /> : null}
         {section === "notifications" ? <NotificationsSection session={session} staged={staged} /> : null}
         {section === "connections" ? <ConnectionsSection session={session} /> : null}
         {/* The Apply button hugs the section content (staged sections only) and
@@ -185,12 +186,15 @@ function useStagedSettings(session: ConnectionSession): StagedSettings {
 
 function GeneralSection({ session }: { session: ConnectionSession }): React.JSX.Element {
   const ownUsername = useStore(appStore, (state) => state.ownUsername) ?? session.username();
+  // The rename model: what General shows is the NICKNAME (the name people see);
+  // the login never surfaces here.
+  const ownDisplayName = useDisplayName(session, ownUsername);
   return (
     <div>
       {/* Overview idiom: the identity name rides under the heading in the
-          role-editor typography — no pencil, renaming lives in Account. */}
+          role-editor typography — no pencil, the nickname edits in Appearance. */}
       <div className="role-editor-title-row">
-        <span className="role-editor-name">{ownUsername}</span>
+        <span className="role-editor-name">{ownDisplayName}</span>
       </div>
       <AvatarEditor
         session={session}
@@ -293,24 +297,29 @@ function VideoSection({ staged }: { staged: StagedSettings }): React.JSX.Element
 // ---------------------------------------------------------------------------
 
 function AccountSection({ session }: { session: ConnectionSession }): React.JSX.Element {
-  const canRename = useStore(session.permissionStore, (state) =>
+  const canChangeLogin = useStore(session.permissionStore, (state) =>
     state.my?.permissions.includes(CHANGE_NICKNAME_PERMISSION) ?? false);
   const ownUsername = useStore(appStore, (state) => state.ownUsername) ?? session.username();
+  const ownDisplayName = useDisplayName(session, ownUsername);
   const record = connectionDirectory.get(session.recordId);
 
   return (
     <div>
       <h3>Change password</h3>
       <div className="settings-hint">
-        Changes the password for {ownUsername} on {record?.cachedServerName ?? session.hostUrl()}.
+        Changes the password for {ownDisplayName} on {record?.cachedServerName ?? session.hostUrl()}.
         The session stays connected.
       </div>
       <PasswordForm />
-      {canRename ? (
+      {canChangeLogin ? (
         <>
-          <h3>Change username</h3>
-          <div className="settings-hint">Not available while in voice or a call.</div>
-          <UsernameForm current={ownUsername} />
+          <h3>Change login</h3>
+          <div className="settings-hint">
+            The login is your principal: the name you sign in with, and the server's internal handle.
+            It never appears in chat — only you see it, in this window. Changing it rotates your
+            tokens and reconnects the session.
+          </div>
+          <LoginForm current={ownUsername} />
         </>
       ) : null}
     </div>
@@ -373,31 +382,31 @@ function PasswordForm(): React.JSX.Element {
   );
 }
 
-function UsernameForm({ current }: { current: string }): React.JSX.Element {
-  const [username, setUsername] = useState(current);
+function LoginForm({ current }: { current: string }): React.JSX.Element {
+  const [login, setLogin] = useState(current);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const blocked = inVoiceOrCall();
   const validation
-    = username.length > 0 && (username.length < 3 || username.length > 32) ? "Username must be 3–32 characters."
+    = login.length > 0 && (login.length < 3 || login.length > 32) ? "Login must be 3–32 characters."
     : null;
 
   const submit = async (): Promise<void> => {
-    if (busy || validation !== null || blocked || username === current) {
+    if (busy || validation !== null || blocked || login === current) {
       return;
     }
     setBusy(true);
     setStatus("Changing…");
     try {
-      await changeAccountUsername(username.trim());
-      setStatus("Username changed.");
+      await changeAccountUsername(login.trim());
+      setStatus("Login changed.");
     } catch (error: unknown) {
       // oak's friendly verdicts for the two expected refusals.
       if (error instanceof ApiError && error.status === 409) {
-        setStatus("Username already taken.");
+        setStatus("This login is already taken.");
       } else if (error instanceof ApiError && error.status === 403) {
-        setStatus("You do not have permission to change your nickname.");
+        setStatus("You do not have permission to change your login.");
       } else {
         setStatus(error instanceof Error ? error.message : String(error));
       }
@@ -408,17 +417,84 @@ function UsernameForm({ current }: { current: string }): React.JSX.Element {
 
   return (
     <div>
-      <label className="settings-field"><span>Username</span>
-        <input type="text" value={username} onChange={(event) => setUsername(event.target.value)} />
+      <label className="settings-field"><span>Login</span>
+        <input type="text" value={login} onChange={(event) => setLogin(event.target.value)} />
       </label>
       <div className="modal-actions left">
-        <button className="primary" disabled={busy || blocked || validation !== null || username === current}
+        <button className="primary" disabled={busy || blocked || validation !== null || login === current}
           onClick={() => void submit()}>
-          Change username
+          Change login
         </button>
         <span className="settings-status">
-          {blocked ? "Leave voice and calls before changing your username." : validation ?? status ?? ""}
+          {blocked ? "Leave voice and calls before changing your login." : validation ?? status ?? ""}
         </span>
+      </div>
+    </div>
+  );
+}
+
+/** The nickname form (Appearance): the DISPLAY name everyone sees — an instant
+ *  self-rename through the member endpoint (409 = the nickname is taken). */
+function NicknameForm({ session, current }: { session: ConnectionSession; current: string }): React.JSX.Element {
+  const [nickname, setNickname] = useState(current);
+  const [status, setStatus] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const selfId = session.selfUserId(); // null until the roster resolves — the form waits
+
+  const trimmed = nickname.trim();
+  const submit = async (): Promise<void> => {
+    if (busy || selfId === null || trimmed.length === 0 || trimmed === current) {
+      return;
+    }
+    setBusy(true);
+    setStatus("Saving…");
+    try {
+      await session.renameMember(selfId, trimmed);
+      setStatus("Nickname changed.");
+    } catch (error: unknown) {
+      if (error instanceof ApiError && error.status === 409) {
+        setStatus("Nickname is already taken.");
+      } else {
+        setStatus(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resetToLogin = async (): Promise<void> => {
+    if (busy || selfId === null) {
+      return;
+    }
+    setBusy(true);
+    setStatus("Resetting…");
+    try {
+      await session.resetMemberNickname(selfId);
+      setNickname(session.username());
+      setStatus("Nickname reset to your login.");
+    } catch (error: unknown) {
+      if (error instanceof ApiError && error.status === 409) {
+        setStatus("Nickname is already taken.");
+      } else {
+        setStatus(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      <label className="settings-field"><span>Nickname</span>
+        <input type="text" value={nickname} onChange={(event) => setNickname(event.target.value)} />
+      </label>
+      <div className="modal-actions left">
+        <button className="primary" disabled={busy || selfId === null || trimmed.length === 0 || trimmed === current}
+          onClick={() => void submit()}>
+          Change nickname
+        </button>
+        <button className="ghost" disabled={busy || selfId === null} onClick={() => void resetToLogin()}>Reset to login</button>
+        <span className="settings-status">{status ?? ""}</span>
       </div>
     </div>
   );
@@ -428,9 +504,23 @@ function UsernameForm({ current }: { current: string }): React.JSX.Element {
 // Appearance / Notifications (staged) / Connections (read-only)
 // ---------------------------------------------------------------------------
 
-function AppearanceSection({ staged }: { staged: StagedSettings }): React.JSX.Element {
+function AppearanceSection({ session, staged }: { session: ConnectionSession; staged: StagedSettings }): React.JSX.Element {
+  const canChangeNickname = useStore(session.permissionStore, (state) =>
+    state.my?.permissions.includes(CHANGE_NICKNAME_PERMISSION) ?? false);
+  const ownUsername = useStore(appStore, (state) => state.ownUsername) ?? session.username();
+  const ownDisplayName = useDisplayName(session, ownUsername);
   return (
     <div>
+      {canChangeNickname ? (
+        <>
+          <h3>Nickname</h3>
+          <div className="settings-hint">
+            The name everyone sees next to your messages, in the roster and in voice. Mentions
+            resolve against nicknames — letters, digits, underscore and dash, no spaces.
+          </div>
+          <NicknameForm session={session} current={ownDisplayName} />
+        </>
+      ) : null}
       <h3>Message input</h3>
       <label className="settings-check">
         <input

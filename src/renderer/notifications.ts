@@ -146,6 +146,9 @@ class NotificationHub {
     prefs: ToastDecisionPrefs,
     onClick?: () => void,
     forceMention = false,
+    /** The RENDERED author name (the nickname, resolved by the caller against
+     *  the live roster) — falls back to the wire's authorUsername. */
+    authorName?: string,
   ): void {
     // ONE mention formula shared by the decision AND the toast frame: a direct
     // @user, a held @role, or an UNSUPPRESSED @everyone/@here (live report: the
@@ -176,7 +179,7 @@ class NotificationHub {
       suppressEveryoneHere: prefs.suppressEveryoneHere,
     });
     this.showToast({
-      title: message.authorUsername,
+      title: authorName ?? message.authorUsername,
       channelName,
       body: segments.length > 0 ? segments.map((segment) => segment.text).join("") : "(attachment)",
       segments: segments.length > 0 ? segments : undefined,

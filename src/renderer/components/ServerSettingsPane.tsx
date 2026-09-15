@@ -19,9 +19,11 @@ import type {
 } from "../../types";
 import {
   BAN_MEMBERS_PERMISSION,
+  CHANGE_NICKNAME_PERMISSION,
   KICK_MEMBERS_PERMISSION,
   MANAGE_CHANNELS_PERMISSION,
   MANAGE_MEMBERS_PERMISSION,
+  MANAGE_NICKNAMES_PERMISSION,
   MANAGE_ROLES_PERMISSION,
   MANAGE_SERVER_PERMISSION,
 } from "../../types";
@@ -38,7 +40,8 @@ import {
   type PermissionSets,
   type TriState,
 } from "../../domain/logic/channel-access";
-import { argbIntToCss, memberNameColor } from "../../domain/logic/roster-grouping";
+import { argbIntToCss, canActOn, memberNameColor, topPosition } from "../../domain/logic/roster-grouping";
+import { ApiError } from "../../core/rest";
 import { moveRoleIdTowards } from "../../domain/logic/role-drag";
 import { Modal } from "./Modal";
 import { Avatar } from "./Avatar";
@@ -982,9 +985,74 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [kickTarget, setKickTarget] = useState<ServerMember | null>(null);
   const [banTarget, setBanTarget] = useState<ServerMember | null>(null);
+  // The rename form state (the nickname is the ONE display name).
+  const [renameDraft, setRenameDraft] = useState<string | null>(null);
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameStatus, setRenameStatus] = useState<string | null>(null);
 
   const canKick = permissions.includes(KICK_MEMBERS_PERMISSION);
   const canBan = permissions.includes(BAN_MEMBERS_PERMISSION);
+
+  const selfId = session.selfUserId();
+  /** Rename gates (Discord): yourself under CHANGE_NICKNAME; someone else under
+   *  MANAGE_NICKNAMES + strictly-higher hierarchy (an OWNER target is immune). */
+  const canRenameMember = (member: ServerMember): boolean => {
+    if (member.userId === selfId) {
+      return permissions.includes(CHANGE_NICKNAME_PERMISSION);
+    }
+    if (!permissions.includes(MANAGE_NICKNAMES_PERMISSION)) {
+      return false;
+    }
+    const self = members.find((entry) => entry.userId === selfId);
+    if (self === undefined) {
+      return false;
+    }
+    const hierarchyOf = (entry: ServerMember) => ({ owner: entry.owner, topPosition: topPosition(entry, roles) });
+    return canActOn(hierarchyOf(self), hierarchyOf(member));
+  };
+
+  const applyRename = async (member: ServerMember): Promise<void> => {
+    const nickname = renameDraft?.trim() ?? "";
+    if (nickname.length === 0 || renameBusy) {
+      return;
+    }
+    setRenameBusy(true);
+    setRenameStatus("Saving…");
+    try {
+      await session.renameMember(member.userId, nickname);
+      setRenameDraft(null);
+      setRenameStatus(null);
+    } catch (error: unknown) {
+      if (error instanceof ApiError && error.status === 409) {
+        setRenameStatus("Nickname is already taken.");
+      } else {
+        setRenameStatus(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      setRenameBusy(false);
+    }
+  };
+
+  const resetRename = async (member: ServerMember): Promise<void> => {
+    if (renameBusy) {
+      return;
+    }
+    setRenameBusy(true);
+    setRenameStatus("Resetting…");
+    try {
+      await session.resetMemberNickname(member.userId);
+      setRenameDraft(null);
+      setRenameStatus(null);
+    } catch (error: unknown) {
+      if (error instanceof ApiError && error.status === 409) {
+        setRenameStatus("Nickname is already taken.");
+      } else {
+        setRenameStatus(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      setRenameBusy(false);
+    }
+  };
   const active = selectedId !== null ? members.find((member) => member.userId === selectedId) ?? null : null;
 
   return (
@@ -998,7 +1066,7 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
           <div key={member.userId} className={"roles-row" + (member.userId === active?.userId ? " active" : "")}
             onClick={() => setSelectedId(member.userId)}>
             <Avatar session={session} username={member.username} size={20} />
-            <span className="member-name" style={{ color: memberNameColor(member, roles) ?? undefined }}>{member.username}</span>
+            <span className="member-name" style={{ color: memberNameColor(member, roles) ?? undefined }}>{member.nickname}</span>
             {member.owner ? <span className="owner-badge">OWNER</span> : null}
             {member.banned ? <span className="banned-badge">BANNED</span> : null}
           </div>
@@ -1009,7 +1077,7 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
           <div className="settings-empty">Select a member</div>
         ) : (
           <div>
-            <span className="role-editor-name">{active.username}</span>
+            <span className="role-editor-name">{active.nickname}</span>
             <div className="settings-hint">Member actions</div>
             <div className="modal-actions left">
               {active.banned ? (
@@ -1033,11 +1101,48 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
                   ) : null}
                 </>
               )}
-              {/* oak's renameMemberButton: a PLACEHOLDER shown for every member
-                  regardless of permissions — the handler is empty there (reserved
-                  for nickname management; the server has no endpoint yet). */}
-              <button className="ghost" onClick={() => undefined}>Rename</button>
+              {canRenameMember(active) ? (
+                renameDraft === null ? (
+                  <button className="ghost" onClick={() => {
+                    setRenameDraft(active.nickname);
+                    setRenameStatus(null);
+                  }}>Rename</button>
+                ) : (
+                  <button className="ghost" onClick={() => {
+                    setRenameDraft(null);
+                    setRenameStatus(null);
+                  }}>Cancel rename</button>
+                )
+              ) : null}
             </div>
+            {renameDraft !== null ? (
+              <div className="member-rename-form">
+                <label className="settings-field"><span>Nickname</span>
+                  <input
+                    autoFocus
+                    value={renameDraft}
+                    onChange={(event) => setRenameDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        void applyRename(active);
+                      } else if (event.key === "Escape") {
+                        event.preventDefault();
+                        setRenameDraft(null);
+                        setRenameStatus(null);
+                      }
+                    }}
+                  />
+                </label>
+                <div className="modal-actions left">
+                  <button className="primary" disabled={renameBusy || renameDraft.trim().length === 0} onClick={() => void applyRename(active)}>
+                    Save nickname
+                  </button>
+                  <button className="ghost" disabled={renameBusy} onClick={() => void resetRename(active)}>Reset to login</button>
+                </div>
+                <span className="settings-status">{renameStatus ?? ""}</span>
+              </div>
+            ) : null}
             <div className="settings-hint">Roles (managed in Roles → Members)</div>
             {/* oak lists the OWNER row explicitly — the OWNER role is not among
                 the roles, so the owner would otherwise read as "No roles". */}

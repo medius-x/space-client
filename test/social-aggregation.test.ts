@@ -9,7 +9,7 @@ import {
 import type { DmChannel, Relationship } from "../src/types";
 
 function relationship(userId: number, username: string, type: Relationship["type"] = "FRIEND"): Relationship {
-  return { userId, username, type, avatarKey: null, avatarUrl: null };
+  return { userId, username, type, avatarKey: null, avatarUrl: null, displayName: username };
 }
 
 function dm(id: number, lastMessageAt: string | null, name: string | null = null): DmChannel {

@@ -24,7 +24,7 @@ function role(id: number, overrides: Partial<Role> = {}): Role {
 }
 
 function member(userId: number, username: string, overrides: Partial<ServerMember> = {}): ServerMember {
-  return { userId, username, avatarUrl: null, roleIds: [], owner: false, banned: false, ...overrides };
+  return { userId, username, avatarUrl: null, roleIds: [], owner: false, banned: false, nickname: username, ...overrides };
 }
 
 const RED = 0xffda373c; // -2429124 as a Java int would be on the wire

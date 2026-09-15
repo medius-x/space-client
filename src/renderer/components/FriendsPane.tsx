@@ -11,7 +11,7 @@ import {
 import { socialDirectory } from "../social-aggregate";
 import { mergeFriendRows, type FriendRowModel } from "../../domain/logic/social-aggregation";
 import type { ConnectionSession } from "../../domain/session/connection-session";
-import type { RelationshipType } from "../../types";
+import type { RelationshipType, UserSummary } from "../../types";
 import { Avatar } from "./Avatar";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { InstanceTag } from "./InstanceTag";
@@ -174,7 +174,7 @@ function FriendRow({ session, row }: { session: ConnectionSession; row: FriendRo
       <span className={"presence-dot" + (relationship.type === "FRIEND" && row.online ? " online" : "")} />
       <Avatar session={row.active ? session : null} username={relationship.username} size={40} override={relationship} />
       <div className="friend-info">
-        <span className="friend-name">{relationship.username}</span>
+        <span className="friend-name">{relationship.displayName ?? relationship.username}</span>
         <span className="friend-status">{statusText}</span>
         {error !== null ? <span className="friend-error">{error}</span> : null}
       </div>
@@ -227,8 +227,8 @@ function FriendRow({ session, row }: { session: ConnectionSession; row: FriendRo
         >
           <div className="modal-note">
             {confirmKind === "remove"
-              ? `Are you sure you want to permanently remove ${relationship.username} as a friend?`
-              : `Are you sure you want to block ${relationship.username}?`}
+              ? `Are you sure you want to permanently remove ${relationship.displayName ?? relationship.username} as a friend?`
+              : `Are you sure you want to block ${relationship.displayName ?? relationship.username}?`}
           </div>
           <div className="modal-actions">
             <button className="ghost" onClick={() => setConfirmKind(null)}>Cancel</button>
@@ -260,8 +260,8 @@ function AddFriendForm({ session }: { session: ConnectionSession }): React.JSX.E
   const users = useStore(session.rosterStore, (state) => state.users);
   const ownUsername = useStore(appStore, (state) => state.ownUsername);
 
-  // oak's username autocomplete: roster matches by case-insensitive prefix
-  // (excluding self), ≤10, ↑/↓/Enter/Esc; a pick fills the field.
+  // oak's autocomplete, walked by NICKNAME (the rename model: friends are
+  // addressed by the one visible name; the login never matches).
   const suggestions = useMemo(() => {
     const query = username.trim().toLowerCase();
     if (query.length === 0) {
@@ -269,12 +269,12 @@ function AddFriendForm({ session }: { session: ConnectionSession }): React.JSX.E
     }
     return users
       .filter((user) => user.username !== ownUsername)
-      .filter((user) => user.username.toLowerCase().startsWith(query))
+      .filter((user) => (user.displayName ?? user.username).toLowerCase().startsWith(query))
       .slice(0, 10);
   }, [username, users, ownUsername]);
 
-  const applySuggestion = (picked: string): void => {
-    setUsername(picked);
+  const applySuggestion = (picked: UserSummary): void => {
+    setUsername(picked.displayName ?? picked.username);
     setSuggestIndex(0);
   };
 
@@ -300,7 +300,7 @@ function AddFriendForm({ session }: { session: ConnectionSession }): React.JSX.E
   return (
     <div className="add-friend-form">
       <div className="add-friend-title">ADD A FRIEND</div>
-      <div className="add-friend-hint">You can add friends by their username.</div>
+      <div className="add-friend-hint">You can add friends by their nickname.</div>
       <div className="add-friend-entry">
         {suggestions.length > 0 ? (
           <div className="username-suggest">
@@ -308,10 +308,10 @@ function AddFriendForm({ session }: { session: ConnectionSession }): React.JSX.E
               <div
                 key={user.id}
                 className={"mention-row" + (index === suggestIndex ? " chosen" : "")}
-                onClick={() => applySuggestion(user.username)}
+                onClick={() => applySuggestion(user)}
               >
                 <Avatar session={session} username={user.username} size={20} />
-                <span>{user.username}</span>
+                <span>{user.displayName ?? user.username}</span>
               </div>
             ))}
           </div>
@@ -321,7 +321,7 @@ function AddFriendForm({ session }: { session: ConnectionSession }): React.JSX.E
             autoFocus
             type="text"
             value={username}
-            placeholder="Enter a username"
+            placeholder="Enter a nickname"
             onChange={(event) => {
               setUsername(event.target.value);
               setSuggestIndex(0);
@@ -336,7 +336,7 @@ function AddFriendForm({ session }: { session: ConnectionSession }): React.JSX.E
               } else if (event.key === "Enter") {
                 if (suggestions.length > 0 && suggestIndex < suggestions.length) {
                   event.preventDefault();
-                  applySuggestion(suggestions[suggestIndex]!.username);
+                  applySuggestion(suggestions[suggestIndex]!);
                 } else {
                   void submit();
                 }

@@ -2,9 +2,10 @@ import type { DmChannel } from "../../types";
 
 /**
  * Pure DM display helpers (oak's DmNode naming rules):
- *  - 1:1 → the OTHER participant's username (fallback: any participant, then
+ *  - 1:1 → the OTHER participant's NICKNAME (fallback: any participant, then
  *    "Direct Message" when the roster is somehow empty);
  *  - group → the stored name, else the participant list without me, else "Group".
+ *  The username never renders — it is the lookup key only (the rename model).
  */
 
 const PREVIEW_MAX_CHARS = 40;
@@ -15,12 +16,12 @@ export function dmDisplayName(dm: DmChannel, selfUsername: string): string {
       return dm.name;
     }
     const others = dm.participants
-      .map((participant) => participant.username)
-      .filter((username) => username !== selfUsername);
+      .filter((participant) => participant.username !== selfUsername)
+      .map((participant) => participant.displayName ?? participant.username);
     return others.length > 0 ? others.join(", ") : "Group";
   }
   const peer = dm.participants.find((participant) => participant.username !== selfUsername);
-  return peer?.username ?? dm.participants[0]?.username ?? "Direct Message";
+  return peer?.displayName ?? peer?.username ?? dm.participants[0]?.displayName ?? dm.participants[0]?.username ?? "Direct Message";
 }
 
 /** One-line list preview under the DM name (oak's 40-char clamp). */

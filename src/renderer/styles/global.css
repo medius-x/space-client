@@ -460,6 +460,25 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 
 /* Row wrapper — oak's ServerNode: a 72×56 click zone carrying the white
    selection pill at the RAIL's left edge, the 48×48 icon and the badge. */
+/* oak's name bubble (showNameBubble): a Discord-style pill to the right of the
+   icon, vertically centered on it — not at the cursor, not a native Tooltip.
+   FIXED + ported to document.body: the rail's overflow-y: auto clips everything
+   past its 72px edge (overflow-x computes to auto as well), so an absolutely
+   positioned sibling never showed. The top/left come inline from the icon rect. */
+.rail-name-bubble {
+  position: fixed;
+  transform: translateY(-50%);
+  background: #1e1f22;
+  border: 1px solid #4e5058;
+  border-radius: 8px;
+  color: #f2f3f5;
+  font-size: 14px;
+  padding: 6px 12px;
+  white-space: nowrap;
+  z-index: 60;
+  pointer-events: none;
+}
+
 .rail-wrap {
   position: relative;
   width: 72px;
@@ -923,6 +942,14 @@ button.wide-add { width: 100%; }
   color: var(--sp-text-dim);
   font-size: 11px;
   margin-top: 3px;
+}
+
+/* The member rename form (Server Settings → Members): nickname + save/reset. */
+.member-rename-form {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .inline-editor {

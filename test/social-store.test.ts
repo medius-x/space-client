@@ -4,7 +4,7 @@ import { CoalescingRefresher } from "../src/domain/lib/refresher";
 import type { DmChannel, Message, Relationship } from "../src/types";
 
 function relationship(userId: number, username: string, type: Relationship["type"]): Relationship {
-  return { userId, username, type, avatarKey: null, avatarUrl: null };
+  return { userId, username, type, avatarKey: null, avatarUrl: null, displayName: username };
 }
 
 function dmChannel(id: number, overrides: Partial<DmChannel> = {}): DmChannel {
@@ -69,21 +69,57 @@ describe("SocialStore", () => {
       dmChannel(1, { lastMessageId: 10, lastMessageAt: "2026-09-01T10:00:00Z", lastMessagePreview: "old" }),
       dmChannel(2, { lastMessageAt: "2026-09-02T10:00:00Z" }),
     ]);
-    store.updateDmLastMessage(message(11, 1, "2026-09-04T10:00:00Z"));
+    store.updateDmLastMessage(message(11, 1, "2026-09-04T10:00:00Z"), "Bob");
     const floated = store.getSnapshot().dms[0]!;
     expect(floated.id).toBe(1);
     expect(floated.lastMessageId).toBe(11);
     expect(floated.lastMessagePreview).toBe("hello 11");
-    expect(floated.lastMessageAuthorName).toBe("bob");
+    // The DISPLAY name, not the login — the caller resolves it via the roster.
+    expect(floated.lastMessageAuthorName).toBe("Bob");
 
     // An edit of an OLDER message must not touch the preview (oak's guard).
-    store.updateDmLastMessage(message(5, 1, "2026-09-04T11:00:00Z"));
+    store.updateDmLastMessage(message(5, 1, "2026-09-04T11:00:00Z"), "Bob");
     expect(store.getSnapshot().dms[0]!.lastMessageId).toBe(11);
     expect(store.getSnapshot().dms[0]!.lastMessagePreview).toBe("hello 11");
 
     // Unknown channel (just closed) — a no-op, never a crash.
-    store.updateDmLastMessage(message(3, 99, "2026-09-04T12:00:00Z"));
+    store.updateDmLastMessage(message(3, 99, "2026-09-04T12:00:00Z"), "Bob");
     expect(store.getSnapshot().dms).toHaveLength(2);
+  });
+
+  it("applyUserRename repaints the relationship, the DM participants and the preview author; unknown users emit nothing", () => {
+    const listener = vi.fn();
+    const store = new SocialStore();
+    store.subscribe(listener);
+    store.setRelationships([relationship(2, "bob", "FRIEND"), relationship(3, "carol", "FRIEND")]);
+    store.setDms([
+      dmChannel(1, {
+        participants: [
+          { id: 1, username: "alice", displayName: "alice", avatarKey: null, avatarUrl: null },
+          { id: 2, username: "bob", displayName: "bob", avatarKey: null, avatarUrl: null },
+        ],
+        lastMessageAuthorName: "bob",
+      }),
+    ]);
+    listener.mockClear();
+
+    store.applyUserRename("bob", "Robert");
+    const state = store.getSnapshot();
+    expect(state.relationships[0]!.displayName).toBe("Robert");
+    expect(state.relationships[1]!.displayName).toBe("carol"); // untouched
+    expect(state.dms[0]!.participants[1]!.displayName).toBe("Robert");
+    expect(state.dms[0]!.lastMessageAuthorName).toBe("Robert");
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    // A user in neither list — no mutation, no emit (snapshot stays identical).
+    listener.mockClear();
+    store.applyUserRename("stranger", "X");
+    expect(store.getSnapshot()).toBe(state);
+    expect(listener).not.toHaveBeenCalled();
+
+    // An avatar-only push (same display name) — no emit either.
+    store.applyUserRename("bob", "Robert");
+    expect(listener).not.toHaveBeenCalled();
   });
 
   it("applyDmClosed drops the row and ignores unknown ids", () => {

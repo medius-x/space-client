@@ -56,9 +56,10 @@ export class SocialStore extends Emitter {
   /**
    * A live message in a DM: refresh the preview fields and float the row to the
    * top (oak's updateDmPreview). Unknown ids are ignored — the channel may have
-   * just been closed locally.
+   * just been closed locally. The preview author is the DISPLAY name (rename
+   * model: the login never renders) — the caller resolves it via the live roster.
    */
-  updateDmLastMessage(message: Message): void {
+  updateDmLastMessage(message: Message, authorName: string): void {
     const target = this.state.dms.find((entry) => entry.id === message.channelId);
     if (target === undefined || !shouldRefreshPreview(target, message.id)) {
       return;
@@ -71,11 +72,52 @@ export class SocialStore extends Emitter {
           lastMessageId: message.id,
           lastMessageAt: message.createdAt,
           lastMessagePreview: message.content,
-          lastMessageAuthorName: message.authorUsername,
+          lastMessageAuthorName: authorName,
         },
         ...this.state.dms.filter((entry) => entry.id !== message.channelId),
       ]),
     };
+    this.emit();
+  }
+
+  /**
+   * A /topic/users push (rename, avatar change): the pushed user may appear in
+   * the relationship list, among DM participants, and as the DM preview author —
+   * the snapshot fields would otherwise keep the old name until the next refetch
+   * (a rename pushes no relationship event). The preview author is matched by the
+   * participant's OLD display name: nicknames are unique, so in the push instant
+   * no other participant carries that name. Emits only when something changed.
+   */
+  applyUserRename(username: string, displayName: string): void {
+    let changed = false;
+    const relationships = this.state.relationships.map((entry) => {
+      if (entry.username !== username || entry.displayName === displayName) {
+        return entry;
+      }
+      changed = true;
+      return { ...entry, displayName };
+    });
+    const dms = this.state.dms.map((dm) => {
+      const target = dm.participants.find((participant) => participant.username === username);
+      if (target === undefined) {
+        return dm;
+      }
+      const oldName = target.displayName ?? target.username;
+      if (oldName === displayName) {
+        return dm; // an avatar-only push — nothing to repaint in this channel
+      }
+      changed = true;
+      return {
+        ...dm,
+        participants: dm.participants.map((participant) =>
+          participant.username === username ? { ...participant, displayName } : participant),
+        lastMessageAuthorName: dm.lastMessageAuthorName === oldName ? displayName : dm.lastMessageAuthorName,
+      };
+    });
+    if (!changed) {
+      return;
+    }
+    this.state = { relationships, dms };
     this.emit();
   }
 }

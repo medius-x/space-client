@@ -22,6 +22,9 @@ export interface UserSummary {
   username: string;
   avatarKey: string | null;
   avatarUrl: string | null;
+  /** The NICKNAME — the only name the UI shows (chat authors, roster, voice,
+   *  call cards). `username` stays as the stable lookup key, never rendered. */
+  displayName: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +153,7 @@ export const MANAGE_SERVER_PERMISSION = "MANAGE_SERVER";
 export const MANAGE_ROLES_PERMISSION = "MANAGE_ROLES";
 export const MANAGE_MEMBERS_PERMISSION = "MANAGE_MEMBERS";
 export const CHANGE_NICKNAME_PERMISSION = "CHANGE_NICKNAME";
+export const MANAGE_NICKNAMES_PERMISSION = "MANAGE_NICKNAMES";
 
 /** GET /api/channels/{id}/permissions/me — override-aware, per channel. */
 export interface ChannelMyPermissions {
@@ -346,6 +350,8 @@ export interface Relationship {
   type: RelationshipType;
   avatarKey: string | null;
   avatarUrl: string | null;
+  /** The NICKNAME the client renders; the username stays a lookup key. */
+  displayName: string;
 }
 
 /** /user/queue/relationships push — plain string type, always the OTHER side. */
@@ -404,6 +410,8 @@ export interface ServerMember {
   roleIds: number[];
   owner: boolean;
   banned: boolean;
+  /** The display name (rename model): render this, never `username`. */
+  nickname: string;
 }
 
 /** GET /api/roles row — position DESC (highest first), color is ARGB int, nullable. */

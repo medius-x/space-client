@@ -3,7 +3,7 @@ import { dmDisplayName, dmPreviewText, shouldRefreshPreview } from "../src/domai
 import type { DmChannel, UserSummary } from "../src/types";
 
 function user(id: number, username: string): UserSummary {
-  return { id, username, avatarKey: null, avatarUrl: null };
+  return { id, username, avatarKey: null, avatarUrl: null, displayName: username };
 }
 
 function dm(overrides: Partial<DmChannel>): DmChannel {

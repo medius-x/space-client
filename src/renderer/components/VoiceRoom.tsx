@@ -40,6 +40,7 @@ import type { ConnectionSession } from "../../domain/session/connection-session"
 import type { VoiceMemberMarks } from "../../domain/stores/VoiceControlStore";
 import type { FeedInfo } from "../../types";
 import { canActOn, memberNameColor, topPosition, type HierarchyView } from "../../domain/logic/roster-grouping";
+import { displayNameOf } from "../../domain/logic/display-name";
 import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
 import { SharePickerModal } from "./SharePickerModal";
 import { Avatar } from "./Avatar";
@@ -166,6 +167,8 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
   const apmEnabled = useStore(settingsStore, (settings) => settings.apmEnabled);
   const participants = useStore(appStore, (state) => state.participants);
   const marksByMember = useStore(session.voiceControlStore, (snapshot) => snapshot.marks);
+  // The rename model: the peer's rendered name resolves through the live roster.
+  const rosterUsers = useStore(session.rosterStore, (state) => state.users);
   const callState = useStore(appStore, (state) => state.callState);
   const callPeer = useStore(appStore, (state) => state.callPeer);
   const callHealthy = useStore(appStore, (state) => state.callHealthy);
@@ -216,7 +219,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
         <div className="voice-bar-info" onClick={toggleRoomView} title="Open / close the call view">
           <div className="voice-bar-text">
             <span className={"voice-bar-status " + statusClass}>{statusText}</span>
-            <span className="voice-bar-details">{callPeer !== null ? `${callPeer} / ${serverName}` : ""}</span>
+            <span className="voice-bar-details">{callPeer !== null ? `${displayNameOf(rosterUsers, callPeer)} / ${serverName}` : ""}</span>
           </div>
           {peerScreens > 0 ? (
             <span className="voice-screen-badge">
@@ -436,6 +439,10 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
   const marksByMember = useStore(session.voiceControlStore, (snapshot) => snapshot.marks);
   const members = useStore(session.memberStore, (state) => state.members);
   const roles = useStore(session.memberStore, (state) => state.roles);
+  // The rename model: tile names resolve through the live roster (the username
+  // stays the lookup key for marks/volumes and never renders).
+  const rosterUsers = useStore(session.rosterStore, (state) => state.users);
+  const nameOf = (username: string): string => displayNameOf(rosterUsers, username);
 
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const callSelfVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -661,7 +668,7 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
           )}
         </div>
         <div className="tile-foot">
-          <span className="tile-name" style={{ color: nameColor(username) ?? undefined }}>{username}{isSelf ? " (you)" : ""}</span>
+          <span className="tile-name" style={{ color: nameColor(username) ?? undefined }}>{nameOf(username)}{isSelf ? " (you)" : ""}</span>
           <VoiceMarks marks={marksByMember.get(username)} />
           {/* oak puts the pop-out / stop-watching buttons in the NAME ROW (right
               of the mute marks, 22×22 grey) — not floating over the preview. */}
@@ -716,7 +723,7 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
           )}
         </div>
         <div className="tile-foot">
-          <span className="tile-name" style={{ color: nameColor(username) ?? undefined }}>{username}{isSelf ? " (you)" : ""}</span>
+          <span className="tile-name" style={{ color: nameColor(username) ?? undefined }}>{nameOf(username)}{isSelf ? " (you)" : ""}</span>
           {isSelf
             ? <CallMarks micOn={callMicOn} deafenedOn={callDeafenedOn} />
             : <CallMarks micOn={peerMicOn} deafenedOn={peerDeafenedOn} />}
@@ -735,7 +742,7 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
             → stretch → the BACK button at the RIGHT edge (buildRoomView 4261-4276).
             In a call the title is the PEER's name (roomTitleLabel = callPeer). */}
         <span className="icon mdi-volume-high" />
-        <span className="pane-title">{callMode ? (callPeer ?? "Call") : channel !== null ? channel.name : "Voice room"}</span>
+        <span className="pane-title">{callMode ? nameOf(callPeer ?? "") : channel !== null ? channel.name : "Voice room"}</span>
         <span className="room-view-sub">
           {callMode
             ? `2 in room${callPeerMedia ? " · 1 screen" : ""}`
@@ -864,9 +871,11 @@ export function VoiceMemberCard({ session, username, hasShare, moderation = true
 
   const left = Math.min(Math.max(8, x), window.innerWidth - 250);
   const top = Math.min(Math.max(8, y), window.innerHeight - 8 - (hasShare ? 190 : 150));
+  // The rename model: the card's heading is the NICKNAME from the live roster.
+  const rosterUsers = useStore(session.rosterStore, (state) => state.users);
   return (
     <div ref={cardRef} className="member-card" style={{ left, top }}>
-      <div className="member-card-title">{username}</div>
+      <div className="member-card-title">{displayNameOf(rosterUsers, username)}</div>
       <VolumeRow label={hasShare ? "Voice" : null} initialGain={persistedGain("voice", username)} onChange={(gain) => setVoiceVolume(username, gain)} />
       {hasShare ? (
         <VolumeRow label="Share audio" initialGain={persistedGain("share", username)} onChange={(gain) => setShareVolume(username, gain)} />

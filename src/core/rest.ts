@@ -483,6 +483,20 @@ export class RestClient {
     await this.request<unknown>(`/api/members/${userId}/ban`, { method: "DELETE" });
   }
 
+  /** Sets the member's NICKNAME (the display name; someone else needs
+   *  MANAGE_NICKNAMES + hierarchy, yourself CHANGE_NICKNAME). 409 = taken. */
+  async renameMember(userId: number, nickname: string): Promise<void> {
+    await this.request<unknown>(`/api/members/${userId}/nickname`, {
+      method: "PATCH",
+      body: JSON.stringify({ nickname }),
+    });
+  }
+
+  /** Resets the nickname to the member's login handle. */
+  async resetMemberNickname(userId: number): Promise<void> {
+    await this.request<unknown>(`/api/members/${userId}/nickname`, { method: "DELETE" });
+  }
+
   // ---------------------------------------------------------------------------
   // RBAC editor (M7): role CRUD, channel overrides, account mutations
   // ---------------------------------------------------------------------------

@@ -385,7 +385,46 @@ blur-коммитящих полей). Итерация 8 (scroll-jank): мед�
 (oak INITIAL_HISTORY_LIMIT), страницы вверх по 50 (HISTORY_PAGE) + до 3
 alignment-страниц (граница не режет группу), jump-бэкфилл кап 1000.
 
-## M6 (закрыт, 088df95): социальный слой
+**Задача #475/#472 (2026-09-15): rail-попап + RENAME-МОДЕЛЬ (ник everywhere) + фоновые
+звонки.** (1) **Rail name bubble** (oak showNameBubble): кастомная пилюля справа от иконки
+сервера, вертикально ПО ЦЕНТРУ иконки (не у курсора, не нативный title), #1e1f22/#4e5058
+radius 8, 14px, паддинг 6/12; появление через 400 мс ховера, мгновенное исчезновение; только
+у серверных иконок (Home/«+» без). (2) **RENAME-МОДЕЛЬ** (сервер см. oak-server/CLAUDE.md,
+ДЕПЛОЙ ПАРНЫЙ): username = LOGIN (только Settings→Account «Change login» с пояснением про
+principal; нигде больше не рендерится), nickname = НИК (unique в своём множестве,
+юникод-без-пробелов) = единственное отображаемое имя И единственный механизм упоминаний.
+Клиент: `displayNameOf(users, username)` (logic/display-name.ts) + хук `useDisplayName` —
+РЕНДЕР ВСЕГДА ЧЕРЕЗ ЖИВОЙ РОСТЕР (пуш /topic/users несёт UserSummary с displayName →
+переименование перекрашивает всё разом): автор в чате, reply-бар, цитаты/форварды (nameOf-
+проп в QuoteCard/ForwardCard), ростер MembersPane (member.nickname), voice-строки сайдбара,
+тайлы RoomView/звонка + шапка «Call», VoiceBar-детали, VoiceMemberCard, звоночная карточка
+(peerName), тосты (handleMessage += authorName-параметр), друзья/DM (Relationship.displayName,
+dmDisplayName по никам), UserBar/General. MessageResponse НЕ расширен — username остаётся
+ключом. UI: Account → «Change login»; Appearance → «Change nickname» (self-PATCH + «Reset
+to login», гейт CHANGE_NICKNAME); Server Settings → Members — рабочая Rename-форма (гейт
+MANAGE_NICKNAMES+canActOn, self — CHANGE_NICKNAME; 409 → «Nickname is already taken.»).
+@-автодополнение композера и Add Friend — ПО НИКАМ (вставка ника; триггер-regex юникод
+`/(?:^|\s)@([\p{L}\p{N}_-]*)$/u`). Кросс-инстанс форвард шлёт originAuthorName = НИК. (3)
+**Фоновые звонки**: фоновая STOMP-сессия больше не глотает call.signal — RING с неактивного
+инстанса → ТА ЖЕ звоночная карточка в тост-окне с именем ФОНОВОГО сервера + чайм + аватар из
+ростера фоновой сессии + локальный ring-таймаут (busy: активный звонок/другая карточка →
+авто-REJECT с фоновой — oak); HANGUP/диспоуз фоновой → карточка умирает; **Accept** →
+`pendingBackgroundAccept` → switchConnection (промоут живой сессии без teardown) →
+`consumePendingOpen` поднимает ringing-in + acceptCallNow; **Decline** → REJECT с фоновой
+сессии без переключения. ГРАБЛЯ: hooks-фабрика не имеет session — sendCallSignal фоновой
+через `sessionMap.get(recordId)`; аватар-погоня карточки гвардится «живостью ринга»
+(активный: ringing-in+peer; фон: backgroundRing-запись), не activeSession-сравнением.
+Гейты: сервер 258/258, клиент 256/256 + typecheck + build. **Смоук-фиксы итерации 1 (2026-09-15):** (1)
+rail-попап НЕ ПОЯВЛЯЛСЯ — ГРАБЛЯ OVERFLOW-КЛИПА: рейл крутит `overflow-y: auto`, а по CSS-спецификации
+явный не-visible по одной оси вычисляет вторую в auto → absolute-пилюля за 72px-краем рейла ОБРЕЗАНА;
+фикс = createPortal(document.body) + position:fixed с inline-координатами от rect иконки (снимаются
+в момент срабатывания 400-мс таймера). (2) «Ник не изменился в списке друзей в Home» — relationships/DM-
+снапшоты обновляются ТОЛЬКО по relationships-событию, которого rename не шлёт: `SocialStore.
+applyUserRename(username, displayName)` вызывается из /topic/users-подписки (патчит relationship.
+displayName, DM-participants и lastMessageAuthorName по старому имени участника; avatar-only пуш без
+изменения имени — no-op без emit); серверный `DmChannelResponse.lastMessageAuthorName` перешёл с
+getUsername() на displayName() (превью DM-строки ПАЛИЛО ЛОГИН), live-путь `updateDmLastMessage` получил
+authorName-параметр (runtime резолвит через ростер обеих — активной и фоновой — веток). Смоук продолжается.
 
 M5 закрыт и закоммичен (`b14b2a6`). M6: **друзья** —
 `GET /api/users/me/relationships` (типы `FRIEND|BLOCKED|PENDING_INCOMING|

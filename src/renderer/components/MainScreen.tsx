@@ -8,6 +8,7 @@ import { ChatPane } from "./ChatPane";
 import { FriendsPane } from "./FriendsPane";
 import { MembersPane } from "./MembersPane";
 import { VoiceBar, RoomView, CallConflictModal } from "./VoiceRoom";
+import { useDisplayName } from "../hooks/useDisplayName";
 import { Diagnostics } from "./Diagnostics";
 import { Avatar } from "./Avatar";
 
@@ -86,6 +87,8 @@ export function MainScreen({ session }: { session: ConnectionSession }): React.J
  *  avatar editing lives in Settings (oak parity). */
 function UserBar({ session }: { session: ConnectionSession }): React.JSX.Element {
   const ownUsername = useStore(appStore, (state) => state.ownUsername) ?? session.username();
+  // The rename model: the bar shows the NICKNAME; the login never renders.
+  const ownDisplayName = useDisplayName(session, ownUsername);
   const stompState = useStore(appStore, (state) => state.stompState);
   const stompAttempt = useStore(appStore, (state) => state.stompAttempt);
   const stompCountdown = useStore(appStore, (state) => state.stompCountdown);
@@ -106,7 +109,7 @@ function UserBar({ session }: { session: ConnectionSession }): React.JSX.Element
     <div className={"user-bar" + (voiceConnected ? " with-voice" : "")}>
       <Avatar session={session} username={ownUsername} size={32} />
       <div className="user-bar-text">
-        <span className="user-bar-name">{ownUsername}</span>
+        <span className="user-bar-name">{ownDisplayName}</span>
         <span className="user-bar-status-row">
           <span className={"user-bar-status " + status.className}>{status.text}</span>
           {/* oak's retryButton: visible only while the connection is down; the

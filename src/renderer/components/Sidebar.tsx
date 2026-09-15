@@ -3,6 +3,7 @@ import { useStore } from "../hooks/useStore";
 import { appStore, connectionDirectory, joinVoiceGuarded, setActiveChannel, settingsStore, toggleRoomView } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import { memberNameColor } from "../../domain/logic/roster-grouping";
+import { displayNameOf } from "../../domain/logic/display-name";
 import type { Channel } from "../../types";
 import { MANAGE_CHANNELS_PERMISSION } from "../../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
@@ -154,7 +155,7 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
                   >
                     <Avatar session={session} username={username} size={20} />
                     <span className="member-name" style={nickColor !== null ? { color: nickColor } : undefined}>
-                      {username}{username === ownUsername ? " (you)" : ""}
+                      {displayNameOf(roster.users, username)}{username === ownUsername ? " (you)" : ""}
                     </span>
                     <VoiceMarks marks={voiceMarks.get(username)} />
                   </div>

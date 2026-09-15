@@ -10,6 +10,7 @@ import { RestClient } from "../../core/rest";
 import { log } from "../../logging";
 import { computeGroupStarts, continuesGroup, formatHeaderStamp, formatTimeOfDay, toEpochMs, type GroupableMessage } from "../../domain/logic/message-grouping";
 import { firstHttpUrl, segmentMessageContent } from "../../domain/logic/mention-segmenter";
+import { displayNameOf } from "../../domain/logic/display-name";
 import { linkPreviewFor, type LinkPreview } from "../link-preview";
 import { notifications } from "../notifications";
 import { dmDisplayName } from "../../domain/logic/dm-display";
@@ -145,6 +146,10 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
     const member = members.find((entry) => entry.username === username);
     return member !== undefined ? memberNameColor(member, roles) : null;
   }, [members, roles]);
+  // The rename model: rendered names resolve through the LIVE roster (the
+  // username stays the lookup key and never shows).
+  const rosterUsers = useStore(session.rosterStore, (state) => state.users);
+  const nameOf = useCallback((username: string): string => displayNameOf(rosterUsers, username), [rosterUsers]);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [editing, setEditing] = useState<Message | null>(null);
@@ -318,7 +323,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
       />
       {replyTo !== null ? (
         <div className="reply-bar">
-          <span>Replying to <strong>@{replyTo.authorUsername}</strong></span>
+          <span>Replying to <strong>@{nameOf(replyTo.authorUsername)}</strong></span>
           <span className="reply-preview">{replyPreviewOf(replyTo)}</span>
           <button className="ghost" onClick={() => setReplyTo(null)}>×</button>
         </div>
@@ -846,6 +851,10 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
   // Subscribed (not read-once): the relative-dates toggle must repaint every
   // stamp the moment it is committed (oak's onApplied → messageList.refresh()).
   const relativeDates = useStore(settingsStore, (settings) => settings.relativeDates);
+  // The rename model: names render through the live roster (a /topic/users push
+  // repaints every author at once); the username never shows.
+  const rosterUsers = useStore(session.rosterStore, (state) => state.users);
+  const nameOf = (username: string): string => displayNameOf(rosterUsers, username);
 
   useEffect(() => {
     setDraft(message.content ?? "");
@@ -1028,7 +1037,7 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
       <div className="message-body">
         {startsGroup ? (
           <div className="message-meta">
-            <span className="message-author" style={{ color: props.authorColor(message.authorUsername) ?? undefined }}>{message.authorUsername}</span>
+            <span className="message-author" style={{ color: props.authorColor(message.authorUsername) ?? undefined }}>{nameOf(message.authorUsername)}</span>
             <span className="message-time">{formatHeaderStamp(toEpochMs(message.createdAt), Date.now(), relativeDates)}</span>
           </div>
         ) : null}
@@ -1036,7 +1045,7 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
           /* oak: a forward renders the BODY + attachments INSIDE the card — the
              forwarded content reads as the quoted original, not as a plain
              message under a one-line marker. The inline editor keeps the flat order. */
-          <ForwardCard forward={message.forward}>
+          <ForwardCard forward={message.forward} nameOf={nameOf}>
             {body}
             {attachmentView}
             {previewUrl !== null ? <LinkPreviewCard url={previewUrl} /> : null}
@@ -1044,7 +1053,7 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
         ) : (
           <>
             {message.reply !== null
-              ? <QuoteCard level={message.reply} depth={0} clickable onJump={actions.jumpTo} />
+              ? <QuoteCard level={message.reply} depth={0} clickable onJump={actions.jumpTo} nameOf={nameOf} />
               : null}
             {body}
             {previewUrl !== null ? <LinkPreviewCard url={previewUrl} /> : null}
@@ -1082,12 +1091,14 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
   );
 });
 
-function QuoteCard({ level, depth, clickable, onJump }: {
+function QuoteCard({ level, depth, clickable, onJump, nameOf }: {
   level: ReplyInfo;
   depth: number;
   /** Live tree rows jump on click; FROZEN snapshots (inside a forward) never do. */
   clickable: boolean;
   onJump: (messageId: number) => void;
+  /** Resolves the RENDERED name (nickname) from the live roster. */
+  nameOf: (username: string) => string;
 }): React.JSX.Element {
   if (level.deleted) {
     return <div className="quote-card deleted">Original message deleted</div>;
@@ -1102,11 +1113,11 @@ function QuoteCard({ level, depth, clickable, onJump }: {
       >
         <span className="icon mdi-reply" />
         <span className="quote-prefix">Reply to</span>
-        <span className="quote-author" style={{ color: paletteColor(level.authorUsername) }}>{level.authorUsername}</span>
+        <span className="quote-author" style={{ color: paletteColor(level.authorUsername) }}>{nameOf(level.authorUsername)}</span>
       </div>
-      {level.forward !== null ? <span className="quote-forward">↗ from {level.forward.authorUsername}</span> : null}
+      {level.forward !== null ? <span className="quote-forward">↗ from {nameOf(level.forward.authorUsername)}</span> : null}
       {level.reply !== null && depth < QUOTE_DEPTH_MAX
-        ? <QuoteCard level={level.reply} depth={depth + 1} clickable={clickable} onJump={onJump} />
+        ? <QuoteCard level={level.reply} depth={depth + 1} clickable={clickable} onJump={onJump} nameOf={nameOf} />
         : null}
       <span className="quote-preview">{level.preview}</span>
     </div>
@@ -1119,7 +1130,7 @@ function QuoteCard({ level, depth, clickable, onJump }: {
  * author (palette color) + their timestamp; the frozen quote tree and then the
  * BODY + attachments live INSIDE the card — a forward reads as the quoted original.
  */
-function ForwardCard({ forward, children }: { forward: ForwardInfo; children: React.ReactNode }): React.JSX.Element {
+function ForwardCard({ forward, children, nameOf }: { forward: ForwardInfo; children: React.ReactNode; nameOf: (username: string) => string }): React.JSX.Element {
   // Subscribed like MessageList: a relative-dates toggle repaints the stamp.
   const relativeDates = useStore(settingsStore, (settings) => settings.relativeDates);
   return (
@@ -1131,10 +1142,10 @@ function ForwardCard({ forward, children }: { forward: ForwardInfo; children: Re
         {!forward.trusted ? <span className="forward-unverified"> · unverified</span> : null}
       </div>
       <div className="forward-author-row">
-        <span className="forward-author" style={{ color: paletteColor(forward.authorUsername) }}>{forward.authorUsername}</span>
+        <span className="forward-author" style={{ color: paletteColor(forward.authorUsername) }}>{nameOf(forward.authorUsername)}</span>
         <span className="forward-time">{formatHeaderStamp(toEpochMs(forward.createdAt), Date.now(), relativeDates)}</span>
       </div>
-      {forward.reply !== null ? <QuoteCard level={forward.reply} depth={1} clickable={false} onJump={() => undefined} /> : null}
+      {forward.reply !== null ? <QuoteCard level={forward.reply} depth={1} clickable={false} onJump={() => undefined} nameOf={nameOf} /> : null}
       {children}
     </div>
   );
@@ -1231,7 +1242,9 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
 
   // oak's MentionSuggester order: @everyone/@here first, then MENTIONABLE roles,
   // then users — one flat list the keyboard walks (live report: roles and the
-  // broad pings were missing from the popup entirely).
+  // broad pings were missing from the popup entirely). Users walk by NICKNAME
+  // (the one addressable name — the login never matches), and the trigger token
+  // class is Unicode to match the nickname grammar (Cyrillic included).
   const mentionCandidates = useMemo(() => {
     if (mentionQuery === null) {
       return [];
@@ -1250,17 +1263,18 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
       }
     }
     for (const user of users) {
-      if (user.username !== ownUsername && matches(user.username)) {
-        candidates.push({ key: `user:${user.id}`, insert: user.username, label: user.username, kind: "user", userId: user.id });
+      const shownName = user.displayName ?? user.username;
+      if (user.username !== ownUsername && matches(shownName)) {
+        candidates.push({ key: `user:${user.id}`, insert: shownName, label: shownName, kind: "user", userId: user.id });
       }
     }
     return candidates.slice(0, 10);
   }, [mentionQuery, roles, users, ownUsername]);
 
-  // Track the @token ending at the caret — the popup's query.
+  // Track the @token ending at the caret — the popup's query (Unicode token class).
   const updateMentionQuery = (value: string, caret: number): void => {
     const beforeCaret = value.slice(0, caret);
-    const tokenMatch = beforeCaret.match(/(?:^|\s)@([A-Za-z0-9_-]*)$/);
+    const tokenMatch = beforeCaret.match(/(?:^|\s)@([\p{L}\p{N}_-]*)$/u);
     setMentionQuery(tokenMatch !== null ? { token: tokenMatch[0].trimStart(), caret } : null);
     setMentionIndex(0);
   };
@@ -1510,7 +1524,8 @@ function ForwardDialog({ session, source, sourceChannel, onClose }: {
             originServer,
             originChannel: sourceChannel.name,
             originAuthorId: message.authorId,
-            originAuthorName: message.authorUsername,
+            // The snapshot carries the NICKNAME (the login never crosses the wire).
+            originAuthorName: displayNameOf(session.rosterStore.getSnapshot().users, message.authorUsername),
             originCreatedAt: message.createdAt,
             originReply: message.reply,
           });

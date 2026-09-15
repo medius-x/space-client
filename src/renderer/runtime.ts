@@ -21,6 +21,7 @@ import { dmDisplayName } from "../domain/logic/dm-display";
 import type { MentionIdentity } from "../domain/logic/notification-decider";
 import { dmToastHeader, toastServerHeader } from "../domain/logic/toast-preview";
 import { paletteColor } from "../domain/logic/user-palette";
+import { displayNameOf } from "../domain/logic/display-name";
 import { SettingsStore } from "../domain/stores/SettingsStore";
 import type { NotificationPrefs } from "../types";
 import { notifications } from "./notifications";
@@ -399,7 +400,11 @@ function makeSessionHooks(recordId: string): SessionHooks {
           );
         }
         if (dm !== null) {
-          session.socialStore.updateDmLastMessage(message); // float the row + refresh the preview
+          // float the row + refresh the preview (author's DISPLAY name — the login never renders)
+          session.socialStore.updateDmLastMessage(
+            message,
+            displayNameOf(session.rosterStore.getSnapshot().users, message.authorUsername),
+          );
         }
         if (ownMessage || (inOpenChannel && windowFocused)) {
           return;
@@ -423,6 +428,7 @@ function makeSessionHooks(recordId: string): SessionHooks {
           },
           dm !== null ? () => openDm(dm.id) : () => setActiveChannel(message.channelId),
           dm !== null, // every DM is a mention equivalent
+          displayNameOf(session.rosterStore.getSnapshot().users, message.authorUsername),
         );
         return;
       }
@@ -440,7 +446,10 @@ function makeSessionHooks(recordId: string): SessionHooks {
         );
       }
       if (dm !== null) {
-        session.socialStore.updateDmLastMessage(message);
+        session.socialStore.updateDmLastMessage(
+          message,
+          displayNameOf(session.rosterStore.getSnapshot().users, message.authorUsername),
+        );
       }
       if (ownMessage) {
         return;
@@ -464,6 +473,7 @@ function makeSessionHooks(recordId: string): SessionHooks {
         },
         dm !== null ? () => openDmOnInstance(recordId, dm.id) : () => openChannelOnInstance(recordId, message.channelId),
         dm !== null,
+        displayNameOf(session.rosterStore.getSnapshot().users, message.authorUsername),
       );
     },
     onOwnVoiceControlState: (state) => {
@@ -490,6 +500,39 @@ function makeSessionHooks(recordId: string): SessionHooks {
     onCallSignal: (signal) => {
       if (isActive()) {
         handleCallSignal(signal);
+        return;
+      }
+      // BACKGROUND ring (#475): the same toast-window call card, tagged with the
+      // background server's name; busy auto-rejects (oak). Accept switches the
+      // instance first (openSession consumes pendingBackgroundAccept).
+      if (signal.type === "RING") {
+        if (appStore.getSnapshot().callState !== "idle" || backgroundRing !== null) {
+          sessionMap.get(recordId)?.sendCallSignal({ type: "REJECT", to: signal.from, sdp: null, candidate: null });
+          return;
+        }
+        const ring = { recordId, peer: signal.from, timer: null as number | null };
+        backgroundRing = ring;
+        const session = sessionMap.get(recordId) ?? null;
+        if (session !== null) {
+          showIncomingCallCard(session, signal.from);
+          notifications.playChime();
+        }
+        const timeoutSeconds = settingsStore.getSnapshot().ringTimeoutSeconds;
+        if (timeoutSeconds > 0) {
+          ring.timer = window.setTimeout(() => {
+            if (backgroundRing === ring) {
+              clearBackgroundRing(); // missed — the caller's own timeout sends HANGUP
+            }
+          }, timeoutSeconds * 1000);
+        }
+        log.info("call", `background RING from ${signal.from} on record ${recordId}`);
+        return;
+      }
+      if (signal.type === "HANGUP"
+        && backgroundRing !== null
+        && backgroundRing.recordId === recordId
+        && backgroundRing.peer === signal.from) {
+        clearBackgroundRing();
       }
     },
     onDmClosed: (channelId) => {
@@ -754,6 +797,10 @@ function disposeBackgroundSession(recordId: string): void {
   sessionMap.delete(recordId);
   session.dispose();
   unbindLiveBackgroundSession(recordId);
+  // A live background-call card dies with its session (nothing to accept on).
+  if (backgroundRing !== null && backgroundRing.recordId === recordId) {
+    clearBackgroundRing();
+  }
   void loadBackgroundSocial(connectionDirectory, activeSession?.recordId ?? "");
 }
 
@@ -846,6 +893,17 @@ export function openChannelOnInstance(recordId: string, channelId: number): void
  *  (a DM, then a server channel) replaces the restored last channel; a channel
  *  deleted while away falls through to the ordinary restore. */
 function consumePendingOpen(session: ConnectionSession): void {
+  // A background call the user ACCEPTED: the now-promoted session takes the
+  // ring (ringing-in + the normal accept path) — before any channel restore.
+  if (pendingBackgroundAccept !== null && pendingBackgroundAccept.recordId === session.recordId) {
+    const pending = pendingBackgroundAccept;
+    pendingBackgroundAccept = null;
+    if (appStore.getSnapshot().callState === "idle") {
+      appStore.patch({ callState: "ringing-in", callPeer: pending.peer, callHealthy: true, callSeconds: 0 });
+      void acceptCallNow();
+      return;
+    }
+  }
   const state = appStore.getSnapshot();
   const pendingDm = state.pendingOpenDm;
   if (pendingDm !== null && pendingDm.recordId === session.recordId) {
@@ -1703,6 +1761,22 @@ let callMicStateBeforeDeafen = true;
 /** Signals that raced ahead of the session (OFFER while the callee's mic was still starting). */
 const pendingCallSignals: IncomingCallSignal[] = [];
 
+/** A ring that arrived on a NON-active instance (the background-call feature,
+ *  #475): the toast-window card tagged with the background server's name, plus
+ *  the pending accept that switches the instance before the call comes up. */
+let backgroundRing: { recordId: string; peer: string; timer: number | null } | null = null;
+/** Set when the user ACCEPTS a background ring — consumed by openSession once
+ *  that instance is promoted to the active session. */
+let pendingBackgroundAccept: { recordId: string; peer: string } | null = null;
+
+function clearBackgroundRing(): void {
+  if (backgroundRing !== null && backgroundRing.timer !== null) {
+    window.clearTimeout(backgroundRing.timer);
+  }
+  backgroundRing = null;
+  notifications.dismissCallCard();
+}
+
 /** Wiring point for the room view's imperative peer-video element (call mode). */
 export const callView = {
   attachPeerVideo(_track: MediaStreamTrack): void {
@@ -1811,7 +1885,9 @@ function handleCallSignal(signal: IncomingCallSignal): void {
         return;
       }
       appStore.patch({ callState: "ringing-in", callPeer: signal.from, callHealthy: true, callSeconds: 0 });
-      showIncomingCallCard(signal.from);
+      if (activeSession !== null) {
+        showIncomingCallCard(activeSession, signal.from);
+      }
       notifications.playChime();
       armRingTimeout();
       log.info("call", `incoming RING from ${signal.from}`);
@@ -1868,14 +1944,17 @@ function drainPendingCallSignals(): void {
  *  out — live report: a broken-image glyph) nor our blob: object URLs cross
  *  over — the image is re-fetched through the attachment cache (fresh-link
  *  recovery included) and re-sent as a data: URL. */
-function showIncomingCallCard(peer: string): void {
-  const session = activeSession;
+function showIncomingCallCard(callSession: ConnectionSession, peer: string): void {
+  const session = callSession;
   // The avatar rides the ROSTER's UserSummary (rosterStore), not ServerMember.
-  const user = session?.rosterStore.getSnapshot().users.find((entry) => entry.username === peer) ?? null;
-  const serverName = serverDisplayName(session?.recordId ?? "");
+  const users = session.rosterStore.getSnapshot().users;
+  const user = users.find((entry) => entry.username === peer) ?? null;
+  const serverName = serverDisplayName(session.recordId);
+  // The rename model: the card shows the NICKNAME; the login (peer key) never renders.
+  const peerName = displayNameOf(users, peer);
   const paint = (avatarUrl: string | null): void => {
     notifications.showCallCard({
-      peer,
+      peer: peerName,
       serverName,
       avatarUrl,
       avatarColor: paletteColor(peer),
@@ -1883,16 +1962,24 @@ function showIncomingCallCard(peer: string): void {
     });
   };
   paint(null);
+  // Liveness of THIS ring: the active session's ringing-in state, or — for a
+  // BACKGROUND ring — the still-live backgroundRing entry.
+  const isStillLive = session === activeSession
+    ? () => {
+      const state = appStore.getSnapshot();
+      return state.callState === "ringing-in" && state.callPeer === peer;
+    }
+    : () => backgroundRing !== null && backgroundRing.recordId === session.recordId && backgroundRing.peer === peer;
   const avatarKey = user?.avatarKey ?? null;
   const avatarUrl = user?.avatarUrl ?? null;
-  if (session !== null && avatarKey !== null && avatarUrl !== null) {
+  if (avatarKey !== null && avatarUrl !== null) {
     // Diagnosed step by step into space.log — a silent catch here left the card
     // on the fallback with nothing to go on (live report).
     void (async () => {
       try {
         const objectUrl = await session.attachmentCache.loadImage({ key: avatarKey, url: avatarUrl });
         log.info("call", `incoming-card avatar cache: ${objectUrl !== null ? "hit" : "null"}`);
-        if (objectUrl === null || activeSession !== session) {
+        if (objectUrl === null) {
           return;
         }
         const blob = await fetch(objectUrl).then((response) => response.blob());
@@ -1903,10 +1990,9 @@ function showIncomingCallCard(peer: string): void {
           reader.readAsDataURL(blob);
         });
         log.info("call", `incoming-card avatar dataUrl: ${dataUrl !== null ? `${Math.round(dataUrl.length / 1024)} KB` : "null"}`);
-        const state = appStore.getSnapshot();
         // Only while THIS ring is still the live one — a late decode must not
         // resurrect the card or downgrade a "Connecting…" status.
-        if (dataUrl !== null && state.callState === "ringing-in" && state.callPeer === peer) {
+        if (dataUrl !== null && isStillLive()) {
           paint(dataUrl);
         }
       } catch (error) {
@@ -2088,13 +2174,32 @@ export function rejectIncomingCall(): void {
   teardownCall();
 }
 
-// The toast window's call-card buttons land here (relayed by main).
+// The toast window's call-card buttons land here (relayed by main): the ACTIVE
+// ring answers in place; a BACKGROUND ring switches the instance first (#475).
 notifications.setCallActionHandler((action) => {
-  if (action === "accept") {
-    acceptIncomingCall();
-  } else {
-    rejectIncomingCall();
+  const state = appStore.getSnapshot();
+  if (state.callState === "ringing-in") {
+    if (action === "accept") {
+      acceptIncomingCall();
+    } else {
+      rejectIncomingCall();
+    }
+    return;
   }
+  if (backgroundRing === null) {
+    return;
+  }
+  const ring = backgroundRing;
+  if (action === "accept") {
+    // Promote that instance (openSession reuses the live session — no teardown)
+    // and hand the ring over; openSession consumes pendingBackgroundAccept.
+    pendingBackgroundAccept = { recordId: ring.recordId, peer: ring.peer };
+    clearBackgroundRing();
+    void switchConnection(ring.recordId);
+    return;
+  }
+  sessionMap.get(ring.recordId)?.sendCallSignal({ type: "REJECT", to: ring.peer, sdp: null, candidate: null });
+  clearBackgroundRing();
 });
 
 export function hangUpCall(): void {

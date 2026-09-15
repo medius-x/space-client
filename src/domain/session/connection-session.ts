@@ -557,6 +557,19 @@ export class ConnectionSession {
     this.memberRefresh.request(); // the ban list refreshes via /topic/members anyway — this covers a missed push
   }
 
+  /** Nickname mutation (the rename model): /topic/members + /topic/users
+   *  pushes refresh the management roster and the display-name roster — the
+   *  request covers a missed push. */
+  async renameMember(userId: number, nickname: string): Promise<void> {
+    await this.rest.renameMember(userId, nickname);
+    this.memberRefresh.request();
+  }
+
+  async resetMemberNickname(userId: number): Promise<void> {
+    await this.rest.resetMemberNickname(userId);
+    this.memberRefresh.request();
+  }
+
   // ---------------------------------------------------------------------------
   // RBAC editor (M7): roles CRUD/reorder — every mutation ends with the coalesced
   // member+roles refresh so all viewers (including this one) re-derive gates live
@@ -635,8 +648,12 @@ export class ConnectionSession {
       this.rosterStore.applyPresenceEvent(JSON.parse(raw) as PresenceEvent);
     });
     this.stomp.subscribe("/topic/users", (raw) => {
-      // Avatar confirm/remove pushes the updated user to everyone.
-      this.rosterStore.updateUser(JSON.parse(raw) as UserSummary);
+      // Avatar confirm/remove AND renames push the updated user to everyone.
+      // A rename also repaints the social snapshots (friends/DM rows) — no
+      // relationship event follows a rename, so the snapshot would go stale.
+      const user = JSON.parse(raw) as UserSummary;
+      this.rosterStore.updateUser(user);
+      this.socialStore.applyUserRename(user.username, user.displayName ?? user.username);
     });
     this.stomp.subscribe("/topic/voice", (raw) => {
       const event = JSON.parse(raw) as VoiceMemberEvent;

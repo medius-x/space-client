@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useStore } from "../hooks/useStore";
 import { useAttachmentImage } from "../hooks/useAttachmentImage";
 import {
@@ -245,18 +246,50 @@ function RailRow({ record, active, expired, busy, session, onActivate, onMenu }:
   );
   const badge = useServerBadge(record.id, session);
 
+  // oak's name bubble: a Discord-style pill to the RIGHT of the icon, vertically
+  // centered on it (not at the cursor) — a custom popup, never a native Tooltip.
+  // Shows after 400 ms of hover, hides instantly on leave (MainController 8470-8489).
+  // PORTED TO document.body: the rail scrolls (overflow-y: auto), which per CSS
+  // computes overflow-x to auto too — an absolutely-positioned pill past the
+  // 72px rail edge was CLIPPED, so the bubble never appeared (live report).
+  const [bubbleAnchor, setBubbleAnchor] = useState<{ top: number; left: number } | null>(null);
+  const bubbleTimerRef = useRef<number | null>(null);
+  const iconRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => () => {
+    if (bubbleTimerRef.current !== null) {
+      window.clearTimeout(bubbleTimerRef.current);
+    }
+  }, []);
+
   return (
     <div
       className={"rail-wrap" + (active ? " active" : "")}
-      title={`${name} · ${record.username}`}
       onClick={onActivate}
+      onMouseEnter={() => {
+        if (bubbleTimerRef.current !== null) {
+          window.clearTimeout(bubbleTimerRef.current);
+        }
+        bubbleTimerRef.current = window.setTimeout(() => {
+          const rect = iconRef.current?.getBoundingClientRect();
+          if (rect !== undefined) {
+            setBubbleAnchor({ top: rect.top + rect.height / 2, left: rect.right + 4 });
+          }
+        }, 400);
+      }}
+      onMouseLeave={() => {
+        if (bubbleTimerRef.current !== null) {
+          window.clearTimeout(bubbleTimerRef.current);
+          bubbleTimerRef.current = null;
+        }
+        setBubbleAnchor(null);
+      }}
       onContextMenu={(event) => {
         event.preventDefault();
         onMenu(event.clientX, event.clientY);
       }}
     >
       {active ? <span className="rail-pill" /> : null}
-      <div className={"rail-icon" + (expired ? " expired" : "")}>
+      <div ref={iconRef} className={"rail-icon" + (expired ? " expired" : "")}>
         <ServerIconBody iconUrl={iconUrl} name={name} />
       </div>
       {/* A SIBLING of the icon, like the Home badge: inside .rail-icon the
@@ -266,6 +299,14 @@ function RailRow({ record, active, expired, busy, session, onActivate, onMenu }:
           {badge.unread > 99 ? "99+" : badge.unread}
         </span>
       ) : null}
+      {bubbleAnchor !== null
+        ? createPortal(
+          <span className="rail-name-bubble" style={{ top: bubbleAnchor.top, left: bubbleAnchor.left }}>
+            {name}
+          </span>,
+          document.body,
+        )
+        : null}
     </div>
   );
 }

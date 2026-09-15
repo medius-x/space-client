@@ -99,7 +99,7 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
           {roster.users.map((user) => (
             <div key={user.id} className="member-row">
               <Avatar session={session} username={user.username} size={32} showPresence={roster.presence.has(user.username)} />
-              <span className="member-name">{user.username}</span>
+              <span className="member-name">{user.displayName ?? user.username}</span>
             </div>
           ))}
         </>
@@ -113,7 +113,7 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
           verb="Kick"
           session={session}
           member={kickTarget}
-          text={`Kick "${kickTarget.username}"? They will be disconnected from the server.`}
+          text={`Kick "${kickTarget.nickname}"? They will be disconnected from the server.`}
           onClose={() => setKickTarget(null)}
         />
       ) : null}
@@ -122,7 +122,7 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
           verb="Ban"
           session={session}
           member={banTarget}
-          text={`Ban "${banTarget.username}"? They will no longer be able to log in.`}
+          text={`Ban "${banTarget.nickname}"? They will no longer be able to log in.`}
           onClose={() => setBanTarget(null)}
         />
       ) : null}
@@ -143,7 +143,7 @@ function MemberRow({ session, member, online, isSelf, nameColor, onMenu }: {
     <div className={"member-row" + (online ? "" : " offline")} onContextMenu={onMenu}>
       <Avatar session={session} username={member.username} size={36} showPresence={online} />
       <span className="member-name" style={{ color: nameColor ?? (online ? "var(--sp-text)" : "var(--sp-text-muted)") }}>
-        {member.username}{isSelf ? " (you)" : ""}
+        {member.nickname}{isSelf ? " (you)" : ""}
       </span>
       {member.owner ? <span className="owner-badge" title="Server owner">👑</span> : null}
     </div>
