@@ -22,10 +22,14 @@ export function Diagnostics(): React.JSX.Element {
       <div className="diag-title">diagnostics</div>
       <button className="ghost" onClick={() => void runDisplayMediaSelfTest()}>getDisplayMedia self-test</button>
       {/* Deterministic white noise → engine → RMS verdict (no mic/room/peer
-          involved); the verdict lands in the [selftest] log tail below. */}
+          involved); the verdict lands in the [selftest] log tail below. Gate's
+          verdict reads "WEAK" on continuous noise by design — a gate mutes
+          pauses, it does not clean speech-shaped input. */}
       <div className="diag-row">
-        <button className="ghost" onClick={() => void runNoiseEngineSelfTest("rnnoise")}>NS self-test: RNNoise</button>
-        <button className="ghost" onClick={() => void runNoiseEngineSelfTest("deepfilternet3")}>NS self-test: DFN3</button>
+        <button className="ghost" onClick={() => void runNoiseEngineSelfTest("rnnoise")}>RNNoise</button>
+        <button className="ghost" onClick={() => void runNoiseEngineSelfTest("deepfilternet3")}>DFN3</button>
+        <button className="ghost" onClick={() => void runNoiseEngineSelfTest("speex")}>Speex</button>
+        <button className="ghost" onClick={() => void runNoiseEngineSelfTest("gate")}>Gate</button>
       </div>
       <button className="ghost" onClick={() => seedSyntheticMessages(10_000)}>seed 10k messages (perf gate)</button>
       <div className="diag-row">

@@ -522,6 +522,27 @@ SUPPRESSED/PASSTHROUGH/WEAK в [selftest]-лог — движок тестиру
 успешной подписке (answer sent + transport connected); следующий повтор покажет слой (Janus не стартует RTP vs
 плейаут). Гейты 260/260.
 
+**Движки Speex + Gate; протокол space-asset:// (2026-09-17, юзер-смоук пройден).** Каталог движков стал
+`off | rnnoise | deepfilternet3 | speex | gate` (NsEngineMenu + Settings→Audio + самотест-кнопки в diag на
+КАЖДЫЙ движок; вердикт Gate на белом шуме — WEAK ПО ОПРЕДЕЛЕНИЮ: гейт глушит паузы). Speex = speexdsp
+`preprocess` из `@sapphi-red/web-noise-suppressor` (wasm 56КБ, wasm+ворклет vendored в `public/ns/`,
+`npm run ns:vendor`); Gate = оттуда же (пороги −45/−60 дБ, hold 250 мс). **Протокол `space-asset://`**
+(main.ts): read-only file-хендлер на статику рендерера (dev: src/renderer/public, прод: out/renderer), path-
+traversal-гварда; ДВИЖКОВЫЕ АССЕТЫ ГРУЗЯТСЯ ТОЛЬКО ЧЕРЕЗ НЕГО: прод-окно — file://-ДОКУМЕНТ и fetch()
+СОБСТВЕННЫХ файлов запрещён CORS'ом (origin null) — относительный fetch работает лишь под vite-dev.
+ГРАБЛИ CORS-СХЕМЫ: registerSchemesAsPrivileged БЕЗ corsEnabled + без заголовка ACAO в ответе даёт голое
+«Failed to fetch» из file://-страницы (origin null = кросс-схемный запрос); CSP connect-src += space-asset:.
+ГРАБЛЯ PER-CONTEXT addModule: список AudioWorklet-модулей у КАЖДОГО AudioContext СВОЙ — регистрация на
+одноразовом «контексте-носителе» с кешем на окно оставляла пайплайн-контекст пуст («no valid
+AudioWorkletGlobalScope»); addModule зовётся на контексте пайплайна, никаких кешей. **DTLN ОТКАЧЕН**
+(@workadventure/noise-suppression удалён): их ворклет-обёртка жёстко резолвит litert-wasm+tflite по
+file://-fetch (в проде мёртв) и НЕ пробрасывает их пути; НИЖНИЙ API пакета (createNoiseSuppressionModule
+{liteRtWasmRoot, model1Url, model2Url}) всё позволяет — следующий раунд: своя ворклет-обёртка поверх их
+процессора по DFN3-паттерну + vendored litert/модели через space-asset. SettingsStore.load() санирует
+устаревший движок из KV (dtln→rnnoise). **NS-попап**: карточка открывается ВВЕРХ, нижним краем вплотную
+к кнопке (translateY(-100%), без фиксированной высоты — раньше улетала за низ окна), повторный клик по
+NS-кнопке ЗАКРЫВАЕТ (toggle). Гейты 260/260.
+
 M5 закрыт и закоммичен (`b14b2a6`). M6: **друзья** —
 `GET /api/users/me/relationships` (типы `FRIEND|BLOCKED|PENDING_INCOMING|
 PENDING_OUTGOING` — сервер сам сворачивает направление в caller-view); запрос

@@ -18,7 +18,8 @@
     "profile": "node scripts/capture-profile.mjs",
     "start:tools": "npm run build && electron . --space-devtools",
     "start2:tools": "npm run build && electron . --space-instance=b --space-devtools",
-    "df3:glue": "node scripts/extract-df3-glue.mjs"
+    "df3:glue": "node scripts/extract-df3-glue.mjs",
+    "ns:vendor": "node scripts/vendor-ns-engines.mjs"
   },
   "devDependencies": {
     "@mdi/font": "^7.4.47",
@@ -37,6 +38,7 @@
   },
   "dependencies": {
     "@jitsi/rnnoise-wasm": "^0.2.1",
+    "@sapphi-red/web-noise-suppressor": "^0.4.0",
     "@tanstack/react-virtual": "^3.14.11",
     "deepfilternet3-noise-filter": "^1.3.0",
     "react": "^19.2.8",

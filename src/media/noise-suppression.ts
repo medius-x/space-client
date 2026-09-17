@@ -26,7 +26,7 @@ import { log } from "../logging";
  *    self-hosted/offline app — so both files are vendored into
  *    src/renderer/public/df3/ and cdnUrl points at the local copies.
  */
-export type NoiseEngineKind = "off" | "rnnoise" | "deepfilternet3";
+export type NoiseEngineKind = "off" | "rnnoise" | "deepfilternet3" | "speex" | "gate";
 
 /** The audio rate every engine path is built around (RNNoise's 480-sample frame
  *  is 10 ms at 48 kHz; the capture constraints request the same rate). */
@@ -55,6 +55,12 @@ export async function createNoisePipeline(
 ): Promise<NoisePipeline> {
   if (engine === "rnnoise") {
     return createRnnoisePipeline(rawTrack);
+  }
+  if (engine === "speex") {
+    return createSpeexPipeline(rawTrack);
+  }
+  if (engine === "gate") {
+    return createGatePipeline(rawTrack);
   }
   return createDeepFilterPipeline(rawTrack, deepFilterLevel);
 }
@@ -407,10 +413,97 @@ async function createDeepFilterPipeline(rawTrack: MediaStreamTrack, suppressionL
   };
 }
 
-async function fetchAsset(url: string): Promise<ArrayBuffer> {
-  const response = await fetch(url);
+/** Engine assets ride main's read-only space-asset:// protocol: the packaged
+ *  window is a file:// document and CANNOT fetch its own files (CORS origin
+ *  null) — relative URLs only work under the vite dev server. */
+const ASSET_BASE = "space-asset://";
+
+async function fetchAsset(relative: string): Promise<ArrayBuffer> {
+  const response = await fetch(ASSET_BASE + relative);
   if (!response.ok) {
-    throw new Error(`asset ${url} fetch: ${response.status}`);
+    throw new Error(`asset ${relative} fetch: ${response.status}`);
   }
   return response.arrayBuffer();
+}
+
+async function fetchAssetText(relative: string): Promise<string> {
+  const response = await fetch(ASSET_BASE + relative);
+  if (!response.ok) {
+    throw new Error(`asset ${relative} fetch: ${response.status}`);
+  }
+  return response.text();
+}
+
+/** Load a vendored worklet MODULE as a blob (addModule needs a URL; blob URLs
+ *  behave identically under dev and the packaged file:// window). */
+async function addWorkletModule(context: AudioContext, relative: string): Promise<void> {
+  const text = await fetchAssetText(relative);
+  const blobUrl = URL.createObjectURL(new Blob([text], { type: "text/javascript" }));
+  try {
+    await context.audioWorklet.addModule(blobUrl);
+  } finally {
+    URL.revokeObjectURL(blobUrl);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Speex (the speexdsp "preprocess" classic; @sapphi-red's wasm build) and the
+// noise Gate from the same package (user decision 2026-09-17: more choice,
+// vendored via scripts/vendor-ns-engines.mjs / `npm run ns:vendor`).
+// ---------------------------------------------------------------------------
+
+async function createSpeexPipeline(rawTrack: MediaStreamTrack): Promise<NoisePipeline> {
+  const { SpeexWorkletNode, loadSpeex } = await import("@sapphi-red/web-noise-suppressor");
+  const context = new AudioContext({ sampleRate: NOISE_PIPELINE_SAMPLE_RATE, latencyHint: "interactive" });
+  void context.resume();
+  // addModule ON THE PIPELINE'S OWN CONTEXT: Chromium keeps the worklet module
+  // map PER CONTEXT — registering on a throwaway carrier (the earlier cache)
+  // left this context without the processor ("no valid AudioWorkletGlobalScope",
+  // live report). Per-context also means no "already registered" clashes.
+  const wasmBinary = await loadSpeex({ url: `${ASSET_BASE}ns/speex.wasm` });
+  await addWorkletModule(context, "ns/speexWorklet.js");
+  const node = new SpeexWorkletNode(context, { maxChannels: 1, wasmBinary });
+  const source = context.createMediaStreamSource(new MediaStream([rawTrack]));
+  const destination = context.createMediaStreamDestination();
+  source.connect(node);
+  node.connect(destination);
+  return {
+    engine: "speex",
+    track: destination.stream.getAudioTracks()[0] ?? rawTrack,
+    vad: null,
+    dispose(): void {
+      node.destroy();
+      source.disconnect();
+      void context.close();
+    },
+  };
+}
+
+async function createGatePipeline(rawTrack: MediaStreamTrack): Promise<NoisePipeline> {
+  const { NoiseGateWorkletNode } = await import("@sapphi-red/web-noise-suppressor");
+  const context = new AudioContext({ sampleRate: NOISE_PIPELINE_SAMPLE_RATE, latencyHint: "interactive" });
+  void context.resume();
+  await addWorkletModule(context, "ns/noiseGateWorklet.js"); // per-context, see createSpeexPipeline
+  // Speech-level defaults: open at −45 dBFS, close at −60, hold 250 ms — quiet
+  // background stays out, normal talking keeps the gate open.
+  const node = new NoiseGateWorkletNode(context, {
+    openThreshold: -45,
+    closeThreshold: -60,
+    holdMs: 250,
+    maxChannels: 1,
+  });
+  const source = context.createMediaStreamSource(new MediaStream([rawTrack]));
+  const destination = context.createMediaStreamDestination();
+  source.connect(node);
+  node.connect(destination);
+  return {
+    engine: "gate",
+    track: destination.stream.getAudioTracks()[0] ?? rawTrack,
+    vad: null,
+    dispose(): void {
+      source.disconnect();
+      node.disconnect();
+      void context.close();
+    },
+  };
 }

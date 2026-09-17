@@ -1,4 +1,4 @@
-import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, ipcMain, net, screen, session, shell } from "electron";
+import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, ipcMain, net, protocol, screen, session, shell } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -9,6 +9,45 @@ import * as path from "node:path";
  * renderer (server CORS is wide open), so main only owns the window, the display-media
  * grant, and the security posture. DevTools stays open — this is a diagnostics spike.
  */
+
+// ---------------------------------------------------------------------------
+// space-asset:// — a read-only file protocol for the noise-suppression engines'
+// heavy assets (wasm / models / worklet modules). The renderer CANNOT fetch()
+// local files: the production window is a file:// document, and file→file fetch
+// is blocked by CORS (origin null). Engines' assets live under the renderer's
+// static root (src/renderer/public in dev, out/renderer in prod) and are served
+// read-only from there; unknown or escaping paths are refused.
+// ---------------------------------------------------------------------------
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "space-asset",
+    // corsEnabled + the ACAO header below: the renderer is a file:// document
+    // (origin null) — a cross-scheme fetch without them dies as "Failed to fetch".
+    privileges: { standard: true, supportFetchAPI: true, stream: true, corsEnabled: true },
+  },
+]);
+
+const STATIC_ASSETS_ROOT = process.env.ELECTRON_RENDERER_URL
+  ? path.resolve(app.getAppPath(), "src", "renderer", "public") // dev: vite serves them, main maps the same files
+  : path.resolve(__dirname, "..", "renderer"); // prod: the built static tree next to index.html
+
+function registerSpaceAssetProtocol(): void {
+  protocol.handle("space-asset", async (request) => {
+    // space-asset://df3/v3/x.wasm carries "df3" as the URL HOST — fold it back
+    // into the relative path so callers write plain asset paths.
+    const parsed = new URL(request.url);
+    const relative = decodeURIComponent(`${parsed.host}${parsed.pathname}`.replace(/^\/+/, ""));
+    const resolved = path.resolve(STATIC_ASSETS_ROOT, relative);
+    if (!resolved.startsWith(STATIC_ASSETS_ROOT + path.sep)) {
+      return new Response("forbidden", { status: 403, headers: { "Access-Control-Allow-Origin": "*" } });
+    }
+    const fileResponse = await net.fetch(`file:///${resolved.split(path.sep).join("/")}`);
+    return new Response(fileResponse.body, {
+      status: fileResponse.status,
+      headers: { ...fileResponse.headers, "Access-Control-Allow-Origin": "*" },
+    });
+  });
+}
 
 // Autoplay: the documented default is no-user-gesture-required but real-world reports
 // disagree — set it both here and on the window below, and the renderer also calls
@@ -632,6 +671,7 @@ async function createWindow(): Promise<void> {
 }
 
 app.whenReady().then(() => {
+  registerSpaceAssetProtocol();
   void createWindow();
   app.on("activate", () => {
     // macOS habit — harmless on Windows, kept for free.

@@ -34,7 +34,7 @@ export interface ClientSettings {
    *  heavyweight alternative, off = deliberately raw. AEC/AGC have NO knob:
    *  they stay always-on at the capture constraints (echo hurts the other
    *  listeners, not the one toggling). */
-  noiseSuppressionEngine: "off" | "rnnoise" | "deepfilternet3";
+  noiseSuppressionEngine: "off" | "rnnoise" | "deepfilternet3" | "speex" | "gate";
   /** DeepFilterNet3's suppression limit in dB — the engine's own native knob
    *  (0–100): 0 = no limit (the deepest suppression), higher = gentler.
    *  RNNoise has no such knob. */
@@ -65,6 +65,10 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
 
 const KV_KEY = "client-settings";
 
+/** The selectable engine catalog (mirrors media/noise-suppression's union —
+ *  domain cannot import from media, an accepted literal duplication). */
+const NS_ENGINES = ["off", "rnnoise", "deepfilternet3", "speex", "gate"] as const;
+
 export class SettingsStore extends Emitter {
   private settings: ClientSettings = { ...DEFAULT_CLIENT_SETTINGS };
   private loaded = false;
@@ -88,6 +92,11 @@ export class SettingsStore extends Emitter {
           ...this.settings,
           noiseSuppressionEngine: apmEnabled ? "rnnoise" : "off",
         };
+      }
+      // A stored engine may be gone from the catalog later (dtln was dropped
+      // 2026-09-17) — fall back to the default instead of a dead value.
+      if (!NS_ENGINES.includes(this.settings.noiseSuppressionEngine)) {
+        this.settings = { ...this.settings, noiseSuppressionEngine: DEFAULT_CLIENT_SETTINGS.noiseSuppressionEngine };
       }
     }
     this.loaded = true;

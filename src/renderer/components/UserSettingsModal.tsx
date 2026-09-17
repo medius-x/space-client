@@ -284,6 +284,8 @@ function AudioSection({ staged }: { staged: StagedSettings }): React.JSX.Element
         >
           <option value="rnnoise">RNNoise</option>
           <option value="deepfilternet3">DeepFilterNet3</option>
+          <option value="speex">Speex</option>
+          <option value="gate">Gate</option>
           <option value="off">Off</option>
         </select>
       </label>
@@ -304,9 +306,10 @@ function AudioSection({ staged }: { staged: StagedSettings }): React.JSX.Element
       ) : null}
       <div className="settings-hint">
         Runs locally on your microphone before it is sent. RNNoise is light and the default;
-        DeepFilterNet3 is heavier and stronger on irregular noise. Echo cancellation and auto
-        gain are always on. While voice or a call is live, switching engines rebuilds the
-        chain on the fly; the voice-bar NS button opens the same selector.
+        DeepFilterNet3 is heavier and stronger on irregular noise; Speex is the classic
+        spectral suppressor; Gate only mutes pauses (quiet, not clean). Echo cancellation
+        and auto gain are always on. While voice or a call is live, switching engines
+        rebuilds the chain on the fly; the voice-bar NS button opens the same selector.
         {staged.value("noiseSuppressionEngine") === "deepfilternet3"
           ? " The limit caps how deeply DeepFilterNet3 may attenuate: 0 is no limit (the strongest suppression), higher values are gentler; it applies live."
           : ""}

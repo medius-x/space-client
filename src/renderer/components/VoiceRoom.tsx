@@ -133,6 +133,8 @@ export const NS_ENGINE_LABELS: Record<NoiseEngineKind, string> = {
   off: "Off",
   rnnoise: "RNNoise",
   deepfilternet3: "DeepFilterNet3",
+  speex: "Speex",
+  gate: "Gate",
 };
 
 /** The NS button's tooltip (oak): the click opens the engine selector card. */
@@ -140,6 +142,10 @@ function nsTitle(engine: NoiseEngineKind): string {
   return `Noise suppression: ${NS_ENGINE_LABELS[engine]}`;
 }
 
+/** The card renders UPWARDS and HUGS the button: the NS button sits at the
+ *  BOTTOM of the voice bar, so the popup's LOWER edge anchors 6px above the
+ *  button's top (translateY(-100%) — no fixed-height guessing); a repeated
+ *  button click toggles the card closed. The callers pass the button's TOP. */
 export function NsEngineMenu({ engine, x, y, onPick, onClose }: {
   engine: NoiseEngineKind;
   x: number;
@@ -149,9 +155,9 @@ export function NsEngineMenu({ engine, x, y, onPick, onClose }: {
 }): React.JSX.Element {
   const cardRef = useRef<HTMLDivElement | null>(null);
   useOutsideDismiss(cardRef, onClose);
-  const options: NoiseEngineKind[] = ["rnnoise", "deepfilternet3", "off"];
+  const options: NoiseEngineKind[] = ["rnnoise", "deepfilternet3", "speex", "gate", "off"];
   return (
-    <div ref={cardRef} className="member-card engine-card" style={{ left: Math.max(8, x), top: Math.min(y, window.innerHeight - 120) }}>
+    <div ref={cardRef} className="member-card engine-card" style={{ left: Math.max(8, x), top: Math.max(44, y - 6), transform: "translateY(-100%)" }}>
       {options.map((option) => (
         <button
           key={option}
@@ -261,7 +267,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
           <button
             className={"voice-toggle icon-button ns" + (nsEngine !== "off" ? " on" : "")}
             title={nsTitle(nsEngine)}
-            onClick={(event) => setNsMenu({ x: event.currentTarget.getBoundingClientRect().left, y: event.currentTarget.getBoundingClientRect().bottom + 4 })}
+            onClick={(event) => setNsMenu(nsMenu === null ? { x: event.currentTarget.getBoundingClientRect().left, y: event.currentTarget.getBoundingClientRect().top } : null)}
           >
             <span className="icon mdi-triangle-wave" />
           </button>
@@ -372,7 +378,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
         <button
           className={"voice-toggle icon-button ns" + (nsEngine !== "off" ? " on" : "")}
           title={nsTitle(nsEngine)}
-          onClick={(event) => setNsMenu({ x: event.currentTarget.getBoundingClientRect().left, y: event.currentTarget.getBoundingClientRect().bottom + 4 })}
+          onClick={(event) => setNsMenu(nsMenu === null ? { x: event.currentTarget.getBoundingClientRect().left, y: event.currentTarget.getBoundingClientRect().top } : null)}
         >
           <span className="icon mdi-triangle-wave" />
         </button>
