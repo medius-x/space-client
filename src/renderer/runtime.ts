@@ -108,7 +108,7 @@ export interface AppState {
   stompCountdown: number | null;
   /** Server settings screen (in-app, replaces the content area) — M7. */
   serverSettingsOpen: boolean;
-  serverSettingsSection: "overview" | "roles" | "members" | "channels";
+  serverSettingsSection: "overview" | "roles" | "members" | "channels" | "server";
   /** User settings modal — M7. */
   userSettingsOpen: boolean;
   /** A DM on a NON-active instance the user clicked in the aggregated list:
@@ -1027,7 +1027,7 @@ export function canManageServerSettings(session: ConnectionSession | null): bool
   const permissions = session.permissionStore.getSnapshot().my?.permissions ?? [];
   return permissions.some((name) =>
     name === "MANAGE_ROLES" || name === "MANAGE_MEMBERS" || name === "KICK_MEMBERS"
-    || name === "BAN_MEMBERS" || name === "MANAGE_CHANNELS");
+    || name === "BAN_MEMBERS" || name === "MANAGE_CHANNELS" || name === "MANAGE_STORAGE");
 }
 
 export function openServerSettings(): void {

@@ -16,6 +16,7 @@ import type {
   PermissionCatalogEntry,
   Role,
   ServerMember,
+  StorageStatus,
 } from "../../types";
 import {
   BAN_MEMBERS_PERMISSION,
@@ -26,6 +27,7 @@ import {
   MANAGE_NICKNAMES_PERMISSION,
   MANAGE_ROLES_PERMISSION,
   MANAGE_SERVER_PERMISSION,
+  MANAGE_STORAGE_PERMISSION,
 } from "../../types";
 import {
   ACCESS_MANAGED_PERMISSIONS,
@@ -145,6 +147,7 @@ export function ServerSettingsPane({ session }: { session: ConnectionSession }):
     { key: "roles" as const, label: "Roles", enabled: can(MANAGE_ROLES_PERMISSION) },
     { key: "members" as const, label: "Members", enabled: can(MANAGE_MEMBERS_PERMISSION) || can(KICK_MEMBERS_PERMISSION) || can(BAN_MEMBERS_PERMISSION) },
     { key: "channels" as const, label: "Channels", enabled: can(MANAGE_CHANNELS_PERMISSION) },
+    { key: "server" as const, label: "Server", enabled: can(MANAGE_STORAGE_PERMISSION) },
   ].filter((entry) => entry.enabled);
   const active = sections.find((entry) => entry.key === section) ?? sections[0];
 
@@ -171,6 +174,8 @@ export function ServerSettingsPane({ session }: { session: ConnectionSession }):
           <RolesSection session={session} />
         ) : active.key === "members" ? (
           <MembersSection session={session} />
+        ) : active.key === "server" ? (
+          <ServerStorageSection session={session} />
         ) : (
           <ChannelsSection session={session} />
         )}
@@ -1859,4 +1864,240 @@ function setsEqual(left: ReadonlySet<string>, right: ReadonlySet<string>): boole
     }
   }
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Server — storage housekeeping (MANAGE_STORAGE): the GC policy, a live disk
+// reading, and a run-now trigger. The cleanup itself is watermark-driven and
+// age-agnostic: history lives as long as the disk allows.
+// ---------------------------------------------------------------------------
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 ** 4) {
+    return `${(bytes / 1024 ** 4).toFixed(1)} TB`;
+  }
+  if (bytes >= 1024 ** 3) {
+    return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  }
+  if (bytes >= 1024 ** 2) {
+    return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  }
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function formatMinuteOfDay(minuteOfDay: number): string {
+  const hours = Math.floor(minuteOfDay / 60);
+  const minutes = minuteOfDay % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+/** The nightly-run time input writes "HH:mm"; invalid input keeps the field but blocks Save. */
+function parseTimeToMinuteOfDay(text: string): number | null {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(text.trim());
+  if (match === null) {
+    return null;
+  }
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59) {
+    return null;
+  }
+  return hours * 60 + minutes;
+}
+
+function ServerStorageSection({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const [status, setStatus] = useState<StorageStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [high, setHigh] = useState("");
+  const [low, setLow] = useState("");
+  const [runTime, setRunTime] = useState("");
+  const [autoEnabled, setAutoEnabled] = useState(true);
+  const [saved, setSaved] = useState(false);
+  const [confirmRun, setConfirmRun] = useState(false);
+
+  const applyStatus = (next: StorageStatus): void => {
+    setStatus(next);
+    setHigh(String(next.policy.highWatermarkPercent));
+    setLow(String(next.policy.lowWatermarkPercent));
+    setRunTime(formatMinuteOfDay(next.policy.gcMinuteOfDay));
+    setAutoEnabled(next.policy.gcEnabled);
+  };
+
+  const refresh = (): void => {
+    void session.rest.getStorageStatus()
+      .then(applyStatus)
+      .catch((refreshError: unknown) =>
+        setError(refreshError instanceof Error ? refreshError.message : String(refreshError)));
+  };
+
+  useEffect(refresh, [session]);
+
+  // While a manual run is in flight, poll for the report (the server runs it in
+  // the background and answers 202).
+  const runInFlight = status !== null && status.running;
+  useEffect(() => {
+    if (!runInFlight) {
+      return;
+    }
+    const timer = window.setInterval(refresh, 1000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh is a stable shape over setStatus/session only
+  }, [runInFlight, session]);
+
+  const highNumber = Number(high);
+  const lowNumber = Number(low);
+  const minuteOfDay = parseTimeToMinuteOfDay(runTime);
+  const valid = Number.isInteger(highNumber) && highNumber > 0 && highNumber <= 99
+    && Number.isInteger(lowNumber) && lowNumber >= 0 && lowNumber <= 98
+    && highNumber > lowNumber && minuteOfDay !== null;
+  // SaveButton's dirty: any control drifted from the stored policy (an INVALID
+  // draft keeps the button disabled — dirty only counts when the draft is valid).
+  const dirty = status !== null && valid && (
+    highNumber !== status.policy.highWatermarkPercent
+    || lowNumber !== status.policy.lowWatermarkPercent
+    || minuteOfDay !== status.policy.gcMinuteOfDay
+    || autoEnabled !== status.policy.gcEnabled
+  );
+
+  const save = async (): Promise<void> => {
+    if (busy || !valid || minuteOfDay === null) {
+      return;
+    }
+    setBusy(true);
+    try {
+      applyStatus(await session.rest.updateStorageSettings({
+        highWatermarkPercent: highNumber,
+        lowWatermarkPercent: lowNumber,
+        gcMinuteOfDay: minuteOfDay,
+        gcEnabled: autoEnabled,
+      }));
+      setSaved(true);
+    } catch (saveError: unknown) {
+      setError(saveError instanceof Error ? saveError.message : String(saveError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runNow = async (): Promise<void> => {
+    if (busy) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await session.rest.triggerStorageGc();
+      refresh();
+    } catch (runError: unknown) {
+      setError(runError instanceof Error ? runError.message : String(runError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (status === null) {
+    return <div className="settings-hint">{error ?? "Loading storage state…"}</div>;
+  }
+
+  const usedPercent = Math.round(status.usage.usedPercent);
+  const lastRun = status.lastRun;
+
+  return (
+    <div>
+      <div className="roles-list-header overview-heading"><span>Storage</span></div>
+
+      <h3>Disk usage</h3>
+      {/* The instance's data disk (Postgres + MinIO live on it): the watermark
+          policy is measured against exactly this bar. */}
+      <div className="settings-hint">
+        {formatBytes(status.usage.usedBytes)} of {formatBytes(status.usage.totalBytes)} used — {usedPercent}%
+      </div>
+      <div style={{
+        height: 10,
+        borderRadius: 5,
+        background: "#1e1f22",
+        border: "1px solid #383a40",
+        overflow: "hidden",
+        margin: "8px 0 16px",
+      }}>
+        <div style={{
+          height: "100%",
+          width: `${Math.min(100, usedPercent)}%`,
+          background: usedPercent >= status.policy.highWatermarkPercent ? "#da373c" : "#3ba55d",
+        }} />
+      </div>
+
+      <h3>Cleanup policy</h3>
+      <div className="settings-hint">
+        Cleanup is need-driven, not age-driven: when the disk crosses the high threshold at night,
+        the oldest messages and unreferenced attachments are removed until it drops below the low
+        one. Attachments whose last message is deleted go immediately; the newest history is always
+        kept.
+      </div>
+      <label className="settings-check">
+        <input
+          type="checkbox"
+          checked={autoEnabled}
+          onChange={(event) => setAutoEnabled(event.target.checked)}
+        />
+        <span>Automatic cleanup</span>
+      </label>
+      <label className="settings-field">
+        <span>Start cleanup above — {high || "?"}% full</span>
+        <input type="range" min={1} max={99} value={high} onChange={(event) => setHigh(event.target.value)} />
+      </label>
+      <label className="settings-field">
+        <span>Clean down to — {low || "?"}% full</span>
+        <input type="range" min={0} max={98} value={low} onChange={(event) => setLow(event.target.value)} />
+      </label>
+      <label className="settings-field">
+        <span>Nightly run at (local time)</span>
+        <input
+          type="text"
+          value={runTime}
+          placeholder="03:30"
+          disabled={!autoEnabled}
+          onChange={(event) => setRunTime(event.target.value)}
+        />
+      </label>
+      <div className="modal-actions left">
+        <SaveButton label="Save changes" saved={saved} dirty={dirty} busy={busy} onClick={() => void save()} />
+        <button className="ghost" disabled={busy || status.running} onClick={() => setConfirmRun(true)}>
+          {status.running ? "Cleaning…" : "Run cleanup now"}
+        </button>
+        <span className="settings-status">
+          {valid ? "" : "The high threshold must be above the low one; time as HH:mm."}
+        </span>
+      </div>
+
+      {confirmRun ? (
+        <Modal
+          title="Run cleanup now?"
+          onClose={() => setConfirmRun(false)}
+        >
+          <div className="modal-note">
+            The cleanup may take a while, and while it runs the server can hang for a few
+            seconds — the chat freezes until it finishes. Are you sure you want to run it now?
+          </div>
+          <div className="modal-actions">
+            <button className="ghost" onClick={() => setConfirmRun(false)}>Cancel</button>
+            <button className="danger" onClick={() => {
+              setConfirmRun(false);
+              void runNow();
+            }}>Run cleanup</button>
+          </div>
+        </Modal>
+      ) : null}
+      {lastRun !== null ? (
+        <div className="settings-hint">
+          Last run {lastRun.trigger} — {lastRun.outcome}. Swept {lastRun.sweptOrphanObjects} orphan
+          object(s) ({formatBytes(lastRun.sweptBytes)}), removed {lastRun.purgedMessages} message(s)
+          and {lastRun.purgedAttachmentObjects} attachment object(s)
+          {lastRun.finalUsedPercent >= 0 ? `; disk now ${Math.round(lastRun.finalUsedPercent)}%` : ""}.
+        </div>
+      ) : null}
+      {error !== null ? <div className="settings-warning">{error}</div> : null}
+    </div>
+  );
 }

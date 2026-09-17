@@ -154,6 +154,42 @@ export const MANAGE_ROLES_PERMISSION = "MANAGE_ROLES";
 export const MANAGE_MEMBERS_PERMISSION = "MANAGE_MEMBERS";
 export const CHANGE_NICKNAME_PERMISSION = "CHANGE_NICKNAME";
 export const MANAGE_NICKNAMES_PERMISSION = "MANAGE_NICKNAMES";
+export const MANAGE_STORAGE_PERMISSION = "MANAGE_STORAGE";
+
+/** GET/PUT /api/server/storage — the "Server" settings screen (MANAGE_STORAGE). */
+export interface StoragePolicy {
+  highWatermarkPercent: number;
+  lowWatermarkPercent: number;
+  /** Local minute-of-day the nightly GC fires at (210 = 03:30). */
+  gcMinuteOfDay: number;
+  /** False = the scheduled GC never fires (manual "run now" still works). */
+  gcEnabled: boolean;
+}
+
+export interface StorageUsage {
+  totalBytes: number;
+  usedBytes: number;
+  usedPercent: number;
+}
+
+export interface StorageGcRun {
+  trigger: string;
+  startedAt: string;
+  finishedAt: string | null;
+  outcome: string;
+  sweptOrphanObjects: number;
+  sweptBytes: number;
+  purgedMessages: number;
+  purgedAttachmentObjects: number;
+  finalUsedPercent: number;
+}
+
+export interface StorageStatus {
+  policy: StoragePolicy;
+  usage: StorageUsage;
+  running: boolean;
+  lastRun: StorageGcRun | null;
+}
 
 /** GET /api/channels/{id}/permissions/me — override-aware, per channel. */
 export interface ChannelMyPermissions {

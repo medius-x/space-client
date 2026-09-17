@@ -20,6 +20,9 @@ import type {
   RoomInfo,
   ServerMember,
   ServerProfile,
+  StorageGcRun,
+  StoragePolicy,
+  StorageStatus,
   UserRenamedResponse,
   UserResponse,
   UserSummary,
@@ -355,6 +358,24 @@ export class RestClient {
       }
       throw error;
     }
+  }
+
+  // --- storage GC ("Server" settings screen, MANAGE_STORAGE) ---
+
+  async getStorageStatus(): Promise<StorageStatus> {
+    return this.request<StorageStatus>("/api/server/storage", { method: "GET" });
+  }
+
+  async updateStorageSettings(policy: StoragePolicy): Promise<StorageStatus> {
+    return this.request<StorageStatus>("/api/server/storage", {
+      method: "PUT",
+      body: JSON.stringify(policy),
+    });
+  }
+
+  /** Fires one GC pass NOW; the run itself is background — poll getStorageStatus(). */
+  async triggerStorageGc(): Promise<StorageGcRun> {
+    return this.request<StorageGcRun>("/api/server/storage/run", { method: "POST" });
   }
 
   async createChannel(request: { name: string; type?: ChannelType | null }): Promise<Channel> {

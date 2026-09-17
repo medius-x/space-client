@@ -1947,6 +1947,15 @@ input[type="checkbox"]:disabled { opacity: 0.5; cursor: default; }
 .settings-empty { color: var(--sp-text-dim); padding: 24px; text-align: center; }
 .settings-field { display: flex; flex-direction: column; gap: 4px; margin: 12px 0; max-width: 420px; }
 .settings-field > span { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--sp-text-muted); }
+/* A disabled field must read GREY, not merely inert (the storage screen's time input when
+   automatic cleanup is off — the visual is the message, live report). */
+.settings-field input:disabled {
+  background: var(--sp-darkest);
+  color: var(--sp-text-dim);
+  border-color: var(--sp-control);
+  cursor: not-allowed;
+}
+.settings-field > span:has(+ input:disabled) { color: var(--sp-text-dim); }
 .settings-check { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
 .settings-hint { font-size: 12px; color: var(--sp-text-dim); margin: 6px 0 10px; max-width: 520px; }
 .settings-status { font-size: 12px; color: var(--sp-text-muted); }
