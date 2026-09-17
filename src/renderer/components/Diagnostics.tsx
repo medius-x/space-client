@@ -30,6 +30,7 @@ export function Diagnostics(): React.JSX.Element {
         <button className="ghost" onClick={() => void runNoiseEngineSelfTest("deepfilternet3")}>DFN3</button>
         <button className="ghost" onClick={() => void runNoiseEngineSelfTest("speex")}>Speex</button>
         <button className="ghost" onClick={() => void runNoiseEngineSelfTest("gate")}>Gate</button>
+        <button className="ghost" onClick={() => void runNoiseEngineSelfTest("dtln")}>DTLN</button>
       </div>
       <button className="ghost" onClick={() => seedSyntheticMessages(10_000)}>seed 10k messages (perf gate)</button>
       <div className="diag-row">

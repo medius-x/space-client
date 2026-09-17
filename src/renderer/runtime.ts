@@ -285,7 +285,7 @@ export async function runDisplayMediaSelfTest(): Promise<void> {
 // at one commit and failed at the next with nothing in between).
 // ---------------------------------------------------------------------------
 
-export async function runNoiseEngineSelfTest(engine: "rnnoise" | "deepfilternet3" | "speex" | "gate"): Promise<void> {
+export async function runNoiseEngineSelfTest(engine: "rnnoise" | "deepfilternet3" | "speex" | "gate" | "dtln"): Promise<void> {
   const testContext = new AudioContext({ sampleRate: 48_000 });
   try {
     await testContext.resume();

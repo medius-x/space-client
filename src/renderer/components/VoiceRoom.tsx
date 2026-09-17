@@ -135,6 +135,7 @@ export const NS_ENGINE_LABELS: Record<NoiseEngineKind, string> = {
   deepfilternet3: "DeepFilterNet3",
   speex: "Speex",
   gate: "Gate",
+  dtln: "DTLN",
 };
 
 /** The NS button's tooltip (oak): the click opens the engine selector card. */
@@ -155,7 +156,7 @@ export function NsEngineMenu({ engine, x, y, onPick, onClose }: {
 }): React.JSX.Element {
   const cardRef = useRef<HTMLDivElement | null>(null);
   useOutsideDismiss(cardRef, onClose);
-  const options: NoiseEngineKind[] = ["rnnoise", "deepfilternet3", "speex", "gate", "off"];
+  const options: NoiseEngineKind[] = ["rnnoise", "deepfilternet3", "dtln", "speex", "gate", "off"];
   return (
     <div ref={cardRef} className="member-card engine-card" style={{ left: Math.max(8, x), top: Math.max(44, y - 6), transform: "translateY(-100%)" }}>
       {options.map((option) => (

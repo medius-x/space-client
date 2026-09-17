@@ -16,7 +16,7 @@ import { log } from "../logging";
  * while the built-in noiseSuppression constraint is ALWAYS OFF: its job belongs
  * to the selectable engine, and stacking two suppressors mangles speech.
  *
- * Both engines share this integration shape, so switching is uniform:
+ * The engines share this integration shape, so switching is uniform:
  *  - RNNoise  — @jitsi/rnnoise-wasm "sync" build (wasm inlined as base64,
  *    designed for AudioWorklets), our own processor with the framing pinned by
  *    domain/logic/rnnoise-framing tests;
@@ -24,9 +24,16 @@ import { log } from "../logging";
  *    its heavy assets load only when the engine is selected. The package fetches
  *    its wasm + ONNX model from a CDN by default — unacceptable for a
  *    self-hosted/offline app — so both files are vendored into
- *    src/renderer/public/df3/ and cdnUrl points at the local copies.
+ *    src/renderer/public/df3/ and cdnUrl points at the local copies;
+ *  - Speex/Gate — @sapphi-red/web-noise-suppressor worklets, vendored via
+ *    scripts/vendor-ns-engines.mjs;
+ *  - DTLN — @workadventure/noise-suppression. Their 5.8 MB worklet processor
+ *    is SELF-CONTAINED (both tflite models inlined as base64) and speaks an
+ *    honest ready/error handshake; the ONLY external asset is the litert wasm
+ *    binary, passed through processorOptions (their wrapper's URL resolution
+ *    is what made the first integration attempt impossible under file://).
  */
-export type NoiseEngineKind = "off" | "rnnoise" | "deepfilternet3" | "speex" | "gate";
+export type NoiseEngineKind = "off" | "rnnoise" | "deepfilternet3" | "speex" | "gate" | "dtln";
 
 /** The audio rate every engine path is built around (RNNoise's 480-sample frame
  *  is 10 ms at 48 kHz; the capture constraints request the same rate). */
@@ -61,6 +68,9 @@ export async function createNoisePipeline(
   }
   if (engine === "gate") {
     return createGatePipeline(rawTrack);
+  }
+  if (engine === "dtln") {
+    return createDtlnPipeline(rawTrack);
   }
   return createDeepFilterPipeline(rawTrack, deepFilterLevel);
 }
@@ -501,6 +511,120 @@ async function createGatePipeline(rawTrack: MediaStreamTrack): Promise<NoisePipe
     track: destination.stream.getAudioTracks()[0] ?? rawTrack,
     vad: null,
     dispose(): void {
+      source.disconnect();
+      node.disconnect();
+      void context.close();
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// DTLN (@workadventure/noise-suppression) — the packaged processor IS the
+// engine: a self-contained rolldown IIFE (registerProcessor at the tail) with
+// BOTH tflite models inlined as base64 and the litert emscripten factories in
+// scope. The earlier rejection of this package was about its WRAPPER, which
+// resolves the wasm/models via URL fetches that die under a file:// document;
+// we bypass the wrapper entirely and hand the one external asset — the
+// relaxed-SIMD litert wasm — to the processor as processorOptions bytes.
+// ---------------------------------------------------------------------------
+
+/** DTLN's native rate: the model eats fixed 512-sample frames (32 ms) at
+ *  16 kHz. Their processor has NO resampler, so the pipeline context itself
+ *  runs at 16 kHz — Chromium resamples the 48k mic at the MediaStreamSource,
+ *  and the PUBLISHED track comes out wideband 16k mono (intrinsic to DTLN,
+ *  Opus carries it fine). 512 = 4×128, so the render quantum divides the
+ *  frame exactly — no priming tricks needed (their ring buffer accumulates
+ *  quanta into frames and silences the few startup quanta). */
+const DTLN_PIPELINE_SAMPLE_RATE = 16000;
+
+/** The processor's registered name (NOISE_SUPPRESSION_AUDIO_WORKLET_PROCESSOR
+ *  of the package's audio-worklet-shared). */
+const DTLN_PROCESSOR_NAME = "workadventure-noise-suppression";
+
+/** ~14.6 MB of assets ride every boot — cache them across engine switches
+ *  (a live rebuild refetching the pair each toggle would be wasteful; the
+ *  bytes are only ever structured-CLONED into the worklet, never transferred). */
+let dtlnAssets: { processorText: string; wasmBinary: ArrayBuffer } | null = null;
+
+async function loadDtlnAssets(): Promise<{ processorText: string; wasmBinary: ArrayBuffer }> {
+  if (dtlnAssets === null) {
+    const [processorText, wasmBinary] = await Promise.all([
+      fetchAssetText("ns/dtln/workletProcessor.js"),
+      fetchAsset("ns/dtln/litert_wasm_internal.wasm"),
+    ]);
+    dtlnAssets = { processorText, wasmBinary };
+  }
+  return dtlnAssets;
+}
+
+async function createDtlnPipeline(rawTrack: MediaStreamTrack): Promise<NoisePipeline> {
+  const { processorText, wasmBinary } = await loadDtlnAssets();
+  log.info("ns", `dtln boot assets: processor=${processorText.length} chars wasm=${wasmBinary.byteLength}`);
+  const context = new AudioContext({ sampleRate: DTLN_PIPELINE_SAMPLE_RATE, latencyHint: "interactive" });
+  void context.resume();
+  const workletUrl = URL.createObjectURL(new Blob([processorText], { type: "text/javascript" }));
+  try {
+    // Per-context module map (see createSpeexPipeline): addModule on the
+    // pipeline's own context, every time.
+    await context.audioWorklet.addModule(workletUrl);
+  } finally {
+    URL.revokeObjectURL(workletUrl);
+  }
+  const node = new AudioWorkletNode(context, DTLN_PROCESSOR_NAME, {
+    numberOfInputs: 1,
+    numberOfOutputs: 1,
+    outputChannelCount: [1],
+    processorOptions: {
+      threads: false, // no pthreads inside an AudioWorklet
+      numThreads: 1,
+      bypassUntilReady: false, // silence until ready — the handshake gates publishing anyway
+      liteRtVariant: "relaxed", // this Electron Chromium always has relaxed SIMD
+      liteRtWasmBinary: wasmBinary,
+    },
+  });
+  // Their processor speaks a real handshake (unlike DFN3's): ready/error over
+  // the port. Booting compiles an 8.8 MB wasm + two models inside the worklet
+  // — 15 s of headroom.
+  const boot = await new Promise<{ ok: boolean; detail: string }>((resolve) => {
+    const timeout = window.setTimeout(() => resolve({ ok: false, detail: "worklet boot timeout (15 s)" }), 15_000);
+    node.port.onmessage = (event: MessageEvent) => {
+      const data = event.data as { type?: string; message?: string } | undefined;
+      if (data === undefined) {
+        return;
+      }
+      if (data.type === "ready") {
+        window.clearTimeout(timeout);
+        resolve({ ok: true, detail: "litert models live" });
+      } else if (data.type === "error") {
+        window.clearTimeout(timeout);
+        resolve({ ok: false, detail: data.message ?? "unknown worklet error" });
+      }
+    };
+  });
+  if (!boot.ok) {
+    node.port.onmessage = null;
+    node.disconnect();
+    void context.close();
+    throw new Error(`DTLN worklet failed to boot: ${boot.detail}`);
+  }
+  log.info("ns", `dtln worklet ready (${boot.detail})`);
+  const source = context.createMediaStreamSource(new MediaStream([rawTrack]));
+  const destination = context.createMediaStreamDestination();
+  source.connect(node);
+  node.connect(destination);
+  node.port.onmessage = (event: MessageEvent) => {
+    const data = event.data as { type?: string; message?: string } | undefined;
+    if (data !== undefined && data.type === "error") {
+      log.error("ns", `dtln worklet died mid-stream: ${data.message ?? "?"} (publishing continues as silence until rebuilt)`);
+    }
+  };
+  return {
+    engine: "dtln",
+    track: destination.stream.getAudioTracks()[0] ?? rawTrack,
+    vad: null,
+    dispose(): void {
+      node.port.postMessage({ type: "dispose" }); // their protocol: dtln_stop + ring cleanup
+      node.port.onmessage = null;
       source.disconnect();
       node.disconnect();
       void context.close();

@@ -534,14 +534,36 @@ traversal-гварда; ДВИЖКОВЫЕ АССЕТЫ ГРУЗЯТСЯ ТОЛ�
 «Failed to fetch» из file://-страницы (origin null = кросс-схемный запрос); CSP connect-src += space-asset:.
 ГРАБЛЯ PER-CONTEXT addModule: список AudioWorklet-модулей у КАЖДОГО AudioContext СВОЙ — регистрация на
 одноразовом «контексте-носителе» с кешем на окно оставляла пайплайн-контекст пуст («no valid
-AudioWorkletGlobalScope»); addModule зовётся на контексте пайплайна, никаких кешей. **DTLN ОТКАЧЕН**
+AudioWorkletGlobalScope»); addModule зовётся на контексте пайплайна, никаких кешей. **DTLN ОТКАЧЕН (первая попытка)**
 (@workadventure/noise-suppression удалён): их ворклет-обёртка жёстко резолвит litert-wasm+tflite по
 file://-fetch (в проде мёртв) и НЕ пробрасывает их пути; НИЖНИЙ API пакета (createNoiseSuppressionModule
 {liteRtWasmRoot, model1Url, model2Url}) всё позволяет — следующий раунд: своя ворклет-обёртка поверх их
 процессора по DFN3-паттерну + vendored litert/модели через space-asset. SettingsStore.load() санирует
-устаревший движок из KV (dtln→rnnoise). **NS-попап**: карточка открывается ВВЕРХ, нижним краем вплотную
+устаревший движок из KV. **NS-попап**: карточка открывается ВВЕРХ, нижним краем вплотную
 к кнопке (translateY(-100%), без фиксированной высоты — раньше улетала за низ окна), повторный клик по
 NS-кнопке ЗАКРЫВАЕТ (toggle). Гейты 260/260.
+
+**DTLN-движок, вторая попытка — получилась (#477, 2026-09-17).** Каталог стал `off | rnnoise |
+deepfilternet3 | dtln | speex | gate` (пакет вернулся как devDependency — ИСТОЧНИК для `npm run
+ns:vendor`, в рантайме НЕ импортируется). Ключ к успеху: их 5.8-МБ `assets/audio-worklet-processor.js` —
+САМОДОСТАТОЧНЫЙ rolldown-IIFE (registerProcessor в хвосте) с ОБОИМИ tflite-моделями инлайном (base64)
+и emscripten-фабриками litert в скоупе; честное рукопожатие ready/error по порту (НЕ как DFN3);
+единственный внешний ассет — litert-wasm, передаётся ЧЕРЕЗ processorOptions.liteRtWasmBinary
+(ArrayBuffer) — обёртку пакета (тот самый file://-резолвер) обходим целиком. Вендорится 2 файла →
+`public/ns/dtln/`: процессор (модели внутри) + `litert_wasm_internal.wasm` (8.8 МБ, RELAXED-SIMD
+вариант — Chromium в Electron поддерживает relaxed SIMD всегда, compat/jspi/threaded НЕ вендорим;
+`processorOptions.liteRtVariant:"relaxed"` выбирает фабрику ModuleFactory$1 = relaxed, маппинг подтверждён
+их же browser-runtime-options: compat→litert_wasm_compat, иначе→litert_wasm_internal). Интеграция в
+`createDtlnPipeline`: контекст **16 кГц** (натив DTLN — кадры 512@16k=32 мс, ресемплера в их процессоре
+НЕТ → Chromium сам ресемплит 48k-мик на MediaStreamSource, опубликованный трек = wideband 16k mono —
+intrinsic to DTLN, Opus несёт нормально; 512=4×128 — прайминг НЕ нужен, их ring сам копит кванты и
+тишинит стартовые); процессор-текст+wasm (14.6 МБ) КЕШИРУЮТСЯ модульно (переключение движков на живом
+голосе не тянет их повторно; байпы только structured-clone, не transfer — кеш жив); blob→addModule на
+контексте пайплайна (per-context грабля); рукопожатие ready/error с таймаутом 15 с (компиляция 8.8-МБ
+wasm + 2 модели в ворклете); `bypassUntilReady:false` — до ready тишина, но пайплайн не публикуется до
+handshake; dispose шлёт их `{type:"dispose"}` (dtln_stop). UI: пункт DTLN в NsEngineMenu (третьим, после
+тяжеловесов), опция в Settings→Audio + подсказка «heaviest, wideband 16 kHz», кнопка самотеста в diag.
+Гейты 260/260 + typecheck + build (бандл НЕ вырос — пакет не импортируется).
 
 M5 закрыт и закоммичен (`b14b2a6`). M6: **друзья** —
 `GET /api/users/me/relationships` (типы `FRIEND|BLOCKED|PENDING_INCOMING|

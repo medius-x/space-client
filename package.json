@@ -28,6 +28,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^5.2.0",
+    "@workadventure/noise-suppression": "^0.1.1",
     "electron": "^44.1.1",
     "electron-vite": "^4.0.1",
     "esbuild": "^0.28.0",
