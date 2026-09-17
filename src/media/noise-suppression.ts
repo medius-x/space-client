@@ -3,6 +3,8 @@
 // ?raw import keeps it a separate chunk that loads when an engine boots
 // (typed by the "*?raw" module declaration in src/vite-raw.d.ts).
 
+import { log } from "../logging";
+
 /**
  * The microphone noise-suppression pipeline (user decision 2026-09-17): a
  * WebAudio detour between getUserMedia and the published track —
@@ -36,15 +38,25 @@ export interface NoisePipeline {
   readonly track: MediaStreamTrack;
   /** Last VAD probability reported by the engine (diagnostics only). */
   readonly vad: number | null;
+  /** DeepFilterNet3 only: its 0–100 dB suppression limit, applied live. */
+  setSuppressionLevel?(level: number): void;
   /** Tear the WebAudio detour down; does NOT stop the raw track. */
   dispose(): void;
 }
 
-export async function createNoisePipeline(engine: NoiseEngineKind, rawTrack: MediaStreamTrack): Promise<NoisePipeline> {
+/** The default DFN3 level rides the engine's own native scale: 50 dB of
+ *  allowed attenuation is effectively "no limit" for it. */
+export const DEFAULT_DEEP_FILTER_LEVEL = 50;
+
+export async function createNoisePipeline(
+  engine: NoiseEngineKind,
+  rawTrack: MediaStreamTrack,
+  deepFilterLevel: number = DEFAULT_DEEP_FILTER_LEVEL,
+): Promise<NoisePipeline> {
   if (engine === "rnnoise") {
     return createRnnoisePipeline(rawTrack);
   }
-  return createDeepFilterPipeline(rawTrack);
+  return createDeepFilterPipeline(rawTrack, deepFilterLevel);
 }
 
 // ---------------------------------------------------------------------------
@@ -185,45 +197,220 @@ async function createRnnoisePipeline(rawTrack: MediaStreamTrack): Promise<NoiseP
 // DeepFilterNet3 (lazy — the assets load only when the engine is chosen)
 // ---------------------------------------------------------------------------
 
-interface DeepFilter3Module {
-  DeepFilterNet3Core: new (config: {
-    sampleRate?: number;
-    noiseReductionLevel?: number;
-    assetConfig?: { cdnUrl?: string };
-  }) => {
-    initialize(): Promise<void>;
-    createAudioWorkletNode(context: AudioContext): Promise<AudioWorkletNode>;
-    setNoiseSuppressionEnabled(enabled: boolean): void;
-    destroy(): void;
-  };
+/**
+ * OUR processor, appended INSIDE the package's worklet IIFE (its wasm-bindgen
+ * glue — initSync/df_create/df_process_frame/df_set_atten_lim — is in scope
+ * there). The package's own processor SWALLOWS its boot errors into a silent
+ * passthrough (a live-caught defect: identical inputs, out == in, "live" in
+ * the log) — ours reports ready/error over the port and never fakes success.
+ * Framing mirrors the RNNoise processor: fixed frames, a priming silent frame,
+ * passthrough only before a successful boot.
+ */
+const DFN3_PROCESSOR_SOURCE = `
+class SpaceDfn3Processor extends AudioWorkletProcessor {
+  constructor(options) {
+    super();
+    this.ready = false;
+    this.inputRing = null;
+    this.outputRing = null;
+    this.inputLength = 0;
+    this.outputLength = 0;
+    this.frame = null;
+    const describe = (error) => String((error && error.message) || error)
+      + ((error && error.stack) ? ' | ' + String(error.stack).split('\\n').slice(1, 3).join(' ~ ') : '');
+    try {
+      initSync(options.processorOptions.wasmModule);
+    } catch (error) {
+      this.port.postMessage({ type: 'error', message: 'initSync: ' + describe(error) });
+      return;
+    }
+    const modelBytes = options.processorOptions.modelBytes;
+    if (!(modelBytes instanceof Uint8Array) || modelBytes.length < 1000) {
+      this.port.postMessage({ type: 'error', message: 'model bytes bad: ' + (modelBytes && modelBytes.constructor && modelBytes.constructor.name) + ' len=' + (modelBytes && modelBytes.length) });
+      return;
+    }
+    try {
+      this.handle = df_create(modelBytes, options.processorOptions.suppressionLevel ?? 50);
+    } catch (error) {
+      this.port.postMessage({ type: 'error', message: 'df_create(' + modelBytes.length + ' bytes): ' + describe(error) });
+      return;
+    }
+    try {
+      this.frameLength = df_get_frame_length(this.handle);
+      if (!(this.frameLength > 0)) {
+        throw new Error('df frame length ' + this.frameLength);
+      }
+      const ringSize = this.frameLength * 4;
+      this.inputRing = new Float32Array(ringSize);
+      this.outputRing = new Float32Array(ringSize);
+      this.outputLength = this.frameLength; // the priming silent frame (zero-filled)
+      this.frame = new Float32Array(this.frameLength);
+      this.ready = true;
+      this.port.onmessage = (event) => {
+        const data = event.data;
+        if (this.ready && data !== undefined && data.type === 'level' && typeof data.value === 'number' && this.handle !== undefined) {
+          df_set_atten_lim(this.handle, Math.max(0, Math.min(100, data.value)));
+        }
+      };
+      this.port.postMessage({ type: 'ready', frameLength: this.frameLength });
+    } catch (error) {
+      this.port.postMessage({ type: 'error', message: 'frame setup: ' + describe(error) });
+    }
+  }
+
+  process(inputs, outputs) {
+    const input = inputs.length > 0 && inputs[0].length > 0 ? inputs[0][0] : null;
+    const output = outputs.length > 0 && outputs[0].length > 0 ? outputs[0][0] : null;
+    if (output === null || output === undefined) {
+      return true;
+    }
+    if (input === null || input === undefined) {
+      output.fill(0);
+      return true;
+    }
+    if (!this.ready) {
+      output.set(input);
+      return true;
+    }
+    if (this.inputLength + input.length <= this.inputRing.length) {
+      this.inputRing.set(input, this.inputLength);
+      this.inputLength += input.length;
+    }
+    while (this.inputLength >= this.frameLength && this.outputLength + this.frameLength <= this.outputRing.length) {
+      this.frame.set(this.inputRing.subarray(0, this.frameLength));
+      let processed = null;
+      try {
+        processed = df_process_frame(this.handle, this.frame);
+      } catch (error) {
+        this.ready = false;
+        this.port.postMessage({ type: 'error', message: 'df_process_frame: ' + String((error && error.message) || error) });
+        output.set(input);
+        return true;
+      }
+      if (processed === null || processed === undefined || processed.length !== this.frameLength) {
+        this.ready = false;
+        this.port.postMessage({ type: 'error', message: 'df_process_frame returned ' + (processed && processed.length) + ' samples (expected ' + this.frameLength + ')' });
+        output.set(input);
+        return true;
+      }
+      this.outputRing.set(processed, this.outputLength);
+      this.outputLength += this.frameLength;
+      this.inputRing.copyWithin(0, this.frameLength, this.inputLength);
+      this.inputLength -= this.frameLength;
+    }
+    const copied = Math.min(output.length, this.outputLength);
+    output.set(this.outputRing.subarray(0, copied));
+    if (copied < output.length) {
+      output.fill(0, copied);
+    }
+    this.outputRing.copyWithin(0, copied, this.outputLength);
+    this.outputLength -= copied;
+    return true;
+  }
 }
 
-async function createDeepFilterPipeline(rawTrack: MediaStreamTrack): Promise<NoisePipeline> {
-  const { DeepFilterNet3Core } = (await import("deepfilternet3-noise-filter")) as unknown as DeepFilter3Module;
+registerProcessor('space-dfn3', SpaceDfn3Processor);
+`;
+
+/** The glue is VENDORED (scripts/extract-df3-glue.mjs, `npm run df3:glue`) as
+ *  a plain string module: the package's exports map blocks deep imports, and a
+ *  ?raw-FILE import of a project file outside the renderer root is not
+ *  rewritten by the vite dev analyzer (it falls through to the SPA html — a
+ *  live-caught blob syntax error). The string is the package's IIFE PREFIX
+ *  with the wasm-bindgen df functions; our processor is appended inside it. */
+async function loadDfn3GlueSource(): Promise<string> {
+  const glueModule = await import("./df3-glue");
+  return glueModule.default;
+}
+
+async function createDeepFilterPipeline(rawTrack: MediaStreamTrack, suppressionLevel: number): Promise<NoisePipeline> {
+  // NOTE the DOUBLE closing brace: the first `}` closes the ${...} interpolation,
+  // the second is the literal IIFE closer. A single one silently produces
+  // `...registerProcessor(...);)();` — "Unexpected token ')'" (live-caught).
+  const moduleSource = `${await loadDfn3GlueSource()}${DFN3_PROCESSOR_SOURCE}})();\n`;
   // Vendored assets (src/renderer/public/df3) instead of the package's CDN —
   // the app must work offline and never phone home for models.
-  const core = new DeepFilterNet3Core({
-    sampleRate: NOISE_PIPELINE_SAMPLE_RATE,
-    noiseReductionLevel: 50,
-    assetConfig: { cdnUrl: "df3" },
-  });
-  await core.initialize();
+  const [wasmBytes, modelBytes] = await Promise.all([
+    fetchAsset("df3/v3/pkg/df_bg.wasm"),
+    // .bin, NOT .tar.gz: a .gz static is served with Content-Encoding: gzip,
+    // and the browser's fetch TRANSPARENTLY decompresses it — df_create then
+    // gets the raw tar (8601600 bytes instead of 7983136) and panics with an
+    // "unreachable" wasm trap (live-caught). The body stays gzip either way:
+    // df_create unpacks it itself.
+    fetchAsset("df3/v3/models/DeepFilterNet3_onnx.bin"),
+  ]);
+  const wasmModule = await WebAssembly.compile(wasmBytes);
   const context = new AudioContext({ sampleRate: NOISE_PIPELINE_SAMPLE_RATE, latencyHint: "interactive" });
   void context.resume();
-  const node = await core.createAudioWorkletNode(context);
+  const workletUrl = URL.createObjectURL(new Blob([moduleSource], { type: "text/javascript" }));
+  try {
+    await context.audioWorklet.addModule(workletUrl);
+  } finally {
+    URL.revokeObjectURL(workletUrl);
+  }
+  log.info("ns", `dfn3 boot assets: wasm=${wasmBytes.byteLength} model=${modelBytes.byteLength}`);
+  const node = new AudioWorkletNode(context, "space-dfn3", {
+    numberOfInputs: 1,
+    numberOfOutputs: 1,
+    outputChannelCount: [1],
+    processorOptions: { wasmModule, modelBytes: new Uint8Array(modelBytes), suppressionLevel },
+  });
+  // A firm handshake: the worklet MUST answer ready or error. Never a silent
+  // passthrough (the package's defect) — a boot failure throws here, the
+  // caller falls back to the raw mic and the cause lands in the log.
+  const boot = await new Promise<{ ok: boolean; detail: string }>((resolve) => {
+    const timeout = window.setTimeout(() => resolve({ ok: false, detail: "worklet boot timeout (10 s)" }), 10_000);
+    node.port.onmessage = (event: MessageEvent) => {
+      const data = event.data as { type?: string; message?: string; frameLength?: number } | undefined;
+      if (data === undefined) {
+        return;
+      }
+      if (data.type === "ready") {
+        window.clearTimeout(timeout);
+        resolve({ ok: true, detail: `frame ${data.frameLength ?? "?"}` });
+      } else if (data.type === "error") {
+        window.clearTimeout(timeout);
+        resolve({ ok: false, detail: data.message ?? "unknown worklet error" });
+      }
+    };
+  });
+  if (!boot.ok) {
+    node.port.onmessage = null;
+    node.disconnect();
+    void context.close();
+    throw new Error(`DeepFilterNet3 worklet failed to boot: ${boot.detail}`);
+  }
+  log.info("ns", `dfn3 worklet ready (${boot.detail})`);
   const source = context.createMediaStreamSource(new MediaStream([rawTrack]));
   const destination = context.createMediaStreamDestination();
   source.connect(node);
   node.connect(destination);
+  node.port.onmessage = (event: MessageEvent) => {
+    const data = event.data as { type?: string; message?: string } | undefined;
+    if (data !== undefined && data.type === "error") {
+      log.error("ns", `dfn3 worklet died mid-stream: ${data.message ?? "?"} (publishing continues raw)`);
+    }
+  };
   return {
     engine: "deepfilternet3",
     track: destination.stream.getAudioTracks()[0] ?? rawTrack,
     vad: null,
+    setSuppressionLevel(level: number): void {
+      node.port.postMessage({ type: "level", value: level }); // → df_set_atten_lim, live
+    },
     dispose(): void {
+      node.port.onmessage = null;
       source.disconnect();
       node.disconnect();
-      core.destroy();
       void context.close();
     },
   };
+}
+
+async function fetchAsset(url: string): Promise<ArrayBuffer> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`asset ${url} fetch: ${response.status}`);
+  }
+  return response.arrayBuffer();
 }

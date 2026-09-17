@@ -219,6 +219,8 @@ let shareAudioElementActive = false;
  *  rebuild the detour and swap the published track without a re-capture. */
 let activeNoisePipeline: NoisePipeline | null = null;
 let noiseSourceTrack: MediaStreamTrack | null = null;
+/** The DFN3 level the live pipeline was built with (only re-sends on change). */
+let appliedDeepFilterLevel = -1;
 
 /**
  * The server's voice-control verdict for OUR member — the compliance truth. Kept
@@ -274,6 +276,80 @@ export async function runDisplayMediaSelfTest(): Promise<void> {
   } catch (error) {
     log.error("selftest", `getDisplayMedia failed: ${errorMessage(error)}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Noise-engine self-test: deterministic white noise → engine → RMS verdict.
+// No mic, no room, no peer — the engine's own worklet is the only variable,
+// which is exactly what live reports could not isolate (identical code worked
+// at one commit and failed at the next with nothing in between).
+// ---------------------------------------------------------------------------
+
+export async function runNoiseEngineSelfTest(engine: "rnnoise" | "deepfilternet3"): Promise<void> {
+  const testContext = new AudioContext({ sampleRate: 48_000 });
+  try {
+    await testContext.resume();
+    // Deterministic LCG white noise, ±0.25 amplitude, looped — the same signal
+    // every run, so the verdict is comparable across launches.
+    const noiseBuffer = testContext.createBuffer(1, 48_000 * 2, 48_000);
+    const samples = noiseBuffer.getChannelData(0);
+    let seed = 0x2f6e2b1;
+    for (let sampleIndex = 0; sampleIndex < samples.length; sampleIndex += 1) {
+      seed = (seed * 1_664_525 + 1_013_904_223) >>> 0;
+      samples[sampleIndex] = (seed / 0xffff_ffff - 0.5) * 0.5;
+    }
+    const generator = testContext.createBufferSource();
+    generator.buffer = noiseBuffer;
+    generator.loop = true;
+    const generatorSink = testContext.createMediaStreamDestination();
+    generator.connect(generatorSink);
+    generator.start();
+    const preAnalyser = testContext.createAnalyser();
+    preAnalyser.fftSize = 2_048;
+    generator.connect(preAnalyser);
+
+    log.info("selftest", `noise engine ${engine}: building the pipeline…`);
+    const generatorTrack = generatorSink.stream.getAudioTracks()[0];
+    if (generatorTrack === undefined) {
+      throw new Error("synthetic noise track missing");
+    }
+    const pipeline = await createNoisePipeline(engine, generatorTrack);
+    const sink = testContext.createMediaStreamSource(new MediaStream([pipeline.track]));
+    const postAnalyser = testContext.createAnalyser();
+    postAnalyser.fftSize = 2_048;
+    sink.connect(postAnalyser);
+
+    await new Promise((resolve) => setTimeout(resolve, 1_500)); // let the engine process
+    const preRms = peakRms(preAnalyser);
+    const postRms = peakRms(postAnalyser);
+    const verdict = postRms < preRms * 0.5
+      ? "SUPPRESSED (engine works)"
+      : postRms > preRms * 0.9
+        ? "PASSTHROUGH (engine lets noise through — broken)"
+        : "WEAK (some reduction, far short of RNNoise-class)";
+    log.info("selftest", `noise engine ${engine}: in=${(preRms * 100).toFixed(1)}% out=${(postRms * 100).toFixed(1)}% → ${verdict}`);
+    pipeline.dispose();
+    generator.stop();
+  } catch (error) {
+    log.error("selftest", `noise engine ${engine} self-test failed: ${errorMessage(error)}`);
+  } finally {
+    void testContext.close();
+  }
+}
+
+/** Max RMS across several analyser windows (~½ s) — robust to spot sampling. */
+function peakRms(analyser: AnalyserNode): number {
+  const buffer = new Float32Array(analyser.fftSize);
+  let peak = 0;
+  for (let windowIndex = 0; windowIndex < 8; windowIndex += 1) {
+    analyser.getFloatTimeDomainData(buffer as Float32Array<ArrayBuffer>);
+    let sum = 0;
+    for (let sampleIndex = 0; sampleIndex < buffer.length; sampleIndex += 1) {
+      sum += buffer[sampleIndex]! * buffer[sampleIndex]!;
+    }
+    peak = Math.max(peak, Math.sqrt(sum / buffer.length));
+  }
+  return peak;
 }
 
 // ---------------------------------------------------------------------------
@@ -1476,13 +1552,18 @@ async function enhanceMicTrack(rawTrack: MediaStreamTrack): Promise<MediaStreamT
   if (settings.noiseSuppressionEngine === "off") {
     return rawTrack;
   }
-  const pipeline = await createNoisePipeline(settings.noiseSuppressionEngine, rawTrack);
+  const pipeline = await createNoisePipeline(
+    settings.noiseSuppressionEngine,
+    rawTrack,
+    settings.deepFilterSuppressionLevel,
+  );
   // The voice/call may have died while the engine booted — never resurrect it.
   if (rawTrack.readyState !== "live" || (sfuSession === null && callSession === null)) {
     pipeline.dispose();
     return rawTrack;
   }
   activeNoisePipeline = pipeline;
+  appliedDeepFilterLevel = settings.deepFilterSuppressionLevel;
   log.info("ns", `engine ${pipeline.engine} live`);
   return pipeline.track;
 }
@@ -1524,7 +1605,7 @@ async function rebuildNoisePipeline(engine: NoiseEngineKind): Promise<void> {
   } else {
     let pipeline: NoisePipeline;
     try {
-      pipeline = await createNoisePipeline(engine, rawTrack);
+      pipeline = await createNoisePipeline(engine, rawTrack, settingsStore.getSnapshot().deepFilterSuppressionLevel);
     } catch (error) {
       // The new engine failed to boot — fall back to the RAW track so the
       // sender never keeps the previous (disposed) detour's dead track.
@@ -1537,6 +1618,7 @@ async function rebuildNoisePipeline(engine: NoiseEngineKind): Promise<void> {
       return;
     }
     activeNoisePipeline = pipeline;
+    appliedDeepFilterLevel = settingsStore.getSnapshot().deepFilterSuppressionLevel;
     track = pipeline.track;
     log.info("ns", `engine ${engine} live`);
   }
@@ -1546,15 +1628,21 @@ async function rebuildNoisePipeline(engine: NoiseEngineKind): Promise<void> {
 /** Live settings follow: an engine pick rebuilds the detour in place. The
  *  rebuild fires for EVERY pick while audio is live — including from "off"
  *  (activeNoisePipeline is null there; an early return on it alone stranded
- *  the raw mic until a re-join — live report). */
+ *  the raw mic until a re-join — live report). A DFN3 level change reaches
+ *  the live worklet through df_set_atten_lim — no rebuild needed. */
 function watchNoiseSettings(): void {
   settingsStore.subscribe(() => {
-    const { noiseSuppressionEngine } = settingsStore.getSnapshot();
+    const { noiseSuppressionEngine, deepFilterSuppressionLevel } = settingsStore.getSnapshot();
+    if (activeNoisePipeline !== null && activeNoisePipeline.engine === noiseSuppressionEngine) {
+      if (noiseSuppressionEngine === "deepfilternet3" && deepFilterSuppressionLevel !== appliedDeepFilterLevel) {
+        activeNoisePipeline.setSuppressionLevel?.(deepFilterSuppressionLevel);
+        appliedDeepFilterLevel = deepFilterSuppressionLevel;
+        log.info("ns", `suppression level ${deepFilterSuppressionLevel} dB`);
+      }
+      return;
+    }
     if (sfuSession === null && callSession === null) {
       return; // nothing live — the next capture builds whatever is selected
-    }
-    if (activeNoisePipeline !== null && activeNoisePipeline.engine === noiseSuppressionEngine) {
-      return;
     }
     void rebuildNoisePipeline(noiseSuppressionEngine);
   });

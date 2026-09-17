@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { buildDiagModel, runDisplayMediaSelfTest, seedSyntheticMessages, toggleTestTone, type DiagModel } from "../runtime";
+import { buildDiagModel, runDisplayMediaSelfTest, runNoiseEngineSelfTest, seedSyntheticMessages, toggleTestTone, type DiagModel } from "../runtime";
 import { log } from "../../logging";
 
 /** The evidence surface: connection key/values, stereo oracle, log tail. 4 Hz refresh. */
@@ -21,6 +21,12 @@ export function Diagnostics(): React.JSX.Element {
     <div className="diagnostics">
       <div className="diag-title">diagnostics</div>
       <button className="ghost" onClick={() => void runDisplayMediaSelfTest()}>getDisplayMedia self-test</button>
+      {/* Deterministic white noise → engine → RMS verdict (no mic/room/peer
+          involved); the verdict lands in the [selftest] log tail below. */}
+      <div className="diag-row">
+        <button className="ghost" onClick={() => void runNoiseEngineSelfTest("rnnoise")}>NS self-test: RNNoise</button>
+        <button className="ghost" onClick={() => void runNoiseEngineSelfTest("deepfilternet3")}>NS self-test: DFN3</button>
+      </div>
       <button className="ghost" onClick={() => seedSyntheticMessages(10_000)}>seed 10k messages (perf gate)</button>
       <div className="diag-row">
         <button className="ghost" onClick={() => toggleTestTone("left")}>Tone L</button>

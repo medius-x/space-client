@@ -690,6 +690,25 @@ export class SfuSession {
       return;
     }
     log.info("sfu", `remote track on slot ${slotMid} (stream ${resolved.streamMid}, feed ${resolved.feedId}, muted=${event.track.muted})`);
+    const incomingTrack = event.track;
+    // The muted-flag hunt (live reports: a "successful" join with dead silence
+    // until a re-enter): an incoming track arrives muted ("no RTP yet") and a
+    // track that NEVER unmutes plays silence forever. Log every transition and
+    // flag a track still muted well after the transport connected — that
+    // points at the gateway never starting the media flow for this subscription.
+    incomingTrack.addEventListener("mute", () => {
+      log.info("sfu", `track ${slotMid} (feed ${resolved.feedId}) → muted`);
+    });
+    incomingTrack.addEventListener("unmute", () => {
+      log.info("sfu", `track ${slotMid} (feed ${resolved.feedId}) → UNMUTED (media flowing)`);
+    });
+    if (incomingTrack.muted && incomingTrack.kind === "audio") {
+      setTimeout(() => {
+        if (!this.closed && incomingTrack.readyState === "live" && incomingTrack.muted) {
+          log.warn("sfu", `audio track ${slotMid} (feed ${resolved.feedId}) STILL muted after 5 s — no RTP: the join is silent (re-enter cures it)`);
+        }
+      }, 5_000);
+    }
     const feedId = resolved.feedId;
     const feed = this.feeds.get(feedId);
     if (!feed) {

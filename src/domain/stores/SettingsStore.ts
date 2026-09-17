@@ -35,6 +35,10 @@ export interface ClientSettings {
    *  they stay always-on at the capture constraints (echo hurts the other
    *  listeners, not the one toggling). */
   noiseSuppressionEngine: "off" | "rnnoise" | "deepfilternet3";
+  /** DeepFilterNet3's suppression limit in dB — the engine's own native knob
+   *  (0–100): 0 = no limit (the deepest suppression), higher = gentler.
+   *  RNNoise has no such knob. */
+  deepFilterSuppressionLevel: number;
   /** Device picks (oak Audio/Video): null = system default. Mic/camera apply
    *  on the next capture; the speaker switches live via setSinkId. */
   microphoneDeviceId: string | null;
@@ -53,6 +57,7 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   maxToasts: 3,
   ringTimeoutSeconds: 120, // oak's default (SettingsStore.java)
   noiseSuppressionEngine: "rnnoise",
+  deepFilterSuppressionLevel: 50, // effectively "no limit" at DFN3's native scale
   microphoneDeviceId: null,
   speakerDeviceId: null,
   cameraDeviceId: null,

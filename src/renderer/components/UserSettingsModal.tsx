@@ -287,11 +287,29 @@ function AudioSection({ staged }: { staged: StagedSettings }): React.JSX.Element
           <option value="off">Off</option>
         </select>
       </label>
+      {/* DFN3 only — its native knob has a hard 0..100 ceiling, so a SLIDER
+          (user decision), never a free-form number field. */}
+      {staged.value("noiseSuppressionEngine") === "deepfilternet3" ? (
+        <label className="settings-field">
+          <span>Suppression limit — {staged.value("deepFilterSuppressionLevel")} dB</span>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={1}
+            value={staged.value("deepFilterSuppressionLevel")}
+            onChange={(event) => staged.set("deepFilterSuppressionLevel", Number(event.target.value))}
+          />
+        </label>
+      ) : null}
       <div className="settings-hint">
         Runs locally on your microphone before it is sent. RNNoise is light and the default;
         DeepFilterNet3 is heavier and stronger on irregular noise. Echo cancellation and auto
         gain are always on. While voice or a call is live, switching engines rebuilds the
         chain on the fly; the voice-bar NS button opens the same selector.
+        {staged.value("noiseSuppressionEngine") === "deepfilternet3"
+          ? " The limit caps how deeply DeepFilterNet3 may attenuate: 0 is no limit (the strongest suppression), higher values are gentler; it applies live."
+          : ""}
       </div>
       <h3>Devices</h3>
       <DeviceSelect

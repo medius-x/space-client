@@ -494,6 +494,34 @@ sampleRate:48000 (нестандартный, риск Overconstrained; AudioCon
 движка работают, переключение off↔движки на живом голосе режет/возвращает шум клавиатуры; принципиальной
 разницы движков на слух не выявлено — решат реальные шумы.
 
+**DFN3-сага (продолжение #476, 2026-09-17, закрыто живым смоуком).** Пакет `deepfilternet3-noise-filter` оказался
+НЕПРИГОДЕН как есть: его AudioWorklet-процессор ГЛОТАЕТ ошибки инициализации (catch → console.error → тихий
+passthrough) — при живом «engine live» движок не обрабатывал НИЧЕГО. Заменили их процессор СВОИМ поверх их же
+wasm-bindgen-глю: `scripts/extract-df3-glue.mjs` (npm run df3:glue) вырезает из пакета workletCode-литерал
+(JSON.parse; маркер `const WorkletMessageTypes`), режет их процессор и кладёт IIFE-ПРЕФИКС глю в
+`src/media/df3-glue.ts` СТРОКОЙ (export default JSON.stringify) — НЕ ?raw-файлом: (а) exports-пакета не даёт
+глубоких импортов, (б) ГРАБЛЯ VITE-DEV: ?raw-импорт проектного файла ВНЕ renderer-root НЕ переписывается
+анализатором — URL падает в SPA-fallback и приходит index.html → битый blob. Наш процессор (`space-dfn3`,
+строка DFN3_PROCESSOR_SOURCE в noise-suppression.ts): кадрирование с прайминг-кадром (как RNNoise), ЖЁСТКОЕ
+РУКОПОЖАТИЕ — ворклет обязан ответить ready(frame N)/error, ошибка → throw → fallback raw + [ns]-лог; никаких
+тихих passthrough. ГРАБЛИ ПО ПУТИ (все живые): (1) ШАБЛОННАЯ СКОБКА: `${DFN3_PROCESSOR_SOURCE})();` — первая
+`}` ЗАКРЫВАЕТ ИНТЕРПОЛЯЦИЮ, в модуль уезжает `)();` → «Unexpected token ')'»; правильно ДВОЙНАЯ `}})();`;
+(2) **Content-Encoding: gzip на статике .gz** — dev-сервер (и любой gzip-осведомлённый) отдаёт .tar.gz с этим
+заголовком → браузерный fetch ПРОЗРАЧНО РАСПАКОВЫВАЕТ → df_create получает сырой tar (8 601 600 вместо
+7 983 136 байт) и паникует «unreachable» (wasm-trap Rust); фикс = модель лежит как `DeepFilterNet3_onnx.bin`
+(тело то же gzip, df распакует сам); (3) их df_create в Node работал, в ворклете падал — средовой_dump через
+лог размеров байтов в main («dfn3 boot assets: wasm=… model=…») вскрыл (2). **NS-самотест** в diag-панели
+(`runNoiseEngineSelfTest`): детерминированный белый шум (LCG, ±0.25) → движок → peak-RMS-вердикт
+SUPPRESSED/PASSTHROUGH/WEAK в [selftest]-лог — движок тестируется БЕЗ микрофона/комнаты/собеседника.
+**Ползунок уровня DFN3** (юзер-решение: шкала движка ограничена 0–100 → слайдер, не число): настройка
+`deepFilterSuppressionLevel` (дефолт 50), UI в Settings→Audio только при DFN3 (type=range + значение в
+подписи, hint про шкалу: 0 = без предела/сильнейшее), применение НА ЛЕТУ через df_set_atten_lim в живой
+ворклет (port-сообщение, appliedDeepFilterLevel против повторов) + уровень при создании пайплайна.
+**Ловушка тишины при заходе** (повтор живого бага): входящий аудиотрек логирует muted-переходы
+(→ muted / → UNMUTED) и warn «STILL muted after 5 s» — в зафиксированном случае трек пришёл muted=true при
+успешной подписке (answer sent + transport connected); следующий повтор покажет слой (Janus не стартует RTP vs
+плейаут). Гейты 260/260.
+
 M5 закрыт и закоммичен (`b14b2a6`). M6: **друзья** —
 `GET /api/users/me/relationships` (типы `FRIEND|BLOCKED|PENDING_INCOMING|
 PENDING_OUTGOING` — сервер сам сворачивает направление в caller-view); запрос
