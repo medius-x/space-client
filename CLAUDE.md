@@ -517,10 +517,18 @@ SUPPRESSED/PASSTHROUGH/WEAK в [selftest]-лог — движок тестиру
 `deepFilterSuppressionLevel` (дефолт 50), UI в Settings→Audio только при DFN3 (type=range + значение в
 подписи, hint про шкалу: 0 = без предела/сильнейшее), применение НА ЛЕТУ через df_set_atten_lim в живой
 ворклет (port-сообщение, appliedDeepFilterLevel против повторов) + уровень при создании пайплайна.
-**Ловушка тишины при заходе** (повтор живого бага): входящий аудиотрек логирует muted-переходы
-(→ muted / → UNMUTED) и warn «STILL muted after 5 s» — в зафиксированном случае трек пришёл muted=true при
-успешной подписке (answer sent + transport connected); следующий повтор покажет слой (Janus не стартует RTP vs
-плейаут). Гейты 260/260.
+**Ловушка тишины при заходе — РАЗГАДАНА (2026-09-17, вечер).** Повтор с вооружённой диагностикой: трек
+приходит muted=true при полностью здоровой подписке (join → answer sent → transport connected), и через 5 с
+«STILL muted». Решающий прогон 18:18: ревход НЕ вылечил (STILL снова), а тишина кончилась `→ UNMUTED` на том
+же фиде БЕЗ участия заходившего — **пир был замучен по мьюку**: замученный publisher НЕ ШЛЁТ RTP вообще
+(track.enabled=false = нет пакетов), трек получателя висит muted. «Лечилось перезаходом» — совпадение с
+размутом пира. Сопутствующий баг усиливал загадку: бейдж мьюта пира ПРОПАДАЛ у заходящего (см. ниже).
+Правки: (а) sfu-сторожевая строка различает сценарии через колбэк `describeMuteState` (marks из
+voiceControlStore): «still muted — expected: self-muted» (INFO) vs «STILL muted with NO mute mark — real
+silent join» (WARN); (б) joinVoice чистит ТОЛЬКО свои метки (`clearUser(own)`, было `clearAll()` — чужие
+метки валидны и раньше стирались); (в) oak-server: tracker при КАЖДОМ enter ре-паблишит состояния ВСЕХ
+меченых участников канала (сеет заходчику, чинит пропустивших пуши; subsumes прежний репаблиш mod-метки
+вошедшего). Гейты: сервер 264/264 (+1 тест reseed), клиент 267/267.
 
 **Движки Speex + Gate; протокол space-asset:// (2026-09-17, юзер-смоук пройден).** Каталог движков стал
 `off | rnnoise | deepfilternet3 | speex | gate` (NsEngineMenu + Settings→Audio + самотест-кнопки в diag на
@@ -564,6 +572,37 @@ wasm + 2 модели в ворклете); `bypassUntilReady:false` — до re
 handshake; dispose шлёт их `{type:"dispose"}` (dtln_stop). UI: пункт DTLN в NsEngineMenu (третьим, после
 тяжеловесов), опция в Settings→Audio + подсказка «heaviest, wideband 16 kHz», кнопка самотеста в diag.
 Гейты 260/260 + typecheck + build (бандл НЕ вырос — пакет не импортируется).
+
+**Аудит-фиксы устойчивости к обрывам сети (#478, 2026-09-17, ДЕПЛОЙ ПАРНЫЙ с oak-server).**
+Аудит всего сетевого слоя; итоговые фиксы: (1) **RESYNC ПОСЛЕ STOMP-РЕКОННЕКТА** (главная дыра:
+пуши за время WS-дыры пропадали навсегда — сообщения не появлялись до рестарта): StompClient
+`onConnected(reconnected)` (флаг `everConnected` — первый коннект НЕ реконнект, start() сам
+делает снапшоты) → `ConnectionSession.resyncAfterReconnect()`: presence (с delta-буфером как в
+start()) + voiceMembers + socialRefresh + memberRefresh + refetchChannels + read-states, ПОТОМ
+хвосты сообщений — для каждого loaded-канала свежая последняя страница (`getMessages(…, 100)`)
+вливается через НОВЫЙ `MessageStore.mergeTail` (батч-merge по id, ОДИН emit, возвращает только
+НОВЫЕ строки — они проходят через `onLiveMessage` = бейджи/тосты/превью считают их как live);
+ПОРЯДОК: read-states СТРАТЬЮТ per-channel состояние (applySnapshot заменяет) — их фетч обязан
+закончиться ДО бампов хвостов, иначе сотрёт unread; хвосты ПОСЛЕДОВАТЕЛЬНЫ (не штампом).
+Дыра >100 сообщений оставляет дырки в середине — это уже не «морг». (2) **Publisher-PC failed →
+rejoin-лестница**: зеркало M4-фикса сабскрайбера — `PublisherTransportError` из sfu → runtime
+`handleVoiceSessionLost("outgoing media transport failed")` (раньше только «Connection failed»
+в баре навсегда). (3) **REST-устойчивость**: `request()` обёрнут в `fetchWithRetries` — таймаут
+20 с (AbortController; НЕ для uploadBytes/downloadBytes — большие тела) + ретраи ТОЛЬКО для
+идемпотентных вызовов (GET/PUT/DELETE + POST с `idempotencyKey`), бэкоф `[500, 1500]`
+(`retryDelaysMs` инжектится тестами); 5xx НЕ ретраится (сервер сказал — повтор может
+пере-триггерить сайд-эффекты); refresh-POST таймаутится, но НИКОГДА не ретраится (refresh-токен
+одноразовый — повтор с тем же токеном REVOC'нет семью). (4) **Реанонс звонка** после
+WS-реконнекта: `PeerCallSession.reannounceState()` — MIC/DEAFEN/CAM/SCREEN по текущему
+состоянию (одношотные сигналы, потерянные за дыру, восстанавливают пиру марки). (5)
+**IDEMPOTENCY-KEY сообщений** (антидубль при «запрос дошёл, ответ потерян»):
+`ConnectionSession.sendMessage/sendMessageWithFiles` генерят `crypto.randomUUID()` на отправку
+→ `CreateMessageRequest.idempotencyKey` (4-е поле) — сервер отдаёт ОРИГИНАЛ по ключу (см.
+oak-server/CLAUDE.md); благодаря ключу POST /messages теперь БЕЗОПАСНО ретраится (лестница п.3).
+Гейты: клиент 267/267 (+7 тестов: mergeTail-батч, стомп-флаг, ретраи GET/POST±key/5xx), сервер
+263/263 (+5: replay-юниты + интеграция). Смоук-сценарий: выключить сеть на ~30 с — WS
+переподнимется, пропущенные сообщения появятся, голос перезайдёт комнатой, звонок вернётся по
+ICE-restart'у.
 
 M5 закрыт и закоммичен (`b14b2a6`). M6: **друзья** —
 `GET /api/users/me/relationships` (типы `FRIEND|BLOCKED|PENDING_INCOMING|

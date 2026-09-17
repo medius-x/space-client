@@ -38,6 +38,11 @@ export interface SfuCallbacks {
   onState(state: "connecting" | "live" | "reconnecting" | "failed", detail?: string): void;
   /** Transport-level fatality; 426 (room vanished) is signalled via RoomVanishedError. */
   onError(error: Error): void;
+  /** Why this member's mic might be legitimately silent (the voice-control marks:
+   *  a muted publisher sends NO RTP, so the incoming track stays muted — that is
+   *  not a fault). Returns null when the member carries no marks. Used to keep
+   *  the still-muted watchdog from crying wolf on a muted publisher. */
+  describeMuteState?(username: string): string | null;
 }
 
 export class RoomVanishedError extends Error {
@@ -61,6 +66,15 @@ export class SubscriberTransportError extends Error {
   constructor() {
     super("subscriber peer connection failed");
     this.name = "SubscriberTransportError";
+  }
+}
+
+/** The publisher (outgoing) peer connection hit ICE failure — recoverable only
+ *  by a full rejoin, like the subscriber twin. */
+export class PublisherTransportError extends Error {
+  constructor() {
+    super("publisher peer connection failed");
+    this.name = "PublisherTransportError";
   }
 }
 
@@ -229,7 +243,15 @@ export class SfuSession {
         this.publisherIceReady = true;
         this.callbacks.onState("live");
       } else if (publisher.connectionState === "failed") {
+        // The outgoing media path is dead and never heals itself — mirror the
+        // subscriber-side M4 fix: the runtime's rejoin ladder rebuilds the
+        // whole session with fresh candidates. The "failed" state below is
+        // honest for the instant before the ladder takes over.
         this.callbacks.onState("failed", "publisher connection failed");
+        if (!this.closed) {
+          log.error("sfu", "publisher transport FAILED — outgoing media is dead");
+          this.callbacks.onError(new PublisherTransportError());
+        }
       }
     };
     if (this.micTrack) {
@@ -705,7 +727,18 @@ export class SfuSession {
     if (incomingTrack.muted && incomingTrack.kind === "audio") {
       setTimeout(() => {
         if (!this.closed && incomingTrack.readyState === "live" && incomingTrack.muted) {
-          log.warn("sfu", `audio track ${slotMid} (feed ${resolved.feedId}) STILL muted after 5 s — no RTP: the join is silent (re-enter cures it)`);
+          // A MUTED PUBLISHER sends no RTP at all — the track stays muted by design.
+          // With the marks at hand the watchdog reads as "expected silence", not as
+          // a dead subscription (live 2026-09-17: three "silent join" reports were
+          // exactly this — the peer was mic-muted; its un-mute, not the re-enter,
+          // cured the "silence").
+          const display = feed?.display ?? "?";
+          const muteState = feed !== undefined ? (this.callbacks.describeMuteState?.(display) ?? null) : null;
+          if (muteState !== null) {
+            log.info("sfu", `audio track ${slotMid} (feed ${resolved.feedId}, ${display}) still muted — expected: ${muteState}`);
+          } else {
+            log.warn("sfu", `audio track ${slotMid} (feed ${resolved.feedId}, ${display}) STILL muted after 5 s with NO mute mark — no RTP and the publisher should be audible: this is a real silent join`);
+          }
         }
       }, 5_000);
     }

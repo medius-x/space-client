@@ -3,7 +3,7 @@ import { log } from "../logging";
 import { MemoryTokenStorage } from "../core/auth";
 import { RestClient } from "../core/rest";
 import { JanusClient } from "../core/janus";
-import { SfuSession, RoomVanishedError, SubscriberTransportError, type MediaSource } from "../core/sfu";
+import { SfuSession, RoomVanishedError, SubscriberTransportError, PublisherTransportError, type MediaSource } from "../core/sfu";
 import { PeerCallSession, type PeerCallOptions, type PeerTrackKind } from "../core/peer-call";
 import { extractAudioFmtpLines } from "../core/sdp";
 import { stereoVerdict } from "../core/audio-math";
@@ -419,6 +419,9 @@ function makeSessionHooks(recordId: string): SessionHooks {
       if (channelId !== null) {
         activeSession?.stomp.send("/app/voice.join", { channelId });
       }
+      // A live call re-announces its media state: the one-shot MIC/CAM/SCREEN/
+      // DEAFEN signals sent while the socket was down were silently dropped.
+      callSession?.reannounceState();
     },
     onChannelGone: (channelId) => {
       if (!isActive()) {
@@ -1339,9 +1342,13 @@ export async function joinVoice(channel: Channel): Promise<void> {
   }
   cancelVoiceRejoin();
   await teardownVoice();
-  // Entering a room is a fresh voice state: self-marks are dropped server-side on
-  // leave, and a surviving moderator mark re-publishes via /topic/voice.state.
-  session.voiceControlStore.clearAll();
+  // Entering a room resets MY OWN marks only (the server drops self-marks on
+  // leave and re-publishes a surviving moderator mark on our enter). Other
+  // members' marks stay — they are still true server-side; wiping them made a
+  // muted member's badge VANISH for the joining viewer (live report
+  // 2026-09-17). The server additionally re-seeds the whole channel's state
+  // on every join, so even a fresh client learns everyone's current marks.
+  session.voiceControlStore.clearUser(session.username());
   voiceCompliance.micMuted = false;
   voiceCompliance.shareAudioMuted = false;
   voiceCompliance.deafened = false;
@@ -1410,6 +1417,22 @@ async function connectVoiceRoom(channel: Channel): Promise<void> {
           onRemoteTrack: handleRemoteTrack,
           onRemoteTrackEnded: handleRemoteTrackEnded,
           onState: (state, detail) => appStore.patch({ voiceState: state, stateDetail: detail ?? null }),
+          // The still-muted watchdog's lie detector: a muted publisher sends no RTP,
+          // so "silent" is expected for a marked member — only an UNMARKED silent
+          // feed is a real fault worth alarming about.
+          describeMuteState: (username) => {
+            const marks = activeSession?.voiceControlStore.marksFor(username);
+            if (!marks || (!marks.selfMuted && !marks.modMuted && !marks.selfDeafened && !marks.modDeafened)) {
+              return null;
+            }
+            const reasons = [
+              marks.selfMuted ? "self-muted" : null,
+              marks.modMuted ? "server-muted" : null,
+              marks.selfDeafened ? "self-deafened" : null,
+              marks.modDeafened ? "server-deafened" : null,
+            ].filter((reason) => reason !== null);
+            return reasons.join(", ");
+          },
           onError: (error) => {
             if (error instanceof RoomVanishedError) {
               // The room died under a LIVE session — the rejoin ladder owns it now.
@@ -1418,6 +1441,10 @@ async function connectVoiceRoom(channel: Channel): Promise<void> {
               // Incoming media died silently (ICE failure on the subscriber PC) — the
               // ladder rebuilds the session, exactly the manual re-click that cured it.
               handleVoiceSessionLost("incoming media transport failed");
+            } else if (error instanceof PublisherTransportError) {
+              // The M4 subscriber fix's twin: the OUTGOING transport hit ICE failure
+              // — without this the bar just read "Connection failed" forever.
+              handleVoiceSessionLost("outgoing media transport failed");
             } else {
               log.error("voice", `sfu: ${error.message}`);
               appStore.patch({ stateDetail: error.message });

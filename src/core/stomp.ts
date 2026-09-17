@@ -115,8 +115,10 @@ function parseSingleFrame(raw: string): StompFrame | null {
 export interface StompHandlers {
   /** Abnormal loss only (heartbeat death / socket drop) — a manual disconnect stays silent. */
   onLost(reason: string): void;
-  /** Fires after every (re)connect — subscriptions are replayed before this. */
-  onConnected?(): void;
+  /** Fires after every (re)connect — subscriptions are replayed before this.
+   *  `reconnected` distinguishes a REconnect (the session re-syncs whatever the
+   *  WS gap swallowed) from the first connect (start() takes its own snapshots). */
+  onConnected?(reconnected: boolean): void;
   /** Every second while an attempt is SCHEDULED: the seconds left and the
    *  1-based attempt number — oak's "Reconnecting in Ns… M/10" label. */
   onCountdown?(secondsLeft: number, attempt: number): void;
@@ -163,6 +165,9 @@ export class StompClient {
    *  flying and the counter must not reset (live report). */
   private attemptInFlight = false;
   private reconnectAttempt = 0;
+  /** True once ANY connect succeeded — a later CONNECTED is a reconnect (the
+   *  gap between them lost every server push; the session resyncs). */
+  private everConnected = false;
   private lastSentAt = 0;
   private lastReceivedAt = 0;
 
@@ -305,15 +310,18 @@ export class StompClient {
 
   private handleFrame(frame: StompFrame, reject: (error: Error) => void, onConnectedFrame: () => void): void {
     switch (frame.command) {
-      case "CONNECTED":
+      case "CONNECTED": {
+        const wasReconnect = this.everConnected;
+        this.everConnected = true;
         this.connected = true;
         this.reconnectAttempt = 0;
         this.startTimers();
         this.replaySubscriptions();
         onConnectedFrame();
-        this.handlers.onConnected?.();
-        log.info("stomp", `connected (${frame.headers.server ?? "?"})`);
+        this.handlers.onConnected?.(wasReconnect);
+        log.info("stomp", `connected (${frame.headers.server ?? "?"})${wasReconnect ? " — resync due (gap healed)" : ""}`);
         break;
+      }
       case "MESSAGE": {
         // Route to the per-destination handler registered via subscribe(); messages
         // for never-subscribed destinations are dropped (they cannot legitimately occur).

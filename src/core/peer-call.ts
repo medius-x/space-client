@@ -284,6 +284,23 @@ export class PeerCallSession {
     return this.screenActive;
   }
 
+  /**
+   * Re-send the one-shot state announcements (MIC/DEAFEN/CAM/SCREEN) after a
+   * STOMP gap: signals sent while the socket was down were silently dropped,
+   * and the peer's badges would stay stale until the next local toggle.
+   * Idempotent — the peer just re-applies the same states (and a pre-accept
+   * callee buffers them like any other early signal).
+   */
+  reannounceState(): void {
+    if (this.closed) {
+      return;
+    }
+    this.signal({ type: this.micEnabled ? "MIC_ON" : "MIC_OFF", sdp: null, candidate: null });
+    this.signal({ type: this.deafened ? "DEAFEN_ON" : "DEAFEN_OFF", sdp: null, candidate: null });
+    this.signal({ type: this.cameraActive ? "CAM_ON" : "CAM_OFF", sdp: null, candidate: null });
+    this.signal({ type: this.screenActive ? "SCREEN_ON" : "SCREEN_OFF", sdp: null, candidate: null });
+  }
+
   close(): void {
     if (this.closed) {
       return;

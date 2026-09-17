@@ -114,4 +114,84 @@ describe("RestClient", () => {
     expect(storage.load()?.token).toBe("access-1");
     expect(fake.requests.map((request) => request.path)).toEqual(["/api/auth/register", "/api/auth/login"]);
   });
+
+  // -------------------------------------------------------------------------
+  // Network-resilience ladder: idempotent calls retry on NO-response failures;
+  // server answers and plain POSTs never repeat.
+  // -------------------------------------------------------------------------
+
+  it("retries a GET through network failures (idempotent), then surfaces the last error", async () => {
+    const fake = new FakeFetch(() => {
+      throw new TypeError("Failed to fetch");
+    });
+    const storage = new MemoryTokenStorage();
+    storage.save({ token: "t", refreshToken: "r", expiresAt: 0 });
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: storage, fetchImpl: fake.call, retryDelaysMs: [0, 0] });
+
+    await expect(client.getChannels()).rejects.toThrow("Failed to fetch");
+    expect(fake.requests).toHaveLength(3); // 1 + 2 retries
+  });
+
+  it("a GET that connects on the SECOND attempt resolves normally", async () => {
+    let attempts = 0;
+    const fake = new FakeFetch(() => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new TypeError("Failed to fetch");
+      }
+      return { status: 200, body: [{ id: 1, name: "general", type: "TEXT", position: 0 }] };
+    });
+    const storage = new MemoryTokenStorage();
+    storage.save({ token: "t", refreshToken: "r", expiresAt: 0 });
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: storage, fetchImpl: fake.call, retryDelaysMs: [0, 0] });
+
+    const channels = await client.getChannels();
+    expect(channels).toHaveLength(1);
+    expect(attempts).toBe(2);
+  });
+
+  it("a plain POST is NOT retried — a lost response may already have acted", async () => {
+    const fake = new FakeFetch(() => {
+      throw new TypeError("Failed to fetch");
+    });
+    const storage = new MemoryTokenStorage();
+    storage.save({ token: "t", refreshToken: "r", expiresAt: 0 });
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: storage, fetchImpl: fake.call, retryDelaysMs: [0, 0] });
+
+    await expect(client.addFriend("bob")).rejects.toThrow("Failed to fetch");
+    expect(fake.requests).toHaveLength(1); // one flight only — no duplicate friend request
+  });
+
+  it("a POST carrying an idempotency key IS retried (the server dedups by key)", async () => {
+    let attempts = 0;
+    const fake = new FakeFetch((request) => {
+      if (request.path === "/api/channels/1/messages") {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new TypeError("Failed to fetch");
+        }
+        return { status: 201, body: { id: 42, channelId: 1, authorId: 1, authorUsername: "alice", content: "hi", createdAt: "now", attachments: [], mentions: [], reactions: [], editedAt: null, reply: null, forward: null } };
+      }
+      return { status: 200, body: [] };
+    });
+    const storage = new MemoryTokenStorage();
+    storage.save({ token: "t", refreshToken: "r", expiresAt: 0 });
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: storage, fetchImpl: fake.call, retryDelaysMs: [0, 0] });
+
+    const created = await client.sendMessage(1, { content: "hi", idempotencyKey: "key-1" });
+    expect(created.id).toBe(42);
+    expect(attempts).toBe(2); // the retry flew with the SAME key (same request body)
+    expect(fake.requests[0]?.body).toMatchObject({ idempotencyKey: "key-1" });
+    expect(fake.requests[1]?.body).toMatchObject({ idempotencyKey: "key-1" });
+  });
+
+  it("a server 5xx answer is NOT retried — the server spoke, repeating may re-trigger side effects", async () => {
+    const fake = new FakeFetch(() => ({ status: 500, body: { message: "boom" } }));
+    const storage = new MemoryTokenStorage();
+    storage.save({ token: "t", refreshToken: "r", expiresAt: 0 });
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: storage, fetchImpl: fake.call, retryDelaysMs: [0, 0] });
+
+    await expect(client.getChannels()).rejects.toThrow("boom");
+    expect(fake.requests).toHaveLength(1);
+  });
 });

@@ -89,6 +89,34 @@ export class MessageStore extends Emitter {
     return fresh.length;
   }
 
+  /** Channel ids with a loaded history — the reconnect gap heal iterates these. */
+  loadedChannelIds(): number[] {
+    return [...this.loadedChannels];
+  }
+
+  /**
+   * Merge a refetched NEWEST page into a loaded channel (the STOMP-reconnect
+   * gap heal). Insert-only by id in one batched emit — the same invariant
+   * applyLive keeps, without N emits for N messages. Returns the messages that
+   * were actually NEW: the caller fires the live accounting (unread/mention/
+   * preview) for them, because they were missed while the socket was down.
+   */
+  mergeTail(channelId: number, page: readonly Message[]): Message[] {
+    if (!this.loadedChannels.has(channelId) || page.length === 0) {
+      return [];
+    }
+    const current = this.lists.get(channelId) ?? MessageStore.EMPTY;
+    const existingIds = new Set(current.map((message) => message.id));
+    const fresh = page.filter((message) => !existingIds.has(message.id));
+    if (fresh.length === 0) {
+      return [];
+    }
+    // The list is kept id-ascending (applyLive's invariant) — sorted concat keeps it.
+    this.lists.set(channelId, [...current, ...fresh].sort((left, right) => left.id - right.id));
+    this.emit();
+    return fresh;
+  }
+
   /**
    * The .edited push: replace the row by id AND refresh every quote tree that
    * references it. Idempotent against the REST caller's own optimistic replace.

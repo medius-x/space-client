@@ -337,4 +337,29 @@ describe("StompClient", () => {
     await vi.advanceTimersByTimeAsync(2_000);
     expect(attempts).toEqual([1, 2]);
   });
+
+  it("onConnected flags REconnects so the session can resync what the gap missed", async () => {
+    const flags: boolean[] = [];
+    const client = new StompClient({
+      url: "ws://localhost:8080/ws",
+      getAccessToken: () => "jwt-1",
+      webSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+      handlers: {
+        onLost: () => undefined,
+        onConnected: (reconnected) => flags.push(reconnected),
+      },
+    });
+    const connecting = client.connect();
+    const first = connectedSocket();
+    await connecting;
+    expect(flags).toEqual([false]); // the first connect is NOT a reconnect — start() snapshots
+
+    first.serverClose(); // abnormal
+    vi.advanceTimersByTime(1_000); // first backoff step
+    const second = FakeWebSocket.instances[1]!;
+    second.serverOpen();
+    second.serverMessage("CONNECTED\n\n" + TERMINATOR);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(flags).toEqual([false, true]); // the reconnect carries the flag
+  });
 });

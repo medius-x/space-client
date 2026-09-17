@@ -52,7 +52,17 @@ export interface RestClientOptions {
   fetchImpl?: typeof fetch;
   /** Fires when the refresh family is dead — the app returns to the login screen. */
   onSessionExpired?: () => void;
+  /** Network-failure retry backoff for IDEMPOTENT calls (GET/PUT/DELETE and
+   *  idempotency-keyed posts); tests inject zeros. Default [500, 1500]. */
+  retryDelaysMs?: readonly number[];
 }
+
+/** A JSON call must fail fast into the retry ladder — a hung request (dead
+ *  socket, stalled middleware) pends forever otherwise. Not applied to the
+ *  byte endpoints (uploadBytes/downloadBytes): large bodies legitimately take
+ *  minutes. */
+const REQUEST_TIMEOUT_MS = 20_000;
+const DEFAULT_RETRY_DELAYS_MS: readonly number[] = [500, 1500];
 
 /**
  * REST client for the OAK server: Bearer auth on every call, silent token refresh.
@@ -66,6 +76,7 @@ export class RestClient {
   private readonly tokenStorage: TokenStorage;
   private readonly fetchImpl: typeof fetch;
   private readonly onSessionExpired?: () => void;
+  private readonly retryDelays: readonly number[];
   private refreshInFlight: Promise<void> | null = null;
 
   constructor(options: RestClientOptions) {
@@ -76,6 +87,7 @@ export class RestClient {
     // is exactly why the fakes-injected unit tests never saw this.
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.onSessionExpired = options.onSessionExpired;
+    this.retryDelays = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
   }
 
   getTokens(): AuthTokens | null {
@@ -146,15 +158,20 @@ export class RestClient {
     return this.request<Message[]>(`/api/channels/${channelId}/messages${query ? `?${query}` : ""}`, { method: "GET" });
   }
 
-  /** 201 + the created message; the STOMP echo of the same id arrives too — dedup upstream. */
+  /** 201 + the created message; the STOMP echo of the same id arrives too — dedup upstream.
+   *  The idempotency key makes network-level retries safe: a retry after a LOST
+   *  RESPONSE reuses the key and the server returns the ORIGINAL message instead
+   *  of duplicating it. */
   async sendMessage(channelId: number, request: {
     content: string | null;
     attachments?: { key: string; fileName: string; thumbnailKey?: string | null; durationMillis?: number | null }[];
     replyToId?: number | null;
+    idempotencyKey?: string;
   }): Promise<Message> {
     return this.request<Message>(`/api/channels/${channelId}/messages`, {
       method: "POST",
       body: JSON.stringify(request),
+      idempotencyKey: request.idempotencyKey,
     });
   }
 
@@ -645,11 +662,21 @@ export class RestClient {
     if (!tokens) {
       throw new ApiError(401, "No stored session");
     }
-    const response = await this.fetchImpl(`${this.baseUrl}/api/auth/refresh`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refreshToken: tokens.refreshToken }),
-    });
+    // Timed out, but NEVER retried: the refresh token is single-use — repeating
+    // a possibly-delivered refresh would reuse it and revoke the whole family.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.baseUrl}/api/auth/refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refreshToken: tokens.refreshToken }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
     if (!response.ok) {
       log.warn("rest", `refresh rejected (${response.status}) — session expired`);
       this.tokenStorage.clear();
@@ -666,17 +693,17 @@ export class RestClient {
     body?: string;
     authenticated?: boolean;
     retried?: boolean;
+    /** Present = the call is idempotent server-side, so a network-level retry
+     *  (lost response) is safe. Message sends carry a generated key and the
+     *  server returns the ORIGINAL message on a key collision. */
+    idempotencyKey?: string;
   }): Promise<T> {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     const tokens = this.tokenStorage.load();
     if (init.authenticated !== false && tokens) {
       headers.Authorization = `Bearer ${tokens.token}`;
     }
-    const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
-      method: init.method,
-      headers,
-      body: init.body,
-    });
+    const response = await this.fetchWithRetries(path, init, headers);
 
     if (response.status === 401 && init.authenticated !== false && !init.retried && tokens) {
       await this.refreshOnce();
@@ -704,5 +731,44 @@ export class RestClient {
     // Parse only when there is actually something to parse.
     const text = await response.text();
     return (text.length === 0 ? undefined : JSON.parse(text)) as T;
+  }
+
+  /**
+   * The network-retry ladder. Only IDEMPOTENT calls may repeat — GET/PUT/DELETE
+   * plus POSTs that carry an idempotency key the server dedups on: a request
+   * whose response was lost MAY have been acted upon, and blindly repeating a
+   * plain POST would duplicate the message/create. Server answers (any HTTP
+   * status, including 5xx) are NOT retried — that is the server speaking, and
+   * repeating a 500 could re-trigger side effects. Timeouts count as network
+   * failures (no response).
+   */
+  private async fetchWithRetries(path: string, init: { method: string; body?: string; idempotencyKey?: string },
+    headers: Record<string, string>): Promise<Response> {
+    const retryable = init.method === "GET" || init.method === "PUT" || init.method === "DELETE"
+      || init.idempotencyKey !== undefined;
+    const attempts = retryable ? this.retryDelays.length + 1 : 1;
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      if (attempt > 1) {
+        await new Promise((resolve) => setTimeout(resolve, this.retryDelays[attempt - 2]));
+      }
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      try {
+        return await this.fetchImpl(`${this.baseUrl}${path}`, {
+          method: init.method,
+          headers,
+          body: init.body,
+          signal: controller.signal,
+        });
+      } catch (error: unknown) {
+        lastError = error;
+        const reason = error instanceof Error ? error.message : String(error);
+        log.warn("rest", `${init.method} ${path} no response (attempt ${attempt}/${attempts}): ${reason}`);
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 }

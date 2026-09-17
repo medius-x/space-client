@@ -79,6 +79,9 @@ export interface ConnectionSessionOptions {
 const INITIAL_HISTORY_LIMIT = 100;
 /** Scroll-up / back-fill page size (oak's HISTORY_PAGE). */
 export const HISTORY_PAGE = 50;
+/** Newest-page size a reconnect gap-heal refetches per loaded channel. A gap
+ *  wider than this leaves holes in the middle — that is no longer a blip. */
+const RESYNC_TAIL_LIMIT = 100;
 
 function toWsUrl(hostUrl: string): string {
   return hostUrl.replace(/^http/, "ws") + "/ws";
@@ -152,9 +155,12 @@ export class ConnectionSession {
         onExhausted: () => {
           this.hooks.onStompExhausted?.();
         },
-        onConnected: () => {
+        onConnected: (reconnected) => {
           this.hooks.onStompState("connected");
           this.hooks.onStompConnected();
+          if (reconnected) {
+            void this.resyncAfterReconnect();
+          }
         },
       },
     });
@@ -301,7 +307,13 @@ export class ConnectionSession {
   }
 
   async sendMessage(channelId: number, content: string, replyToId?: number): Promise<void> {
-    const created = await this.rest.sendMessage(channelId, { content, replyToId: replyToId ?? null });
+    // One key per composer submission: a network retry of THIS send reuses it,
+    // and the server returns the original message instead of a duplicate.
+    const created = await this.rest.sendMessage(channelId, {
+      content,
+      replyToId: replyToId ?? null,
+      idempotencyKey: crypto.randomUUID(),
+    });
     this.messageStore.applyLive(created); // the STOMP echo dedups against this id
   }
 
@@ -335,6 +347,10 @@ export class ConnectionSession {
       content,
       attachments: refs,
       replyToId: replyToId ?? null,
+      // The upload bytes are already on MinIO — a retried POST re-references
+      // the SAME keys (no re-upload), and a duplicate message is prevented
+      // server-side by the key.
+      idempotencyKey: crypto.randomUUID(),
     });
     this.messageStore.applyLive(created);
   }
@@ -804,6 +820,79 @@ export class ConnectionSession {
       void this.refreshPermissions();
     } catch (error) {
       log.warn("session", `channel refetch failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * A WS gap swallowed every /topic push the server sent during it — nothing
+   * arrives retroactively. On every REconnect re-take the same snapshot set
+   * start() takes, then heal every loaded channel's tail: the refetched newest
+   * page merges by id, and the messages that were actually missed fire the
+   * live accounting (unread/mention/preview) exactly as if they had arrived
+   * live. Everything dedups by id, so overlaps with pushes that DID make it
+   * through are free.
+   */
+  private async resyncAfterReconnect(): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
+    log.info("session", "STOMP reconnected — resyncing what the gap missed");
+    // Presence keeps its snapshot+delta-buffer discipline (see start()).
+    this.rosterStore.beginPresenceSnapshot();
+    void this.rest.getPresence()
+      .then((presence) => {
+        if (!this.disposed) {
+          this.rosterStore.setPresence(presence);
+        }
+      })
+      .catch((error: unknown) => {
+        log.warn("session", `presence resync failed: ${error instanceof Error ? error.message : String(error)}`);
+        this.rosterStore.abortPresenceSnapshot(); // unbuffer the deltas onto current state
+      });
+    void this.rest.getVoiceMembers()
+      .then((voiceMembers) => {
+        if (!this.disposed) {
+          this.rosterStore.setVoiceMembers(voiceMembers);
+        }
+      })
+      .catch((error: unknown) => {
+        log.warn("session", `voice members resync failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    this.socialRefresh.request();
+    this.memberRefresh.request();
+    void this.refetchChannels();
+    // Read states BEFORE the tail heal: applySnapshot REPLACES per-channel
+    // state, so a snapshot landing after the heals would erase their bumps.
+    try {
+      this.readStateStore.applySnapshot(await this.rest.getReadStates());
+    } catch (error: unknown) {
+      log.warn("session", `read states resync failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await this.resyncMessageTails();
+  }
+
+  /** Sequential on purpose: a reconnect after a long gap can hold many loaded
+   *  channels, and a burst of parallel history fetches would stampede the server. */
+  private async resyncMessageTails(): Promise<void> {
+    for (const channelId of this.messageStore.loadedChannelIds()) {
+      if (this.disposed) {
+        return;
+      }
+      try {
+        const page = await this.rest.getMessages(channelId, undefined, RESYNC_TAIL_LIMIT);
+        if (this.disposed) {
+          return;
+        }
+        const fresh = this.messageStore.mergeTail(channelId, page);
+        for (const message of fresh) {
+          this.hooks.onLiveMessage(message);
+        }
+      } catch (error: unknown) {
+        log.warn("session", `channel #${channelId} tail resync failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (!this.disposed) {
+      log.info("session", "reconnect gap heal complete");
     }
   }
 
