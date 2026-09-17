@@ -15,7 +15,9 @@
     "test": "vitest run",
     "watch": "vitest",
     "icons": "node scripts/regen-icons.mjs",
-    "profile": "node scripts/capture-profile.mjs"
+    "profile": "node scripts/capture-profile.mjs",
+    "start:tools": "npm run build && electron . --space-devtools",
+    "start2:tools": "npm run build && electron . --space-instance=b --space-devtools"
   },
   "devDependencies": {
     "@mdi/font": "^7.4.47",
@@ -33,7 +35,9 @@
     "vitest": "^4.1.0"
   },
   "dependencies": {
+    "@jitsi/rnnoise-wasm": "^0.2.1",
     "@tanstack/react-virtual": "^3.14.11",
+    "deepfilternet3-noise-filter": "^1.3.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   }

@@ -29,8 +29,12 @@ export interface ClientSettings {
   /** Ring timeout; 0 = ring forever (still ends on any hangup signal). Also
    *  bounds the callee's accept→offer gap (re-armed on Accept — oak). */
   ringTimeoutSeconds: number;
-  /** Chromium APM (echo cancellation et al) on the mic path. */
-  apmEnabled: boolean;
+  /** The noise-suppression ENGINE (user decision 2026-09-17): the built-in
+   *  WebRTC suppressor is gone — RNNoise replaces it, DeepFilterNet3 is the
+   *  heavyweight alternative, off = deliberately raw. AEC/AGC have NO knob:
+   *  they stay always-on at the capture constraints (echo hurts the other
+   *  listeners, not the one toggling). */
+  noiseSuppressionEngine: "off" | "rnnoise" | "deepfilternet3";
   /** Device picks (oak Audio/Video): null = system default. Mic/camera apply
    *  on the next capture; the speaker switches live via setSinkId. */
   microphoneDeviceId: string | null;
@@ -48,7 +52,7 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   toastDismissSeconds: 5,
   maxToasts: 3,
   ringTimeoutSeconds: 120, // oak's default (SettingsStore.java)
-  apmEnabled: true,
+  noiseSuppressionEngine: "rnnoise",
   microphoneDeviceId: null,
   speakerDeviceId: null,
   cameraDeviceId: null,
@@ -67,9 +71,19 @@ export class SettingsStore extends Emitter {
   }
 
   async load(): Promise<void> {
-    const stored = await kv.get<Partial<ClientSettings>>(KV_KEY);
+    const stored = await kv.get<Partial<ClientSettings> & { apmEnabled?: boolean }>(KV_KEY);
     if (stored !== null) {
-      this.settings = { ...DEFAULT_CLIENT_SETTINGS, ...stored };
+      const { apmEnabled, ...rest } = stored;
+      this.settings = { ...DEFAULT_CLIENT_SETTINGS, ...rest };
+      // Migration (2026-09-17): the one APM flag used to gate echo+NS+AGC
+      // together. AEC/AGC became always-on; the NS slot became an engine.
+      // false meant "Raw (off)"; true (the old default) upgrades to RNNoise.
+      if (apmEnabled !== undefined && rest.noiseSuppressionEngine === undefined) {
+        this.settings = {
+          ...this.settings,
+          noiseSuppressionEngine: apmEnabled ? "rnnoise" : "off",
+        };
+      }
     }
     this.loaded = true;
     this.emit();

@@ -99,8 +99,11 @@ export class SfuSession {
   private readonly mediaSource: MediaSource;
   private readonly createPeerConnection: () => RTCPeerConnection;
   private readonly callbacks: SfuCallbacks;
-  /** Chromium APM on the mic capture; runtime-owned (client settings, M7). Applies to the NEXT start(). */
-  apmEnabled = true;
+  /** Mic post-processing (the noise-suppression pipeline, runtime-owned).
+   *  start() runs the RAW track through it BEFORE the publisher sees a sample,
+   *  so no unprocessed frames leak while the engine spins up. The enhancer owns
+   *  its WebAudio detour; this class only carries the resulting track. */
+  micEnhancer: ((track: MediaStreamTrack) => Promise<MediaStreamTrack>) | null = null;
   /** Picked microphone (client settings, oak Audio); null = system default. Next start(). */
   microphoneDeviceId: string | null = null;
 
@@ -157,18 +160,44 @@ export class SfuSession {
   async start(): Promise<void> {
     this.callbacks.onState("connecting");
     let micStream: MediaStream;
+    // AEC/AGC are ALWAYS ON (echo hurts the other listeners — no knob); the
+    // built-in noiseSuppression is ALWAYS OFF — that job belongs to the
+    // selectable engine, and two stacked suppressors mangle speech. No
+    // sampleRate constraint — the pipeline's AudioContext resamples on its own.
+    const micConstraints = {
+      echoCancellation: true,
+      noiseSuppression: false,
+      autoGainControl: true,
+      ...(this.microphoneDeviceId !== null ? { deviceId: { exact: this.microphoneDeviceId } } : {}),
+    };
     try {
-      micStream = await this.mediaSource.getUserMedia({
-        audio: {
-          echoCancellation: this.apmEnabled,
-          noiseSuppression: this.apmEnabled,
-          autoGainControl: this.apmEnabled,
-          ...(this.microphoneDeviceId !== null ? { deviceId: { exact: this.microphoneDeviceId } } : {}),
-        },
-      });
+      micStream = await this.mediaSource.getUserMedia({ audio: micConstraints });
     } catch (error: unknown) {
-      this.callbacks.onState("failed", "microphone unavailable");
-      throw error instanceof Error ? error : new Error(String(error));
+      // Chromium scopes media device ids PER ORIGIN: an id saved by another
+      // window kind (dev server vs packaged file://) — or a yanked USB mic —
+      // makes the exact constraint unsatisfiable. Fall back to the system
+      // default instead of refusing the room.
+      if (this.microphoneDeviceId !== null && error instanceof DOMException && error.name === "OverconstrainedError") {
+        log.warn("sfu", "saved microphone unavailable in this window — using the system default");
+        try {
+          const { deviceId: _dropped, ...defaultConstraints } = micConstraints;
+          micStream = await this.mediaSource.getUserMedia({ audio: defaultConstraints });
+        } catch (fallbackError: unknown) {
+          log.error("sfu", `microphone unavailable: ${fallbackError instanceof DOMException ? fallbackError.name : String(fallbackError)}`);
+          this.callbacks.onState("failed", "microphone unavailable");
+          throw fallbackError instanceof Error ? fallbackError : new Error(String(fallbackError));
+        }
+      } else {
+        // The state line shows a generic verdict — the real cause (permission,
+        // busy device) must land in the log. DOMExceptions often carry an
+        // EMPTY message — the name is the readable half.
+        const described = error instanceof DOMException
+          ? `${error.name}`
+          : error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+        log.error("sfu", `microphone unavailable: ${described}`);
+        this.callbacks.onState("failed", "microphone unavailable");
+        throw error instanceof Error ? error : new Error(String(error));
+      }
     }
     if (this.closed) {
       for (const track of micStream.getTracks()) {
@@ -176,7 +205,16 @@ export class SfuSession {
       }
       return;
     }
-    this.micTrack = micStream.getAudioTracks()[0] ?? null;
+    let micTrack = micStream.getAudioTracks()[0] ?? null;
+    if (micTrack !== null && this.micEnhancer !== null) {
+      try {
+        micTrack = await this.micEnhancer(micTrack);
+      } catch (error) {
+        // The engine failed to boot — publish the raw track rather than no audio.
+        log.warn("sfu", `noise suppression unavailable, publishing raw mic: ${String(error)}`);
+      }
+    }
+    this.micTrack = micTrack;
     if (this.micTrack && this.micMutedDesired) {
       this.micTrack.enabled = false; // re-entered a room while server-muted — comply immediately
     }
@@ -445,6 +483,7 @@ export class SfuSession {
           type: "answer",
           sdp: localDescription.sdp ?? "",
         });
+        log.info("sfu", `subscriber answer sent (${subscriber.getTransceivers().length} m-lines)`);
         current = this.pendingSubscriberOffer;
         this.pendingSubscriberOffer = null;
       }
@@ -650,6 +689,7 @@ export class SfuSession {
       log.warn("sfu", `track on unknown slot mid ${slotMid} — dropped (no attached event yet?)`);
       return;
     }
+    log.info("sfu", `remote track on slot ${slotMid} (stream ${resolved.streamMid}, feed ${resolved.feedId}, muted=${event.track.muted})`);
     const feedId = resolved.feedId;
     const feed = this.feeds.get(feedId);
     if (!feed) {

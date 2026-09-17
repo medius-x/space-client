@@ -613,9 +613,11 @@ async function createWindow(): Promise<void> {
       });
   });
 
-  // DevTools are OPT-IN (SPACE_DEVTOOLS=1 npm run dev) — the default window must
-  // look exactly like what a user ships with (live M7 polish round).
-  if (process.env.SPACE_DEVTOOLS === "1") {
+  // DevTools are OPT-IN — the default window must look exactly like what a user
+  // ships with (live M7 polish round). Two ways in: the SPACE_DEVTOOLS=1 env var
+  // or the --space-devtools flag (npm scripts cannot set env vars portably on
+  // Windows cmd.exe — the flag rides the same argv the instance split uses).
+  if (process.env.SPACE_DEVTOOLS === "1" || process.argv.includes("--space-devtools")) {
     mainWindow.webContents.openDevTools({ mode: "bottom" });
   }
   // electron-vite convention: in `dev` the renderer must load the VITE DEV SERVER

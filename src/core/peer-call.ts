@@ -60,7 +60,7 @@ export class PeerCallSession {
   private readonly sendSignalOut: (signal: CallSignal) => void;
   private readonly callbacks: PeerCallOptions["callbacks"];
   private readonly peerConnection: RTCPeerConnection;
-  private readonly micTrack: MediaStreamTrack | null;
+  private micTrack: MediaStreamTrack | null;
 
   private videoSender: RTCRtpSender | null = null;
   private shareAudioSender: RTCRtpSender | null = null;
@@ -219,6 +219,20 @@ export class PeerCallSession {
     }
     this.micEnabled = enabled;
     this.signal({ type: enabled ? "MIC_ON" : "MIC_OFF", sdp: null, candidate: null });
+  }
+
+  /**
+   * Swap the mic track on the pre-agreed voice slot (a noise-engine switch —
+   * same replaceTrack pattern as the camera/share swaps, no renegotiation).
+   * The desired mute state carries over to the new track.
+   */
+  async replaceMicTrack(track: MediaStreamTrack | null): Promise<void> {
+    if (track === null) {
+      return;
+    }
+    await this.senderForSlot(MLINE_VOICE)?.replaceTrack(track);
+    track.enabled = this.micEnabled;
+    this.micTrack = track;
   }
 
   isMicEnabled(): boolean {

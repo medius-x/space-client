@@ -8,6 +8,7 @@ import { PeerCallSession, type PeerCallOptions, type PeerTrackKind } from "../co
 import { extractAudioFmtpLines } from "../core/sdp";
 import { stereoVerdict } from "../core/audio-math";
 import { RoomAudio } from "../media/RoomAudio";
+import { createNoisePipeline, type NoiseEngineKind, type NoisePipeline } from "../media/noise-suppression";
 import {
   ConnectionDirectory,
   DEFAULT_NOTIFICATION_PREFS,
@@ -213,6 +214,11 @@ let localDisplayStream: MediaStream | null = null;
 let localCameraStream: MediaStream | null = null;
 let janusSessionLostFired = false;
 let shareAudioElementActive = false;
+/** The live noise-suppression detour over the RAW mic (a voice room XOR a call —
+ *  the two are already exclusive). The raw track is kept so an engine switch can
+ *  rebuild the detour and swap the published track without a re-capture. */
+let activeNoisePipeline: NoisePipeline | null = null;
+let noiseSourceTrack: MediaStreamTrack | null = null;
 
 /**
  * The server's voice-control verdict for OUR member — the compliance truth. Kept
@@ -569,6 +575,7 @@ function makeSessionHooks(recordId: string): SessionHooks {
 /** App entry: load the directory, auto-resume the most recently used connection. */
 export async function bootstrapApp(): Promise<void> {
   await settingsStore.load();
+  watchNoiseSettings(); // an engine pick rebuilds the detour while voice/call is live
   notifications.setToastConfig({
     dismissSeconds: () => settingsStore.getSnapshot().toastDismissSeconds,
     maxToasts: () => settingsStore.getSnapshot().maxToasts,
@@ -1272,6 +1279,8 @@ export async function joinVoice(channel: Channel): Promise<void> {
       notifications.playKnock("join");
     }
   } catch (error) {
+    // The bar's detail gets overwritten by the leaving-state — the cause lives here.
+    log.error("voice", `room join failed: ${errorMessage(error)}`);
     appStore.patch({ voiceState: "failed", stateDetail: errorMessage(error) });
     await teardownVoice();
     activeSession?.stomp.send("/app/voice.leave", { channelId: channel.id });
@@ -1341,7 +1350,7 @@ async function connectVoiceRoom(channel: Channel): Promise<void> {
         },
       });
       sfuSession = sfu;
-      sfu.apmEnabled = settingsStore.getSnapshot().apmEnabled; // takes effect on this start()
+      sfu.micEnhancer = enhanceMicTrack; // the suppression detour — runs BEFORE the publisher sees a sample
       sfu.microphoneDeviceId = settingsStore.getSnapshot().microphoneDeviceId;
       await sfu.start();
       const mic = sfu.getMicTrack();
@@ -1451,6 +1460,106 @@ function resetVoiceCompliance(): void {
   roomAudio.setDeafened(false);
 }
 
+// ---------------------------------------------------------------------------
+// Noise suppression (user decision 2026-09-17): selectable engine over the raw
+// mic — RNNoise (default) / DeepFilterNet3 / off. AEC/AGC live on the capture
+// constraints and have no knob. The NS button opens oak's engine selector card;
+// picking an engine rebuilds the detour and swaps the published track in place
+// (no re-capture, no renegotiation).
+// ---------------------------------------------------------------------------
+
+/** The SfuSession/PeerCallSession mic hook: raw in, published track out. */
+async function enhanceMicTrack(rawTrack: MediaStreamTrack): Promise<MediaStreamTrack> {
+  disposeNoisePipeline();
+  noiseSourceTrack = rawTrack;
+  const settings = settingsStore.getSnapshot();
+  if (settings.noiseSuppressionEngine === "off") {
+    return rawTrack;
+  }
+  const pipeline = await createNoisePipeline(settings.noiseSuppressionEngine, rawTrack);
+  // The voice/call may have died while the engine booted — never resurrect it.
+  if (rawTrack.readyState !== "live" || (sfuSession === null && callSession === null)) {
+    pipeline.dispose();
+    return rawTrack;
+  }
+  activeNoisePipeline = pipeline;
+  log.info("ns", `engine ${pipeline.engine} live`);
+  return pipeline.track;
+}
+
+function disposeNoisePipeline(): void {
+  if (activeNoisePipeline !== null) {
+    log.info("ns", `engine ${activeNoisePipeline.engine} down`);
+    activeNoisePipeline.dispose();
+    activeNoisePipeline = null;
+  }
+}
+
+/** Point the live room/call at a mic track (an engine switch): sender swap +
+ *  re-bind the speaking analysis, both in place. */
+async function publishMicTrack(track: MediaStreamTrack): Promise<void> {
+  if (callSession !== null) {
+    await callSession.replaceMicTrack(track);
+    roomAudio.attachOwnMic(appStore.getSnapshot().ownUsername ?? "you", track);
+    return;
+  }
+  if (sfuSession !== null) {
+    await sfuSession.replaceMicTrack(track);
+    roomAudio.attachOwnMic(appStore.getSnapshot().ownUsername ?? "you", track);
+  }
+}
+
+/** Engine switch while voice/call is live: rebuild the detour from the raw
+ *  track (kept from enhanceMicTrack) and swap the published track in place. */
+async function rebuildNoisePipeline(engine: NoiseEngineKind): Promise<void> {
+  const rawTrack = noiseSourceTrack;
+  if (rawTrack === null || rawTrack.readyState !== "live") {
+    return;
+  }
+  disposeNoisePipeline();
+  let track: MediaStreamTrack;
+  if (engine === "off") {
+    track = rawTrack;
+    log.info("ns", "engine off — publishing the raw mic");
+  } else {
+    let pipeline: NoisePipeline;
+    try {
+      pipeline = await createNoisePipeline(engine, rawTrack);
+    } catch (error) {
+      // The new engine failed to boot — fall back to the RAW track so the
+      // sender never keeps the previous (disposed) detour's dead track.
+      log.error("ns", `engine ${engine} failed to start: ${errorMessage(error)} — publishing raw`);
+      await publishMicTrack(rawTrack);
+      return;
+    }
+    if (rawTrack.readyState !== "live" || (sfuSession === null && callSession === null)) {
+      pipeline.dispose();
+      return;
+    }
+    activeNoisePipeline = pipeline;
+    track = pipeline.track;
+    log.info("ns", `engine ${engine} live`);
+  }
+  await publishMicTrack(track);
+}
+
+/** Live settings follow: an engine pick rebuilds the detour in place. The
+ *  rebuild fires for EVERY pick while audio is live — including from "off"
+ *  (activeNoisePipeline is null there; an early return on it alone stranded
+ *  the raw mic until a re-join — live report). */
+function watchNoiseSettings(): void {
+  settingsStore.subscribe(() => {
+    const { noiseSuppressionEngine } = settingsStore.getSnapshot();
+    if (sfuSession === null && callSession === null) {
+      return; // nothing live — the next capture builds whatever is selected
+    }
+    if (activeNoisePipeline !== null && activeNoisePipeline.engine === noiseSuppressionEngine) {
+      return;
+    }
+    void rebuildNoisePipeline(noiseSuppressionEngine);
+  });
+}
+
 export async function teardownVoice(): Promise<void> {
   voiceView.dropShareVideo();
   if (localDisplayStream) {
@@ -1475,6 +1584,8 @@ export async function teardownVoice(): Promise<void> {
   if (janus) {
     await janus.destroy().catch(() => undefined);
   }
+  disposeNoisePipeline();
+  noiseSourceTrack = null;
   roomAudio.detachOwnMic();
   roomAudio.detachAll();
   shareAudioElementActive = false;
@@ -1752,6 +1863,8 @@ const CALL_SHARE_FEED_ID = -2;
 
 let callSession: PeerCallSession | null = null;
 let callMicStream: MediaStream | null = null;
+/** The call's mic AFTER the suppression detour (== callMicStream when off). */
+let callPublishedMic: MediaStream | null = null;
 let callCameraStream: MediaStream | null = null;
 let callDisplayStream: MediaStream | null = null;
 let ringTimeoutTimer: number | null = null;
@@ -1805,14 +1918,37 @@ function stopStream(stream: MediaStream | null): void {
 
 async function captureCallMic(): Promise<MediaStream> {
   const settings = settingsStore.getSnapshot();
-  return navigator.mediaDevices.getUserMedia({
-    audio: {
-      echoCancellation: settings.apmEnabled,
-      noiseSuppression: settings.apmEnabled,
-      autoGainControl: settings.apmEnabled,
-      ...(settings.microphoneDeviceId !== null ? { deviceId: { exact: settings.microphoneDeviceId } } : {}),
-    },
-  });
+  // Same policy as the voice room capture: AEC/AGC always on, the built-in
+  // suppressor off — the selectable engine owns noise. The saved deviceId may
+  // be UNKNOWN in this window (Chromium scopes device ids per origin — a dev
+  // server id is garbage under file:// and vice versa, ditto a yanked USB
+  // mic): on OverconstrainedError fall back to the system default.
+  const baseConstraints = { echoCancellation: true, noiseSuppression: false, autoGainControl: true };
+  const constraints = settings.microphoneDeviceId !== null
+    ? { ...baseConstraints, deviceId: { exact: settings.microphoneDeviceId } }
+    : baseConstraints;
+  try {
+    return await navigator.mediaDevices.getUserMedia({ audio: constraints });
+  } catch (error: unknown) {
+    if (settings.microphoneDeviceId !== null && error instanceof DOMException && error.name === "OverconstrainedError") {
+      log.warn("call", "saved microphone unavailable in this window — using the system default");
+      return navigator.mediaDevices.getUserMedia({ audio: baseConstraints });
+    }
+    throw error;
+  }
+}
+
+/** The call's publishable mic: the RAW stream through the suppression detour
+ *  (one pipeline at a time — a call and a voice room are already exclusive).
+ *  callMicStream stays RAW for teardown; this stream feeds the PeerCallSession
+ *  and the speaking analysis. */
+async function wrapCallMic(raw: MediaStream): Promise<MediaStream> {
+  const rawTrack = raw.getAudioTracks()[0] ?? null;
+  if (rawTrack === null) {
+    return raw;
+  }
+  const publishedTrack = await enhanceMicTrack(rawTrack);
+  return publishedTrack === rawTrack ? raw : new MediaStream([publishedTrack]);
 }
 
 async function fetchIceServers(): Promise<RTCIceServer[]> {
@@ -2069,7 +2205,11 @@ export function callUser(username: string): void {
 async function beginOutgoingCall(username: string): Promise<void> {
   try {
     callMicStream = await captureCallMic();
+    callPublishedMic = await wrapCallMic(callMicStream);
   } catch (error) {
+    // The toast is short-lived — the full cause must survive in the log (live
+    // report: an unreadable error flashed and vanished).
+    log.error("call", `outgoing call failed to start: ${errorMessage(error)}`);
     notifications.showToast({ title: "Call", channelName: username, body: `Microphone unavailable — ${errorMessage(error)}` });
     return;
   }
@@ -2082,7 +2222,7 @@ async function beginOutgoingCall(username: string): Promise<void> {
 
 async function establishCallerSession(peer: string): Promise<void> {
   const session = activeSession;
-  const micStream = callMicStream;
+  const micStream = callPublishedMic ?? callMicStream;
   if (!session || micStream === null) {
     teardownCall();
     return;
@@ -2143,18 +2283,20 @@ async function acceptCallNow(): Promise<void> {
   notifications.updateCallCardStatus("Connecting…");
   try {
     callMicStream = await captureCallMic();
+    callPublishedMic = await wrapCallMic(callMicStream);
   } catch (error) {
+    log.error("call", `accept failed to start: ${errorMessage(error)}`);
     notifications.showToast({ title: "Call", channelName: peer, body: `Microphone unavailable — ${errorMessage(error)}` });
     teardownCall();
     return;
   }
-  attachOwnCallMic(callMicStream);
+  attachOwnCallMic(callPublishedMic ?? callMicStream);
   const iceServers = await fetchIceServers();
   callSession = new PeerCallSession({
     isCaller: false,
     peerUsername: peer,
     iceServers,
-    micStream: callMicStream,
+    micStream: callPublishedMic ?? callMicStream,
     sendSignal: (signal) => session.sendCallSignal(signal),
     callbacks: callCallbacks(peer),
   });
@@ -2260,6 +2402,9 @@ function teardownCall(): void {
   stopStream(callCameraStream);
   stopStream(callDisplayStream);
   callMicStream = null;
+  callPublishedMic = null;
+  disposeNoisePipeline();
+  noiseSourceTrack = null;
   callCameraStream = null;
   callDisplayStream = null;
   roomAudio.detachFeed(CALL_VOICE_FEED_ID);
@@ -2298,8 +2443,9 @@ export function toggleCallMic(): void {
   }
   // Pre-accept (ringing-out): the mic is ALREADY captured — gate the track
   // directly; the PeerCallSession inherits the gate (its micEnabled reads the
-  // track) and re-announces it to the peer once the offer flies.
-  const track = callMicStream?.getAudioTracks()[0] ?? null;
+  // track) and re-announces it to the peer once the offer flies. Gate the
+  // PUBLISHED track — with an engine live it is the one the sender will carry.
+  const track = callPublishedMic?.getAudioTracks()[0] ?? callMicStream?.getAudioTracks()[0] ?? null;
   if (track) {
     track.enabled = !track.enabled;
     appStore.patch({ callMicOn: track.enabled });
@@ -2514,10 +2660,16 @@ export function buildDiagModel(): DiagModel {
       + ` Δ=${reading?.deltaDb.toFixed(1)} ch=${reading?.channelCount} (target "${probeTarget}")`);
   }
 
+  const nsSettings = settingsStore.getSnapshot();
+  const nsLine = `${nsSettings.noiseSuppressionEngine}`
+    + (activeNoisePipeline !== null
+      ? " live" + (activeNoisePipeline.vad !== null ? ` vad ${activeNoisePipeline.vad.toFixed(2)}` : "")
+      : " (idle)");
   return {
     lines: [
       { key: "stomp", value: state.stompState },
       { key: "audio ctx", value: roomAudio.getState() },
+      { key: "ns", value: nsLine },
       { key: "voice", value: state.voiceState + (state.activeVoiceChannelId !== null ? ` #${state.activeVoiceChannelId}` : "") },
       { key: "call", value: state.callState !== "idle" ? `${state.callState} → ${state.callPeer ?? "?"} (${state.callHealthy ? "healthy" : "reconnecting"})` : "—" },
       { key: "sub conn", value: sfuSession?.getSubscriberConnectionState() ?? "—" },

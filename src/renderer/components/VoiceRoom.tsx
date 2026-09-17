@@ -41,6 +41,7 @@ import type { VoiceMemberMarks } from "../../domain/stores/VoiceControlStore";
 import type { FeedInfo } from "../../types";
 import { canActOn, memberNameColor, topPosition, type HierarchyView } from "../../domain/logic/roster-grouping";
 import { displayNameOf } from "../../domain/logic/display-name";
+import type { NoiseEngineKind } from "../../media/noise-suppression";
 import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
 import { SharePickerModal } from "./SharePickerModal";
 import { Avatar } from "./Avatar";
@@ -123,35 +124,45 @@ export function CallMarks({ micOn, deafenedOn }: { micOn: boolean; deafenedOn: b
  */
 /**
  * oak's NS-engine selector card (showNoiseEngineMenu port): one option row per
- * engine with the live one checkmarked; a pick applies locally (no signaling)
- * and closes. Our stack has two "engines": Chromium's built-in APM and Raw.
+ * engine with the live one checkmarked; a pick applies locally (a live voice
+ * rebuilds the detour in place) and closes. The built-in WebRTC suppressor is
+ * GONE (user decision): RNNoise replaces it, DeepFilterNet3 is the heavyweight
+ * alternative, Off is a deliberately raw mic.
  */
-export function NsEngineMenu({ apmEnabled, x, y, onPick, onClose }: {
-  apmEnabled: boolean;
+export const NS_ENGINE_LABELS: Record<NoiseEngineKind, string> = {
+  off: "Off",
+  rnnoise: "RNNoise",
+  deepfilternet3: "DeepFilterNet3",
+};
+
+/** The NS button's tooltip (oak): the click opens the engine selector card. */
+function nsTitle(engine: NoiseEngineKind): string {
+  return `Noise suppression: ${NS_ENGINE_LABELS[engine]}`;
+}
+
+export function NsEngineMenu({ engine, x, y, onPick, onClose }: {
+  engine: NoiseEngineKind;
   x: number;
   y: number;
-  onPick(next: boolean): void;
+  onPick(next: NoiseEngineKind): void;
   onClose(): void;
 }): React.JSX.Element {
   const cardRef = useRef<HTMLDivElement | null>(null);
   useOutsideDismiss(cardRef, onClose);
-  const options: { label: string; value: boolean }[] = [
-    { label: "WebRTC (built-in)", value: true },
-    { label: "Raw (off)", value: false },
-  ];
+  const options: NoiseEngineKind[] = ["rnnoise", "deepfilternet3", "off"];
   return (
     <div ref={cardRef} className="member-card engine-card" style={{ left: Math.max(8, x), top: Math.min(y, window.innerHeight - 120) }}>
       {options.map((option) => (
         <button
-          key={option.label}
+          key={option}
           className="engine-row"
           onClick={() => {
-            onPick(option.value);
+            onPick(option);
             onClose();
           }}
         >
-          <span>{option.label}</span>
-          {option.value === apmEnabled ? <span className="icon mdi-check" /> : null}
+          <span>{NS_ENGINE_LABELS[option]}</span>
+          {option === engine ? <span className="icon mdi-check" /> : null}
         </button>
       ))}
     </div>
@@ -164,7 +175,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
   const sharing = useStore(appStore, (state) => state.sharing);
   const cameraOn = useStore(appStore, (state) => state.cameraOn);
   const activeChannelId = useStore(appStore, (state) => state.activeVoiceChannelId);
-  const apmEnabled = useStore(settingsStore, (settings) => settings.apmEnabled);
+  const nsEngine = useStore(settingsStore, (settings) => settings.noiseSuppressionEngine);
   const participants = useStore(appStore, (state) => state.participants);
   const marksByMember = useStore(session.voiceControlStore, (snapshot) => snapshot.marks);
   // The rename model: the peer's rendered name resolves through the live roster.
@@ -248,8 +259,8 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
             <span className={"icon " + (callDeafenedOn ? "mdi-headphones-off" : "mdi-headphones")} />
           </button>
           <button
-            className={"voice-toggle icon-button ns" + (apmEnabled ? " on" : "")}
-            title={"Noise suppression: " + (apmEnabled ? "WebRTC (built-in)" : "Raw (off)")}
+            className={"voice-toggle icon-button ns" + (nsEngine !== "off" ? " on" : "")}
+            title={nsTitle(nsEngine)}
             onClick={(event) => setNsMenu({ x: event.currentTarget.getBoundingClientRect().left, y: event.currentTarget.getBoundingClientRect().bottom + 4 })}
           >
             <span className="icon mdi-triangle-wave" />
@@ -289,10 +300,10 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
         ) : null}
         {nsMenu !== null ? (
           <NsEngineMenu
-            apmEnabled={apmEnabled}
+            engine={nsEngine}
             x={nsMenu.x}
             y={nsMenu.y}
-            onPick={(next) => settingsStore.apply({ apmEnabled: next })}
+            onPick={(next) => settingsStore.apply({ noiseSuppressionEngine: next })}
             onClose={() => setNsMenu(null)}
           />
         ) : null}
@@ -357,10 +368,10 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
           <span className={"icon " + (selfDeafened ? "mdi-headphones-off" : "mdi-headphones")} />
         </button>
         {/* oak: the NS button opens the ENGINE SELECTOR card; the button itself
-            is green while an engine is active, grey on Raw (applyNoiseEngineState). */}
+            is green while an engine runs, grey on Off (applyNoiseEngineState). */}
         <button
-          className={"voice-toggle icon-button ns" + (apmEnabled ? " on" : "")}
-          title={"Noise suppression: " + (apmEnabled ? "WebRTC (built-in)" : "Raw (off)")}
+          className={"voice-toggle icon-button ns" + (nsEngine !== "off" ? " on" : "")}
+          title={nsTitle(nsEngine)}
           onClick={(event) => setNsMenu({ x: event.currentTarget.getBoundingClientRect().left, y: event.currentTarget.getBoundingClientRect().bottom + 4 })}
         >
           <span className="icon mdi-triangle-wave" />
@@ -398,10 +409,10 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
       ) : null}
       {nsMenu !== null ? (
         <NsEngineMenu
-          apmEnabled={apmEnabled}
+          engine={nsEngine}
           x={nsMenu.x}
           y={nsMenu.y}
-          onPick={(next) => settingsStore.apply({ apmEnabled: next })}
+          onPick={(next) => settingsStore.apply({ noiseSuppressionEngine: next })}
           onClose={() => setNsMenu(null)}
         />
       ) : null}

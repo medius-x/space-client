@@ -276,6 +276,23 @@ function AudioSection({ staged }: { staged: StagedSettings }): React.JSX.Element
     || staged.differs("speakerDeviceId");
   return (
     <div>
+      <h3>Noise suppression</h3>
+      <label className="settings-field"><span>Engine</span>
+        <select
+          value={staged.value("noiseSuppressionEngine")}
+          onChange={(event) => staged.set("noiseSuppressionEngine", event.target.value as ClientSettings["noiseSuppressionEngine"])}
+        >
+          <option value="rnnoise">RNNoise</option>
+          <option value="deepfilternet3">DeepFilterNet3</option>
+          <option value="off">Off</option>
+        </select>
+      </label>
+      <div className="settings-hint">
+        Runs locally on your microphone before it is sent. RNNoise is light and the default;
+        DeepFilterNet3 is heavier and stronger on irregular noise. Echo cancellation and auto
+        gain are always on. While voice or a call is live, switching engines rebuilds the
+        chain on the fly; the voice-bar NS button opens the same selector.
+      </div>
       <h3>Devices</h3>
       <DeviceSelect
         label="Microphone"

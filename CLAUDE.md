@@ -434,6 +434,66 @@ NicknameForm переехала из Appearance) и Account — SERVER-related: 
 « — {имя сервера}» к названию раздела (SERVER_SCOPED_SECTIONS); Audio/Video/Appearance/Notifications/
 Connections — CLIENT-related, без суффикса. Гейт 256/256.
 
+**Шумодавы RNNoise + DeepFilterNet3 (задача #476, 2026-09-17).** Юзер-решения: движок
+`off | rnnoise | deepfilternet3` (ДЕФОЛТ rnnoise, ВКЛЮЧЕН); WebRTC built-in NS ИСКЛЮЧЕН совсем
+(асимметрия «только со следующего захода» отвергнута юзером); AEC/AGC ВСЕГДА on без тумблера
+(эхо мучает других — как Discord); при живом движке констрейнт noiseSuppression=false (двойной NS
+портит речь). Констрейнты захвата: `echoCancellation:true, noiseSuppression:false,
+autoGainControl:true, sampleRate:48000` (sfu + captureCallMic). Пайплайн `media/
+noise-suppression.ts`: raw → MediaStreamSource → AudioWorklet(движок) → MediaStreamDestination →
+processed-трек (отдельный AudioContext 48k interactive; raw-трек остаётся у владельца). RNNoise =
+`@jitsi/rnnoise-wasm` SYNC-склейка (wasm base64-инлайн, создана для ворклетов): глюк импортируется
+`?raw` ДИНАМИЧЕСКИ (иначе ~1.9 МБ base64 едут в главном бандле — отдельный чанк грузится при старте
+движка), склеивается с нашим процессором в Blob → addModule; кадры ровно 480 сэмплов, ×32768 →
+`_rnnoise_process_frame` (VAD бесплатно) → ÷32768; bypass через port.postMessage (кадры идут
+напрямую). ГРАБЛЯ-ДИЗАЙН (поймана тестом): 480 % 128 = 96 — без ПРАЙМИНГ-кадра тишины выходное
+кольцо осушается на 32 сэмпла раз в цикл и вставляет нули В СЕРЕДИНУ потока (лёгкий треск);
+прайминг делает задержку константной 480 — семантика в чистом `domain/logic/rnnoise-framing.ts`
+(+тесты), ворклет несёт КОПИЮ (keep in sync). DeepFilterNet3 = пакет `deepfilternet3-noise-filter`
+(lazy import; его wasm+ONNX-модель по дефолту тянулись с cdn.mezon.ai — НЕСАМОДОСТАТОЧНО для
+self-hosted: оба файла СКАЧАНЫ и закоммичены в `src/renderer/public/df3/`, cdnUrl="df3" — локально,
+fetch 'self' уже в CSP). Интеграция: `SfuSession.micEnhancer` (хук: start() пропускает трек ДО
+addTrack — сырые кадры не утекут) + `wrapCallMic` для звонков (callMicStream RAW для teardown,
+callPublishedMic PROCESSED в PeerCallSession/attachOwnMic; pre-accept mute-гейт бьёт по published);
+`PeerCallSession.replaceMicTrack` (слот MLINE_VOICE, replaceTrack, мьют-состояние переносится).
+На лету (watchNoiseSettings в bootstrap): bypass кнопкой = мгновенно; смена движка = rebuild
+пайплайна от сохранённого raw-трека + replaceMicTrack + перепривязка attachOwnMic (БЕЗ перезахвата
+и ренего); гварды «raw жив и голос/звонок жив» после async-бута. UI (юзер-решение, oak-семантика):
+NS-кнопка голосовой панели/звонка — КЛИК открывает карточку NsEngineMenu (rnnoise/dfn3/off, чек у
+активного), зелёная при любом движке, СЕРАЯ в off; bypass-механики НЕТ (юзер отверг «клик = мгновенный
+bypass» — вернулись к oak); Settings→Audio — staged-селектор Engine + hint. Миграция настроек:
+apmEnabled true→rnnoise / false→off (load()). CSP: script-src/worker-src += blob: (AudioWorklet-модули
+из blob-URL — и наш, и DFN3-шные). Диагностика: diag-строка `ns` (engine/live/vad). Лог
+`[ns] engine … live/down`. Гейт 260/260 + typecheck + build. **Смоук-фиксы итерации 1 (2026-09-17,
+по space.log):** (1) `import(...)` УЖЕ возвращает промис — обёртка «loadGlue is not a function»
+убрана, глюк грузится прямым await import; (2) ГРАБЛЯ CSP-WASM: компиляция WebAssembly ВНУТРИ
+AudioWorklet-модуля подчинена script-src — CompileError «'unsafe-eval' is not an allowed source»;
+фикс = узкий токен `'wasm-unsafe-eval'` (только wasm, не JS-eval; нужен и RNNoise-склейке, и
+DFN3-компиляции); (3) ошибки старта звонка (captureCallMic/wrapCallMic) логируются [call] — тост
+мимолётный, причина обязана оставаться на диске; (4) диагностика тишины при РЕ-ДЖОЙНЕ ПАРТНЁРА
+(входящий тракт, НЕ шумодавы): добавлены логи «subscriber answer sent (N m-lines)» и «remote track
+on slot … (muted=…)» — ловушка на следующий прогон. Итерация 2: (5) ГРАБЛЯ ЛОГИКИ: после выбора
+off `activeNoisePipeline === null`, и watchNoiseSettings выходил по раннему return НАВСЕГДА (до
+перезахода) — «вернул RNNoise, а шум не пропал» (лог: между off и следующим live пусто); фикс =
+rebuild на ЛЮБУЮ смену движка пока голос/звонок жив (null-пайплайн не повод молчать). (6) rebuild
+получил try/catch вокруг createNoisePipeline: упавший движок = publish RAW (sender никогда не
+остаётся с мёртвым треком распущенного пайплайна) + [ns] error-лог. (7) ИЗВЕСТНАЯ ГРАБЛЯ ПАКЕТА
+DFN3: его ворклет ГЛОТАЕТ ошибку инициализации (console.error в ворклет-консоль → тихий passthrough,
+«live» в логе при нефункционирующем движке) — при разборе смотреть красную строку DevTools
+«Failed to initialize DeepFilter in AudioWorklet». Итерация 3 (смоук пройден, 2026-09-17): (8)
+ГРАБЛЯ PER-ORIGIN deviceId: Chromium выдаёт media-device id СВОИ для каждого origin — id микрофона,
+сохранённый в dev-окне (http://localhost), НЕ СУЩЕСТВУЕТ в прод-окне (file://) → `deviceId:{exact}` →
+мгновенный OverconstrainedError С ПУСТЫМ message (DOMException — в логах печатать `name`, message
+часто пуст); фикс = fallback на System default при OverconstrainedError в ОБОИХ захватах (sfu +
+captureCallMic) с warn-логом «saved microphone unavailable in this window»; заодно УБРАН констрейнт
+sampleRate:48000 (нестандартный, риск Overconstrained; AudioContext пайплайна сам ресемплит вход).
+(9) joinVoice-catch логирует [voice] room join failed (detail статуса перезаписывается leaving-состоянием).
+(10) DevTools: флаг `--space-devtools` в argv + скрипты `start:tools`/`start2:tools` (npm-скрипты не
+умеют env портативно на Windows). (11) Варнинг ворклета DFN3 «deprecated parameters for initSync()» —
+БЕЗВРЕДЕН (wasm-bindgen стиль вызова), означает УСПЕШНУЮ инициализацию. Смоук-вердикт юзера: оба
+движка работают, переключение off↔движки на живом голосе режет/возвращает шум клавиатуры; принципиальной
+разницы движков на слух не выявлено — решат реальные шумы.
+
 M5 закрыт и закоммичен (`b14b2a6`). M6: **друзья** —
 `GET /api/users/me/relationships` (типы `FRIEND|BLOCKED|PENDING_INCOMING|
 PENDING_OUTGOING` — сервер сам сворачивает направление в caller-view); запрос
