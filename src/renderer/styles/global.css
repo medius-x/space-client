@@ -1565,6 +1565,31 @@ button.wide-add { width: 100%; }
   text-overflow: ellipsis;
 }
 .picker-list { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
+/* Enumeration (desktop sources on Windows takes a beat) shows a spinner, not a
+   premature "No screens found". Reuses the upload spinner's keyframes. */
+.picker-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--sp-text-muted);
+  font-size: 13px;
+  padding: 28px 0;
+}
+.picker-loading .icon { animation: sp-spin 900ms linear infinite; font-size: 18px; }
+.picker-camera-preview {
+  background: #000;
+  border-radius: 4px;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 10px;
+}
+.picker-camera-preview video { width: 100%; height: 100%; object-fit: contain; }
+.picker-camera-preview .picker-loading { padding: 0; }
+.picker-preview-note { color: var(--sp-text-muted); font-size: 12px; }
 .picker-row {
   padding: 10px 12px;
   border: 2px solid var(--sp-control);
