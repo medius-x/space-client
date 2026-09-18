@@ -5,7 +5,7 @@ import { ackActiveChannel, appStore, forwardCrossInstance, forwardRequestUpload,
 import { connectionDirectory, settingsStore } from "../runtime";
 import { RecordTokenStorage } from "../../domain/session/connection-record";
 import type { ConnectionSession } from "../../domain/session/connection-session";
-import { HISTORY_PAGE } from "../../domain/session/connection-session";
+import { HISTORY_PAGE, NEWER_PAGE } from "../../domain/session/connection-session";
 import { RestClient } from "../../core/rest";
 import { log } from "../../logging";
 import { computeGroupStarts, continuesGroup, formatHeaderStamp, formatTimeOfDay, toEpochMs, type GroupableMessage } from "../../domain/logic/message-grouping";
@@ -185,9 +185,14 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
     setStaged([]);
     setCapNote(null);
     session.playback.stop(); // one sound at a time — leaving the channel silences it
-    session.loadHistory(activeChatId).catch((error: unknown) => {
-      setHistoryError(error instanceof Error ? error.message : String(error));
-    });
+    // A search-result jump opened this channel ON a message: runtime already issued
+    // loadAround — a loadHistory here would be a no-op (isLoaded) anyway, but the skip
+    // keeps the two paths from ever interleaving.
+    if (appStore.getSnapshot().activeAround?.channelId !== activeChatId) {
+      session.loadHistory(activeChatId).catch((error: unknown) => {
+        setHistoryError(error instanceof Error ? error.message : String(error));
+      });
+    }
     if (dm === null) {
       session.ensureChannelPermissions(activeChatId).catch((error: unknown) => {
         log.warn("chat", `permission check failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -233,6 +238,12 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
   // DM rows render through a Channel-shaped adapter — MessageList and the composer
   // stay channel-agnostic (message/history/ack APIs are shared with DMs on the wire).
   const viewChannel = dm !== null ? dmViewChannel(dm, ownUsername) : channel;
+  const activeAround = useStore(appStore, (state) => state.activeAround);
+  // The around target only applies to THIS chat (a search hit in another channel
+  // first switches the channel; the field then survives into the new mount).
+  const aroundTarget = activeAround !== null && viewChannel !== null && activeAround.channelId === viewChannel.id
+    ? activeAround.messageId
+    : null;
   const permissions = dm !== null ? DM_CHANNEL_PERMISSIONS : channelPermissions;
   const chatTitlePrefix = dm !== null && dm.type === "DM" ? "@" : "#";
 
@@ -313,6 +324,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
         session={session}
         channel={viewChannel}
         messages={messages}
+        aroundTarget={aroundTarget}
         actions={actions}
         authorColor={authorColor}
         editing={editing}
@@ -495,6 +507,9 @@ interface MessageListProps {
   session: ConnectionSession;
   channel: Channel;
   messages: readonly Message[];
+  /** A just-clicked search result in THIS channel: center the around window on it
+   *  (flash + scroll), then the field is consumed. Null while no jump is pending. */
+  aroundTarget: number | null;
   actions: ChatActions;
   authorColor(username: string): string | null;
   editing: Message | null;
@@ -505,13 +520,18 @@ interface MessageListProps {
 }
 
 function MessageList(props: MessageListProps): React.JSX.Element {
-  const { session, channel, messages, actions, editing } = props;
+  const { session, channel, messages, aroundTarget, actions, editing } = props;
   const listRef = useRef<VirtualListHandle | null>(null);
   const nearBottomRef = useRef(true);
   const loadingOlderRef = useRef(false);
   const hasOlderRef = useRef(true);
   const pendingJumpRef = useRef<number | null>(null);
   const firstLayoutRef = useRef(true);
+  // The around window's downward end: true while an id-unknown gap sits between the
+  // window's last message and the live tail (the search jump opened mid-history).
+  const belowEndRef = useRef(false);
+  const loadingNewerRef = useRef(false);
+  const [jumpToPresent, setJumpToPresent] = useState(false);
   const [dividerReadId, setDividerReadId] = useState<number | null>(null);
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [beginReached, setBeginReached] = useState(false);
@@ -566,7 +586,32 @@ function MessageList(props: MessageListProps): React.JSX.Element {
     firstLayoutRef.current = true;
     hasOlderRef.current = true;
     setBeginReached(false);
+    belowEndRef.current = false;
+    setJumpToPresent(false);
   }, [channel.id, session]);
+
+  // The search jump: once the around window ARRIVES (the target id is in the list),
+  // center on it, flash it, and consume the appStore field. Declared BEFORE the
+  // first-layout effect so it claims the layout (firstLayoutRef=false) — otherwise
+  // the divider/bottom open would fight the centering scroll. No cleanup: the
+  // highlight TTL timer is idempotent, and the consumption patch re-triggers this
+  // effect (aroundTarget → null) where a cleanup would kill the flash mid-flight.
+  useEffect(() => {
+    if (aroundTarget === null || !messages.some((message) => message.id === aroundTarget)) {
+      return;
+    }
+    appStore.patch({ activeAround: null }); // consumed — a later channel re-entry must not re-jump
+    firstLayoutRef.current = false; // the window IS the layout — no divider/bottom open
+    const around = session.messageStore.isAroundWithoutTail(channel.id);
+    belowEndRef.current = around;
+    setJumpToPresent(around);
+    for (let attempt = 0; attempt < 4; attempt++) {
+      window.setTimeout(() => listRef.current?.scrollToKey(String(aroundTarget), "center"), 30 * attempt);
+    }
+    setHighlightId(aroundTarget);
+    window.setTimeout(() => setHighlightId(null), HIGHLIGHT_TTL_MS);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aroundTarget, messages]);
 
   // oak's BeginOfChannel latch: a short initial page IS the whole history — the
   // marker rides above everything without a guaranteed-empty pagination probe.
@@ -618,7 +663,10 @@ function MessageList(props: MessageListProps): React.JSX.Element {
     const ownBatch = previousTailRef.current !== null
       && messages.filter((message) => message.id > previousTailRef.current!)
         .every((message) => message.authorUsername === session.username());
-    if (grew && previousTailRef.current !== null && !watching && !ownBatch) {
+    // While an around window is paginating DOWN, the "new" rows below are OLD
+    // messages fetched on demand — not unread arrivals. No divider raise, no ack;
+    // scrollToBottom stays (it chains the next downward page while pinned).
+    if (grew && previousTailRef.current !== null && !watching && !ownBatch && !belowEndRef.current) {
       setDividerReadId(previousTailRef.current);
     }
     previousTailRef.current = messages.length > 0 ? messages[messages.length - 1]!.id : null;
@@ -626,7 +674,7 @@ function MessageList(props: MessageListProps): React.JSX.Element {
     if (grew && pinned) {
       listRef.current?.scrollToBottom();
     }
-    if (grew && (watching || ownBatch)) {
+    if (grew && (watching || ownBatch) && !belowEndRef.current) {
       ackActiveChannel();
     }
   }, [messages]);
@@ -697,6 +745,49 @@ function MessageList(props: MessageListProps): React.JSX.Element {
     })();
   };
 
+  /** Downward pagination away from an around window (towards the live tail). A short
+   *  RAW page = the gap is closed: the list is contiguous again, so the around flag
+   *  clears (live appends + the reconnect heal resume) and the ack becomes real. */
+  const loadNewer = () => {
+    if (loadingNewerRef.current || !belowEndRef.current || messages.length === 0) {
+      return;
+    }
+    loadingNewerRef.current = true;
+    void (async () => {
+      try {
+        const lastId = messages[messages.length - 1]!.id;
+        const raw = await session.loadNewer(channel.id, lastId);
+        if (raw < NEWER_PAGE) {
+          belowEndRef.current = false;
+          setJumpToPresent(false);
+          session.messageStore.markTailReached(channel.id);
+          if (nearBottomRef.current && document.hasFocus()) {
+            ackActiveChannel(); // contiguous tail now — the ack is finally true
+          }
+        }
+      } catch {
+        // next near-bottom pass retries
+      } finally {
+        loadingNewerRef.current = false;
+      }
+    })();
+  };
+
+  /** "Jump to present": discard the window, refetch the newest page as the plain
+   *  contiguous tail and land on the bottom. */
+  const jumpToPresentNow = () => {
+    void session.reloadTail(channel.id)
+      .then(() => {
+        belowEndRef.current = false;
+        setJumpToPresent(false);
+        hasOlderRef.current = true;
+        setBeginReached(false);
+        firstLayoutRef.current = false; // the explicit bottom scroll below is the layout
+        window.setTimeout(() => listRef.current?.scrollToBottom(), 30);
+      })
+      .catch(() => undefined);
+  };
+
   const wiredActions: ChatActions = {
     ...actions,
     jumpTo: (messageId: number) => {
@@ -761,7 +852,8 @@ function MessageList(props: MessageListProps): React.JSX.Element {
     : messages.findIndex((message) => message.id > dividerReadId && message.authorUsername !== session.username());
 
   return (
-    <VirtualList
+    <>
+      <VirtualList
       className="message-list virtual-list"
       ref={listRef}
       items={messages}
@@ -772,6 +864,9 @@ function MessageList(props: MessageListProps): React.JSX.Element {
         nearBottomRef.current = nearBottom;
         if (nearBottom) {
           scheduleDividerDismiss(); // back at the bottom → restart the countdown
+          if (belowEndRef.current) {
+            loadNewer(); // pinned at the window's lower edge → page towards the tail
+          }
         } else {
           cancelDividerDismiss(); // scrolled away — the divider stays put
         }
@@ -813,7 +908,11 @@ function MessageList(props: MessageListProps): React.JSX.Element {
           />
         </>
       )}
-    />
+      />
+      {jumpToPresent && messages.length > 0 ? (
+        <button className="jump-to-present" onClick={jumpToPresentNow}>Jump To Present ↓</button>
+      ) : null}
+    </>
   );
 }
 

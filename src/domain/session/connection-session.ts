@@ -79,6 +79,10 @@ export interface ConnectionSessionOptions {
 const INITIAL_HISTORY_LIMIT = 100;
 /** Scroll-up / back-fill page size (oak's HISTORY_PAGE). */
 export const HISTORY_PAGE = 50;
+/** The around window's size (the search-result jump: a centered page). */
+export const AROUND_LIMIT = 50;
+/** Downward page size away from an around window (towards the live tail). */
+export const NEWER_PAGE = 50;
 /** Newest-page size a reconnect gap-heal refetches per loaded channel. A gap
  *  wider than this leaves holes in the middle — that is no longer a blip. */
 const RESYNC_TAIL_LIMIT = 100;
@@ -403,6 +407,47 @@ export class ConnectionSession {
     }
     this.messageStore.prependPage(channelId, page);
     return page.length;
+  }
+
+  /**
+   * Open a channel ON a message: the around window REPLACES the channel's list
+   * (jumping away from the tail discards it) and marks it around-without-tail.
+   * A 404 (the message was deleted) propagates to the caller — it falls back to
+   * a plain tail open.
+   */
+  async loadAround(channelId: number, messageId: number): Promise<void> {
+    const window = await this.rest.getMessages(channelId, undefined, AROUND_LIMIT, { aroundId: messageId });
+    if (this.disposed) {
+      return;
+    }
+    this.messageStore.applySnapshotAround(channelId, window);
+  }
+
+  /**
+   * Downward pagination away from an around window. Mirror of {@link loadOlder}:
+   * returns the RAW page length — the caller latches "tail reached" on a short
+   * page and clears the around flag.
+   */
+  async loadNewer(channelId: number, afterId: number): Promise<number> {
+    const page = await this.rest.getMessages(channelId, undefined, NEWER_PAGE, { afterId });
+    if (this.disposed) {
+      return 0;
+    }
+    this.messageStore.appendPage(channelId, page);
+    return page.length;
+  }
+
+  /**
+   * "Jump to present": refetch the newest page as a PLAIN snapshot — clears any
+   * around window (the list becomes the contiguous tail again) and re-enables
+   * live appends.
+   */
+  async reloadTail(channelId: number): Promise<void> {
+    const messages = await this.rest.getMessages(channelId, undefined, INITIAL_HISTORY_LIMIT);
+    if (this.disposed) {
+      return;
+    }
+    this.messageStore.applySnapshot(channelId, messages);
   }
 
   /** The read-state ack: local counters now, the REST call fire-and-forget. */

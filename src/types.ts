@@ -98,6 +98,13 @@ export interface Message {
   forward: ForwardInfo | null;
 }
 
+/** GET /api/search/messages — one search page: the cursor-independent total hit count plus
+ *  the newest-first results (page with beforeId = the last result's id). */
+export interface SearchMessagesResult {
+  total: number;
+  results: Message[];
+}
+
 // ---------------------------------------------------------------------------
 // Server profile (GET /api/server)
 // ---------------------------------------------------------------------------

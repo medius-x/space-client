@@ -724,6 +724,80 @@ reset-контролы секции справа — юзер-решение); (
 OS-хордов теперь на всю сессию записи ([recording]-булево — прыжок пилюля→пилюля не
 дёргает suspend/resume). Гейт 291/291 + typecheck + build. Смоук pending.
 
+**Поиск по сообщениям + окно ?around= (#481, 2026-09-18, ДЕПЛОЙ ПАРНЫЙ с oak-server).**
+Юзер-решения: матчинг ПОДСТРОКОЙ как Discord (ILIKE + pg_trgm-GIN на сервере; tsvector
+отвергнут — не ищет подстроки и не живёт в H2-тестах); скоуп = текущий канал + переключатель
+«Everywhere» (весь сервер; DM в серверо-широкий НЕ входят, в открытом DM скоуп только этот
+DM); фильтры v1 = текст + from:(автор); прыжок к результату = ОКНО ?around= сразу (закрывает
+старую роадмап-задачу «прыжок по истории»; бэкфилл-кап 1000 остаётся для цитат). **Сервер**
+(детали — oak-server/CLAUDE.md): `GET /api/search/messages?q=&channelId=&author=&beforeId=&limit=`
+(`SearchMessagesResponse{total, results}` — total без курсора; newest-first; limit 25/50);
+история += параметры `aroundId` (окно limit центр. на сообщении; 404 если чужой/удалённый)
+и `afterId` (страница младше ASC); ReadStateService.ack стал МОНОТОННЫМ; индексы pg_trgm —
+РУЧНОЙ МИГРАЦИЕЙ (docker exec psql). **Клиент:** REST `getMessages(..., {aroundId?, afterId?})`
++ `searchMessages` (тип SearchMessagesResult в types.ts); **MessageStore around-режим**
+(`aroundWithoutTail`-сет): `applySnapshotAround` (ЗАМЕНЯЕТ список канала), `appendPage`
+(зеркало prependPage, сорт-склейка), `markTailReached`; ГЕЙТЫ: `applyLive` при around дропает
+id>last (дыра между окном и хвостом — вставка соврала бы о смежности; своё отправленное из
+окна не появляется, Discord-фейсфул), `mergeTail` → [] (recon-heal не вшивает дыру; счётчики
+восстанавливает read-states-снапшот), applySnapshot/dropChannel гасят; «дыра» = forbid не
+автодогрузка. Сессия: `loadAround/loadNewer/raw<NEWER_PAGE → markTailReached+ack`/
+`reloadTail` («Jump to present»); константы AROUND_LIMIT=NEWER_PAGE=50. **runtime**:
+AppState += searchOpen/searchScope/activeAround (сброс в teardown); `toggleSearch`,
+`setSearchScope`, `setActiveChannel(channelId, aroundMessageId?)` (around-путь: ОДИН патч с
+activeAround, БЕЗ loadHistory+ack — ack середины обнулил бы unread; 404-фолбэк = loadHistory
++ тост «Message not found»; обычный путь при around-канале = reloadTail вместо no-op
+loadHistory), `openChannelAtMessage` (канал открыт → re-arm патчем; чужой канал →
+setActiveChannel(around); DM → openDm + патч); **ackActiveChannel guard** по
+isAroundWithoutTail (локальный ReadStateStore.ack НЕ монотонен — обнулил бы бейдж; закрывает
+ВСЕ пути: focus-regain/mark-read/switch-away/after-load). **ChatPane**: кнопка-лупа
+mdi-magnify в chat-header справа (margin-left:auto; в dmMode тоже), эффект смены канала
+skip'ает loadHistory при activeAround для этого канала; **MessageList**: around-эффект
+(потребляет activeAround при прибытии окна: scrollToKey center ×4 + highlight + firstLayout
+claimed; без cleanup — consumption-патч перезапустил бы эффект и убил бы флеш), belowEndRef/
+loadingNewerRef/jumpToPresent-state; onBottomProximity при belowEnd → loadNewer (цепочка
+автозагрузок при pinned); рост-эффект при belowEnd НЕ двигает NEW-divider и НЕ аккает;
+«Jump To Present»-пилюля (absolute над композером, blurple) → reloadTail + scrollToBottom.
+**SearchPane** (правая колонка 340px, СВАП ростера в MainScreen при searchOpen; скрыта в
+Friends/room view): query-инпут (debounce 300мс, минимум 2 символа при только-q; Enter =
+немедленно; Escape = закрыть), скоуп-селектор [#/имя | Everywhere] (dmMode → только «This
+DM»), from:-инпут с попапом автодополнения ПО НИКАМ (ростер, ↑/↓/Enter/Tab/Esc, на wire
+уходит username), «N results»/«No results», группы по дням (Today/Yesterday/Mon d[, yyyy]),
+карточки: #канал (только в Everywhere) + аватар + ник из живого ростера + время
+formatHeaderStamp + превью flattenForSearch(120) с <mark>-подсветкой highlightSegments
+(indexOf-цикл, БЕЗ regex — LIKE-метасимволы бесплатны; кириллица кейс-insensitive) + имена
+аттачей; Load more (beforeId = последний id); клик = openChannelAtMessage, панель НЕ
+закрывается; seq-guard от stale-ответов. **Хоткей** `toggle-search` (local, дефолт Ctrl+F —
+дискордов хорд; модификаторный → preventDefault гасит browser-find, из композера работает).
+Чистая логика `domain/logic/search-results.ts` (highlightSegments/flattenForSearch/
+groupSearchResultsByDay/formatSearchDayStamp) + тесты; MessageStore around-контракт,
+rest-search пути, keybinds-каталог. Гейты: сервер 284/284 (+8), клиент 307/307 + typecheck
++ build (icons.css перегенерен — mdi-magnify). **Смоук pending; ДЕПЛОЙ ПАРНЫЙ: индексы
+psql → сервер → клиент.**
+**UI-полиш (юзер-решения 2026-09-18, живой смоук поиска пройден):** (1) кнопка-лупа
+УДАЛЕНА из chat-header — раздувала min-height:37 шапку до 46px и divider уезжал ниже
+сайдбарного (та же room-view-грабля); (2) правая колонка стала ПОСТОЯННЫМ элементом
+`RightPane` (в SearchPane.tsx): шапка height:37 + border-bottom (divider ПРОДОЛЖАЕТ линию
+шапки чата) с полем поиска + лупой-кнопкой ВНУТРИ поля справа; body свапает ростер ↔
+результаты; (3) ростер 190→222px (ширина на обёртке .right-pane; .members-pane потерял
+width, стал flex-телом); (4) фильтры панели (скоуп + from:) — СТОЛБИКОМ (колонка узкая);
+(5) query живёт в RightPane и ПЕРЕЖИВАЕТ закрытие панели; ввод ≥2 символов сам открывает
+панель; лупа = toggle, Escape в поле = закрыть; Ctrl+F фокусирует поле; (6) в dmMode колонка
+появляется ТОЛЬКО при открытом поиске (DM-чат сохраняет полную ширину; поиск по DM живёт
+через Ctrl+F). Гейт 307/307 + typecheck + build. **Полиш-итерация 2 (юзер-решения):** (1)
+from:-поле ВО ВСЮ ШИРИНУ — внешний label убран, подпись стала placeholder'ем «from:»
+(попап автодополнения от left:0); (2) стрелка скоуп-селекта — appearance:none + СВОЙ глиф
+mdi-chevron-down абсолютом right:7 (нативная стрелка Chromium прижата к краю ЛЮБОЙ
+padding-right — не сдвигается; своя встала на вертикаль лупы поиска; icons.css реген,
+44 глифа); (3) Escape в поле поиска теперь и ЗАКРЫВАЕТ панель, и ОЧИЩАЕТ строку (раньше
+текст переживал закрытие). Гейт 307/307 + typecheck + build. Смоук pending.
+**Полиш-итерация 3 (юзер-решения):** (1) ЛУПА больше НЕ закрывает панель (повторный клик
+по ней не должен возвращать ростер) — только открывает/ищет; рядом СЛЕВА от лупы, когда
+поле НЕПУСТОЕ, появляется кнопка-крестик (mdi-close, .search-clear) = аналог Esc: чистит
+поле + возвращает ростер; (2) автокомплит from: показывает ВЕСЬ ростер СРАЗУ ПО ФОКУСУ
+мышки (пустой префикс матчит всех — как @-попап композера; кап 10). Гейт 307/307 +
+typecheck + build. Смоук pending.
+
 **Push-to-talk — СКИПНУТО (юзер-решение 2026-09-18; контекст на случай возвращения).**
 PTT = «удержание = микрофон открыт, отпустил — закрыт» требует ГЛОБАЛЬНЫХ keydown+keyup.
 Electron `globalShortcut` даёт ТОЛЬКО нажатие (RegisterHotKey-семантика, события отпускания

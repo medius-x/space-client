@@ -1,7 +1,7 @@
 import { Emitter } from "../domain/lib/store";
 import { log } from "../logging";
 import { MemoryTokenStorage } from "../core/auth";
-import { RestClient } from "../core/rest";
+import { ApiError, RestClient } from "../core/rest";
 import { JanusClient } from "../core/janus";
 import { SfuSession, RoomVanishedError, SubscriberTransportError, PublisherTransportError, type MediaSource } from "../core/sfu";
 import { PeerCallSession, type PeerCallOptions, type PeerTrackKind } from "../core/peer-call";
@@ -127,6 +127,14 @@ export interface AppState {
   /** A SERVER channel on a NON-active instance (a background toast click) —
    *  consumed by openSession after start, same contract as pendingOpenDm. */
   pendingOpenChannel: { recordId: string; channelId: number } | null;
+  /** The search panel (right column, swaps the roster) — Ctrl+F / the header loupe. */
+  searchOpen: boolean;
+  /** The panel's scope: the open channel (or DM) vs the whole server. */
+  searchScope: "channel" | "server";
+  /** A just-clicked search result: open this channel ON that message (the around
+   *  window). Consumed by MessageList's first layout, which scrolls to it, flashes
+   *  the highlight and nulls the field. */
+  activeAround: { channelId: number; messageId: number } | null;
 }
 
 class AppStore extends Emitter {
@@ -174,6 +182,9 @@ class AppStore extends Emitter {
     userSettingsOpen: false,
     pendingOpenDm: null,
     pendingOpenChannel: null,
+    searchOpen: false,
+    searchScope: "channel",
+    activeAround: null,
   };
 
   getSnapshot = (): AppState => this.state;
@@ -948,6 +959,8 @@ export async function teardownSession(): Promise<void> {
     viewingFeedId: null,
     viewingUsername: null,
     serverSettingsOpen: false,
+    searchOpen: false,
+    activeAround: null,
     // pendingOpenDm/pendingOpenChannel deliberately survive too — a switch that lands on the login
     // modal should still open the clicked DM once the user re-logs in.
     // userSettingsOpen is deliberately NOT reset here: the username rename
@@ -960,19 +973,102 @@ export async function teardownSession(): Promise<void> {
 // Active text channel (lastChannel persistence)
 // ---------------------------------------------------------------------------
 
-export function setActiveChannel(channelId: number): void {
+export function setActiveChannel(channelId: number, aroundMessageId?: number): void {
   const session = activeSession;
   if (!session) {
     return;
   }
   ackActiveChannel(); // oak acks the channel being LEFT before the switch lands
-  appStore.patch({ activeChannelId: channelId, dmMode: false, activeDmId: null, roomViewOpen: false });
-  void session.loadHistory(channelId)
-    .then(() => ackActiveChannel())
-    .catch((error: unknown) => {
-      log.warn("chat", `history load failed: ${errorMessage(error)}`);
+  if (aroundMessageId !== undefined) {
+    // The search-result jump: open the channel ON the message (the around window).
+    // ONE patch — activeAround rides along so ChatPane's open effect skips loadHistory
+    // and MessageList's first layout centers on the target instead of the bottom.
+    // An around open NEVER acks: the window's last id is mid-history, and acking it
+    // would zero the channel's real unread.
+    appStore.patch({
+      activeChannelId: channelId,
+      dmMode: false,
+      activeDmId: null,
+      roomViewOpen: false,
+      activeAround: { channelId, messageId: aroundMessageId },
     });
+    void session.loadAround(channelId, aroundMessageId)
+      .catch((error: unknown) => {
+        // 404 = the message was deleted since the search snapshot — fall back to the tail.
+        log.warn("chat", `around open failed, falling back to the tail: ${errorMessage(error)}`);
+        appStore.patch({ activeAround: null });
+        if (error instanceof ApiError && error.status === 404) {
+          notifications.showToast({ title: "space", channelName: "", body: "Message not found — showing the latest messages" });
+        }
+        return session.loadHistory(channelId);
+      })
+      .catch((error: unknown) => {
+        log.warn("chat", `history load failed: ${errorMessage(error)}`);
+      });
+    void connectionDirectory.update(session.recordId, { lastChannelId: channelId });
+    return;
+  }
+  appStore.patch({ activeChannelId: channelId, dmMode: false, activeDmId: null, roomViewOpen: false, activeAround: null });
+  // A channel left in the AROUND state must not stay stuck on its window: loadHistory is
+  // a no-op once isLoaded, so refetch the tail explicitly (applySnapshot clears the flag).
+  if (session.messageStore.isAroundWithoutTail(channelId)) {
+    void session.reloadTail(channelId)
+      .then(() => ackActiveChannel())
+      .catch((error: unknown) => {
+        log.warn("chat", `tail reload failed: ${errorMessage(error)}`);
+      });
+  } else {
+    void session.loadHistory(channelId)
+      .then(() => ackActiveChannel())
+      .catch((error: unknown) => {
+        log.warn("chat", `history load failed: ${errorMessage(error)}`);
+      });
+  }
   void connectionDirectory.update(session.recordId, { lastChannelId: channelId });
+}
+
+// ---------------------------------------------------------------------------
+// Message search (#481)
+// ---------------------------------------------------------------------------
+
+/** Ctrl+F / the header loupe: show or hide the search panel (the right column). */
+export function toggleSearch(): void {
+  appStore.patch({ searchOpen: !appStore.getSnapshot().searchOpen });
+}
+
+export function setSearchScope(scope: "channel" | "server"): void {
+  appStore.patch({ searchScope: scope });
+}
+
+/** A search-result click: open the target channel ON the message. Works while the
+ *  channel is already open (just re-arms activeAround — MessageList reacts mounted)
+ *  and for DMs (openDm + the around patch on top). */
+export function openChannelAtMessage(channelId: number, messageId: number): void {
+  const session = activeSession;
+  if (!session) {
+    return;
+  }
+  if (session.channelStore.get(channelId) !== null) {
+    const state = appStore.getSnapshot();
+    if (!state.dmMode && state.activeChannelId === channelId) {
+      // Already looking at it — re-arm the window (an around jump within the channel).
+      appStore.patch({ activeAround: { channelId, messageId } });
+      void session.loadAround(channelId, messageId).catch((error: unknown) => {
+        log.warn("chat", `around open failed: ${errorMessage(error)}`);
+        appStore.patch({ activeAround: null });
+      });
+      return;
+    }
+    setActiveChannel(channelId, messageId);
+    return;
+  }
+  // Not a server channel → a DM of this session: open it, then arm the window on top.
+  openDm(channelId);
+  appStore.patch({ activeAround: { channelId, messageId } });
+  void session.loadAround(channelId, messageId).catch((error: unknown) => {
+    log.warn("chat", `around open failed: ${errorMessage(error)}`);
+    appStore.patch({ activeAround: null });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1241,6 +1337,12 @@ export function ackActiveChannel(): void {
   const appState = appStore.getSnapshot();
   const channelId = appState.dmMode ? appState.activeDmId : appState.activeChannelId;
   if (!session || channelId === null) {
+    return;
+  }
+  // An around window ends mid-history: its last loaded id is NOT the channel's newest,
+  // and acking it would zero the real unread (the local store's ack is not monotonic).
+  // The window acks once its gap is paginated through (or "Jump to present" runs).
+  if (session.messageStore.isAroundWithoutTail(channelId)) {
     return;
   }
   const messages = session.messageStore.listFor(channelId);
@@ -2061,6 +2163,9 @@ export function dispatchHotkeyAction(actionId: string): void {
       return;
     case "prev-channel":
       stepChannel(-1);
+      return;
+    case "toggle-search":
+      toggleSearch();
       return;
     case "mark-channel-read":
       ackActiveChannel();

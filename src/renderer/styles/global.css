@@ -2341,6 +2341,219 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 }
 .mention-row:hover, .mention-row.chosen { background: var(--sp-selected); color: var(--sp-text); }
 
+/* ===== Message search (#481): the right column (search box header + roster/results) ===== */
+
+/* The roster's permanent shell: the header strip with the search box (its bottom
+   rule continues the chat header's — both are the SAME 37px line), then the body
+   that swaps between the presence roster and the search results panel. Widened
+   from the old 190px roster to fit the search filters (user decision 2026-09-18). */
+.right-pane {
+  width: 222px;
+  flex-shrink: 0;
+  background: var(--sp-surface);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.right-pane-header {
+  /* FIXED height (the room-view-header lesson): nothing inside may stretch the
+     strip and drop the divider below the chat header's line. */
+  height: 37px;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--sp-control);
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+}
+.right-pane-search {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  background: var(--sp-darkest);
+  border: 1px solid var(--sp-control);
+  border-radius: 4px;
+  padding: 0 2px 0 8px;
+}
+.right-pane-search input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--sp-text);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 0;
+}
+.right-pane-search input::placeholder { color: var(--sp-text-dim); }
+.search-loupe,
+.search-clear {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--sp-text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.search-loupe:hover,
+.search-clear:hover { background: var(--sp-hover); color: var(--sp-text); }
+.search-loupe .icon,
+.search-clear .icon { font-size: 15px; }
+.right-pane-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+.search-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* The filters stack VERTICALLY — the column is roster-width now, one row would
+   not fit both controls (user decision 2026-09-18). */
+.search-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 8px 0;
+}
+.search-scope-wrap { position: relative; display: flex; }
+.search-scope {
+  width: 100%;
+  appearance: none; /* the native arrow hugs the edge regardless of padding (Chromium) */
+  background: var(--sp-darkest);
+  border: 1px solid var(--sp-control);
+  border-radius: 4px;
+  color: var(--sp-text);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 5px 24px 5px 8px;
+  outline: none;
+}
+/* The custom arrow sits on the search box's loupe vertical (right-edge inset
+    matches the loupe's, so the two controls read as one column). */
+.search-scope-arrow {
+  position: absolute;
+  right: 7px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 15px;
+  color: var(--sp-text-muted);
+  pointer-events: none; /* clicks fall through into the select */
+}
+.search-author { position: relative; display: flex; align-items: center; }
+.search-author input {
+  min-width: 0;
+  flex: 1;
+  background: var(--sp-darkest);
+  border: 1px solid var(--sp-control);
+  border-radius: 4px;
+  color: var(--sp-text);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 5px 20px 5px 8px;
+  outline: none;
+}
+.search-author-clear {
+  position: absolute;
+  right: 4px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--sp-text-dim);
+  font-size: 13px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.search-author-clear:hover { color: var(--sp-text); background: var(--sp-hover); }
+.search-author-suggest { left: 0; right: 0; top: calc(100% + 4px); z-index: 30; }
+.search-error { color: var(--sp-red); font-size: 12px; padding: 8px 12px 0; }
+.search-total { color: var(--sp-text-dim); font-size: 11px; font-weight: 700; padding: 10px 12px 4px; }
+.search-results { flex: 1; overflow-y: auto; padding: 0 8px 12px; }
+.search-day-header {
+  color: var(--sp-text-dim);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 8px 4px 4px;
+}
+.search-hit {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border-radius: 6px;
+  padding: 6px;
+  margin: 0 0 2px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.search-hit:hover { background: var(--sp-hover); }
+.search-hit-channel {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--sp-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  padding-bottom: 2px;
+}
+.search-hit-channel .icon { font-size: 12px; }
+.search-hit-row { display: flex; gap: 8px; min-width: 0; }
+.search-hit-body { flex: 1; min-width: 0; font-size: 13px; overflow-wrap: break-word; }
+.search-hit-meta { display: flex; gap: 6px; align-items: baseline; }
+.search-hit-author { font-weight: 700; color: var(--sp-text); }
+.search-hit-time { color: var(--sp-text-dim); font-size: 11px; }
+.search-hit-body mark {
+  background: rgba(88, 101, 242, 0.35);
+  color: var(--sp-text);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.search-hit-files { color: var(--sp-link); font-size: 12px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-load-more {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--sp-text-muted);
+  background: var(--sp-control);
+}
+.search-load-more:hover { color: var(--sp-text); }
+
+/* The around window's escape hatch: visible while the chat is parked mid-history
+   (a search jump), pinned above the composer at the pane's bottom-right. */
+.jump-to-present {
+  position: absolute;
+  right: 20px;
+  bottom: 88px; /* above the composer card + its padding */
+  z-index: 6;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-family: inherit;
+  font-weight: 700;
+  color: #fff;
+  background: var(--sp-accent);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+.jump-to-present:hover { background: var(--sp-accent-hover); }
+
 /* ===== M7 oak-parity: avatar presence overlay, members pane, scrollbars ===== */
 
 .avatar-wrap { position: relative; display: inline-flex; flex-shrink: 0; }
@@ -2356,11 +2569,12 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 }
 .avatar-presence.online { background: var(--sp-green); }
 
-/* The roster is its OWN column beside the chat (oak's members-pane). */
+/* The roster is its OWN column beside the chat (oak's members-pane). The WIDTH
+   now lives on the .right-pane shell (search header + body) — the roster fills
+   the body below the search strip. */
 .members-pane {
-  width: 190px;
-  flex-shrink: 0;
-  background: var(--sp-surface);
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 12px 8px;
 }
@@ -2392,7 +2606,8 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 .settings-body:hover::-webkit-scrollbar-thumb,
 .roles-list:hover::-webkit-scrollbar-thumb,
 .role-tab-body:hover::-webkit-scrollbar-thumb,
-.room-view-body:hover::-webkit-scrollbar-thumb {
+.room-view-body:hover::-webkit-scrollbar-thumb,
+.search-results:hover::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.28);
   background-clip: padding-box;
 }

@@ -16,6 +16,11 @@ export class MessageStore extends Emitter {
 
   private readonly lists = new Map<number, readonly Message[]>();
   private readonly loadedChannels = new Set<number>();
+  /** Channels loaded as an AROUND WINDOW in the middle of history (the search-result jump):
+   *  an id-unknown gap sits between the window's last id and the channel's live tail. Live
+   *  appends below the window are FORBIDDEN (they would pretend the list is contiguous) —
+   *  the tail is reached by paginating down or "Jump to present", which clears the flag. */
+  private readonly aroundWithoutTail = new Set<number>();
 
   getSnapshot = (): MessageStore => this;
 
@@ -27,11 +32,36 @@ export class MessageStore extends Emitter {
     return this.loadedChannels.has(channelId);
   }
 
-  /** Initial history load. Idempotent by caller convention (guarded by isLoaded). */
+  isAroundWithoutTail(channelId: number): boolean {
+    return this.aroundWithoutTail.has(channelId);
+  }
+
+  /** Initial history load. Idempotent by caller convention (guarded by isLoaded). Clears any
+   *  around-window state — a plain snapshot IS the contiguous tail by definition. */
   applySnapshot(channelId: number, messages: readonly Message[]): void {
     this.lists.set(channelId, messages);
     this.loadedChannels.add(channelId);
+    this.aroundWithoutTail.delete(channelId);
     this.emit();
+  }
+
+  /** Around-window load (the search jump): REPLACES the channel's list (a jump away from the
+   *  tail discards it — "Jump to present" refetches the tail with applySnapshot). Marks the
+   *  channel around-without-tail: live appends past the window are dropped until the gap is
+   *  paginated through and {@link markTailReached} fires. */
+  applySnapshotAround(channelId: number, messages: readonly Message[]): void {
+    this.lists.set(channelId, messages);
+    this.loadedChannels.add(channelId);
+    this.aroundWithoutTail.add(channelId);
+    this.emit();
+  }
+
+  /** The around window's gap has been paginated through: the list is contiguous with the live
+   *  tail again, so live appends (and the reconnect heal) are legal from here on. */
+  markTailReached(channelId: number): void {
+    if (this.aroundWithoutTail.delete(channelId)) {
+      this.emit();
+    }
   }
 
   /**
@@ -45,6 +75,13 @@ export class MessageStore extends Emitter {
       return false;
     }
     const current = this.lists.get(message.channelId) ?? MessageStore.EMPTY;
+    // Around window: a message NEWER than the window's last id lives in the unloaded gap
+    // (or the tail) — inserting it would stitch a hole into the "contiguous" list. Messages
+    // landing INSIDE the window (echoes, rare same-id races) insert as usual.
+    if (this.aroundWithoutTail.has(message.channelId) && current.length > 0
+        && message.id > current[current.length - 1]!.id) {
+      return false;
+    }
     let insertionIndex = current.length;
     while (insertionIndex > 0) {
       const neighbor = current[insertionIndex - 1];
@@ -95,6 +132,27 @@ export class MessageStore extends Emitter {
   }
 
   /**
+   * Append a newer page (the around window's downward pagination). Mirror of
+   * {@link prependPage}: dedup by id, sorted concat keeps the id-ascending
+   * invariant, the return value is the count of messages actually added (the
+   * caller keys its "tail reached" latch on the RAW page length, not this).
+   */
+  appendPage(channelId: number, page: readonly Message[]): number {
+    const current = this.lists.get(channelId);
+    if (current === undefined || page.length === 0) {
+      return 0;
+    }
+    const existingIds = new Set(current.map((message) => message.id));
+    const fresh = page.filter((message) => !existingIds.has(message.id));
+    if (fresh.length === 0) {
+      return 0;
+    }
+    this.lists.set(channelId, [...current, ...fresh].sort((left, right) => left.id - right.id));
+    this.emit();
+    return fresh.length;
+  }
+
+  /**
    * Merge a refetched NEWEST page into a loaded channel (the STOMP-reconnect
    * gap heal). Insert-only by id in one batched emit — the same invariant
    * applyLive keeps, without N emits for N messages. Returns the messages that
@@ -103,6 +161,12 @@ export class MessageStore extends Emitter {
    */
   mergeTail(channelId: number, page: readonly Message[]): Message[] {
     if (!this.loadedChannels.has(channelId) || page.length === 0) {
+      return [];
+    }
+    // An around window has an id-unknown GAP below it — a sorted concat would stitch the
+    // window and the tail into one "contiguous" list over the hole. The heal skips the
+    // channel (read-state resync restores its counters); "Jump to present" refetches the tail.
+    if (this.aroundWithoutTail.has(channelId)) {
       return [];
     }
     const current = this.lists.get(channelId) ?? MessageStore.EMPTY;
@@ -163,7 +227,8 @@ export class MessageStore extends Emitter {
   dropChannel(channelId: number): void {
     const hadList = this.lists.delete(channelId);
     const wasLoaded = this.loadedChannels.delete(channelId);
-    if (hadList || wasLoaded) {
+    const wasAround = this.aroundWithoutTail.delete(channelId);
+    if (hadList || wasLoaded || wasAround) {
       this.emit();
     }
   }

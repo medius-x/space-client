@@ -18,6 +18,7 @@ import type {
   Relationship,
   Role,
   RoomInfo,
+  SearchMessagesResult,
   ServerMember,
   ServerProfile,
   StorageGcRun,
@@ -148,8 +149,12 @@ export class RestClient {
   // Chat + channels + server profile (M1)
   // ---------------------------------------------------------------------------
 
-  /** History page, OLDEST FIRST (the server reverses its DESC page query). */
-  async getMessages(channelId: number, beforeId?: number, limit?: number): Promise<Message[]> {
+  /** History page, OLDEST FIRST (the server reverses its DESC page query). Cursor flavours
+   *  (at most one, server-validated): `beforeId` — strictly older (back-fill); `aroundId` —
+   *  a window centered on the message (the search-result jump); `afterId` — strictly newer
+   *  (pagination away from an around window). */
+  async getMessages(channelId: number, beforeId?: number, limit?: number,
+    cursor?: { aroundId?: number; afterId?: number }): Promise<Message[]> {
     const params = new URLSearchParams();
     if (limit !== undefined) {
       params.set("limit", String(limit));
@@ -157,8 +162,45 @@ export class RestClient {
     if (beforeId !== undefined) {
       params.set("beforeId", String(beforeId));
     }
+    if (cursor?.aroundId !== undefined) {
+      params.set("aroundId", String(cursor.aroundId));
+    }
+    if (cursor?.afterId !== undefined) {
+      params.set("afterId", String(cursor.afterId));
+    }
     const query = params.toString();
     return this.request<Message[]>(`/api/channels/${channelId}/messages${query ? `?${query}` : ""}`, { method: "GET" });
+  }
+
+  /** Message search (Discord-style substring match), newest first. `channelId` scopes to one
+   *  channel (a DM works); omitted — the whole server (the server never returns DMs there).
+   *  `q` and `author` are both optional, at least one required server-side; `beforeId` pages
+   *  older; `total` is the cursor-independent hit count. */
+  async searchMessages(request: {
+    q?: string | null;
+    channelId?: number | null;
+    author?: string | null;
+    beforeId?: number;
+    limit?: number;
+  }): Promise<SearchMessagesResult> {
+    const params = new URLSearchParams();
+    if (request.q != null && request.q !== "") {
+      params.set("q", request.q);
+    }
+    if (request.channelId != null) {
+      params.set("channelId", String(request.channelId));
+    }
+    if (request.author != null && request.author !== "") {
+      params.set("author", request.author);
+    }
+    if (request.beforeId !== undefined) {
+      params.set("beforeId", String(request.beforeId));
+    }
+    if (request.limit !== undefined) {
+      params.set("limit", String(request.limit));
+    }
+    const query = params.toString();
+    return this.request<SearchMessagesResult>(`/api/search/messages${query ? `?${query}` : ""}`, { method: "GET" });
   }
 
   /** 201 + the created message; the STOMP echo of the same id arrives too — dedup upstream.

@@ -6,7 +6,7 @@ import { ServerRail } from "./ServerRail";
 import { Sidebar } from "./Sidebar";
 import { ChatPane } from "./ChatPane";
 import { FriendsPane } from "./FriendsPane";
-import { MembersPane } from "./MembersPane";
+import { RightPane } from "./SearchPane";
 import { VoiceBar, RoomView, CallConflictModal } from "./VoiceRoom";
 import { useDisplayName } from "../hooks/useDisplayName";
 import { Diagnostics } from "./Diagnostics";
@@ -26,6 +26,7 @@ export function MainScreen({ session }: { session: ConnectionSession }): React.J
   const dmMode = useStore(appStore, (state) => state.dmMode);
   const activeDmId = useStore(appStore, (state) => state.activeDmId);
   const roomViewOpen = useStore(appStore, (state) => state.roomViewOpen);
+  const searchOpen = useStore(appStore, (state) => state.searchOpen);
 
   // The diagnostics panel is a hidden hotkey away. It USED to live on
   // Ctrl+Shift+D — 2026-09-18 the chord moved to F12: Discord's Toggle Deafen
@@ -44,12 +45,16 @@ export function MainScreen({ session }: { session: ConnectionSession }): React.J
 
   // A 1:1 call does NOT take the chat pane (oak): its surfaces are the voice
   // bar + the room view (a degenerate 2-tile room). The room view is a
-  // chat-area swap opened by the voice-bar click (auto-opened on accept);
-  // the roster is its own 190px column — hidden in Home mode and under the view.
+  // chat-area swap opened by the voice-bar click (auto-opened on accept).
+  // The right column (search box header + roster/results body) is a SERVER-mode
+  // fixture: hidden in Home (the DM chat keeps its full width) — except while
+  // a DM search is open, when the column appears to host it.
   const friendsOccupiesContent = dmMode && activeDmId === null;
   const voiceSurfaceLive = callState !== "idle" || activeVoiceChannelId !== null;
   const roomViewOccupiesContent = roomViewOpen && voiceSurfaceLive && !friendsOccupiesContent;
-  const rosterVisible = !dmMode && !roomViewOccupiesContent;
+  const rightPaneVisible = searchOpen
+    ? !friendsOccupiesContent && !roomViewOccupiesContent
+    : !dmMode && !roomViewOccupiesContent;
 
   return (
     <>
@@ -74,7 +79,7 @@ export function MainScreen({ session }: { session: ConnectionSession }): React.J
           ) : (
             <ChatPane session={session} />
           )}
-          {rosterVisible ? <MembersPane session={session} /> : null}
+          {rightPaneVisible ? <RightPane session={session} /> : null}
         </main>
       </div>
       {/* The settings overlays live in App (direct children of #app) — see App.tsx. */}

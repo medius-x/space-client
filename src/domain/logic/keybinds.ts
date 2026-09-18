@@ -22,6 +22,7 @@ export type ActionId =
   | "decline-call"
   | "next-channel"
   | "prev-channel"
+  | "toggle-search"
   | "mark-channel-read";
 
 export interface KeybindAction {
@@ -91,6 +92,16 @@ export const KEYBIND_ACTIONS: readonly KeybindAction[] = [
     hint: "Moves to the previous text channel in the sidebar",
     scope: "local",
     defaultAccelerator: "Alt+Up",
+  },
+  {
+    id: "toggle-search",
+    label: "Toggle Search",
+    hint: "Opens the message search panel",
+    // Discord's own chord. A modifier chord, so the text-entry guard does not
+    // swallow it in the composer — and preventDefault keeps any leftover
+    // browser find-bar out of the picture.
+    scope: "local",
+    defaultAccelerator: "Control+F",
   },
   {
     id: "mark-channel-read",

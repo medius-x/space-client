@@ -106,4 +106,69 @@ describe("MessageStore", () => {
     expect(store.mergeTail(9, [message(10, 9)])).toEqual([]);
     expect(store.loadedChannelIds()).toEqual([1]);
   });
+
+  it("applySnapshotAround REPLACES the list and marks the channel around-without-tail", () => {
+    const store = new MessageStore();
+    store.applySnapshot(1, [message(40), message(41)]); // the tail we jump away from
+    expect(store.isAroundWithoutTail(1)).toBe(false);
+
+    store.applySnapshotAround(1, [message(10), message(11), message(12)]);
+    expect(store.listFor(1).map((entry) => entry.id)).toEqual([10, 11, 12]); // tail discarded
+    expect(store.isLoaded(1)).toBe(true);
+    expect(store.isAroundWithoutTail(1)).toBe(true);
+  });
+
+  it("around window: live appends past the window's last id are dropped, in-window echoes insert", () => {
+    const store = new MessageStore();
+    store.applySnapshotAround(1, [message(10), message(11), message(12)]);
+
+    // Newer than the window: lives in the unloaded gap (or the tail) — must not stitch a hole.
+    expect(store.applyLive(message(50, 1))).toBe(false);
+    expect(store.applyLive(message(13, 1))).toBe(false);
+    expect(store.listFor(1).map((entry) => entry.id)).toEqual([10, 11, 12]);
+
+    // Inside the window: normal binary insert (an echo / same-id race).
+    expect(store.applyLive(message(11, 1, "bob"))).toBe(false); // echo dedup still applies
+    expect(store.listFor(1).length).toBe(3);
+  });
+
+  it("appendPage dedups and appends the newer page below an around window", () => {
+    const store = new MessageStore();
+    store.applySnapshotAround(1, [message(10), message(12)]);
+    // Out-of-order page contents still land id-sorted.
+    const appended = store.appendPage(1, [message(16), message(13), message(12)]);
+    expect(appended).toBe(2); // 12 overlaps
+    expect(store.listFor(1).map((entry) => entry.id)).toEqual([10, 12, 13, 16]);
+    expect(store.appendPage(1, [])).toBe(0);
+    expect(store.appendPage(1, [message(16)])).toBe(0); // pure overlap → no-op
+  });
+
+  it("markTailReached re-enables live appends; mergeTail skips while around", () => {
+    const store = new MessageStore();
+    store.applySnapshotAround(1, [message(10), message(12)]);
+
+    // The reconnect heal must NOT stitch the window and the tail over the unloaded gap.
+    expect(store.mergeTail(1, [message(11), message(50)])).toEqual([]);
+    expect(store.listFor(1).map((entry) => entry.id)).toEqual([10, 12]);
+    expect(store.applyLive(message(50, 1))).toBe(false);
+
+    store.markTailReached(1);
+    expect(store.isAroundWithoutTail(1)).toBe(false);
+    expect(store.applyLive(message(50, 1))).toBe(true); // contiguous again
+    expect(store.mergeTail(1, [message(60)])).toEqual([message(60)]);
+    store.markTailReached(1); // idempotent — no emit churn
+  });
+
+  it("applySnapshot and dropChannel clear the around flag", () => {
+    const store = new MessageStore();
+    store.applySnapshotAround(1, [message(10)]);
+    store.applySnapshot(1, [message(1), message(2)]); // "Jump to present" refetch
+    expect(store.isAroundWithoutTail(1)).toBe(false);
+    expect(store.applyLive(message(3, 1))).toBe(true); // appends legal again
+
+    store.applySnapshotAround(1, [message(10)]);
+    store.dropChannel(1);
+    expect(store.isAroundWithoutTail(1)).toBe(false);
+    expect(store.isLoaded(1)).toBe(false);
+  });
 });

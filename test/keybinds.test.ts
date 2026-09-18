@@ -180,6 +180,13 @@ describe("catalog sanity", () => {
     expect(new Set(defaults).size).toBe(defaults.length);
   });
 
+  it("the search panel ships on Discord's Ctrl+F, local scope", () => {
+    const search = KEYBIND_ACTIONS.find((action) => action.id === "toggle-search");
+    expect(search).toBeDefined();
+    expect(search?.scope).toBe("local");
+    expect(search?.defaultAccelerator).toBe("Control+F");
+  });
+
   it("every default round-trips normalizeAccelerator", () => {
     for (const accelerator of Object.values(DEFAULT_KEYBINDS)) {
       if (accelerator !== "") {
