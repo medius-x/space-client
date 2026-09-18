@@ -60,6 +60,11 @@ export interface ToastPayload {
 
 class NotificationHub {
   private audioContext: AudioContext | null = null;
+  /** The one convergence point of every UI sound (#483): all per-sound masters
+   *  connect here instead of the destination, and the share-subtraction
+   *  reference taps this bus — so knocks/dings/chimes/ringback leave the share. */
+  private mixBus: GainNode | null = null;
+  private referenceDest: MediaStreamAudioDestinationNode | null = null;
   /** The selected output device (Settings → Audio), applied to the context sink —
    *  oak plays every UI sound through the playout line so it follows the chosen
    *  speaker; the WebAudio shape of that rule is AudioContext.setSinkId. */
@@ -133,6 +138,24 @@ class NotificationHub {
       void context.resume();
     }
     return context;
+  }
+
+  /** The bus every sound's master connects to (created with the context). */
+  private ensureMixBus(context: AudioContext): GainNode {
+    if (this.mixBus === null) {
+      this.mixBus = context.createGain();
+      this.mixBus.connect(context.destination);
+      this.referenceDest = context.createMediaStreamDestination();
+      this.mixBus.connect(this.referenceDest);
+    }
+    return this.mixBus;
+  }
+
+  /** The UI sounds as a reference stream for the share subtractor (#483) —
+   *  creating the context here is free (a silent context costs nothing). */
+  getReferenceStream(): MediaStream {
+    this.ensureMixBus(this.ensureAudioContext());
+    return this.referenceDest!.stream;
   }
 
   /** The full decision path for one live message. self = the signed-in user's
@@ -252,7 +275,7 @@ class NotificationHub {
       const now = context.currentTime;
       const master = context.createGain();
       master.gain.value = 0.5;
-      master.connect(context.destination);
+      master.connect(this.ensureMixBus(context));
       for (const note of knockSchedule(direction)) {
         const startAt = now + note.startSeconds;
         const envelope = context.createGain();
@@ -294,7 +317,7 @@ class NotificationHub {
       const now = context.currentTime;
       const master = context.createGain();
       master.gain.value = cue.gain;
-      master.connect(context.destination);
+      master.connect(this.ensureMixBus(context));
       const envelope = context.createGain();
       envelope.gain.setValueAtTime(0, now);
       envelope.gain.linearRampToValueAtTime(1, now + cue.attackSeconds);
@@ -318,15 +341,13 @@ class NotificationHub {
     }
     const playBurst = (): void => {
       try {
-        this.audioContext ??= new AudioContext();
-        const context = this.audioContext;
-        if (context.state === "suspended") {
-          void context.resume();
-        }
+        // The factory (not a bare `??=`): the ringback must follow the chosen
+        // output device like every other UI sound (pre-existing bypass, fixed).
+        const context = this.ensureAudioContext();
         const now = context.currentTime;
         const master = context.createGain();
         master.gain.value = 0.08; // phone-line quiet — it loops for up to a minute
-        master.connect(context.destination);
+        master.connect(this.ensureMixBus(context));
         for (const frequency of RINGBACK_TONE_HZ) {
           const oscillator = context.createOscillator();
           oscillator.frequency.value = frequency;
@@ -373,7 +394,7 @@ class NotificationHub {
       const now = context.currentTime;
       const master = context.createGain();
       master.gain.value = 1;
-      master.connect(context.destination);
+      master.connect(this.ensureMixBus(context));
       CHIME_PARTIALS_HZ.forEach((frequency, index) => {
         const oscillator = context.createOscillator();
         oscillator.frequency.value = frequency;
@@ -399,7 +420,7 @@ class NotificationHub {
       const now = context.currentTime;
       const master = context.createGain();
       master.gain.value = BELL_MASTER_GAIN;
-      master.connect(context.destination);
+      master.connect(this.ensureMixBus(context));
       BELL_PARTIALS_HZ.forEach((frequency, index) => {
         const peak = BELL_PARTIAL_GAINS[index] ?? 1;
         const oscillator = context.createOscillator();

@@ -143,8 +143,11 @@ contextBridge.exposeInMainWorld("spaceHotkey", {
 
 /** Capture-picker bridge (M4): desktop sources with previews + the grant hint. */
 contextBridge.exposeInMainWorld("spaceCapture", {
-  sources(): Promise<unknown> {
-    return ipcRenderer.invoke("space-capture:sources");
+  /** Optional type filter — e.g. the self-test needs only screens, and skipping
+   *  the window enumeration avoids Chromium's WGC "Source is not capturable"
+   *  error spam for uncapturable windows (plus most of the startup latency). */
+  sources(types?: ("screen" | "window")[]): Promise<unknown> {
+    return ipcRenderer.invoke("space-capture:sources", types);
   },
   select(sourceId: string, withAudio: boolean): Promise<unknown> {
     return ipcRenderer.invoke("space-capture:select", sourceId, withAudio);

@@ -14,7 +14,9 @@ export interface CaptureSourceInfo {
 }
 
 export interface CaptureBridge {
-  sources(): Promise<CaptureSourceInfo[]>;
+  /** Optional type filter — screen-only callers skip the slow window enumeration
+   *  (and Chromium's WGC "Source is not capturable" error spam). */
+  sources(types?: ("screen" | "window")[]): Promise<CaptureSourceInfo[]>;
   /** Tell main which source the NEXT getDisplayMedia grant should hand out. */
   select(sourceId: string, withAudio: boolean): Promise<boolean>;
 }

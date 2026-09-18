@@ -35,6 +35,10 @@ interface VoiceChain {
   level: number;
   /** The user-set volume; element.volume is this OR 0 while deafened. */
   volume: number;
+  /** Mirrors element.volume into the share-subtraction reference (#483): the
+   *  analysis source carries the RAW track, so the reference chain must apply
+   *  the same gain the element applies to its playout. */
+  referenceGain: GainNode;
 }
 
 interface ShareChain {
@@ -46,6 +50,8 @@ interface ShareChain {
   left: Float32Array<ArrayBuffer>;
   right: Float32Array<ArrayBuffer>;
   volume: number;
+  /** Same mirror as VoiceChain.referenceGain (#483). */
+  referenceGain: GainNode;
 }
 
 function playbackElement(track: MediaStreamTrack, initialVolume: number, deafened: boolean, outputDeviceId: string | null): HTMLAudioElement {
@@ -64,6 +70,13 @@ export class RoomAudio {
   private context: AudioContext | null = null;
   private readonly voiceChains = new Map<number, VoiceChain>();
   private readonly shareChains = new Map<number, ShareChain>();
+  /** The share-subtraction reference tap (#483): every chain's analysis source
+   *  feeds a per-chain volume-mirroring gain into this bus; the bus is exposed
+   *  as a NODE for same-context consumers (the subtractor — a track crossing
+   *  between contexts drifts and turns the subtraction metallic) and lazily as
+   *  a stream for anything else. */
+  private referenceBus: GainNode | null = null;
+  private referenceDest: MediaStreamAudioDestinationNode | null = null;
   /** The picked output device (client settings, oak Audio); null = default.
    *  Applied to every NEW playback element and re-applied live on change. */
   private outputDeviceId: string | null = null;
@@ -88,6 +101,47 @@ export class RoomAudio {
       log.info("audio", `AudioContext created (${this.context.sampleRate} Hz, state=${this.context.state})`);
     }
     return this.context;
+  }
+
+  private ensureReferenceBus(): GainNode {
+    if (this.referenceBus === null) {
+      this.referenceBus = this.ensureContext().createGain();
+    }
+    return this.referenceBus;
+  }
+
+  private ensureReferenceDest(): MediaStreamAudioDestinationNode {
+    if (this.referenceDest === null) {
+      this.referenceDest = this.ensureContext().createMediaStreamDestination();
+      this.ensureReferenceBus().connect(this.referenceDest);
+    }
+    return this.referenceDest;
+  }
+
+  /** The context every same-context consumer (the share subtractor) must use —
+   *  a cross-CONTEXT reference track drifts a few samples (Chromium's clock
+   *  reconciliation) and the subtraction turns metallic (live smoke 2026-09-18). */
+  getAudioContext(): AudioContext {
+    return this.ensureContext();
+  }
+
+  /** The reference tap as a NODE — same-context consumers connect this directly
+   *  into their graph (no track crossing, no delivery drift). */
+  getReferenceBus(): GainNode {
+    return this.ensureReferenceBus();
+  }
+
+  /** The single effective-level expression shared by the element and the
+   *  reference gain (deafen zeroes both; the clamp matches playbackElement). */
+  private effectiveVolume(volume: number): number {
+    return this.deafened ? 0 : Math.min(1, Math.max(0, volume));
+  }
+
+  /** The reconstructed playout of every attached chain (#483): the share
+   *  subtractor consumes this as its reference (null never happens — the call
+   *  creates the destination, and an empty one is a valid silent reference). */
+  getReferenceStream(): MediaStream {
+    return this.ensureReferenceDest().stream;
   }
 
   /** Call from the login click — browsers require a gesture to start audio. */
@@ -125,6 +179,10 @@ export class RoomAudio {
     const analyser = context.createAnalyser();
     analyser.fftSize = 512;
     analysisSource.connect(analyser); // analysis only — NEVER to destination
+    const referenceGain = context.createGain();
+    referenceGain.gain.value = this.effectiveVolume(volume);
+    analysisSource.connect(referenceGain); // the subtraction reference tap (#483)
+    referenceGain.connect(this.ensureReferenceBus());
     this.voiceChains.set(feedId, {
       username,
       element,
@@ -133,6 +191,7 @@ export class RoomAudio {
       buffer: new Float32Array(analyser.fftSize),
       level: 0,
       volume,
+      referenceGain,
     });
     log.info("audio", `voice chain attached: feed ${feedId} "${username}" (element playout @ ${element.volume.toFixed(2)})`);
   }
@@ -150,6 +209,10 @@ export class RoomAudio {
     analysisSource.connect(splitter); // analysis tap tree — no destination anywhere
     splitter.connect(analyserLeft, 0);
     splitter.connect(analyserRight, 1);
+    const referenceGain = context.createGain();
+    referenceGain.gain.value = this.effectiveVolume(volume);
+    analysisSource.connect(referenceGain); // the subtraction reference tap (#483)
+    referenceGain.connect(this.ensureReferenceBus());
     this.shareChains.set(feedId, {
       username,
       element,
@@ -159,6 +222,7 @@ export class RoomAudio {
       left: new Float32Array(analyserLeft.fftSize),
       right: new Float32Array(analyserRight.fftSize),
       volume,
+      referenceGain,
     });
     log.info("audio", `share chain attached: feed ${feedId} "${username}" (element playout, track channels=${track.getSettings().channelCount ?? "?"})`);
   }
@@ -170,6 +234,7 @@ export class RoomAudio {
       try {
         voice.analysisSource.disconnect();
         voice.analyser.disconnect();
+        voice.referenceGain.disconnect();
       } catch {
         // already torn down
       }
@@ -183,6 +248,7 @@ export class RoomAudio {
         share.analysisSource.disconnect();
         share.analyserLeft.disconnect();
         share.analyserRight.disconnect();
+        share.referenceGain.disconnect();
       } catch {
         // already torn down
       }
@@ -210,7 +276,7 @@ export class RoomAudio {
     for (const chain of this.voiceChains.values()) {
       if (chain.username === username) {
         chain.volume = gain;
-        this.applyChainVolume(chain.element, gain);
+        this.applyChainVolume(chain);
       }
     }
   }
@@ -219,13 +285,16 @@ export class RoomAudio {
     for (const chain of this.shareChains.values()) {
       if (chain.username === username) {
         chain.volume = gain;
-        this.applyChainVolume(chain.element, gain);
+        this.applyChainVolume(chain);
       }
     }
   }
 
-  private applyChainVolume(element: HTMLAudioElement, volume: number): void {
-    element.volume = this.deafened ? 0 : Math.min(1, Math.max(0, volume));
+  /** THE volume point: element playout AND the #483 reference mirror move together. */
+  private applyChainVolume(chain: VoiceChain | ShareChain): void {
+    const effective = this.effectiveVolume(chain.volume);
+    chain.element.volume = effective;
+    chain.referenceGain.gain.value = effective;
   }
 
   /** Deafen compliance: everything goes silent, per-chain volumes come back on undeafen. */
@@ -235,10 +304,10 @@ export class RoomAudio {
     }
     this.deafened = deafened;
     for (const chain of this.voiceChains.values()) {
-      this.applyChainVolume(chain.element, chain.volume);
+      this.applyChainVolume(chain);
     }
     for (const chain of this.shareChains.values()) {
-      this.applyChainVolume(chain.element, chain.volume);
+      this.applyChainVolume(chain);
     }
     log.info("audio", `deafen ${deafened ? "ON — playout silenced" : "OFF — volumes restored"}`);
   }

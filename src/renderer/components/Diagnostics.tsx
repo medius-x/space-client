@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { buildDiagModel, runDisplayMediaSelfTest, runNoiseEngineSelfTest, seedSyntheticMessages, toggleTestTone, type DiagModel } from "../runtime";
+import { buildDiagModel, runDisplayMediaSelfTest, runNoiseEngineSelfTest, runShareSubtractionSelfTest, seedSyntheticMessages, toggleTestTone, type DiagModel } from "../runtime";
 import { log } from "../../logging";
 
 /** The evidence surface: connection key/values, stereo oracle, log tail. 4 Hz refresh. */
@@ -21,6 +21,11 @@ export function Diagnostics(): React.JSX.Element {
     <div className="diagnostics">
       <div className="diag-title">diagnostics</div>
       <button className="ghost" onClick={() => void runDisplayMediaSelfTest()}>getDisplayMedia self-test</button>
+      {/* The subtraction spike's evidence: noise plays through an <audio>
+          element (the real playout route), comes back via the desktop loopback
+          and must be cancelled — verdict in dB lands in [selftest] below.
+          Keep the desktop silent for the ~13 s run. */}
+      <button className="ghost" onClick={() => void runShareSubtractionSelfTest()}>Share-subtract self-test</button>
       {/* Deterministic white noise → engine → RMS verdict (no mic/room/peer
           involved); the verdict lands in the [selftest] log tail below. Gate's
           verdict reads "WEAK" on continuous noise by design — a gate mutes

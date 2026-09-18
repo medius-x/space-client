@@ -406,10 +406,16 @@ ipcMain.on("space-window:maximize", () => {
 });
 ipcMain.on("space-window:close", () => mainWindowRef?.close());
 
-ipcMain.handle("space-capture:sources", async () => {
+ipcMain.handle("space-capture:sources", async (_event, requestedTypes: unknown) => {
   try {
+    // Optional type filter: the self-test only needs screens, and skipping the
+    // window enumeration avoids Chromium's WGC probing of uncapturable windows
+    // (the "Source is not capturable" console errors) plus most of the latency.
+    const requested = Array.isArray(requestedTypes)
+      ? requestedTypes.filter((entry): entry is "screen" | "window" => entry === "screen" || entry === "window")
+      : [];
     const sources = await desktopCapturer.getSources({
-      types: ["screen", "window"],
+      types: requested.length > 0 ? requested : ["screen", "window"],
       thumbnailSize: { width: 320, height: 180 },
     });
     return sources.map((source) => ({

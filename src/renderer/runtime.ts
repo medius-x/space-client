@@ -9,6 +9,9 @@ import { extractAudioFmtpLines } from "../core/sdp";
 import { stereoVerdict } from "../core/audio-math";
 import { RoomAudio } from "../media/RoomAudio";
 import { createNoisePipeline, type NoiseEngineKind, type NoisePipeline } from "../media/noise-suppression";
+import { createShareSubtraction, suppressionDb } from "../media/share-subtraction";
+import { modulatedNoise } from "../domain/logic/share-recenter";
+import { matchDeviceId } from "../domain/logic/device-match";
 import {
   ConnectionDirectory,
   DEFAULT_NOTIFICATION_PREFS,
@@ -287,6 +290,18 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Loopback audio must arrive RAW. Without the explicit falses Chromium may run
+ *  its audio processing over the desktop mix: the M0 stereo spike passed TONES
+ *  through it, but the #483 subtraction spike measured the mangled broadband
+ *  track — stable delay, correlation quality ~0.1, a ~3 dB cancellation
+ *  ceiling. Applies to every loopback capture (shares, calls, self-tests). */
+const LOOPBACK_AUDIO_CONSTRAINTS: MediaTrackConstraints = {
+  channelCount: { ideal: 2 },
+  echoCancellation: false,
+  noiseSuppression: false,
+  autoGainControl: false,
+};
+
 // ---------------------------------------------------------------------------
 // Display-media self-test (risk probe from the spike)
 // ---------------------------------------------------------------------------
@@ -295,7 +310,7 @@ export async function runDisplayMediaSelfTest(): Promise<void> {
   try {
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: true,
-      audio: { channelCount: { ideal: 2 } },
+      audio: LOOPBACK_AUDIO_CONSTRAINTS,
     });
     for (const track of stream.getTracks()) {
       const settings = track.getSettings();
@@ -387,6 +402,210 @@ function peakRms(analyser: AnalyserNode): number {
     peak = Math.max(peak, Math.sqrt(sum / buffer.length));
   }
   return peak;
+}
+
+// ---------------------------------------------------------------------------
+// Share-subtraction self-test (#483 spike): the honest end-to-end path —
+// deterministic LCG noise goes through an <audio> ELEMENT (the exact playout
+// route every remote track takes, the M0 lesson: the graph itself never plays),
+// gets captured back by the desktop loopback, and the subtractor must cancel
+// it. Verdict in dB per channel phase: L-only, R-only (catches channel swaps),
+// then both. Keep the desktop otherwise silent for the ~9 s run.
+// ---------------------------------------------------------------------------
+
+let shareSubtractionTestRunning = false;
+
+function waitMs(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+/** Two seconds of looping LCG noise per channel seed — same family as the NS test. */
+function selfTestNoiseBuffer(context: AudioContext, seedValue: number): AudioBuffer {
+  const buffer = context.createBuffer(1, Math.floor(context.sampleRate * 2), context.sampleRate);
+  const samples = buffer.getChannelData(0);
+  let seed = seedValue >>> 0;
+  for (let sampleIndex = 0; sampleIndex < samples.length; sampleIndex += 1) {
+    seed = (seed * 1_664_525 + 1_013_904_223) >>> 0;
+    samples[sampleIndex] = (seed / 0xffff_ffff - 0.5) * 0.5;
+  }
+  return buffer;
+}
+
+export async function runShareSubtractionSelfTest(): Promise<void> {
+  if (shareSubtractionTestRunning) {
+    log.info("selftest", "share-subtract: already running");
+    return;
+  }
+  shareSubtractionTestRunning = true;
+  log.info("selftest", "share-subtract: starting — keep the desktop otherwise SILENT for ~13 s");
+  let context: AudioContext | null = null;
+  let subtraction: Awaited<ReturnType<typeof createShareSubtraction>> | null = null;
+  let desktop: MediaStream | null = null;
+  let playoutElement: HTMLAudioElement | null = null;
+  try {
+    const listed = await window.spaceCapture?.sources(["screen"]); // screens only — no window enumeration
+    const screen = (listed ?? []).find((source) => source.kind === "screen");
+    if (!screen) {
+      throw new Error("no screen source — loopback capture impossible");
+    }
+    await window.spaceCapture?.select(screen.id, true); // arm the grant with audio
+    desktop = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: LOOPBACK_AUDIO_CONSTRAINTS,
+    });
+    const loopbackTrack = desktop.getAudioTracks()[0];
+    if (loopbackTrack === undefined) {
+      throw new Error("no loopback audio track came back (grant without sound)");
+    }
+    for (const videoTrack of desktop.getVideoTracks()) {
+      videoTrack.stop(); // audio is all the spike needs
+    }
+    const settings = loopbackTrack.getSettings();
+    log.info("selftest", `share-subtract: loopback ch=${settings.channelCount ?? "?"} rate=${settings.sampleRate ?? "?"}`);
+
+    // Generator graph: two looping noise sources → L/R gains → merger → the
+    // playout track (an <audio> element, the REAL route to the OS) and the
+    // subtractor's reference input (the same node tap — bit-exact reference).
+    context = new AudioContext();
+    await context.resume();
+    const leftSource = context.createBufferSource();
+    leftSource.buffer = selfTestNoiseBuffer(context, 0x2f6e2b1);
+    leftSource.loop = true;
+    const rightSource = context.createBufferSource();
+    rightSource.buffer = selfTestNoiseBuffer(context, 0x71a3c9d);
+    rightSource.loop = true;
+    const leftGain = context.createGain();
+    leftGain.gain.value = 0;
+    const rightGain = context.createGain();
+    rightGain.gain.value = 0;
+    const merger = context.createChannelMerger(2);
+    leftSource.connect(leftGain).connect(merger, 0, 0);
+    rightSource.connect(rightGain).connect(merger, 0, 1);
+    const testMix = context.createGain();
+    merger.connect(testMix);
+    const playoutSink = context.createMediaStreamDestination();
+    testMix.connect(playoutSink);
+    playoutElement = new Audio();
+    playoutElement.autoplay = true;
+    playoutElement.srcObject = playoutSink.stream;
+    await playoutElement.play();
+    leftSource.start();
+    rightSource.start();
+
+    subtraction = await createShareSubtraction(loopbackTrack, { elements: [testMix], contexts: [] }, context);
+
+    const formatLags = (history: { lag: number }[] | undefined): string =>
+      (history ?? []).map((entry) => entry.lag).join("/");
+
+    // Path gain: loopback energy over reference energy — if the loopback is
+    // dominated by something OTHER than our signal, this reads far above the
+    // plausible device gain and points the search off the processing path.
+    const pathGainDb = (channels: { loopbackSquareSum: number }[], domainReference: number): string => {
+      let loopbackSquare = 0;
+      for (const channel of channels) {
+        loopbackSquare += channel.loopbackSquareSum;
+      }
+      if (domainReference <= 1e-12) {
+        return "?";
+      }
+      return (10 * Math.log10(loopbackSquare / domainReference)).toFixed(1);
+    };
+
+    const runPhase = async (label: string, left: number, right: number): Promise<number | null> => {
+      leftGain.gain.value = left;
+      rightGain.gain.value = right;
+      await waitMs(1_000); // fill the correlation buffer + let the NLMS converge
+      await subtraction!.readStats(); // dropped — resets the measurement window
+      await waitMs(1_200); // the measurement window
+      const stats = await subtraction!.readStats();
+      const decibels = suppressionDb(stats);
+      const elements = stats.domains[0];
+      log.info("selftest",
+        `share-subtract ${label}: ${decibels === null ? "NO SIGNAL in loopback (speakers muted?)" : decibels.toFixed(1) + " dB"}`
+        + ` — delay ${elements?.delaySamples ?? "?"} ${elements?.locked ? "locked" : "searching"}`
+        + ` quality ${(elements?.correlationQuality ?? 0).toFixed(2)}`
+        + ` gain ${pathGainDb(stats.channels, elements?.referenceSquareSum ?? 0)} dB`
+        + ` lags=[${formatLags(elements?.lagHistory)}]`);
+      leftGain.gain.value = 0;
+      rightGain.gain.value = 0;
+      await waitMs(300); // silence gap — also exercises the reference-silence gate
+      return decibels;
+    };
+
+    const phaseResults = [
+      await runPhase("L-only", 1, 0),
+      await runPhase("R-only", 0, 1),
+      await runPhase("stereo", 1, 1),
+    ];
+
+    // Voice-likeness regression — THE live-smoke bug class (2026-09-18): speech
+    // is quasi-periodic and its correlation multi-peaked, which made the old
+    // global-max tracker jump pitch aliases. Pitch-modulated noise reproduces
+    // the multi-peak structure; the tracker must hold ONE delay (no ±240–480
+    // jumps) and still cancel. Logged separately, not part of the verdict.
+    const voiceLeftGain = context!.createGain();
+    voiceLeftGain.gain.value = 0;
+    const voiceRightGain = context!.createGain();
+    voiceRightGain.gain.value = 0;
+    voiceLeftGain.connect(merger, 0, 0);
+    voiceRightGain.connect(merger, 0, 1);
+    const makeVoiceSource = (seedValue: number): AudioBufferSourceNode => {
+      const buffer = context!.createBuffer(1, Math.floor(context!.sampleRate * 2), context!.sampleRate);
+      buffer.getChannelData(0).set(modulatedNoise(buffer.length, seedValue, 150, context!.sampleRate));
+      const source = context!.createBufferSource();
+      source.buffer = buffer;
+      source.loop = true;
+      source.start();
+      return source;
+    };
+    makeVoiceSource(0x51ed29b).connect(voiceLeftGain);
+    makeVoiceSource(0x2c7a4f1).connect(voiceRightGain);
+    voiceLeftGain.gain.value = 1;
+    voiceRightGain.gain.value = 1;
+    await waitMs(1_000);
+    await subtraction.readStats();
+    await waitMs(1_200);
+    const voiceStats = await subtraction.readStats();
+    const voiceDecibels = suppressionDb(voiceStats);
+    const voiceElements = voiceStats.domains[0];
+    const recentLags = (voiceElements?.lagHistory ?? []).slice(-4).map((entry) => entry.lag);
+    const lagSpread = recentLags.length > 0 ? Math.max(...recentLags) - Math.min(...recentLags) : 0;
+    log.info("selftest",
+      `share-subtract voice-like (multi-peak regression): ${voiceDecibels === null ? "NO SIGNAL" : voiceDecibels.toFixed(1) + " dB"}`
+      + ` — delay ${voiceElements?.delaySamples ?? "?"} ${voiceElements?.locked ? "locked" : "searching"}`
+      + ` lags=[${formatLags(voiceElements?.lagHistory)}] → ${lagSpread <= 16 ? "STABLE" : "JUMPING (alias chase — the smoke bug is back)"}`);
+    voiceLeftGain.gain.value = 0;
+    voiceRightGain.gain.value = 0;
+    const measured = phaseResults.filter((value): value is number => value !== null);
+    if (measured.length === 0) {
+      log.error("selftest", "share-subtract: no phase produced a loopback signal — check output device/volume");
+    } else {
+      const worst = Math.min(...measured);
+      const verdict = worst >= 20
+        ? "SUPPRESSED (own playout is cancellable from loopback — production round is viable)"
+        : worst >= 8
+          ? "PARTIAL (path not purely linear — check OS audio enhancements / spatial sound)"
+          : "FAILED (subtraction does not converge)";
+      log.info("selftest", `share-subtract verdict: worst phase ${worst.toFixed(1)} dB → ${verdict}`);
+    }
+  } catch (error) {
+    log.error("selftest", `share-subtract self-test failed: ${errorMessage(error)}`);
+  } finally {
+    try {
+      playoutElement?.pause();
+      if (playoutElement !== null) {
+        playoutElement.srcObject = null;
+      }
+      subtraction?.dispose();
+      desktop?.getTracks().forEach((track) => track.stop());
+    } finally {
+      if (context !== null) {
+        void context.close().catch(() => undefined);
+      }
+      shareSubtractionTestRunning = false;
+      log.info("selftest", "share-subtract: teardown complete");
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -688,10 +907,64 @@ function makeSessionHooks(recordId: string): SessionHooks {
   };
 }
 
+/** Resolved device picks: Chromium's deviceId hashes do NOT survive app
+ *  restarts here (every voice join used to log "saved microphone unavailable"),
+ *  so the saved (id, label) pair re-resolves against a live enumeration — exact
+ *  id first, label fallback (domain/logic/device-match.ts). Refreshed on Apply
+ *  and on hotplug. */
+const resolvedDevices = { microphone: null as string | null, speaker: null as string | null, camera: null as string | null };
+
+async function resolveSavedDevices(): Promise<void> {
+  const settings = settingsStore.getSnapshot();
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    if (devices.every((device) => device.deviceId.length === 0)) {
+      return; // pre-permission enumeration — nothing to resolve against yet
+    }
+    resolvedDevices.microphone = matchDeviceId(
+      devices.filter((device) => device.kind === "audioinput"),
+      settings.microphoneDeviceId,
+      settings.microphoneLabel,
+    );
+    resolvedDevices.speaker = matchDeviceId(
+      devices.filter((device) => device.kind === "audiooutput"),
+      settings.speakerDeviceId,
+      settings.speakerLabel,
+    );
+    resolvedDevices.camera = matchDeviceId(
+      devices.filter((device) => device.kind === "videoinput"),
+      settings.cameraDeviceId,
+      settings.cameraLabel,
+    );
+  } catch {
+    // keep the previous resolution
+  }
+}
+
+function watchDeviceSettings(): void {
+  let appliedKey = "";
+  const update = (): void => {
+    void resolveSavedDevices().then(() => {
+      const key = JSON.stringify(resolvedDevices);
+      if (key === appliedKey) {
+        return;
+      }
+      appliedKey = key;
+      // The speaker follows the RESOLVED device (the saved hash may be stale).
+      roomAudio.setOutputDevice(resolvedDevices.speaker);
+      notifications.setOutputDevice(resolvedDevices.speaker);
+    });
+  };
+  settingsStore.subscribe(update); // Apply re-resolves (a fresh hash was just saved)
+  navigator.mediaDevices.addEventListener("devicechange", update); // hotplug / late labels
+  update();
+}
+
 /** App entry: load the directory, auto-resume the most recently used connection. */
 export async function bootstrapApp(): Promise<void> {
   await settingsStore.load();
   watchNoiseSettings(); // an engine pick rebuilds the detour while voice/call is live
+  watchDeviceSettings(); // device picks re-resolve (hashes die across restarts)
   installHotkeys(); // global OS chords + the window keydown (local binds)
   notifications.setToastConfig({
     dismissSeconds: () => settingsStore.getSnapshot().toastDismissSeconds,
@@ -869,8 +1142,9 @@ async function openSession(recordId: string): Promise<void> {
   try {
     await session.start();
     session.attachmentCache.setDiskBudget(settingsStore.getSnapshot().imageCacheMegabytes * 1024 * 1024);
-    roomAudio.setOutputDevice(settingsStore.getSnapshot().speakerDeviceId); // the saved sink, before any chain attaches
-    notifications.setOutputDevice(settingsStore.getSnapshot().speakerDeviceId); // UI sounds follow the same speaker (oak's playout line)
+    await resolveSavedDevices(); // ids die across restarts — resolve by label first
+    roomAudio.setOutputDevice(resolvedDevices.speaker); // the saved sink, before any chain attaches
+    notifications.setOutputDevice(resolvedDevices.speaker); // UI sounds follow the same speaker (oak's playout line)
     appStore.patch({
       loginFormOpen: false,
       loginError: null,
@@ -1583,7 +1857,7 @@ async function connectVoiceRoom(channel: Channel): Promise<void> {
       });
       sfuSession = sfu;
       sfu.micEnhancer = enhanceMicTrack; // the suppression detour — runs BEFORE the publisher sees a sample
-      sfu.microphoneDeviceId = settingsStore.getSnapshot().microphoneDeviceId;
+      sfu.microphoneDeviceId = resolvedDevices.microphone;
       await sfu.start();
       const mic = sfu.getMicTrack();
       if (mic) {
@@ -1944,7 +2218,7 @@ export async function shareTarget(target: ShareTarget): Promise<void> {
     await window.spaceCapture?.select(target.id, target.kind === "screen");
     const display = await navigator.mediaDevices.getDisplayMedia({
       video: true,
-      audio: target.kind === "screen" ? { channelCount: { ideal: 2 } } : false,
+      audio: target.kind === "screen" ? LOOPBACK_AUDIO_CONSTRAINTS : false,
     });
     localDisplayStream = display;
     display.getVideoTracks()[0]?.addEventListener("ended", () => {
@@ -1981,7 +2255,7 @@ export async function toggleCamera(): Promise<void> {
     await stopCameraLocal();
     return;
   }
-  const pickedCamera = settingsStore.getSnapshot().cameraDeviceId;
+  const pickedCamera = resolvedDevices.camera;
   try {
     if (appStore.getSnapshot().sharing) {
       await stopShareInternal();
@@ -2337,20 +2611,19 @@ function stopStream(stream: MediaStream | null): void {
 }
 
 async function captureCallMic(): Promise<MediaStream> {
-  const settings = settingsStore.getSnapshot();
   // Same policy as the voice room capture: AEC/AGC always on, the built-in
-  // suppressor off — the selectable engine owns noise. The saved deviceId may
-  // be UNKNOWN in this window (Chromium scopes device ids per origin — a dev
-  // server id is garbage under file:// and vice versa, ditto a yanked USB
-  // mic): on OverconstrainedError fall back to the system default.
+  // suppressor off — the selectable engine owns noise. The pick comes from the
+  // RESOLVED devices (the saved hash may be stale across restarts — label
+  // recovery in device-match.ts); on OverconstrainedError (a yanked USB mic)
+  // fall back to the system default.
   const baseConstraints = { echoCancellation: true, noiseSuppression: false, autoGainControl: true };
-  const constraints = settings.microphoneDeviceId !== null
-    ? { ...baseConstraints, deviceId: { exact: settings.microphoneDeviceId } }
+  const constraints = resolvedDevices.microphone !== null
+    ? { ...baseConstraints, deviceId: { exact: resolvedDevices.microphone } }
     : baseConstraints;
   try {
     return await navigator.mediaDevices.getUserMedia({ audio: constraints });
   } catch (error: unknown) {
-    if (settings.microphoneDeviceId !== null && error instanceof DOMException && error.name === "OverconstrainedError") {
+    if (resolvedDevices.microphone !== null && error instanceof DOMException && error.name === "OverconstrainedError") {
       log.warn("call", "saved microphone unavailable in this window — using the system default");
       return navigator.mediaDevices.getUserMedia({ audio: baseConstraints });
     }
@@ -2927,7 +3200,7 @@ export async function toggleCallCamera(): Promise<void> {
     appStore.patch({ callCameraOn: false });
     return;
   }
-  const pickedCamera = settingsStore.getSnapshot().cameraDeviceId;
+  const pickedCamera = resolvedDevices.camera;
   try {
     const cameraStream = await navigator.mediaDevices.getUserMedia({
       video: {
@@ -2987,7 +3260,7 @@ export async function callShareTarget(target: ShareTarget): Promise<void> {
     await window.spaceCapture?.select(target.id, target.kind === "screen");
     const display = await navigator.mediaDevices.getDisplayMedia({
       video: true,
-      audio: target.kind === "screen" ? { channelCount: { ideal: 2 } } : false,
+      audio: target.kind === "screen" ? LOOPBACK_AUDIO_CONSTRAINTS : false,
     });
     callDisplayStream = display;
     display.getVideoTracks()[0]?.addEventListener("ended", () => {
