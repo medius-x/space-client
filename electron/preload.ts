@@ -122,6 +122,25 @@ contextBridge.exposeInMainWorld("spaceToast", {
   },
 });
 
+/** Global-hotkey bridge (2026-09-18): the renderer pushes the full global set
+ *  (main registers it OS-wide) and receives presses back — a chord fires while
+ *  the window has NO focus (mute from a fullscreen game). */
+contextBridge.exposeInMainWorld("spaceHotkey", {
+  sync(entries: { id: string; accelerator: string }[]): Promise<unknown> {
+    return ipcRenderer.invoke("space-hotkey:sync", entries);
+  },
+  onHotkey(callback: (actionId: string) => void): void {
+    // Single-subscriber channel: replace any previous listener — a remount
+    // (HMR, StrictMode) must not stack a second one and double-dispatch.
+    ipcRenderer.removeAllListeners("space-hotkey:press");
+    ipcRenderer.on("space-hotkey:press", (_event, actionId: unknown) => {
+      if (typeof actionId === "string") {
+        callback(actionId);
+      }
+    });
+  },
+});
+
 /** Capture-picker bridge (M4): desktop sources with previews + the grant hint. */
 contextBridge.exposeInMainWorld("spaceCapture", {
   sources(): Promise<unknown> {

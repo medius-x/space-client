@@ -1,5 +1,6 @@
 import { Emitter } from "../lib/store";
 import { kv } from "../persistence/kv-client";
+import { DEFAULT_KEYBINDS, resolveKeybinds, type ActionId } from "../logic/keybinds";
 
 /**
  * App-wide client settings (oak's SettingsStore — the M7 subset that maps onto
@@ -45,6 +46,10 @@ export interface ClientSettings {
   microphoneDeviceId: string | null;
   speakerDeviceId: string | null;
   cameraDeviceId: string | null;
+  /** Keyboard shortcuts (2026-09-18): action id → accelerator ("" = unbound).
+   *  Global-scope entries register OS-wide through the main process — the mute
+   *  toggle works from an unfocused game; local entries match a window keydown. */
+  keybinds: Partial<Record<ActionId, string>>;
 }
 
 export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
@@ -62,6 +67,7 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   microphoneDeviceId: null,
   speakerDeviceId: null,
   cameraDeviceId: null,
+  keybinds: { ...DEFAULT_KEYBINDS },
 };
 
 const KV_KEY = "client-settings";
@@ -100,6 +106,10 @@ export class SettingsStore extends Emitter {
       if (!NS_ENGINES.includes(this.settings.noiseSuppressionEngine)) {
         this.settings = { ...this.settings, noiseSuppressionEngine: DEFAULT_CLIENT_SETTINGS.noiseSuppressionEngine };
       }
+      // Keybinds: defaults ⊕ stored ("" stays unbound, garbage falls back to the
+      // default, ids not in the catalog are dropped — the same forward-compat
+      // sanitize as the engine list above).
+      this.settings = { ...this.settings, keybinds: resolveKeybinds(rest.keybinds ?? {}) };
     }
     this.loaded = true;
     this.emit();

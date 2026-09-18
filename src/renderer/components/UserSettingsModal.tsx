@@ -21,6 +21,7 @@ import { CHANGE_NICKNAME_PERMISSION, type NotificationPrefs } from "../../types"
 import { useDisplayName } from "../hooks/useDisplayName";
 import { Avatar } from "./Avatar";
 import { AvatarEditor, userAvatarApi } from "./ProfileModal";
+import { KeybindsSection } from "./KeybindsSection";
 
 /**
  * User settings — oak's SettingsWindow. The sections split by SCOPE (user
@@ -34,19 +35,22 @@ import { AvatarEditor, userAvatarApi } from "./ProfileModal";
  * (oak parity — their buttons act directly).
  */
 
-type Section = "general" | "account" | "audio" | "video" | "appearance" | "notifications" | "connections";
+type Section = "general" | "account" | "audio" | "video" | "keybinds" | "appearance" | "notifications" | "connections";
 
 const SECTIONS: { key: Section; label: string }[] = [
   { key: "general", label: "General" },
   { key: "account", label: "Account" },
   { key: "audio", label: "Audio" },
   { key: "video", label: "Video" },
+  { key: "keybinds", label: "Keybinds" },
   { key: "appearance", label: "Appearance" },
   { key: "notifications", label: "Notifications" },
   { key: "connections", label: "Connections" },
 ];
 
-/** The sections that stage their edits behind the window-level Apply button. */
+/** The sections that stage their edits behind the window-level Apply button.
+ *  Keybinds is deliberately NOT here: it applies per binding with its own
+ *  ✓/✕ confirmation over the recorder pill (user decision 2026-09-18). */
 const STAGED_SECTIONS: ReadonlySet<Section> = new Set(["audio", "video", "appearance", "notifications"]);
 
 /** The SERVER-related sections: the panel heading appends " — {server name}"
@@ -105,6 +109,7 @@ export function UserSettingsModal({ session }: { session: ConnectionSession }): 
         {section === "account" ? <AccountSection session={session} /> : null}
         {section === "audio" ? <AudioSection staged={staged} /> : null}
         {section === "video" ? <VideoSection staged={staged} /> : null}
+        {section === "keybinds" ? <KeybindsSection /> : null}
         {section === "appearance" ? <AppearanceSection staged={staged} /> : null}
         {section === "notifications" ? <NotificationsSection session={session} staged={staged} /> : null}
         {section === "connections" ? <ConnectionsSection session={session} /> : null}
@@ -124,7 +129,7 @@ export function UserSettingsModal({ session }: { session: ConnectionSession }): 
 // The staged draft (oak's syncControls/applyButton wiring, React shape)
 // ---------------------------------------------------------------------------
 
-interface StagedSettings {
+export interface StagedSettings {
   /** The draft value of a setting: the staged override, else the stored one. */
   value<K extends keyof ClientSettings>(key: K): ClientSettings[K];
   set<K extends keyof ClientSettings>(key: K, next: ClientSettings[K]): void;

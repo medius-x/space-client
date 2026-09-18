@@ -621,6 +621,109 @@ now» без подзаголовка, кнопкой-соседом Save change
 — выключен = серверный шедулер не чистит вовсе, поле времени дизейблится (ручной запуск и
 событийная очистка не зависят от тоггла). Сервер 273/273.
 
+**Настраиваемые горячие клавиши + глобальный mute без фокуса (#480, 2026-09-18).**
+Юзер-решения: каталог Discord-совместимый, скоуп «глобальные + локальные»; фидбек
+глобального toggle-mute — ЗВУК-свип (возрастающий = unmute, убывающий = mute, НЕ стук
+входа/выхода — должен отличаться), тост не нужен; PTT — бэклог отдельным раундом
+(Electron globalShortcut НЕ даёт keyup; нужен нативный хук вроде uiohook-napi — первый
+нативный модуль, отдельное решение). **Каталог** (`domain/logic/keybinds.ts`, чистый):
+global — Toggle Mute `Ctrl+Shift+M`, Toggle Deafen `Ctrl+Shift+D`, Toggle NS
+`Ctrl+Shift+N`; local — Next/Prev Channel `Alt+↓/↑`. Unbound по умолчанию: decline-call
+(глобальный Esc украл бы Escape у всей ОС), accept-call (**ОТКАЗ от дискордова Ctrl+Enter:
+OS-wide хорд съедает клавишу везде, а Ctrl+Enter — перенос строки композера / send при
+ctrlEnterSends — глобальная регистрация сломала бы контракт ввода**), mark-channel-read
+(Esc занят модалками). **Механика глобальных:** renderer владеет картой — `installHotkeys()`
+(bootstrap, сразу после watchNoiseSettings) пушит полный global-сет invoke
+`space-hotkey:sync` → main `globalShortcut.unregisterAll()+register` каждый → статус
+per-action `{ok|taken}` (`isRegistered()===false` после register — Windows молча фейлит
+при занятом чужим процессом хорде: второй dev-инстанс/чужое приложение → амбер-бейдж
+«In use by another application» в UI); пресс = `webContents.send("space-hotkey:press", id)`
+ТОЛЬКО в главное окно → `dispatchHotkeyAction` в runtime-синглтоне; `will-quit →
+unregisterAll()`. Синк только при ИЗМЕНЕНИИ canonical payload (JSON-сравнение — чужие
+apply настроек не перерегистрируют ОС-хорды). **Два пути НИКОГДА не смешиваются:**
+глобальный хорд ВСЕГДА приходит через OS-hook (и в фокусе тоже — RegisterHotKey не
+пропускает клавишу в приложение), поэтому локальный keydown-матчер матчит только
+scope=local (иначе двойной тоггл). **Локальный keydown** (window-листенер в runtime):
+skip defaultPrevented/repeat; bare-клавиша в INPUT/TEXTAREA/contenteditable = обычная
+печать (Alt+↓/↑ в композере работают); preventDefault только на хордах с модификатором.
+**Диспетчер:** `voiceSurfaceFor` (call бьёт room; ringing-in поверх комнаты = room —
+мик звонка ещё не захвачен, комнатный жив; none = тишина) → toggleCall*/toggleSelf*;
+NS-тоггл = off↔последний движок через `settingsStore.apply` (живой пайплайн перестраивает
+watchNoiseSettings); accept/decline-call = `callCardAction` (ВЫРЕЗАНО из замыкания
+тост-карточки — кнопки и хоткей делят семантику, включая фоновый ринг с промоутом
+инстанса); mark-read = ackActiveChannel; шаг каналов = adjacentChannelId по TEXT-каналам
+(no-op в dmMode). **Mute-кью** (`logic/mute-cue.ts` + NotificationHub.playMuteCue): один
+осциллятор с portamento 500↔900 Гц / 120 мс (unmute вверх, mute вниз), гейт soundEnabled,
+направление = НОВОЕ состояние (room: !selfMuted, call: !callMicOn); кнопочный путь без
+звука (в фокусе видно UI). **Акцелератор-алгебра:** канон-формат Electron
+(«Control+Shift+M»), `acceleratorFromKeyboardEvent` (event.code→токен: KeyM→M,
+ArrowDown→Down, Digit/Numpad, F1-24, пунктуация; немапимые коды = null),
+`normalizeAccelerator` (синонимы Ctrl/Cmd/CmdOrCtrl→Control, Esc→Escape, реордер
+модификаторов, мусор→null), `resolveKeybinds` (дефолты⊕stored, «»=unbound, unknown id
+дроп — forward-compat), конфликт-детект ЛЮБОГО скоупа (local+global дубль = двойной
+выстрел). Хранение: `ClientSettings.keybinds` (тот же KV client-settings), секция
+**Keybinds** в UserSettingsModal (staged, между Video и Appearance; рекордер: click →
+«Press keys…», Escape = отмена записи (capture+stopImmediatePropagation — модал жив),
+Backspace = unbind, чистые модификаторы игнор; per-row ⟲ + «Reset all keybinds»;
+бейджи конфликт/OS-taken/глобальная-bare-клавиша-ворнинга). **Диагностика переехала
+Ctrl+Shift+D → Ctrl+Shift+F12** (дефолт deafen забрал дискордовскую хорду — иначе каждый
+focused-пресс глушил И открывал панель). Тесты: keybinds.test.ts (19) + mute-cue.test.ts
+(5, инвариант попарного непересечения трёх частотных регистров: стук 150-210 / деafen
+280-480 / мут 500-900). Гейт 289/289 + typecheck + build. **Смоук-вердикт: всё работает.**
+**Полиш-итерация (юзер-решения по смоуку):** (1) **deafen-кью** — тот же свип регистром
+НИЖЕ (`deafenCue`: 280↔480 Гц против мьютовых 500↔900; три звуковых семейства попарно не
+пересекаются — тест), `playDeafenCue` рядом с playMuteCue (общий приватный `playSweep`),
+диспетчер играет на toggle-deafen с направлением НОВОЕ состояние; (2) секция Keybinds
+УШЛА из STAGED (window-level Apply убран) — **per-row подтверждение**: записанный хорд
+висит pending в пилюле, ПОВЕРХ её правого края две квадратные кнопки (зелёная mdi-check
+= сохранить через `settingsStore.apply` — OS-перерегистрация едет по settings-подписке;
+красная mdi-close = откат; pending один на всю секцию, старт другой записи/клик по чужой
+пилюле дропает его; Backspace в рекордере стейджит unbind, reset-кнопка тоже через pending);
+конфликт-бейдж считается по ПОКАЗАННОМУ значению (pending виден до подтверждения);
+(3) reset-кнопка (mdi-refresh) рендерится ВСЕГДА (выравнивание колонок — live-репорт),
+disabled на значении-равном-дефолту. Гейт 291/291 + typecheck + build. Смоук pending
+(полиш: deafen-звук, ✓/✕-флоу, выравнивание). **Полиш-итерация 2 (live-репорты):**
+(а) **рекордер был ГЛУХ к занятым хордам** — зарегистрированный OS-хорд НЕ доходит до
+окна вовсе (RegisterHotKey съедает клавишу до keydown), запись конфликтующего хорда
+выглядела как «ничего не происходит»; лекарь: на время живой записи
+`suspendGlobalHotkeys()` (sync([]) + lastSynced="[]") / по концу записи
+`resumeGlobalHotkeys()` (сброс lastSynced + форс-синк — JSON-детектор одинаковый payload
+пропустил бы и оставил ОС-хорды мёртвыми); (б) **конфликт-ПОПАП** при записи занятого
+хорда (дубль любого скоупа = двойной выстрел): хорд ОТКАЗЫВАЕТСЯ (не pending), над
+пилюлей всплывает amber-попап «{хорд} is already bound to {действие}» (до следующего
+действия); бейдж «Also used by» остался для pending-состояний через reset; (в) taken-
+бейдж («In use by another application») ПЕРЕЕХАЛ из пилюли-обёртки в label-блок; ГРАБЛЯ
+ВЫРАВНИВАНИЯ (два захода): фикс-ширина пилюли 170px с ellipsis выровняла только ШИРИНУ,
+но не ПОЗИЦИЮ — `justify-content: space-between` при label шириной по контенту оставлял
+пилюлю ПЛАВАТЬ в середине строки (длиннее подпись — левее); лекарь = `flex: 1` на
+`.keybind-label` — label забирает всё свободное место, пилюля+reset жёстко прибиты
+вправо. Гейт 291/291 + typecheck + build. Смоук pending. **Полиш-итерация 3 (юзер-решения):**
+(1) sweep-кью ПЕРЕЕХАЛИ в сами toggle-функции (`toggleSelfMute/toggleSelfDeafen/
+toggleCallMic/toggleCallDeafen` — включая pre-accept track-ветку звонка) — звук теперь
+одинаков у кнопок voice panel И хоткеев (диспетчер звук не дублирует); (2) браузерный
+focus-ring у кнопок voice-bar после МЫШИННОГО клика висел и после хоткей-тоггла —
+`.voice-toggle:focus:not(:focus-visible) { outline: none }` (клавиатурный фокус ринг
+сохраняет); (3) reset-кнопка Keybinds = серая пилюля 26×26 (--sp-control, mdi-refresh;
+был голый глиф — читался как надпись), клик открывает CONFIRM-МОДАЛ («Reset the binding
+for {label} to {дефолт}?», Cancel/Reset) — сброс не срабатывает сразу. Гейт 291/291 +
+typecheck + build. Смоук pending. **Полиш-итерация 4 (юзер-решения):** (1) focus-ring
+голосовых кнопок убран БЕЗУСЛОВНО (`.voice-toggle:focus/:focus-visible { outline: none }`,
+обе поверхности — voice-bar и room-toolbar; `:not(:focus-visible)` не хватало — эвристика
+Chromium помечает фокус «клавиатурным» после недавней печати в чате, и мышиный клик всё
+равно рисовал ринг); (2) confirm-модал переехал с ПЕР-РОУ reset (юзер: там уже есть
+✓/✕-подтверждение) на «Reset all keybinds» — та стала ВИДИМОЙ серой кнопкой
+(.keybind-reset-all, тот же --sp-control), модал «Reset every binding — global and
+in-app — back to its default?». Гейт 291/291 + typecheck + build. Смоук pending.
+**Полиш-итерация 5 (live-репорт):** (1) «Reset all keybinds» выровнена ВПРАВО (все
+reset-контролы секции справа — юзер-решение); (2) БАГ ДВОЙНОЙ ЗАПИСИ: recording-state
+жил локально в каждой пилюле — клик по второй НЕ гасил первую, оба capture-keydown-
+листенера висели одновременно и первый (ранее зарегистрированный) съедал каждый хорд,
+ввод шёл «по очереди в поля»; лекарь = state перенесён в секцию (`recordingId`,
+единственный keydown-sink), рекордер стал чисто презентационным; ПЛЮС window-pointerdown
+(capture): клик вне `.keybind-recorder` отменяет запись («Press keys…» гаснет); suspend
+OS-хордов теперь на всю сессию записи ([recording]-булево — прыжок пилюля→пилюля не
+дёргает suspend/resume). Гейт 291/291 + typecheck + build. Смоук pending.
+
 M5 закрыт и закоммичен (`b14b2a6`). M6: **друзья** —
 `GET /api/users/me/relationships` (типы `FRIEND|BLOCKED|PENDING_INCOMING|
 PENDING_OUTGOING` — сервер сам сворачивает направление в caller-view); запрос

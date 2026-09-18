@@ -27,11 +27,13 @@ export function MainScreen({ session }: { session: ConnectionSession }): React.J
   const activeDmId = useStore(appStore, (state) => state.activeDmId);
   const roomViewOpen = useStore(appStore, (state) => state.roomViewOpen);
 
-  // The diagnostics panel is a hidden hotkey away (Ctrl+Shift+D) — the default
-  // window must look exactly like what a user gets.
+  // The diagnostics panel is a hidden hotkey away. It USED to live on
+  // Ctrl+Shift+D — 2026-09-18 the chord moved to F12: Discord's Toggle Deafen
+  // default claimed Ctrl+Shift+D, and a global chord would have opened the
+  // panel on every focused deafen toggle.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.ctrlKey && event.shiftKey && event.code === "KeyD") {
+      if (event.ctrlKey && event.shiftKey && event.code === "F12") {
         event.preventDefault();
         appStore.patch({ diagOpen: !appStore.getSnapshot().diagOpen });
       }

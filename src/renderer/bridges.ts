@@ -94,10 +94,23 @@ export interface ToastBridge {
   onCallAction(callback: (action: "accept" | "decline") => void): void;
 }
 
+/** Per-action outcome of a global-chord registration: "taken" = the OS chord is
+ *  held by another process (a second dev instance, another application) — the
+ *  settings section badges the row instead of pretending it works. */
+export type HotkeyRegistrationStatus = "ok" | "taken";
+
+export interface HotkeyBridge {
+  /** Push the FULL global set — main re-registers wholesale. */
+  sync(entries: { id: string; accelerator: string }[]): Promise<Record<string, HotkeyRegistrationStatus>>;
+  /** A global chord fired (main → the main window only). */
+  onHotkey(callback: (actionId: string) => void): void;
+}
+
 declare global {
   interface Window {
     spaceCapture?: CaptureBridge;
     spaceWindow?: WindowBridge;
     spaceToast?: ToastBridge;
+    spaceHotkey?: HotkeyBridge;
   }
 }

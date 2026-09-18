@@ -1,4 +1,4 @@
-import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, ipcMain, net, protocol, screen, session, shell } from "electron";
+import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, globalShortcut, ipcMain, net, protocol, screen, session, shell } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -277,6 +277,43 @@ ipcMain.handle("space-shell:openExternal", (_event, url: unknown) => {
   }
   void shell.openExternal(url);
   return true;
+});
+
+// Global hotkeys (2026-09-18): the OS-level chord that mutes the mic while the
+// window has NO focus (the user is in a game). The renderer OWNS the map — it
+// pushes the full global set after every keybinds change; main just re-registers
+// it wholesale (unregisterAll + register — the map is tiny). register() fails
+// SILENTLY on Windows when another process (a second dev instance, another app)
+// already holds the chord, so the per-action status is probed with
+// isRegistered() AFTER the attempt: "taken" surfaces in the settings UI.
+ipcMain.handle("space-hotkey:sync", (_event, entries: unknown): Record<string, "ok" | "taken"> => {
+  globalShortcut.unregisterAll();
+  const status: Record<string, "ok" | "taken"> = {};
+  if (!Array.isArray(entries)) {
+    return status;
+  }
+  for (const entry of entries) {
+    if (entry === null || typeof entry !== "object" || typeof (entry as { id?: unknown }).id !== "string"
+      || typeof (entry as { accelerator?: unknown }).accelerator !== "string") {
+      continue;
+    }
+    const { id, accelerator } = entry as { id: string; accelerator: string };
+    try {
+      globalShortcut.register(accelerator, () => {
+        // Only the MAIN window runs the runtime; toast/popout never load it. A
+        // press while the renderer is dead is dropped — fire-and-forget, the
+        // same contract as toast:clicked.
+        if (mainWindowRef && !mainWindowRef.isDestroyed()) {
+          mainWindowRef.webContents.send("space-hotkey:press", id);
+        }
+      });
+    } catch (error) {
+      appendLog(`[hotkey] register ${id} "${accelerator}" failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    status[id] = globalShortcut.isRegistered(accelerator) ? "ok" : "taken";
+    appendLog(`[hotkey] ${id} "${accelerator}" → ${status[id]}`);
+  }
+  return status;
 });
 
 // OG link-preview fetching (oak's LinkPreviewService counterpart). The renderer's
@@ -683,4 +720,9 @@ app.whenReady().then(() => {
 
 app.on("window-all-closed", () => {
   app.quit();
+});
+
+// OS-wide chords must die with the app — nothing else frees them.
+app.on("will-quit", () => {
+  globalShortcut.unregisterAll();
 });

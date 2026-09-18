@@ -23,7 +23,17 @@ import type { MentionIdentity } from "../domain/logic/notification-decider";
 import { dmToastHeader, toastServerHeader } from "../domain/logic/toast-preview";
 import { paletteColor } from "../domain/logic/user-palette";
 import { displayNameOf } from "../domain/logic/display-name";
-import { SettingsStore } from "../domain/stores/SettingsStore";
+import { SettingsStore, type ClientSettings } from "../domain/stores/SettingsStore";
+import {
+  acceleratorFromKeyboardEvent,
+  adjacentChannelId,
+  globalBindingsForSync,
+  isBareKeyAccelerator,
+  KEYBIND_ACTIONS,
+  resolveKeybinds,
+  voiceSurfaceFor,
+  type ActionId,
+} from "../domain/logic/keybinds";
 import type { NotificationPrefs } from "../types";
 import { notifications } from "./notifications";
 import {
@@ -188,6 +198,22 @@ export const roomAudio = new RoomAudio();
 export const connectionDirectory = new ConnectionDirectory();
 /** App-wide client settings (instant-apply, KV-persisted) — M7. */
 export const settingsStore = new SettingsStore();
+
+/** Per-action outcome of the OS chord registration, as main reports it ("taken" =
+ *  another process holds the chord — a second dev instance or a foreign app).
+ *  The Keybinds settings section badges those rows instead of pretending. */
+class KeybindStatusStore extends Emitter {
+  private status: Partial<Record<ActionId, "ok" | "taken">> = {};
+
+  getSnapshot = (): Partial<Record<ActionId, "ok" | "taken">> => this.status;
+
+  setAll(next: Partial<Record<ActionId, "ok" | "taken">>): void {
+    this.status = next;
+    this.emit();
+  }
+}
+
+export const keybindStatusStore = new KeybindStatusStore();
 
 /** The single active session (v1). Login flow and the rail re-point it. */
 let activeSession: ConnectionSession | null = null;
@@ -655,6 +681,7 @@ function makeSessionHooks(recordId: string): SessionHooks {
 export async function bootstrapApp(): Promise<void> {
   await settingsStore.load();
   watchNoiseSettings(); // an engine pick rebuilds the detour while voice/call is live
+  installHotkeys(); // global OS chords + the window keydown (local binds)
   notifications.setToastConfig({
     dismissSeconds: () => settingsStore.getSnapshot().toastDismissSeconds,
     maxToasts: () => settingsStore.getSnapshot().maxToasts,
@@ -1898,7 +1925,9 @@ export function stopShare(): Promise<void> {
 // Voice control commands (self toggles + moderation)
 // ---------------------------------------------------------------------------
 
-/** Self-mute: the toggle reads ONLY the self flag — a moderator's mute is not ours to lift. */
+/** Self-mute: the toggle reads ONLY the self flag — a moderator's mute is not ours to lift.
+ *  The sweep cue lives HERE (user decision): every path to the toggle — the voice-bar
+ *  button and the global hotkey alike — announces the new state identically. */
 export function toggleSelfMute(): void {
   const session = activeSession;
   const channelId = appStore.getSnapshot().activeVoiceChannelId;
@@ -1906,6 +1935,9 @@ export function toggleSelfMute(): void {
     return;
   }
   const marks = session.voiceControlStore.marksFor(session.username());
+  if (settingsStore.getSnapshot().soundEnabled) {
+    notifications.playMuteCue(!marks.selfMuted); // the sweep announces the NEW state
+  }
   session.sendVoiceControl("/app/voice.mute", channelId, session.username(), { muted: !marks.selfMuted });
 }
 
@@ -1916,6 +1948,9 @@ export function toggleSelfDeafen(): void {
     return;
   }
   const marks = session.voiceControlStore.marksFor(session.username());
+  if (settingsStore.getSnapshot().soundEnabled) {
+    notifications.playDeafenCue(!marks.selfDeafened);
+  }
   session.sendVoiceControl("/app/voice.deafen", channelId, session.username(), { deafened: !marks.selfDeafened });
 }
 
@@ -1947,6 +1982,171 @@ export function kickVoiceUser(username: string): void {
     return;
   }
   session.sendVoiceControl("/app/voice.kick", channelId, username, {});
+}
+
+// ---------------------------------------------------------------------------
+// Hotkeys (user decision 2026-09-18): GLOBAL chords fire while the window has
+// NO focus — mute from a fullscreen game. Two deliberately separate paths: a
+// global chord ALWAYS arrives through the OS hook (main → IPC), even when the
+// window IS focused; local chords match the window keydown here. Never both —
+// a local match for a global action would double-toggle.
+// ---------------------------------------------------------------------------
+
+/** The engine to return to when the NS hotkey re-enables suppression. */
+let lastNoiseEngine: ClientSettings["noiseSuppressionEngine"] = "rnnoise";
+
+/** off ↔ the last real engine. Commits through the settings store — the existing
+ *  watchNoiseSettings rebuilds the LIVE pipeline; nothing here touches audio. */
+export function toggleNoiseSuppression(): void {
+  const engine = settingsStore.getSnapshot().noiseSuppressionEngine;
+  if (engine !== "off") {
+    lastNoiseEngine = engine;
+  }
+  settingsStore.apply({ noiseSuppressionEngine: engine === "off" ? lastNoiseEngine : "off" });
+}
+
+/** One step through the sidebar's text channels (Alt+↓/↑ — the Discord walk). */
+function stepChannel(delta: 1 | -1): void {
+  const state = appStore.getSnapshot();
+  const session = activeSession;
+  if (!session || state.dmMode) {
+    return; // the Home view has no server channels to walk
+  }
+  const next = adjacentChannelId(session.channelStore.getSnapshot(), state.activeChannelId, delta);
+  if (next !== null) {
+    setActiveChannel(next);
+  }
+}
+
+/** The one entry point for BOTH press paths (the OS hook for global chords, the
+ *  window keydown for local ones). Unknown ids are silently dropped (a stored
+ *  bind from a newer client). */
+export function dispatchHotkeyAction(actionId: string): void {
+  const state = appStore.getSnapshot();
+  switch (actionId) {
+    case "toggle-mute": {
+      // The sweep cue lives in the toggle functions themselves — the hotkey and
+      // the voice-bar button announce the new state identically (user decision).
+      const surface = voiceSurfaceFor(state);
+      if (surface === "call") {
+        toggleCallMic();
+      } else if (surface === "room") {
+        toggleSelfMute();
+      }
+      log.info("hotkey", `toggle-mute surface=${surface}`);
+      return;
+    }
+    case "toggle-deafen": {
+      const surface = voiceSurfaceFor(state);
+      if (surface === "call") {
+        toggleCallDeafen();
+      } else if (surface === "room") {
+        toggleSelfDeafen();
+      }
+      log.info("hotkey", `toggle-deafen surface=${surface}`);
+      return;
+    }
+    case "toggle-noise-suppression":
+      toggleNoiseSuppression();
+      log.info("hotkey", `toggle-noise-suppression engine=${settingsStore.getSnapshot().noiseSuppressionEngine}`);
+      return;
+    case "accept-call":
+      callCardAction("accept");
+      return;
+    case "decline-call":
+      callCardAction("decline");
+      return;
+    case "next-channel":
+      stepChannel(1);
+      return;
+    case "prev-channel":
+      stepChannel(-1);
+      return;
+    case "mark-channel-read":
+      ackActiveChannel();
+      return;
+    default:
+      return;
+  }
+}
+
+function isTextEntryTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  return target.isContentEditable || target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT";
+}
+
+/** The window keydown: local-scope chords only. Chords with Ctrl/Alt/Meta fire
+ *  everywhere (Alt+↓ must work with the composer focused); a BARE key stays
+ *  plain typing inside inputs. preventDefault only for modifier chords — a
+ *  browser modifier (the Alt menu) must not flash on top of the action. */
+function onKeyDownHotkey(event: KeyboardEvent): void {
+  if (event.defaultPrevented || event.repeat) {
+    return; // a component (the recorder, autocomplete) already consumed it
+  }
+  const accelerator = acceleratorFromKeyboardEvent(event);
+  if (accelerator === null) {
+    return;
+  }
+  const bindings = resolveKeybinds(settingsStore.getSnapshot().keybinds);
+  for (const action of KEYBIND_ACTIONS) {
+    if (action.scope !== "local" || bindings[action.id] !== accelerator) {
+      continue;
+    }
+    if (isBareKeyAccelerator(accelerator) && isTextEntryTarget(event.target)) {
+      return;
+    }
+    if (!isBareKeyAccelerator(accelerator)) {
+      event.preventDefault();
+    }
+    dispatchHotkeyAction(action.id);
+    return;
+  }
+}
+
+let lastSyncedGlobalChords = "";
+
+/** Pushes the global set to main — but only when it actually changed: unrelated
+ *  settings applies emit the store too, and re-registering OS chords on every
+ *  toast-TTL tweak is churn for nothing. */
+function syncGlobalKeybinds(): void {
+  const entries = globalBindingsForSync(resolveKeybinds(settingsStore.getSnapshot().keybinds));
+  const payload = JSON.stringify(entries);
+  if (payload === lastSyncedGlobalChords) {
+    return;
+  }
+  lastSyncedGlobalChords = payload;
+  window.spaceHotkey?.sync(entries)
+    .then((status) => keybindStatusStore.setAll(status))
+    .catch(() => undefined);
+}
+
+/** bootstrapApp installs the whole hotkey layer ONCE (never at module top level —
+ *  the toast/popout windows bundle this file without bootstrapping it). */
+export function installHotkeys(): void {
+  window.spaceHotkey?.onHotkey((actionId) => dispatchHotkeyAction(actionId));
+  window.addEventListener("keydown", onKeyDownHotkey);
+  settingsStore.subscribe(() => syncGlobalKeybinds());
+  syncGlobalKeybinds(); // settings load emitted BEFORE this install — catch up now
+}
+
+/** Drop every OS chord registration for the duration of a RECORDING. A live
+ *  registration swallows the chord at the OS level (RegisterHotKey never
+ *  forwards it to the window), so without this the recorder is DEAF to our own
+ *  default binds — pressing them did nothing at all (live report). Recording
+ *  ends → {@link resumeGlobalHotkeys} re-registers the current set. */
+export function suspendGlobalHotkeys(): void {
+  window.spaceHotkey?.sync([]).catch(() => undefined);
+  lastSyncedGlobalChords = "[]";
+}
+
+/** The recording is over — re-register the current set, even though the
+ *  canonical payload may equal what flew before the suspend (the detector
+ *  alone would skip the invoke and leave the OS chords dead). */
+export function resumeGlobalHotkeys(): void {
+  lastSyncedGlobalChords = "";
+  syncGlobalKeybinds();
 }
 
 // ---------------------------------------------------------------------------
@@ -2431,9 +2631,10 @@ export function rejectIncomingCall(): void {
   teardownCall();
 }
 
-// The toast window's call-card buttons land here (relayed by main): the ACTIVE
-// ring answers in place; a BACKGROUND ring switches the instance first (#475).
-notifications.setCallActionHandler((action) => {
+/** The incoming card's Accept/Decline semantics — the toast buttons AND the
+ *  global hotkey share this one path: the ACTIVE ring answers in place; a
+ *  BACKGROUND ring switches the instance first (#475). */
+export function callCardAction(action: "accept" | "decline"): void {
   const state = appStore.getSnapshot();
   if (state.callState === "ringing-in") {
     if (action === "accept") {
@@ -2457,7 +2658,10 @@ notifications.setCallActionHandler((action) => {
   }
   sessionMap.get(ring.recordId)?.sendCallSignal({ type: "REJECT", to: ring.peer, sdp: null, candidate: null });
   clearBackgroundRing();
-});
+}
+
+// The toast window's call-card buttons land here (relayed by main).
+notifications.setCallActionHandler((action) => callCardAction(action));
 
 export function hangUpCall(): void {
   const state = appStore.getSnapshot();
@@ -2549,9 +2753,13 @@ function teardownCall(): void {
 }
 
 export function toggleCallMic(): void {
+  const soundOn = settingsStore.getSnapshot().soundEnabled;
   const session = callSession;
   if (session !== null) {
     const next = !session.isMicEnabled();
+    if (soundOn) {
+      notifications.playMuteCue(next);
+    }
     session.setMicEnabled(next);
     appStore.patch({ callMicOn: next });
     return;
@@ -2563,6 +2771,9 @@ export function toggleCallMic(): void {
   const track = callPublishedMic?.getAudioTracks()[0] ?? callMicStream?.getAudioTracks()[0] ?? null;
   if (track) {
     track.enabled = !track.enabled;
+    if (soundOn) {
+      notifications.playMuteCue(!track.enabled);
+    }
     appStore.patch({ callMicOn: track.enabled });
   }
 }
@@ -2579,6 +2790,9 @@ export function isCallMicEnabled(): boolean {
 export function toggleCallDeafen(): void {
   const session = callSession;
   const nowDeafened = !roomAudio.isDeafened();
+  if (settingsStore.getSnapshot().soundEnabled) {
+    notifications.playDeafenCue(nowDeafened);
+  }
   roomAudio.setDeafened(nowDeafened);
   if (session === null) {
     appStore.patch({ callDeafenedOn: nowDeafened });

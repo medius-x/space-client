@@ -1960,6 +1960,121 @@ input[type="checkbox"]:disabled { opacity: 0.5; cursor: default; }
 .settings-hint { font-size: 12px; color: var(--sp-text-dim); margin: 6px 0 10px; max-width: 520px; }
 .settings-status { font-size: 12px; color: var(--sp-text-muted); }
 
+/* Keybinds section (2026-09-18): one row per action — the label block on the
+   left, the recorder pill (+ reset) on the right. */
+.keybind-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+  max-width: 560px;
+}
+.keybind-label { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.keybind-label > span:first-child { font-size: 13px; color: var(--sp-text); }
+.keybind-hint { font-size: 11px; color: var(--sp-text-dim); }
+.keybind-badge {
+  font-size: 11px;
+  color: #dbb23c; /* amber — a warning that does not shout */
+  align-self: flex-start;
+}
+/* The recorder pill with its floating confirm pair — ✓/✕ sit ON TOP of the
+   pill's right edge while a recorded chord awaits confirmation. The pill is a
+   FIXED width so every row's input lines up on one edge (live report: the
+   varying chord labels spread the pills apart). */
+.keybind-recorder-wrap { position: relative; display: flex; align-items: center; flex-shrink: 0; }
+.keybind-recorder {
+  width: 170px;
+  padding: 6px 12px;
+  text-align: center;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--sp-text);
+  background: var(--sp-darkest);
+  border: 1px solid var(--sp-control);
+  border-radius: 4px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.keybind-recorder.recording {
+  color: var(--sp-text-dim);
+  border-color: #5865f2; /* blurple — listening */
+}
+.keybind-recorder.pending { padding-right: 64px; } /* room for the confirm pair */
+.keybind-conflict-popup {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #dbb23c; /* amber — the same warning voice as the badges */
+  background: var(--sp-darkest);
+  border: 1px solid #dbb23c;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+  white-space: nowrap;
+}
+.keybind-confirm {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 4px;
+}
+.keybind-confirm button {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.keybind-confirm button .icon { font-size: 14px; color: #ffffff; }
+.keybind-confirm-accept { background: #3ba55d; } /* green — save */
+.keybind-confirm-cancel { background: #ed4245; } /* red — revert */
+/* A grey pill, not a bare glyph (live request: the glyph alone read as text,
+   not as a button). Disabled = already the default binding. */
+.keybind-reset {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 0;
+  color: var(--sp-text-muted);
+  background: var(--sp-control);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.keybind-reset .icon { font-size: 14px; }
+.keybind-reset:hover:not(:disabled) { color: #ffffff; }
+.keybind-reset:disabled { opacity: 0.35; cursor: default; }
+/* The section-wide reset: a VISIBLE grey button (live request — the ghost style
+   read as plain text), same grey as the per-row reset pills. The container caps
+   at the rows' own 560px so the button's RIGHT edge lines up with the per-row
+   reset pills, not with the wider settings pane. */
+.keybind-reset-all-row { display: flex; justify-content: flex-end; max-width: 560px; }
+.keybind-reset-all {
+  padding: 6px 14px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--sp-text-muted);
+  background: var(--sp-control);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.keybind-reset-all:hover { color: #ffffff; }
+
 .roles-layout { display: flex; gap: 16px; height: 100%; min-height: 0; }
 .roles-list { width: 240px; flex-shrink: 0; overflow-y: auto; }
 .roles-list-header {
@@ -2394,6 +2509,13 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
    Active states: mute/deafen RED (cut off), NS/share GREEN (engine live /
    sharing) — applySelfVoiceState / applyNoiseEngineState / applyShareState. */
 .voice-bar-buttons { display: flex; justify-content: flex-end; gap: 8px; }
+/* NO focus ring on the voice toggles, at all (user decision after two rounds:
+   Chromium's :focus-visible heuristic still lights up after a mouse click that
+   follows keyboard input — typing in chat, then clicking Mute — and the ring
+   then hangs over the button after a hotkey toggle. The state is fully visible
+   from the button's color/icon anyway). */
+.voice-toggle:focus,
+.voice-toggle:focus-visible { outline: none; }
 .voice-bar-buttons .voice-toggle.on { background: var(--sp-red); }
 .voice-bar-buttons .voice-toggle.ns.on,
 .voice-bar-buttons .voice-toggle.share.on { background: var(--sp-green); }

@@ -1,6 +1,7 @@
 import { decideNotification, messageHasEveryoneHere, messageMentionsRole, messageMentionsUser, type MentionIdentity } from "../domain/logic/notification-decider";
 import { toastPreviewSegments } from "../domain/logic/toast-preview";
 import { knockSchedule } from "../domain/logic/knock-sound";
+import { deafenCue, muteCue } from "../domain/logic/mute-cue";
 import {
   CHIME_DECAY_TAU_S,
   CHIME_DURATION_SECONDS,
@@ -265,6 +266,46 @@ class NotificationHub {
         oscillator.start(startAt);
         oscillator.stop(startAt + note.durationSeconds);
       }
+    } catch {
+      // audio must never take the app down
+    }
+  }
+
+  /** The HOTKEY mute/unmute cue (user decision 2026-09-18): one gliding sweep —
+   *  rising when the mic returns, falling when it mutes — in a register far above
+   *  the knock's dry thumps. The user is in an unfocused game: the sound IS the
+   *  feedback, no toast is shown. Gated by the app's sound switch like every
+   *  other UI sound (the runtime checks it — audio must never decide policy). */
+  playMuteCue(muted: boolean): void {
+    this.playSweep(muteCue(muted));
+  }
+
+  /** The deafen twin of the mute cue (user request): the SAME sweep shape one
+   *  register lower — falling when deafen engages, rising when it lifts. */
+  playDeafenCue(deafened: boolean): void {
+    this.playSweep(deafenCue(deafened));
+  }
+
+  /** One oscillator, one glide, one soft envelope — the shared shape of both
+   *  voice-state cues. */
+  private playSweep(cue: ReturnType<typeof muteCue>): void {
+    try {
+      const context = this.ensureAudioContext();
+      const now = context.currentTime;
+      const master = context.createGain();
+      master.gain.value = cue.gain;
+      master.connect(context.destination);
+      const envelope = context.createGain();
+      envelope.gain.setValueAtTime(0, now);
+      envelope.gain.linearRampToValueAtTime(1, now + cue.attackSeconds);
+      envelope.gain.exponentialRampToValueAtTime(0.001, now + cue.durationSeconds);
+      envelope.connect(master);
+      const oscillator = context.createOscillator();
+      oscillator.frequency.setValueAtTime(cue.fromHz, now);
+      oscillator.frequency.linearRampToValueAtTime(cue.toHz, now + cue.durationSeconds);
+      oscillator.connect(envelope);
+      oscillator.start(now);
+      oscillator.stop(now + cue.durationSeconds);
     } catch {
       // audio must never take the app down
     }
