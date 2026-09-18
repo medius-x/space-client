@@ -15,6 +15,7 @@ import { notifications } from "../notifications";
 import { ApiError } from "../../core/rest";
 import type { ClientSettings } from "../../domain/stores/SettingsStore";
 import { advertisedAddress, DISK_CACHE_CHOICES, diskCacheLabel } from "../../domain/logic/settings-format";
+import { deviceLabelFor, matchDeviceId } from "../../domain/logic/device-match";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import { DEFAULT_NOTIFICATION_PREFS } from "../../domain/session/connection-record";
 import { CHANGE_NICKNAME_PERMISSION, type NotificationPrefs } from "../../types";
@@ -241,27 +242,39 @@ function GeneralSection({ session }: { session: ConnectionSession }): React.JSX.
 // ---------------------------------------------------------------------------
 
 /** One "System default + every device" row; labels may be blank before the
- *  first capture grant (Chromium hides them without permission). */
-function DeviceSelect({ label, kind, value, onChange }: {
+ *  first capture grant (Chromium hides them without permission). The DISPLAYED
+ *  value re-resolves the saved pick (id first, label fallback — the id hashes
+ *  do not survive app restarts, see device-match.ts). */
+function DeviceSelect({ label, kind, deviceId, deviceLabel, onChange }: {
   label: string;
   kind: MediaDeviceKind;
-  value: string | null;
-  onChange(deviceId: string | null): void;
+  deviceId: string | null;
+  deviceLabel: string | null;
+  onChange(deviceId: string | null, deviceLabel: string | null): void;
 }): React.JSX.Element {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   useEffect(() => {
-    void navigator.mediaDevices.enumerateDevices().then((all) => {
-      setDevices(all.filter((device) => device.kind === kind));
-    }).catch(() => undefined);
+    const refresh = (): void => {
+      void navigator.mediaDevices.enumerateDevices().then((all) => {
+        setDevices(all.filter((device) => device.kind === kind));
+      }).catch(() => undefined);
+    };
+    refresh();
+    navigator.mediaDevices.addEventListener("devicechange", refresh);
+    return () => navigator.mediaDevices.removeEventListener("devicechange", refresh);
   }, [kind]);
   const rowLabel = (device: MediaDeviceInfo): string =>
     device.label.length > 0 ? device.label : `${kind} ${device.deviceId.slice(-6)}`;
+  const displayValue = matchDeviceId(devices, deviceId, deviceLabel) ?? "";
   return (
     <label className="settings-field">
       <span>{label}</span>
       <select
-        value={value ?? ""}
-        onChange={(event) => onChange(event.target.value === "" ? null : event.target.value)}
+        value={displayValue}
+        onChange={(event) => {
+          const next = event.target.value === "" ? null : event.target.value;
+          onChange(next, deviceLabelFor(devices, next));
+        }}
       >
         <option value="">System default</option>
         {/* Chromium prepends SYNTHETIC alias rows ("Default - X" / "Communications - X",
@@ -325,14 +338,22 @@ function AudioSection({ staged }: { staged: StagedSettings }): React.JSX.Element
       <DeviceSelect
         label="Microphone"
         kind="audioinput"
-        value={staged.value("microphoneDeviceId")}
-        onChange={(deviceId) => staged.set("microphoneDeviceId", deviceId)}
+        deviceId={staged.value("microphoneDeviceId")}
+        deviceLabel={staged.value("microphoneLabel")}
+        onChange={(deviceId, deviceLabel) => {
+          staged.set("microphoneDeviceId", deviceId);
+          staged.set("microphoneLabel", deviceLabel);
+        }}
       />
       <DeviceSelect
         label="Speaker / headphones"
         kind="audiooutput"
-        value={staged.value("speakerDeviceId")}
-        onChange={(deviceId) => staged.set("speakerDeviceId", deviceId)}
+        deviceId={staged.value("speakerDeviceId")}
+        deviceLabel={staged.value("speakerLabel")}
+        onChange={(deviceId, deviceLabel) => {
+          staged.set("speakerDeviceId", deviceId);
+          staged.set("speakerLabel", deviceLabel);
+        }}
       />
       {devicesChanged ? (
         <div className="settings-warning">
@@ -350,8 +371,12 @@ function VideoSection({ staged }: { staged: StagedSettings }): React.JSX.Element
       <DeviceSelect
         label="Default camera"
         kind="videoinput"
-        value={staged.value("cameraDeviceId")}
-        onChange={(deviceId) => staged.set("cameraDeviceId", deviceId)}
+        deviceId={staged.value("cameraDeviceId")}
+        deviceLabel={staged.value("cameraLabel")}
+        onChange={(deviceId, deviceLabel) => {
+          staged.set("cameraDeviceId", deviceId);
+          staged.set("cameraLabel", deviceLabel);
+        }}
       />
       {staged.differs("cameraDeviceId") ? (
         <div className="settings-warning">Changes take effect on the next call.</div>

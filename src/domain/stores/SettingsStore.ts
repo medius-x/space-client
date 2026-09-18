@@ -42,10 +42,15 @@ export interface ClientSettings {
    *  RNNoise has no such knob. */
   deepFilterSuppressionLevel: number;
   /** Device picks (oak Audio/Video): null = system default. Mic/camera apply
-   *  on the next capture; the speaker switches live via setSinkId. */
+   *  on the next capture; the speaker switches live via setSinkId. The LABELS
+   *  ride alongside: Chromium's deviceId hashes are NOT stable across app
+   *  restarts here, so restoration re-resolves by label (device-match.ts). */
   microphoneDeviceId: string | null;
+  microphoneLabel: string | null;
   speakerDeviceId: string | null;
+  speakerLabel: string | null;
   cameraDeviceId: string | null;
+  cameraLabel: string | null;
   /** Keyboard shortcuts (2026-09-18): action id → accelerator ("" = unbound).
    *  Global-scope entries register OS-wide through the main process — the mute
    *  toggle works from an unfocused game; local entries match a window keydown. */
@@ -65,8 +70,11 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   noiseSuppressionEngine: "rnnoise",
   deepFilterSuppressionLevel: 50, // effectively "no limit" at DFN3's native scale
   microphoneDeviceId: null,
+  microphoneLabel: null,
   speakerDeviceId: null,
+  speakerLabel: null,
   cameraDeviceId: null,
+  cameraLabel: null,
   keybinds: { ...DEFAULT_KEYBINDS },
 };
 
