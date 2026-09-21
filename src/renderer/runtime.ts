@@ -1540,7 +1540,7 @@ function consumePendingOpen(session: ConnectionSession): void {
   const pendingChannel = state.pendingOpenChannel;
   if (pendingChannel !== null && pendingChannel.recordId === session.recordId) {
     appStore.patch({ pendingOpenChannel: null });
-    if (session.channelStore.get(pendingChannel.channelId) !== null) {
+    if (session.channelStore.get(pendingChannel.channelId)?.locked !== true) {
       setActiveChannel(pendingChannel.channelId);
       return;
     }
@@ -1835,10 +1835,13 @@ export async function forwardUploadBytes(targetRecordId: string, uploadUrl: stri
 function restoreLastChannel(session: ConnectionSession): void {
   const record = connectionDirectory.get(session.recordId);
   const textChannels = session.channelStore.getSnapshot().filter((channel) => channel.type === "TEXT");
+  // The saved channel only qualifies while it is still VISIBLE AND UNLOCKED —
+  // a revoked READ keeps the channel in the viewer's list but locked, and
+  // restoring into it lands on a READ_MESSAGE_HISTORY 403 (live report).
   const preferred = record?.lastChannelId != null
-    ? textChannels.find((channel) => channel.id === record.lastChannelId)
+    ? textChannels.find((channel) => channel.id === record.lastChannelId && !channel.locked)
     : undefined;
-  const chosen = preferred ?? textChannels[0] ?? null;
+  const chosen = preferred ?? textChannels.find((channel) => !channel.locked) ?? null;
   if (chosen) {
     setActiveChannel(chosen.id);
   } else {
@@ -1852,8 +1855,11 @@ function ensureActiveChannelExists(): void {
     return;
   }
   const current = appStore.getSnapshot().activeChannelId;
-  const stillThere = current !== null && session.channelStore.get(current) !== null;
-  if (!stillThere) {
+  // A channel that turned LOCKED under the sitting user (a role edit pulled
+  // READ) is as dead as a deleted one — re-home to an accessible channel.
+  const stillUsable = current !== null
+    && session.channelStore.get(current)?.locked !== true;
+  if (!stillUsable) {
     pickFallbackTextChannel();
   }
 }
@@ -1864,7 +1870,7 @@ function pickFallbackTextChannel(): void {
     appStore.patch({ activeChannelId: null });
     return;
   }
-  const fallback = session.channelStore.getSnapshot().find((channel) => channel.type === "TEXT") ?? null;
+  const fallback = session.channelStore.getSnapshot().find((channel) => channel.type === "TEXT" && !channel.locked) ?? null;
   if (fallback) {
     setActiveChannel(fallback.id);
   } else {

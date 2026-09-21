@@ -778,9 +778,18 @@ export class ConnectionSession {
     // Member/role changes arrive as contentless pings — refetch both snapshots.
     this.stomp.subscribe("/topic/members", () => {
       this.memberRefresh.request();
+      // Role ASSIGNMENT rides /topic/members too, and a mask change re-filters
+      // the viewer's channel list — without the refetch the client keeps
+      // rendering channels it can no longer see.
+      void this.refetchChannels();
     });
     this.stomp.subscribe("/topic/roles", () => {
       this.memberRefresh.request();
+      // A role edit changes every holder's effective mask, and GET /api/channels
+      // is VIEWER-FILTERED — the list must be re-taken or a revoked VIEW/READ
+      // leaves a dead-clickable channel behind (live report: entering it fails
+      // with a READ_MESSAGE_HISTORY 403).
+      void this.refetchChannels();
     });
     this.stomp.subscribe("/user/queue/member.kick", (raw) => {
       const event = JSON.parse(raw) as MemberKickEvent;

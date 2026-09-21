@@ -3027,7 +3027,9 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 /* oak's channel column: the server name header — full-bleed (the negative
    margins cancel the sidebar's padding) and the TWIN of .chat-header above. */
 /* The server header is the server dropdown's trigger (2026-09-21): the name
-   plus a chevron; the old hidden right-click menu on the rail icon is gone. */
+   left, the chevron at the RIGHT edge on the channel-tile column; the old
+   hidden right-click menu on the rail icon is gone. Hover brightens the name
+   and the chevron TEXT ONLY — no background band anywhere (user decision). */
 .sidebar-server-header {
   display: flex;
   align-items: center;
@@ -3043,7 +3045,7 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
   cursor: pointer;
   user-select: none;
 }
-.sidebar-server-header:hover { background: var(--sp-hover); color: var(--sp-text); }
+.sidebar-server-header:hover { color: var(--sp-text); }
 .sidebar-server-name {
   flex: 1;
   min-width: 0;
@@ -3051,7 +3053,10 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.sidebar-server-chevron { font-size: 16px; flex-shrink: 0; }
+/* The chevron rides the channel-tile vertical: the header's 12px right
+   padding plus this push puts its right edge on the badge column (the "+"
+   row and the tiles read as one line — user-tuned iteratively). */
+.sidebar-server-chevron { font-size: 16px; flex-shrink: 0; margin-right: 11px; }
 
 /* oak's message hover cluster: [forward][react][reply] 20×20 buttons sit
    DIRECTLY on the message tile's top-right (unmanaged nodes in oak, no card

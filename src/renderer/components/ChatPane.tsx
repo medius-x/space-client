@@ -253,9 +253,16 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
   };
 
   if (viewChannel === null) {
+    // Two dead ends, two messages: channels EXIST but every one is locked for
+    // this viewer (a role pull) vs a server with no text channels at all.
+    const anyVisible = channels.some((entry) => entry.type === "TEXT");
     return (
       <div className="chat-pane">
-        <div className="chat-empty">No text channel — pick one in the sidebar or create it with +.</div>
+        <div className="chat-empty">
+          {anyVisible
+            ? "You have no permission to watch this chat."
+            : "No text channel — pick one in the sidebar or create it with +."}
+        </div>
       </div>
     );
   }

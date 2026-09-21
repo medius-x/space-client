@@ -1416,7 +1416,30 @@ scope "account" ( ТОЛЬКО General + Account; nav-титул «Account Setti
 не продублированы (юзер-решение «перенесём»). Механика: appStore +=
 userSettingsScope ("client"|"account"), runtime openAccountSettings(),
 toggleUserSettings ставит client; UserSettingsModal фильтрует SECTIONS по
-scope + fallback активной секции. Гейты 363/363 + typecheck + build.
+scope + fallback активной секции. Гейты 363/363 + typecheck + build. **Баг-фиксы
+(2026-09-21, живые репорты):** (1) **Server Settings показывал ЛОГИНЫ** (rename-модель
+нарушена в трёх местах): Roles → Members (список держателей + пикер кандидатов + сортировка)
+и Channels → Access (строки «Members with access» + пикер) рендерили member.username;
+Kick/Ban-confirm-модалки цитировали логин. Всё → member.nickname (Avatar остаётся на
+username — это КЛЮЧ ростера, не дисплей; usernames-map в Access хранит логин для ключей,
+лейбл = grantedUserLabel() → nickname ?? override-логин ?? #id). Members-секция уже была
+на никнеймах. (2) **Отобранная роль оставляла мёртвый канал в списке**: /topic/roles (и
+/topic/members — там едет assignRoles) дёргали только memberRefresh+permissions, а
+GET /api/channels VIEWER-ФИЛЬТРОВАН — теперь оба топика additionally зовут refetchChannels()
+(applySnapshot + ensureActiveChannelExists уводит с исчезнувшего активного; refetch сам
+дотягивает refreshPermissions). Гейты 363/363 + typecheck + build. **Продолжение
+(2б, живой репорт «рестарт клиента, сидевшего в отобранном канале — та же 403-ошибка»):**
+корень — реставрация lastChannelId не проверяла LOCKED (отнятый READ оставляет канал
+в списке, но залоченным) + ensureActiveChannelExists считал «живым» любой существующий.
+Сделано СЛОЯМИ (юзер: «либо фолбэк, либо сообщение» — фолбэк основной, сообщение
+терминальное): restoreLastChannel предпочитает сохранённый канал только при
+!locked, иначе первый незалоченный TEXT; ensureActiveChannelExists трактует
+locked-активный как мёртвый → pickFallbackTextChannel (тоже только !locked);
+pendingOpenChannel (клик фонового тоста) не открывает locked; ТЕРМИНАЛЬНОЕ
+состояние (доступных каналов нет вообще) — ChatPane-заглушка различает
+формулировки: «You have no permission to watch this chat.» (каналы есть, все
+locked) vs старая «No text channel…» (текст-каналов нет), .chat-empty уже
+flex-centered серым. Гейты 363/363 + typecheck + build.
 
 M5 закрыт и закоммичен (`b14b2a6`). M6: **друзья** —
 `GET /api/users/me/relationships` (типы `FRIEND|BLOCKED|PENDING_INCOMING|

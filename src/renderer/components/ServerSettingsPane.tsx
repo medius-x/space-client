@@ -886,10 +886,12 @@ function RoleMembers({ session, role }: {
   const [picked, setPicked] = useState<ReadonlySet<number>>(new Set());
   const [busy, setBusy] = useState(false);
   const holders = members.filter((member) => member.roleIds.includes(role.id));
-  // oak's AddMemberDialog candidates: everyone WITHOUT the role, username-sorted.
+  // oak's AddMemberDialog candidates: everyone WITHOUT the role, name-sorted.
+  // The NICKNAME is the display name everywhere (the rename model) — rows keyed
+  // by username underneath, never showing it (live report: logins leaked here).
   const candidates = [...members]
     .filter((member) => !member.roleIds.includes(role.id))
-    .sort((left, right) => left.username.localeCompare(right.username));
+    .sort((left, right) => left.nickname.localeCompare(right.nickname));
 
   const setHolding = async (member: ServerMember, hold: boolean): Promise<void> => {
     const next = hold
@@ -929,7 +931,7 @@ function RoleMembers({ session, role }: {
         holders.map((member) => (
           <div key={member.userId} className="friend-row">
             <Avatar session={session} username={member.username} size={28} />
-            <span className="member-name" style={{ color: memberNameColor(member, roles) ?? undefined }}>{member.username}</span>
+            <span className="member-name" style={{ color: memberNameColor(member, roles) ?? undefined }}>{member.nickname}</span>
             {/* oak's removal glyph: the small close icon on the row's right
                 (role-trash-button + Icons.close), not a textual "×". */}
             <button className="ghost tiny role-remove" title="Remove role" onClick={() => void setHolding(member, false)}>
@@ -963,7 +965,7 @@ function RoleMembers({ session, role }: {
                   }}
                 />
                 <Avatar session={session} username={member.username} size={24} />
-                <span>{member.username}</span>
+                <span>{member.nickname}</span>
               </label>
             ))}
           </div>
@@ -1177,7 +1179,7 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
       {kickTarget !== null ? (
         <ConfirmModal
           title="Kick member"
-          note={`Kick "${kickTarget.username}"? They will be disconnected from the server.`}
+          note={`Kick "${kickTarget.nickname}"? They will be disconnected from the server.`}
           confirmLabel="Kick"
           onConfirm={async () => {
             await session.kickMember(kickTarget.userId);
@@ -1188,7 +1190,7 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
       {banTarget !== null ? (
         <ConfirmModal
           title="Ban member"
-          note={`Ban "${banTarget.username}"? They will no longer be able to log in.`}
+          note={`Ban "${banTarget.nickname}"? They will no longer be able to log in.`}
           confirmLabel="Ban"
           onConfirm={async () => {
             await session.banMember(banTarget.userId);
@@ -1631,8 +1633,14 @@ function ChannelAccessTab({ session, channel }: {
     .sort((left, right) => left.name.localeCompare(right.name));
   const candidateMembers = [...members]
     .filter((member) => !state.grantedUserIds.has(member.userId))
-    .sort((left, right) => left.username.localeCompare(right.username));
+    .sort((left, right) => left.nickname.localeCompare(right.nickname));
   const grantedRoleList = roles.filter((role) => state.grantedRoleIds.has(role.id));
+  /** The DISPLAY name of a granted user: the nickname (the rename model — the
+   *  usernames map holds the LOGIN, which is the Avatar's roster key only). */
+  const grantedUserLabel = (userId: number): string =>
+    members.find((member) => member.userId === userId)?.nickname
+    ?? state.usernames.get(userId)
+    ?? `user ${userId}`;
 
   return (
     <div>
@@ -1682,7 +1690,7 @@ function ChannelAccessTab({ session, channel }: {
             [...state.grantedUserIds].map((userId) => (
               <div key={userId} className="friend-row">
                 <Avatar session={session} username={state.usernames.get(userId) ?? `#${userId}`} size={24} />
-                <span>{state.usernames.get(userId) ?? `user ${userId}`}</span>
+                <span>{grantedUserLabel(userId)}</span>
                 <button className="ghost tiny role-remove" title="Revoke" onClick={() => {
                   const next = new Set(state.grantedUserIds);
                   next.delete(userId);
@@ -1722,7 +1730,7 @@ function ChannelAccessTab({ session, channel }: {
           emptyNote="Every member already has access."
           rows={candidateMembers.map((member) => ({
             id: member.userId,
-            label: member.username,
+            label: member.nickname,
             avatar: member.username,
           }))}
           onApply={(picked) => {
