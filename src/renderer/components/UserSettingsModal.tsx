@@ -55,7 +55,10 @@ const SECTIONS: { key: Section; label: string }[] = [
 const STAGED_SECTIONS: ReadonlySet<Section> = new Set(["audio", "video", "appearance", "notifications"]);
 
 /** The SERVER-related sections: the panel heading appends " — {server name}"
- *  so the scope is visible right in the chrome (user decision). */
+ *  so the scope is visible right in the chrome (user decision). They are also
+ *  the ACCOUNT scope's whole section list (user decision 2026-09-21): the
+ *  server header's dropdown opens these two as "Account settings", the ⚙
+ *  button opens the client-side remainder. */
 const SERVER_SCOPED_SECTIONS: ReadonlySet<Section> = new Set(["general", "account"]);
 
 /** oak's pane heading — the same chrome Server Settings sections carry. */
@@ -64,12 +67,18 @@ function SectionHeading({ title }: { title: string }): React.JSX.Element {
 }
 
 export function UserSettingsModal({ session }: { session: ConnectionSession }): React.JSX.Element {
-  const [section, setSection] = useState<Section>("general");
+  const scope = useStore(appStore, (state) => state.userSettingsScope);
+  const visibleSections = SECTIONS.filter((entry) =>
+    scope === "account" ? SERVER_SCOPED_SECTIONS.has(entry.key) : !SERVER_SCOPED_SECTIONS.has(entry.key));
+  const [section, setSection] = useState<Section>(visibleSections[0]!.key);
+  // Defensive: a scope switch under a mounted modal would leave an invisible
+  // section selected — fall back to the scope's first entry.
+  const activeSection = visibleSections.some((entry) => entry.key === section) ? section : visibleSections[0]!.key;
   const staged = useStagedSettings(session);
   const serverName = useStore(connectionDirectory, (records) =>
     records.find((entry) => entry.id === session.recordId)?.cachedServerName ?? session.hostUrl());
-  const sectionLabel = SECTIONS.find((entry) => entry.key === section)?.label ?? "";
-  const headingTitle = SERVER_SCOPED_SECTIONS.has(section)
+  const sectionLabel = SECTIONS.find((entry) => entry.key === activeSection)?.label ?? "";
+  const headingTitle = SERVER_SCOPED_SECTIONS.has(activeSection)
     ? `${sectionLabel} — ${serverName}`
     : sectionLabel;
 
@@ -93,11 +102,11 @@ export function UserSettingsModal({ session }: { session: ConnectionSession }): 
   return (
     <div className="settings-screen">
       <div className="settings-nav">
-        <div className="settings-nav-title">User Settings</div>
-        {SECTIONS.map((entry) => (
+        <div className="settings-nav-title">{scope === "account" ? "Account Settings" : "User Settings"}</div>
+        {visibleSections.map((entry) => (
           <button
             key={entry.key}
-            className={"settings-nav-item" + (entry.key === section ? " active" : "")}
+            className={"settings-nav-item" + (entry.key === activeSection ? " active" : "")}
             onClick={() => selectSection(entry.key)}
           >
             {entry.label}
@@ -106,17 +115,17 @@ export function UserSettingsModal({ session }: { session: ConnectionSession }): 
       </div>
       <div className="settings-body">
         <SectionHeading title={headingTitle} />
-        {section === "general" ? <GeneralSection session={session} /> : null}
-        {section === "account" ? <AccountSection session={session} /> : null}
-        {section === "audio" ? <AudioSection staged={staged} /> : null}
-        {section === "video" ? <VideoSection staged={staged} /> : null}
-        {section === "keybinds" ? <KeybindsSection /> : null}
-        {section === "appearance" ? <AppearanceSection staged={staged} /> : null}
-        {section === "notifications" ? <NotificationsSection session={session} staged={staged} /> : null}
-        {section === "connections" ? <ConnectionsSection session={session} /> : null}
+        {activeSection === "general" ? <GeneralSection session={session} /> : null}
+        {activeSection === "account" ? <AccountSection session={session} /> : null}
+        {activeSection === "audio" ? <AudioSection staged={staged} /> : null}
+        {activeSection === "video" ? <VideoSection staged={staged} /> : null}
+        {activeSection === "keybinds" ? <KeybindsSection /> : null}
+        {activeSection === "appearance" ? <AppearanceSection staged={staged} /> : null}
+        {activeSection === "notifications" ? <NotificationsSection session={session} staged={staged} /> : null}
+        {activeSection === "connections" ? <ConnectionsSection session={session} /> : null}
         {/* The Apply button hugs the section content (staged sections only) and
             commits the draft; leaving the section without it discards. */}
-        {STAGED_SECTIONS.has(section) ? (
+        {STAGED_SECTIONS.has(activeSection) ? (
           <div className="modal-actions left settings-apply">
             <button className="primary" disabled={!staged.changed} onClick={staged.commit}>Apply</button>
           </div>

@@ -126,8 +126,12 @@ export interface AppState {
   /** Server settings screen (in-app, replaces the content area) — M7. */
   serverSettingsOpen: boolean;
   serverSettingsSection: "overview" | "roles" | "members" | "channels" | "server";
-  /** User settings modal — M7. */
+  /** User settings modal — M7. The SCOPE splits the sections (user decision
+   *  2026-09-21): "account" = General + Account (opened from the server
+   *  header's dropdown — server-scoped identity), "client" = everything else
+   *  (the ⚙ user-bar button). */
   userSettingsOpen: boolean;
+  userSettingsScope: "client" | "account";
   /** A DM on a NON-active instance the user clicked in the aggregated list:
    *  consumed by openSession once that instance is up (oak's pendingOpenDm). */
   pendingOpenDm: { recordId: string; dmId: number } | null;
@@ -187,6 +191,7 @@ class AppStore extends Emitter {
     serverSettingsOpen: false,
     serverSettingsSection: "overview",
     userSettingsOpen: false,
+    userSettingsScope: "client",
     pendingOpenDm: null,
     pendingOpenChannel: null,
     searchOpen: false,
@@ -937,6 +942,22 @@ function makeSessionHooks(recordId: string): SessionHooks {
         displayNameOf(session.rosterStore.getSnapshot().users, message.authorUsername),
       );
     },
+    onVoiceMemberEvent: (event) => {
+      // The OTHERS' knock (user request 2026-09-21): someone joining or
+      // leaving the room I am in knocks for me too (Discord semantics — the
+      // room talks even when my own feet are still). Own transitions already
+      // knock at the join/leave site; other channels are not my business.
+      if (!isActive()) {
+        return; // only the active session is ever in voice
+      }
+      const state = appStore.getSnapshot();
+      if (event.channelId !== state.activeVoiceChannelId || event.username === state.ownUsername) {
+        return;
+      }
+      if (settingsStore.getSnapshot().soundEnabled) {
+        notifications.playKnock(event.status === "JOINED" ? "join" : "leave");
+      }
+    },
     onOwnVoiceControlState: (state) => {
       if (!isActive()) {
         return; // only the active session is ever in voice
@@ -1566,7 +1587,13 @@ export function closeServerSettings(): void {
 }
 
 export function toggleUserSettings(): void {
-  appStore.patch({ userSettingsOpen: !appStore.getSnapshot().userSettingsOpen });
+  appStore.patch({ userSettingsOpen: !appStore.getSnapshot().userSettingsOpen, userSettingsScope: "client" });
+}
+
+/** The server dropdown's "Account settings" entry — the settings modal scoped
+ *  to General + Account (the server-scoped identity sections). */
+export function openAccountSettings(): void {
+  appStore.patch({ userSettingsOpen: true, userSettingsScope: "account" });
 }
 
 function notificationPrefsFor(recordId: string): NotificationPrefs {

@@ -5,12 +5,8 @@ import { useAttachmentImage } from "../hooks/useAttachmentImage";
 import {
   appStore,
   beginAddServer,
-  canManageServerSettings,
   connectionDirectory,
   exitHomeMode,
-  openServerSettings,
-  reloginConnection,
-  removeConnection,
   settingsStore,
   switchConnection,
   toggleHomeMode,
@@ -22,8 +18,6 @@ import type { SocialState } from "../../domain/stores/SocialStore";
 import type { UnreadState } from "../../domain/stores/ReadStateStore";
 import { paletteColor } from "../../domain/logic/user-palette";
 import { serverInitials } from "../../domain/logic/server-initials";
-import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
-import { Modal } from "./Modal";
 import { socialDirectory } from "../social-aggregate";
 
 /** Stable EMPTY store surrogates for the non-active rows — useStore needs a
@@ -43,7 +37,9 @@ const nullSocialStore = {
  * The Discord-style server rail: the Home button (friends + DMs) on top, then
  * one squircle icon per saved connection — the server's AVATAR when it has
  * one, a palette-colored initials disc otherwise (oak's ServerNode) — then the
- * "+" row. Click switches, right-click manages, hover shows the name bubble.
+ * "+" row. Click switches, hover shows the name bubble. The per-server menu
+ * (settings/re-login/delete) moved to the Sidebar's server-name dropdown
+ * (2026-09-21) — nothing hides behind a right-click anymore.
  */
 export function ServerRail({ activeRecordId, session }: {
   activeRecordId: string | null;
@@ -52,34 +48,6 @@ export function ServerRail({ activeRecordId, session }: {
   const records = useStore(connectionDirectory, (records) => records);
   const busy = useStore(appStore, (state) => state.loginBusy);
   const dmMode = useStore(appStore, (state) => state.dmMode);
-  const [menu, setMenu] = useState<{ recordId: string; x: number; y: number } | null>(null);
-  // oak's reloginFor/showReloginDialog + deleteServer confirm — both ride the
-  // same right-click card as everything else.
-  const [reloginTarget, setReloginTarget] = useState<ConnectionRecord | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<ConnectionRecord | null>(null);
-
-  const menuItems: ContextMenuItem[] = menu === null ? [] : [
-    // Gated live: without any settings permission the entry never appears (oak parity).
-    ...(menu.recordId === session?.recordId && session !== null && canManageServerSettings(session)
-      ? [
-        { label: "Server Settings", action: () => openServerSettings() },
-        // oak's single separator — between the settings entry and the rest.
-        { label: "", separator: true, action: () => undefined },
-      ]
-      : []),
-    { label: "Re-login", action: () => {
-      const record = connectionDirectory.get(menu.recordId);
-      if (record !== null) {
-        setReloginTarget(record);
-      }
-    } },
-    { label: "Delete", danger: true, action: () => {
-      const record = connectionDirectory.get(menu.recordId);
-      if (record !== null) {
-        setDeleteTarget(record);
-      }
-    } },
-  ];
 
   return (
     <nav className="server-rail">
@@ -105,83 +73,12 @@ export function ServerRail({ activeRecordId, session }: {
               void switchConnection(record.id);
             }
           }}
-          onMenu={(x, y) => setMenu({ recordId: record.id, x, y })}
         />
       ))}
       <div className="rail-wrap" title="Add a server" onClick={beginAddServer}>
         <div className="rail-icon add"><span className="icon mdi-plus" /></div>
       </div>
-      {menu !== null ? (
-        <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />
-      ) : null}
-      {reloginTarget !== null ? (
-        <ReloginModal record={reloginTarget} onClose={() => setReloginTarget(null)} />
-      ) : null}
-      {deleteTarget !== null ? (
-        <Modal title="Delete server" onClose={() => setDeleteTarget(null)}>
-          {/* oak's ConfirmDialog wording verbatim. */}
-          <div className="modal-note">
-            {`Remove the connection to "${deleteTarget.cachedServerName ?? deleteTarget.hostUrl}"? The account is not affected, you can re-add it later.`}
-          </div>
-          <div className="modal-actions left">
-            <button className="ghost" onClick={() => setDeleteTarget(null)}>Cancel</button>
-            <button className="danger" onClick={() => {
-              void removeConnection(deleteTarget.id);
-              setDeleteTarget(null);
-            }}>Delete</button>
-          </div>
-        </Modal>
-      ) : null}
     </nav>
-  );
-}
-
-/** oak's showReloginDialog: one password field, "Log in", no persistence. */
-function ReloginModal({ record, onClose }: {
-  record: ConnectionRecord;
-  onClose(): void;
-}): React.JSX.Element {
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const serverName = record.cachedServerName ?? record.hostUrl.replace(/^https?:\/\//, "");
-
-  const submit = async (): Promise<void> => {
-    if (busy || password.length === 0) {
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      await reloginConnection(record.id, password);
-      onClose();
-    } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : String(submitError));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Modal title="Re-login" onClose={onClose}>
-      <div className="modal-note">{`Re-enter the password for "${record.username}" on ${serverName}.`}</div>
-      <input
-        autoFocus
-        type="password"
-        value={password}
-        onChange={(event) => setPassword(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            void submit();
-          }
-        }}
-      />
-      <div className="error-line">{error ?? ""}</div>
-      <div className="modal-actions left">
-        <button className="ghost" onClick={onClose}>Cancel</button>
-        <button className="primary" disabled={busy || password.length === 0} onClick={() => void submit()}>Log in</button>
-      </div>
-    </Modal>
   );
 }
 
@@ -225,14 +122,13 @@ function ServerIconBody({ iconUrl, name }: { iconUrl: string | null; name: strin
  * selection pill at the rail's left edge, the 48×48 squircle icon and the
  * unread badge at its bottom-right corner.
  */
-function RailRow({ record, active, expired, busy, session, onActivate, onMenu }: {
+function RailRow({ record, active, expired, busy, session, onActivate }: {
   record: ConnectionRecord;
   active: boolean;
   expired: boolean;
   busy: boolean;
   session: ConnectionSession | null;
   onActivate(): void;
-  onMenu(x: number, y: number): void;
 }): React.JSX.Element {
   const name = record.cachedServerName ?? record.hostUrl.replace(/^https?:\/\//, "");
   // The ACTIVE record gets the live presigned URL (its own session mints it);
@@ -282,10 +178,6 @@ function RailRow({ record, active, expired, busy, session, onActivate, onMenu }:
           bubbleTimerRef.current = null;
         }
         setBubbleAnchor(null);
-      }}
-      onContextMenu={(event) => {
-        event.preventDefault();
-        onMenu(event.clientX, event.clientY);
       }}
     >
       {active ? <span className="rail-pill" /> : null}

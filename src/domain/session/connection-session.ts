@@ -57,6 +57,9 @@ export interface SessionHooks {
   onLiveMessage(message: Message): void;
   /** /topic/voice.state for the LOGGED-IN user — the runtime applies mic/deafen compliance. */
   onOwnVoiceControlState(state: VoiceControlState): void;
+  /** A /topic/voice delta — the runtime knocks when SOMEONE ELSE joins or
+   *  leaves the room the user is in (own knocks play at the join/leave site). */
+  onVoiceMemberEvent?(event: VoiceMemberEvent): void;
   /** /user/queue/voice.control type=KICKED — the runtime tears the voice session down. */
   onVoiceKicked(byUsername: string): void;
   /** A relayed 1:1 call signal (RING/ACCEPT/OFFER/ICE/…) — the runtime owns the call machine. */
@@ -723,6 +726,7 @@ export class ConnectionSession {
         // Their rows vanish; moderator marks survive server-side and re-publish on re-entry.
         this.voiceControlStore.clearUser(event.username);
       }
+      this.hooks.onVoiceMemberEvent?.(event);
       log.info("voice", `${event.username} ${event.status.toLowerCase()} channel #${event.channelId}`);
     });
     this.stomp.subscribe("/topic/voice.state", (raw) => {
