@@ -19,6 +19,11 @@ export interface CaptureBridge {
   sources(types?: ("screen" | "window")[]): Promise<CaptureSourceInfo[]>;
   /** Tell main which source the NEXT getDisplayMedia grant should hand out. */
   select(sourceId: string, withAudio: boolean): Promise<boolean>;
+  /** Arm the window-share liveness watchdog (null cancels) — Chromium never
+   *  fires the capture track's "ended" when the shared window closes. */
+  watchSource(sourceId: string | null): Promise<boolean>;
+  /** The watched window died — stop the share the ordinary way. */
+  onSourceDead(callback: (sourceId: string) => void): void;
 }
 
 export interface WindowBridge {
@@ -34,6 +39,17 @@ export interface WindowBridge {
   toggleMaximize(): void;
   close(): void;
   onMaximizedChange(callback: (maximized: boolean) => void): void;
+}
+
+/** Native system-audio bridge (#485): WASAPI process-loopback — frames arrive
+ *  as interleaved stereo Int16 at the ~10 ms cadence. Without a source id the
+ *  capture is the whole desktop minus OUR process; a window source id
+ *  ("window:HWND:…") captures only that application's process tree. */
+export interface SysAudioBridge {
+  available(): Promise<boolean>;
+  start(sourceId?: string): Promise<boolean>;
+  stop(): Promise<void>;
+  onFrame(callback: (pcm: Int16Array, silent: boolean) => void): void;
 }
 
 /** One card in the always-on-top toast window (oak's NotificationToast). */
@@ -112,6 +128,7 @@ declare global {
   interface Window {
     spaceCapture?: CaptureBridge;
     spaceWindow?: WindowBridge;
+    spaceSysAudio?: SysAudioBridge;
     spaceToast?: ToastBridge;
     spaceHotkey?: HotkeyBridge;
   }

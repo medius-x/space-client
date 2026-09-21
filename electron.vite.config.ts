@@ -13,7 +13,9 @@ export default defineConfig({
   main: {
     build: {
       lib: { entry: resolve(__dirname, "electron/main.ts") },
-      rollupOptions: { external: ["electron"] },
+      // koffi is a NATIVE module — it must stay external and resolve from
+      // node_modules at runtime (bundling a .node addon is impossible).
+      rollupOptions: { external: ["electron", "koffi"] },
     },
   },
   preload: {

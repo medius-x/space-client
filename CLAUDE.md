@@ -1044,6 +1044,196 @@ NotificationHub mixBus (mixBus — ещё и фикс рингбек-sink), фи
 oak-client + N-API обёртка (EXCLUDE-свой-PID для экранов = та же семантика «десктоп
 минус наш клиент» на уровне ОС; INCLUDE для окон = per-app звук, oak-парити).
 
+**Нативный спайк #485: WASAPI process-loopback через koffi, БЕЗ своего C++ (2026-09-18,
+фаза 0+2 GREEN, обвязка готова, смоук pending).** Юзер-вопрос «почему oak'у хватило
+Java» вскрыл: oak писал логику на Java ЧЕРЕЗ JNA (runtime-FFI, никакого своего
+нативного кода — JNA-колбэки собирают COM-хендлер); Node-эквивалент JNA = **koffi**
+(prebuilt N-API FFI, npm install — первый СТОРОННИЙ prebuilt-нативный деп, своих
+нативных модулей по-прежнему ноль, node-gyp/MSVC не нужны). **Фаза 0 (пробник
+`scripts/koffi-sysaudio-probe.cjs`, чистый node): ЧУЖОПОТОЧНЫЙ COM-колбэк koffi
+доставляет в JS-цикл (документированное поведение — подтверждено живьём), активация
+VAD\Process_Loopback с exclude-self прошла С ПЕРВОГО раза (спека oak байт-точная).
+Фаза 2: полный цикл GetActivateResult→IAudioClient→Initialize(48k/стерео/16бит,
+AUTOCONVERT, нулевые длительности)→Start→дрен 117k сэмплов/2с→Stop→чистый teardown.
+Трюк: чтение памяти по произвольному адресу — msvcrt.memcpy в скретч (raw-read у
+koffi нет); vtable-вызовы через koffi.call.** Продакшн-обвязка: `electron/
+system-audio.ts` (guarded require koffi; availability = win32 + build ≥ 19041;
+bindings/COM-хендлер создаются ОДИН раз на процесс, хендлер-стабы не фришатся —
+oak/vlcj правило; сессия: активация → Initialize → event-дрен таймером 10 мс БЕЗ
+нативного потока, пакеты батчатся; teardown в oak-порядке; Int16-копии кадром в
+колбэк); IPC `space-sysaudio:available/start/stop` + fire-and-forget
+`space-sysaudio:frame` (Int16Array+silent, webContents.send — паттерн space-hotkey);
+koffi в rollup external main-бандла. Renderer: `media/system-audio-source.ts` —
+инжектор-ворклет (port-fed стерео-кольцо 1 с, underrun→тишина+счёт, overflow→дроп
+старых; stats RMS/канал раз в 1 с) → MediaStreamDestination → track (класс
+NS-пайплайна); monitor-выход на destination (TAP — дубль безопасен). Диаг: кнопки
+«System-audio self-test» (3 фазы: тишина ≈−∞ / музыка СНАРУЖИ живая / ТОЛЬКО звуки
+space ≈−∞ — контракт exclude-self) и «Sys-audio monitor» (уши). Гейты 330/330 +
+typecheck + build. Смоук pending. Продакшн-встройка (подмена трека на шве shareTarget,
+INCLUDE-окна+HWND→PID, liveness-watchdog, AEC-референс мика против акустического
+дубля) — отдельный раунд после вердикта. ГРАБЛЯ: у koffi register хочет тип
+koffi.pointer(proto), а НЕ сам proto. **ГРАБЛЯ EXTERNAL BUFFERS (живой крах,
+первый запуск в Electron): `koffi.view()` — ArrayBuffer поверх НАТИВНОЙ памяти —
+в Electron ЗАПРЕЩЁН и фаталит процесс (`FATAL napi_get_last_error_info`); в чистом
+node разрешён — потому пробник был зелёный, а приложение упало. Модуль переписан
+БЕЗ единого view: запись — koffi.encode (включая 'void *' с BigInt), чтение
+скаляров — koffi.decode.int32/uint32, чтение произвольного адреса — msvcrt.memcpy
+с `_Out_ void *dest` + Node Buffer (документированная output-идиома: копия C→JS
+после вызова), сравнение GUID — memcmp по нативным ячейкам (ни байта в JS).**
+**ВЕРДИКТ СПАЙКА #485: GO (живой самотест 2026-09-18, фазы с lead-in-пейсингом
+~27 с: подсказка → 5 с подготовка → «WINDOW OPEN»-маркер → окно 5 с).** (а)
+baseline −96.7 dBFS (цифровой ноль); (б) внешняя музыка −29.3 dBFS; (в) ТОЛЬКО
+звуки space (мут-тогглы) −96.7 dBFS — **EXCLUDE-SELF КОНТРАКТ ДОКАЗАН: наш
+клиент акустически невидим для захвата, остальное пишется чисто**; dropped=0;
+underruns при тишине — кольцо осушается, выход честные нули (безвредно). Полный
+путь: WASAPI(48k/stereo/16bit, koffi, drain-таймер 10 мс) → IPC Int16 →
+инжектор-ворклет → RMS. Продакшн-раунд (решение за юзером): подмена аудио-трека
+на шве shareTarget/callShareTarget (new MediaStream([video, nativeTrack]) —
+хендлер Electron кастомный трек не отдаёт), INCLUDE-режим для окон (HWND→PID) =
+per-app звук oak-парити, liveness-watchdog 500 мс для оконных шар, AEC-референс
+мика (захваченное играет в колонках → акустический дубль в мик без него),
+availability-гейт в UI, koffi в упаковке #470 (node_modules должен ехать в
+dist или external).
+
+**Продакшн-встройка #485 (2026-09-18, код готов, смоук pending): шар публикует
+НАТИВНЫЙ трек — экраны exclude-self, ОКНА per-app (INCLUDE).** На шве
+shareTarget/callShareTarget (комната + звонок) после getDisplayMedia:
+`acquireNativeShareAudioTrack(sourceId?)` (НОВЫЙ `src/media/native-share-audio.ts`
+— менеджер: availability → защитный stop от утёкшей сессии →
+createSystemAudioSource → sink навешивается ДО start (кадры идут с первого тика
+дрен-таймера) → bridge.start; ЛЮБОЙ фейл = null) → при успехе display-аудио-трек
+`.stop()` (Chromium-loopback умирает неопубликованным) и в sfu/peer-call уходит
+`new MediaStream([displayVideo, nativeTrack])` — оба читают `getAudioTracks()[0]`,
+подмена прозрачна; стерео-мунж по track id ловит synthesized-трек as-is.
+**Два режима** (system-audio.ts: `startSystemAudio(onFrame, onEnded?, {sourceId?})`
+→ `SystemAudioStartResult{started, mode, pid}`): БЕЗ sourceId = EXCLUDE-self
+(весь десктоп минус наш процесс, блоб mode=1 pid=наш) — экраны; С sourceId
+окна (`window:HWND:…`, HWND десятичный, второй сегмент) = INCLUDE (mode=0,
+pid=целевого дерева) — per-app звук oak-парити: HWND→PID через user32
+`GetWindowThreadProcessId` (koffi; мёртвое окно → null → фолбэк), окна вообще
+НЕ просят Chromium-аудио (native-трек их единственный звук, фейл = video-only
+как в M4). Фолбэк на любом шаге: экраны → сырой loopback, окна → video-only —
+шар НИКОГДА не ломается из-за фичи. Teardown: stopShareInternal /
+stopCallShareInternal / teardownVoice / teardownCall / catch-пути обоих швов →
+releaseNativeShareAudio() (IPC-stop + dispose контекста инжектора). Логи:
+renderer `[share] publishing screen … (audio: native process-loopback (desktop
+minus this client))` / `native per-app process-loopback` и `[call] share
+publishing …`; main `[sysaudio] native capture started (desktop minus this
+process | per-app pid N)/FAILED/stopped/DIED(reason)` (startSystemAudio получил
+onEnded-колбэк — дрен-catch раньше умирал молча). UI: подсказка вкладки Windows
+в пикере теперь availability-aware («carry only that application's audio…
+native per-app capture» / старый текст при недоступности), подсказка Screens
+упоминает «minus this client's own sounds». **Liveness-watchdog оконного шара
+(живой баг 2026-09-18: шарящий закрыл окно → у смотрящего ВЕЧНЫЙ замороженный
+кадр, «Watch screen»/«sharing screen» на призраке; юзер вспомнил фикс того же
+в oak).** Корень: в Electron трек getDisplayMedia при закрытии захваченного
+окна НЕ стреляет "ended" — WGC морозит последний кадр, публикация продолжается,
+фид у Janus честно жив (вывод «доминирующий путь закрыт ended-треком» был
+неверен). Фикс = oak-парити (SfuService: «IsWindow every 2 s → the ordinary
+stop path»): НОВЫЙ `electron/window-liveness.ts` (koffi user32 IsWindow, поллинг
+500 мс — oak 2 с, но вызов наносекундный; один watch, арм нового заменяет
+старый; `parseWindowHwnd` вынесен сюда и переиспользован в system-audio INCLUDE);
+IPC `space-capture:watchSource(sourceId|null)` + event `space-capture:sourceDead`
+(webContents.send + `[share] watched window died` в лог); renderer: арм на
+ОКОННОМ шаре обоих швов после успешного publish, `installSourceDeadListener`
+(bootstrap) гейтит по совпадению sourceId (стейл-события старого шара игнор) и
+маршрутизирует в ОБЫЧНЫЙ stop (callSharing? stopCallShareInternal :
+stopShareInternal); отмена во всех teardown-путях рядом с
+releaseNativeShareAudio. **ПЕРЕДИАГНОЗИРОВАНО ПО ЛОГАМ (второй прогон
+2026-09-19): ended у видео-трека при закрытии окна ВСЁ-ТАКИ СТРЕЛЯЕТ** —
+`[sysaudio] native capture stopped` в секунду закрытия (stopShareInternal
+успел раньше 500-мс поллинга, потому watchdog-строк в логе нет; watchdog
+остаётся страховкой, oak-парити). Настоящий корень призрака был НА ЗРИТЕЛЕ,
+две дыры: (1) UI считал «есть экран» как `streams.some(type==="video")` БЕЗ
+`!disabled` — Janus при стопе шара помечает стримы фида DISABLED, но
+оставляет их в списке (лог: `streams=[audio:0/m0 video:1/m1! audio:2/m2!]
+(update)` — `!` = disabled), фид-апдейт ДОЕЗЖАЛ и обрабатывался (ренегошка
+`subscriptions +0/-2` в ту же секунду), но «Watch screen»/«N screens»/
+voice-bar-бейдж/ПКМ-меню продолжали видеть призрак; фиксы: `feedHasLiveVideo`
+в classifier.ts (+тест) на всех четырёх точках (VoiceRoom screenCount/screens/
+tile-hasVideo/memberMenu, Sidebar ПКМ); (2) ЗАМОРОЖЕННЫЙ КАДР: после отписки
+remote-видео-трек уходит в muted (НЕ ended) → handleRemoteTrackEnded не
+стреляет, `<video>` держит последний кадр, viewingFeedId никто не чистит;
+фикс: `pruneDeadView(feeds)` в onParticipants-колбэке SfuSession — просмотр
+гасится, если фид пропал ИЛИ его видео disabled (покрывает и уход пира из
+комнаты). Гейты 332/332 + typecheck + build.
+**Итерация 3 (живой репорт 2026-09-19): очистка работает, НО ре-вотч второй
+итерации пуст — «Watch screen» → тайл с plate "Screen sharing…" без кадра,
+off/on лечит.** Корень — Janus РЕЦИКЛИТ m-line подписчика для следующего шара
+паблишера: тот же transceiver/receiver → ТОВ ЖЕ объект трека (замолчал →
+размолчал с новым контентом) → **ontrack повторно НЕ стреляет**, а
+attachShareVideo был сброшен pruneDeadView; off/on работает потому, что
+unsubscribe рвёт m-line и новая подписка создаёт СВЕЖИЙ transceiver → ontrack →
+доставка. Заодно вскрылся КЛАСТЕР в RoomAudio: attachVoiceTrack/
+attachShareTrack начинались с detachFeed (обе цепи) — attach share УБИВАЛ
+voice-цепь пира (голос шарящего у смотрящего умирал с момента просмотра —
+маскировалось тем, что голос слышен внутри loopback-шара), а «share ended»
+(→detachFeed) добивал всё. Фиксы: (1) RoomAudio — РАЗДЕЛЬНЫЙ teardown
+(detachVoiceFeed/detachShareFeed приватные, attach* чистит только свою цепь,
+detachFeed = обе для ухода фида); (2) runtime — УДЕРЖАНИЕ треков
+(feedVideoTracks/feedShareAudioTracks, калл-паттерн callPeerVideoTrack):
+доставка пишет, pruneDeadView чистит только фиды-небитые (disabled-видео
+держит — рецикл вернёт именно этот объект), teardownVoice чистит всё;
+setViewingFeed(on) ре-аттачит удержанный share-audio, VoiceRoom — флип-эффект
+[viewingFeedId, participants] ре-биндит удержанное видео в смонтированный
+<video> (getFeedVideoTrack экспорт); свежий трек при доставке просто
+переопределяет. Гейты 332/332 + typecheck + build.
+**Итерация 4 (живой репорт 2026-09-21, три бага):** (1) «звук шара идёт СРАЗУ,
+без Watch» — КОРЕНЬ: pruneDeadView чистил viewingFeedId в appStore, но НЕ
+говорил SfuSession (viewedFeedIds жил) → следующий шар того же пира попадал в
+wantedStreams и автоподписывался (лог: subscriptions +2 в секунду announce,
+клик был на 5 с позже). Фикс: pruneDeadView вызывает sfuSession.setViewingFeed
+(null) — setViewingFeed сам синкает подписки. (2) «голос шарящего с задержкой
+2-3 с при включении просмотра» — вероятный корень: ПЕРЕСОЗДАНИЕ <audio>-
+элемента при повторном аттаче ТОГО ЖЕ трека (watch-flip ре-аттач + повторная
+доставка рецикл-трека строили свежий элемент = спин-ап плейаута с нуля). Фикс:
+ИДЕМПОТЕНТНОСТЬ attachVoiceTrack/attachShareTrack — цепи хранят track, тот же
+объект = no-op (перестройка только при новом треке). (3) «лишние люди в
+комнате» после жёсткого закрытия клиентов — СЕРВЕР голос чистит корректно
+(VoiceMembershipTracker.onDisconnect → exit(sessionId)); призраки = Janus-
+сторона: мёртвые publisher-сессии висят до собственного session-timeout Janus
+(~минута), room view тайлы питаются от Janus-фидов (лог: фиды с m1!/m2!
+disabled и вечным STILL muted WARN). Артефакт смоук-стенда (жёсткий kill);
+живём, чистый прогон = выходить из комнаты перед закрытием. Гейты 332/332 +
+typecheck + build. ИЗ продакшн-объёма ОСТАЛОСЬ: AEC-референс мика
+(акустический дубль — pre-existing и у сырого loopback; внешнего AEC-референса
+в Chromium API нет), koffi в упаковке #470. Гейты 330/330 + typecheck + build.
+**СМОУК-ВЕРДИКТ продакшн-раунда #485 (2026-09-18, юзер: «протестировал, как
+будто всё работает»): PASS.** Лог instance-b: screen-шар native exclude-self →
+`monitor on (attached to the live share capture)` → чистый stop; ушами: видео
+в мониторе есть, кю/голос — по одному разу (дублей = утечек нет). Окна per-app
+в том же прогоне стартовали/стопались чисто (pid разрешён), наушная проверка —
+тем же монитором при желании.
+
+**ГРАБЛЯ СМОУК-СТЕНДА (живой смоук 2026-09-18): два инстанса на одной машине =
+ЦИФРОВОЙ ФИДБЕК-ЛУП.** Захват A — цифровой TAP рендера процессов минус дерево
+A; инстанс-B — ДРУГОЙ процесс, и ВСЁ, что он воспроизводит (шар-звук, голос
+комнаты), A захватывает и снова публикует → зритель слышит копии «множество
+раз как эхо» (круг ≈ сотни мс). Deafen ШАРЯЩЕГО и мут ПРИНИМАЮЩЕГО НЕ РВУТ луп
+(первый и так исключён из своего захвата; второй не при делах — луп не через
+микрофон); наушники тоже — захват цифровой, до устройства вывода. Рвёт луп
+только глушение РЕНДЕРА принимающего (deafen B / громкость шара в 0) — но тогда
+B не слышит и негативный контракт ушами B на одной машине НЕПРОВЕРИМ в принципе.
+Рецепт одной машины: B deafen; A при живом шаре жмёт diag «Sys-audio monitor» —
+монитор играет через процесс A → из захвата исключён → единственный безлуповый
+пост прослушивания: музыка ЕСТЬ, голос/UI-звуки НЕТ = негативный контракт
+доказан на стороне источника. Для этого монитор УЧИЛ цепляться к живому шару
+(monitorActiveShare/isNativeShareActive в native-share-audio; раньше onFrame
+ВОРОВАЛ единственный IPC-синк шара, а второй bridge.start() фейлился на
+single-session — монитор при живом шаре убивал звук шара); старт шара гасит
+standalone-монитор (stopStandaloneMonitorForShare на обоих швах). Для реальных
+юзеров (разные машины) лупа не существует — у A нет доступа к рендеру машины B
+(Discord на одной машине ведёт себя так же). **Грабля монитора-по-дефолту
+(живая, та же): монитор играл в системный ДЕФОЛТ (колонки), а не в выбранный
+в клиенте спикер** — на смоук-стенде дефолт часто и есть устройство контента:
+прямой звук + отставшая TAP-копия в ОДНИХ колонках читаются как «эхо» (это НЕ
+луп — монитор рендерит наш процесс, из захвата исключён). Фикс: контекст
+system-audio-source принимает monitorSinkId (AudioContext.setSinkId, структурный
+тайп как у NotificationHub) + setMonitorSink на живом источнике; прокинуто из
+швов (resolvedDevices.speaker), standalone-монитор тоже; watchDeviceSettings
+переприменяет (setActiveShareMonitorSink). Публикуемый трек —
+MediaStreamDestination, sink на него не влияет.
+
 **Share-пикер: спиннер загрузки + живое превью камеры (2026-09-18).** (1) Перечисление
 источников на Windows занимает 0.5–2 с, а пикер сразу рисовал «No screens found» — теперь
 `sourcesLoading`/`camerasLoading`: спиннер (`.picker-loading`, md-refresh на keyframes

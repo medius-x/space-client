@@ -1,3 +1,5 @@
+import { isSystemAudioAvailable, startSystemAudio, stopSystemAudio } from "./system-audio";
+import { watchSourceLiveness } from "./window-liveness";
 import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, globalShortcut, ipcMain, net, protocol, screen, session, shell } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -436,6 +438,44 @@ ipcMain.handle("space-capture:select", (_event, sourceId: unknown, withAudio: un
   }
   pendingCaptureGrant = { sourceId, withAudio: withAudio === true };
   return true;
+});
+
+// Window-share liveness watchdog (the oak SfuService precedent): Chromium
+// never fires the capture track's "ended" when the shared window closes —
+// WGC freezes the last frame and the ghost share keeps publishing. Main
+// polls IsWindow and tells the renderer, which stops the share the ordinary way.
+ipcMain.handle("space-capture:watchSource", (_event, sourceId: unknown) => {
+  if (typeof sourceId !== "string" || sourceId.length === 0) {
+    return watchSourceLiveness(null, () => undefined); // cancel any running watch
+  }
+  return watchSourceLiveness(sourceId, (deadSourceId) => {
+    appendLog(`[share] watched window died (${deadSourceId})`);
+    mainWindowRef?.webContents.send("space-capture:sourceDead", deadSourceId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Native system-audio capture (#485): WASAPI process-loopback, desktop minus
+// OUR process — the OS-level replacement for the DSP subtraction. Frames flow
+// fire-and-forget to the main window at the 10 ms drain cadence.
+// ---------------------------------------------------------------------------
+ipcMain.handle("space-sysaudio:available", () => isSystemAudioAvailable());
+ipcMain.handle("space-sysaudio:start", async (_event, sourceId: unknown) => {
+  const options = typeof sourceId === "string" && sourceId.length > 0 ? { sourceId } : {};
+  const result = await startSystemAudio(
+    (frame) => {
+      mainWindowRef?.webContents.send("space-sysaudio:frame", frame.pcm, frame.silent);
+    },
+    (reason) => appendLog(`[sysaudio] native capture DIED (${reason})`),
+    options,
+  );
+  const scope = result.mode === "include" ? `per-app pid ${result.pid}` : "desktop minus this process";
+  appendLog(`[sysaudio] native capture ${result.started ? `started (${scope})` : `FAILED to start (${scope})`}`);
+  return result.started;
+});
+ipcMain.handle("space-sysaudio:stop", () => {
+  stopSystemAudio();
+  appendLog("[sysaudio] native capture stopped");
 });
 
 // ---------------------------------------------------------------------------

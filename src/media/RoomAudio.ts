@@ -28,6 +28,7 @@ export interface StereoReading {
 
 interface VoiceChain {
   username: string;
+  track: MediaStreamTrack;
   element: HTMLAudioElement;
   analyser: AnalyserNode;
   analysisSource: MediaStreamAudioSourceNode;
@@ -43,6 +44,7 @@ interface VoiceChain {
 
 interface ShareChain {
   username: string;
+  track: MediaStreamTrack;
   element: HTMLAudioElement;
   analysisSource: MediaStreamAudioSourceNode;
   analyserLeft: AnalyserNode;
@@ -172,7 +174,14 @@ export class RoomAudio {
   }
 
   attachVoiceTrack(feedId: number, username: string, track: MediaStreamTrack, volume: number): void {
-    this.detachFeed(feedId);
+    // Idempotent re-delivery: a recycled m-line hands us the SAME track object
+    // again — rebuilding would churn the element (a fresh <audio> spins up its
+    // playout from scratch: the seconds-long "voice missing" after a watch).
+    const existingVoice = this.voiceChains.get(feedId);
+    if (existingVoice !== undefined && existingVoice.track === track) {
+      return;
+    }
+    this.detachVoiceFeed(feedId);
     const context = this.ensureContext();
     const element = playbackElement(track, volume, this.deafened, this.outputDeviceId);
     const analysisSource = context.createMediaStreamSource(new MediaStream([track]));
@@ -185,6 +194,7 @@ export class RoomAudio {
     referenceGain.connect(this.ensureReferenceBus());
     this.voiceChains.set(feedId, {
       username,
+      track,
       element,
       analyser,
       analysisSource,
@@ -197,7 +207,13 @@ export class RoomAudio {
   }
 
   attachShareTrack(feedId: number, username: string, track: MediaStreamTrack, volume: number): void {
-    this.detachFeed(feedId);
+    // Same idempotence as attachVoiceTrack: the watch-flip re-attach and the
+    // recycled-track delivery both re-hand the live track over.
+    const existingShare = this.shareChains.get(feedId);
+    if (existingShare !== undefined && existingShare.track === track) {
+      return;
+    }
+    this.detachShareFeed(feedId);
     const context = this.ensureContext();
     const element = playbackElement(track, volume, this.deafened, this.outputDeviceId);
     const analysisSource = context.createMediaStreamSource(new MediaStream([track]));
@@ -215,6 +231,7 @@ export class RoomAudio {
     referenceGain.connect(this.ensureReferenceBus());
     this.shareChains.set(feedId, {
       username,
+      track,
       element,
       analysisSource,
       analyserLeft,
@@ -228,6 +245,14 @@ export class RoomAudio {
   }
 
   detachFeed(feedId: number): void {
+    this.detachVoiceFeed(feedId);
+    this.detachShareFeed(feedId);
+  }
+
+  /** Tear down ONLY the voice chain — a share starting/stopping must never
+   *  kill the peer's voice playout (the pre-split attachShareTrack did exactly
+   *  that: every watch left the sharer mute until a rejoin). */
+  private detachVoiceFeed(feedId: number): void {
     const voice = this.voiceChains.get(feedId);
     if (voice) {
       this.teardownElement(voice.element);
@@ -241,6 +266,10 @@ export class RoomAudio {
       this.voiceChains.delete(feedId);
       this.emitSpeaking(voice.username, false);
     }
+  }
+
+  /** Tear down ONLY the share chain — public: the "share ended" path. */
+  detachShareFeed(feedId: number): void {
     const share = this.shareChains.get(feedId);
     if (share) {
       this.teardownElement(share.element);

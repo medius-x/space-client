@@ -11,12 +11,15 @@ interface CameraEntry {
 }
 
 /**
- * The Discord-style share picker (M4): desktop sources WITH preview thumbnails
- * (enumerated by the main process), windows without audio (system loopback exists
- * only for whole screens), and the cameras as a list with ONE live preview (the
- * selected camera, falling back to the first — holding every device open at once
- * is what v1 avoided, a single preview stream keeps one camera lit). The preview
- * is stopped before the real capture so Share takes over the device cleanly.
+ * The Discord-style share picker (M4 + #485): desktop sources WITH preview
+ * thumbnails (enumerated by the main process) — screens carry native system
+ * audio (desktop minus this client), windows carry that application's own
+ * audio when the native per-app capture is available (otherwise video-only,
+ * the M4 behavior) — and the cameras as a list with ONE live preview (the
+ * selected camera, falling back to the first — holding every device open at
+ * once is what v1 avoided, a single preview stream keeps one camera lit). The
+ * preview is stopped before the real capture so Share takes over the device
+ * cleanly.
  */
 export function SharePickerModal({ onTarget, onClose }: {
   onTarget(target: ShareTarget): void;
@@ -29,6 +32,9 @@ export function SharePickerModal({ onTarget, onClose }: {
   const [camerasLoading, setCamerasLoading] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Whether window shares can carry per-app audio (#485 native capture) — the
+  // Windows-tab hint must not promise audio the platform cannot deliver.
+  const [nativeWindowAudio, setNativeWindowAudio] = useState(false);
 
   // The camera tab's live preview: ONE stream for the camera being looked at.
   const previewStreamRef = useRef<MediaStream | null>(null);
@@ -45,6 +51,18 @@ export function SharePickerModal({ onTarget, onClose }: {
     previewStreamRef.current = null;
     setPreviewStream(null);
   };
+
+  useEffect(() => {
+    let cancelled = false;
+    void window.spaceSysAudio?.available().then((ok) => {
+      if (!cancelled && ok === true) {
+        setNativeWindowAudio(true);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -199,8 +217,14 @@ export function SharePickerModal({ onTarget, onClose }: {
           ))}
         </div>
       )}
-      {tab === "screen" ? <div className="modal-note">Whole-screen shares include system audio (stereo).</div> : null}
-      {tab === "window" ? <div className="modal-note">Window shares have no audio — system loopback captures the whole desktop.</div> : null}
+      {tab === "screen" ? <div className="modal-note">Whole-screen shares include system audio (stereo) minus this client's own sounds.</div> : null}
+      {tab === "window" ? (
+        <div className="modal-note">
+          {nativeWindowAudio
+            ? "Window shares carry only that application's audio (native per-app capture)."
+            : "Window shares have no audio — system loopback captures the whole desktop, and the native per-app capture is unavailable here."}
+        </div>
+      ) : null}
       <div className="modal-actions">
         <button className="ghost" onClick={onClose}>Cancel</button>
         <button className="primary" disabled={selected === null} onClick={share}>Share</button>

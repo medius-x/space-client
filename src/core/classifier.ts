@@ -33,6 +33,16 @@ export function classifyFeed(feed: FeedInfo): FeedClassification {
   };
 }
 
+/**
+ * Whether the feed carries a LIVE screen/camera right now. Janus keeps a
+ * STOPPED share's streams listed on the feed, merely disabled — counting
+ * `type === "video"` without the flag renders a ghost share in every UI that
+ * trusts it (the "Watch screen"/"sharing screen" bug).
+ */
+export function feedHasLiveVideo(feed: FeedInfo): boolean {
+  return feed.streams.some((stream) => stream.type === "video" && !stream.disabled);
+}
+
 export interface StreamRef {
   feed: number;
   mid: string;

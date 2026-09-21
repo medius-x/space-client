@@ -152,6 +152,39 @@ contextBridge.exposeInMainWorld("spaceCapture", {
   select(sourceId: string, withAudio: boolean): Promise<unknown> {
     return ipcRenderer.invoke("space-capture:select", sourceId, withAudio);
   },
+  /** Arm/cancel the window-share liveness watchdog (null cancels). */
+  watchSource(sourceId: string | null): Promise<unknown> {
+    return ipcRenderer.invoke("space-capture:watchSource", sourceId);
+  },
+  /** The watched window died — the renderer stops the share the ordinary way. */
+  onSourceDead(callback: (sourceId: string) => void): void {
+    ipcRenderer.removeAllListeners("space-capture:sourceDead");
+    ipcRenderer.on("space-capture:sourceDead", (_event, sourceId: string) => {
+      callback(sourceId);
+    });
+  },
+});
+
+/** Native system-audio bridge (#485): WASAPI process-loopback. Without a
+ *  source id the capture is the desktop minus OUR process (screen shares);
+ *  a WINDOW source id switches it to that application's own audio. Frames
+ *  arrive as Int16Array at the ~10 ms drain cadence. */
+contextBridge.exposeInMainWorld("spaceSysAudio", {
+  available(): Promise<unknown> {
+    return ipcRenderer.invoke("space-sysaudio:available");
+  },
+  start(sourceId?: string): Promise<unknown> {
+    return ipcRenderer.invoke("space-sysaudio:start", sourceId ?? null);
+  },
+  stop(): Promise<unknown> {
+    return ipcRenderer.invoke("space-sysaudio:stop");
+  },
+  onFrame(callback: (pcm: Int16Array, silent: boolean) => void): void {
+    ipcRenderer.removeAllListeners("space-sysaudio:frame");
+    ipcRenderer.on("space-sysaudio:frame", (_event, pcm: Int16Array, silent: boolean) => {
+      callback(pcm, silent);
+    });
+  },
 });
 
 /** Share pop-out bridge (M4) + the caption-bar controls of the borderless main

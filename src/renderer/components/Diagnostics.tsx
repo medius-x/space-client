@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { buildDiagModel, runDisplayMediaSelfTest, runNoiseEngineSelfTest, runShareSubtractionSelfTest, seedSyntheticMessages, toggleTestTone, type DiagModel } from "../runtime";
+import { buildDiagModel, runDisplayMediaSelfTest, runNoiseEngineSelfTest, runShareSubtractionSelfTest, runSystemAudioSelfTest, seedSyntheticMessages, toggleSystemAudioMonitor, toggleTestTone, type DiagModel } from "../runtime";
 import { log } from "../../logging";
 
 /** The evidence surface: connection key/values, stereo oracle, log tail. 4 Hz refresh. */
@@ -26,6 +26,14 @@ export function Diagnostics(): React.JSX.Element {
           and must be cancelled — verdict in dB lands in [selftest] below.
           Keep the desktop silent for the ~13 s run. */}
       <button className="ghost" onClick={() => void runShareSubtractionSelfTest()}>Share-subtract self-test</button>
+      {/* The NATIVE system-audio spike (#485): WASAPI process-loopback, desktop
+          minus OUR process. Three phases land in [selftest]: silent ≈−∞,
+          external audio alive, space's own sounds ≈−∞ (the exclude-self
+          contract). Monitor = hear the captured desktop locally. */}
+      <div className="diag-row">
+        <button className="ghost" onClick={() => void runSystemAudioSelfTest()}>System-audio self-test</button>
+        <button className="ghost" onClick={() => void toggleSystemAudioMonitor()}>Sys-audio monitor</button>
+      </div>
       {/* Deterministic white noise → engine → RMS verdict (no mic/room/peer
           involved); the verdict lands in the [selftest] log tail below. Gate's
           verdict reads "WEAK" on continuous noise by design — a gate mutes

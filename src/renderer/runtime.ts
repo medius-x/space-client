@@ -5,11 +5,14 @@ import { ApiError, RestClient } from "../core/rest";
 import { JanusClient } from "../core/janus";
 import { SfuSession, RoomVanishedError, SubscriberTransportError, PublisherTransportError, type MediaSource } from "../core/sfu";
 import { PeerCallSession, type PeerCallOptions, type PeerTrackKind } from "../core/peer-call";
+import { feedHasLiveVideo } from "../core/classifier";
 import { extractAudioFmtpLines } from "../core/sdp";
-import { stereoVerdict } from "../core/audio-math";
+import { rmsToDbfs, stereoVerdict } from "../core/audio-math";
 import { RoomAudio } from "../media/RoomAudio";
 import { createNoisePipeline, type NoiseEngineKind, type NoisePipeline } from "../media/noise-suppression";
 import { createShareSubtraction, suppressionDb } from "../media/share-subtraction";
+import { createSystemAudioSource, type SystemAudioSource } from "../media/system-audio-source";
+import { acquireNativeShareAudioTrack, isNativeShareActive, isShareMonitorWanted, monitorActiveShare, releaseNativeShareAudio, setActiveShareMonitorSink } from "../media/native-share-audio";
 import { modulatedNoise } from "../domain/logic/share-recenter";
 import { matchDeviceId } from "../domain/logic/device-match";
 import {
@@ -429,6 +432,122 @@ function selfTestNoiseBuffer(context: AudioContext, seedValue: number): AudioBuf
     samples[sampleIndex] = (seed / 0xffff_ffff - 0.5) * 0.5;
   }
   return buffer;
+}
+
+// ---------------------------------------------------------------------------
+// Native system-audio self-test (#485 spike): WASAPI process-loopback, desktop
+// minus OUR process — the OS-level exclude-self. Three phases: a silent
+// desktop ≈ −∞; external audio alive; space's OWN sounds ≈ −∞ (the contract
+// the failed DSP subtraction was chasing, granted by the OS instead).
+// ---------------------------------------------------------------------------
+
+let systemAudioTestRunning = false;
+let monitorSource: SystemAudioSource | null = null;
+
+function describeSystemAudioStats(source: SystemAudioSource): string {
+  const stats = source.latestStats();
+  if (stats === null) {
+    return "no stats yet";
+  }
+  const left = rmsToDbfs(stats.rmsLeft);
+  const right = rmsToDbfs(stats.rmsRight);
+  return `L=${left <= -100 ? "−∞" : left.toFixed(1)} R=${right <= -100 ? "−∞" : right.toFixed(1)} dBFS`
+    + ` underruns=${stats.underruns} dropped=${stats.dropped}`;
+}
+
+/** The local ear check: play the captured desktop-minus-us to our speakers
+ *  (the loopback is a TAP — hearing the same audio twice is safe). With a
+ *  native share running the monitor ATTACHES to its capture — a second source
+ *  here would steal the share's IPC frame sink and fail main's single-session
+ *  start, killing the share's audio. */
+export async function toggleSystemAudioMonitor(): Promise<void> {
+  if (isNativeShareActive()) {
+    const next = !isShareMonitorWanted();
+    monitorActiveShare(next);
+    log.info("sysaudio", `monitor ${next ? "on" : "off"} (attached to the live share capture)`);
+    return;
+  }
+  if (monitorSource !== null) {
+    monitorSource.dispose();
+    monitorSource = null;
+    await window.spaceSysAudio?.stop();
+    log.info("sysaudio", "monitor off");
+    return;
+  }
+  const bridge = window.spaceSysAudio;
+  if (!bridge || !(await bridge.available())) {
+    log.info("sysaudio", "monitor unavailable — native capture not supported here");
+    return;
+  }
+  const source = await createSystemAudioSource({ monitorSinkId: resolvedDevices.speaker });
+  bridge.onFrame((pcm) => source.feed(pcm));
+  if (!(await bridge.start())) {
+    source.dispose();
+    log.info("sysaudio", "monitor failed to start");
+    return;
+  }
+  source.setMonitor(true);
+  monitorSource = source;
+  log.info("sysaudio", "monitor on — you hear the desktop WITHOUT this client");
+}
+
+/** A share starting while the STANDALONE monitor runs would orphan it (the
+ *  share's acquire re-wires the single IPC sink) — wind it down first. */
+async function stopStandaloneMonitorForShare(): Promise<void> {
+  if (monitorSource !== null) {
+    await toggleSystemAudioMonitor();
+    log.info("sysaudio", "standalone monitor stopped for the share");
+  }
+}
+
+export async function runSystemAudioSelfTest(): Promise<void> {
+  if (systemAudioTestRunning) {
+    return;
+  }
+  systemAudioTestRunning = true;
+  try {
+    const bridge = window.spaceSysAudio;
+    if (!bridge) {
+      throw new Error("bridge missing");
+    }
+    if (!(await bridge.available())) {
+      log.info("selftest", "sysaudio: native capture unavailable (pre-2004 Windows or koffi absent)");
+      return;
+    }
+    const source = await createSystemAudioSource();
+    bridge.onFrame((pcm) => source.feed(pcm));
+    if (!(await bridge.start())) {
+      source.dispose();
+      log.error("selftest", "sysaudio: capture failed to start");
+      return;
+    }
+    log.info("selftest", "sysaudio capture live (48k stereo, exclude-self) — three phases, ~25 s total");
+    await waitMs(2_000);
+    const silentStats = source.latestStats();
+    log.info("selftest", `sysaudio (a) baseline: ${describeSystemAudioStats(source)} — expect ≈−∞ on a silent desktop`);
+    log.info("selftest", "sysaudio (b): START any music/video OUTSIDE space — window opens in 5 s");
+    await waitMs(5_000);
+    log.info("selftest", "sysaudio (b): WINDOW OPEN — keep it playing (5 s)");
+    await waitMs(5_000);
+    const externalStats = source.latestStats();
+    log.info("selftest", `sysaudio (b) external audio: ${describeSystemAudioStats(source)} — expect alive`);
+    log.info("selftest", "sysaudio (b): you may STOP the music now");
+    log.info("selftest", "sysaudio (c): next — toggle MUTE 3-4 times (ONLY space sounds) — window opens in 5 s");
+    await waitMs(5_000);
+    log.info("selftest", "sysaudio (c): WINDOW OPEN — toggle mute now (5 s)");
+    await waitMs(5_000);
+    log.info("selftest", `sysaudio (c) space-only: ${describeSystemAudioStats(source)} — expect ≈−∞ (exclude-self contract)`);
+    const externalAlive = externalStats !== null && (externalStats.rmsLeft > 0.005 || externalStats.rmsRight > 0.005);
+    log.info("selftest",
+      `sysaudio verdict: ${externalAlive ? "external audio captured" : "external audio NOT captured (was anything playing?)"}`
+      + `, silent baseline ${silentStats === null ? "?" : rmsToDbfs(Math.max(silentStats.rmsLeft, silentStats.rmsRight)).toFixed(1) + " dBFS"}`);
+    await bridge.stop();
+    source.dispose();
+  } catch (error) {
+    log.error("selftest", `sysaudio self-test failed: ${errorMessage(error)}`);
+  } finally {
+    systemAudioTestRunning = false;
+  }
 }
 
 export async function runShareSubtractionSelfTest(): Promise<void> {
@@ -953,6 +1072,7 @@ function watchDeviceSettings(): void {
       // The speaker follows the RESOLVED device (the saved hash may be stale).
       roomAudio.setOutputDevice(resolvedDevices.speaker);
       notifications.setOutputDevice(resolvedDevices.speaker);
+      setActiveShareMonitorSink(resolvedDevices.speaker); // the diag monitor ear rides along
     });
   };
   settingsStore.subscribe(update); // Apply re-resolves (a fresh hash was just saved)
@@ -966,6 +1086,7 @@ export async function bootstrapApp(): Promise<void> {
   watchNoiseSettings(); // an engine pick rebuilds the detour while voice/call is live
   watchDeviceSettings(); // device picks re-resolve (hashes die across restarts)
   installHotkeys(); // global OS chords + the window keydown (local binds)
+  installSourceDeadListener(); // the window-share liveness watchdog reports here
   notifications.setToastConfig({
     dismissSeconds: () => settingsStore.getSnapshot().toastDismissSeconds,
     maxToasts: () => settingsStore.getSnapshot().maxToasts,
@@ -1816,7 +1937,10 @@ async function connectVoiceRoom(channel: Channel): Promise<void> {
         publisherHandleId,
         mediaSource: navigator.mediaDevices as MediaSource,
         callbacks: {
-          onParticipants: (feeds) => appStore.patch({ participants: feeds }),
+          onParticipants: (feeds) => {
+            appStore.patch({ participants: feeds });
+            pruneDeadView(feeds);
+          },
           onRemoteTrack: handleRemoteTrack,
           onRemoteTrackEnded: handleRemoteTrackEnded,
           onState: (state, detail) => appStore.patch({ voiceState: state, stateDetail: detail ?? null }),
@@ -2080,6 +2204,10 @@ function watchNoiseSettings(): void {
 
 export async function teardownVoice(): Promise<void> {
   voiceView.dropShareVideo();
+  feedVideoTracks.clear();
+  feedShareAudioTracks.clear();
+  releaseNativeShareAudio();
+  watchShareSource(null);
   if (localDisplayStream) {
     for (const track of localDisplayStream.getTracks()) {
       track.stop();
@@ -2127,15 +2255,32 @@ export async function leaveVoice(): Promise<void> {
   }
 }
 
+/** The latest delivered remote share tracks per feed (the call's
+ *  callPeerVideoTrack pattern). Janus RECYCLES the subscriber m-line for a
+ *  publisher's next share — the same receiver.track object simply mutes and
+ *  unmutes, ontrack never re-fires, so a re-watch must re-bind the RETAINED
+ *  track (a genuinely fresh track, when one arrives, overrides it). */
+const feedVideoTracks = new Map<number, { username: string; track: MediaStreamTrack }>();
+const feedShareAudioTracks = new Map<number, { username: string; track: MediaStreamTrack }>();
+
+export function getFeedVideoTrack(feedId: number | null): { username: string; track: MediaStreamTrack } | null {
+  if (feedId === null) {
+    return null;
+  }
+  return feedVideoTracks.get(feedId) ?? null;
+}
+
 function handleRemoteTrack(feedId: number, username: string, kind: RemoteTrackKind, track: MediaStreamTrack): void {
   if (kind === "voice") {
     roomAudio.attachVoiceTrack(feedId, username, track, persistedGain("voice", username));
     return;
   }
   if (kind === "share") {
+    feedShareAudioTracks.set(feedId, { username, track });
     roomAudio.attachShareTrack(feedId, username, track, persistedGain("share", username));
     return;
   }
+  feedVideoTracks.set(feedId, { username, track });
   if (appStore.getSnapshot().viewingFeedId === feedId) {
     appStore.patch({ viewingUsername: username });
     voiceView.attachShareVideo(username, track);
@@ -2148,7 +2293,45 @@ function handleRemoteTrackEnded(feedId: number, _username: string, kind: RemoteT
     appStore.patch({ viewingUsername: null });
     return;
   }
+  if (kind === "share") {
+    // Only the share chain — the peer's voice playout must survive a share stop.
+    roomAudio.detachShareFeed(feedId);
+    return;
+  }
   roomAudio.detachFeed(feedId);
+}
+
+/** A stopped share disables its streams but the remote video track only goes
+ *  MUTED (never "ended"), so the <video> element would hold the last frame
+ *  forever. Every feed refresh drops the view when the watched feed's video
+ *  is gone (share stopped) or the feed itself left. Retained tracks of feeds
+ *  that LEFT are dropped; a merely-disabled video keeps its retention — the
+ *  recycled m-line will reuse exactly that track object. */
+function pruneDeadView(feeds: FeedInfo[]): void {
+  for (const feedId of feedVideoTracks.keys()) {
+    if (!feeds.some((entry) => entry.feedId === feedId)) {
+      feedVideoTracks.delete(feedId);
+    }
+  }
+  for (const feedId of feedShareAudioTracks.keys()) {
+    if (!feeds.some((entry) => entry.feedId === feedId)) {
+      feedShareAudioTracks.delete(feedId);
+    }
+  }
+  const viewed = appStore.getSnapshot().viewingFeedId;
+  if (viewed === null) {
+    return;
+  }
+  const feed = feeds.find((entry) => entry.feedId === viewed);
+  if (feed === undefined || !feedHasLiveVideo(feed)) {
+    voiceView.dropShareVideo();
+    appStore.patch({ viewingFeedId: null, viewingUsername: null });
+    // The SFU's viewed set must die with the view: a stale entry keeps the
+    // feed's video+share audio in wantedStreams, and the publisher's NEXT
+    // share then auto-subscribes — audio playing with nobody pressing Watch
+    // (live 2026-09-21: subscriptions +2 the instant a second share landed).
+    sfuSession?.setViewingFeed(null);
+  }
 }
 
 /** A share source picked in the picker modal (M4): screen, window or camera. */
@@ -2171,10 +2354,38 @@ async function stopCameraLocal(): Promise<void> {
   appStore.patch({ cameraOn: false });
 }
 
+// Window-share liveness watchdog (the oak SfuService precedent): Chromium
+// never fires the capture track's "ended" when the shared window closes — WGC
+// freezes the last frame and the ghost share keeps publishing. Main polls
+// IsWindow and reports the dead source; the share dies its ORDINARY death.
+let watchedShareSource: string | null = null;
+
+function watchShareSource(sourceId: string | null): void {
+  watchedShareSource = sourceId;
+  void window.spaceCapture?.watchSource(sourceId);
+}
+
+function installSourceDeadListener(): void {
+  window.spaceCapture?.onSourceDead((sourceId) => {
+    if (sourceId !== watchedShareSource) {
+      return; // a stale watch from a previous share
+    }
+    watchedShareSource = null;
+    log.info("share", "shared window closed — stopping the share");
+    if (appStore.getSnapshot().callSharing) {
+      void stopCallShareInternal();
+    } else {
+      void stopShareInternal();
+    }
+  });
+}
+
 async function stopShareInternal(): Promise<void> {
   if (sfuSession) {
     await sfuSession.stopShare().catch(() => undefined);
   }
+  releaseNativeShareAudio();
+  watchShareSource(null);
   if (localDisplayStream) {
     for (const track of localDisplayStream.getTracks()) {
       track.stop();
@@ -2224,12 +2435,43 @@ export async function shareTarget(target: ShareTarget): Promise<void> {
     display.getVideoTracks()[0]?.addEventListener("ended", () => {
       void stopShareInternal();
     });
-    await sfuSession.startShare(display);
-    const shareAudio = display.getAudioTracks()[0];
-    log.info("share", `publishing ${target.kind} "${target.id}" (audio channels=${shareAudio ? shareAudio.getSettings().channelCount ?? "?" : "none"})`);
+    // Native process-loopback (#485): screens capture the desktop MINUS our
+    // process (exclude-self) in place of Chromium's full-desktop loopback — the
+    // display stream's own audio track then dies unpublished; windows capture
+    // only the target app's process tree (INCLUDE via the source HWND → PID,
+    // per-app audio, oak parity) — they carry no Chromium audio at all, so the
+    // native track is their only audio and its failure degrades to video-only.
+    await stopStandaloneMonitorForShare();
+    let publishStream = display;
+    const displayAudio = display.getAudioTracks()[0] ?? null;
+    const displayVideo = display.getVideoTracks()[0] ?? null;
+    const nativeAudioTrack = target.kind === "window"
+      ? await acquireNativeShareAudioTrack(target.id, resolvedDevices.speaker)
+      : displayAudio !== null
+        ? await acquireNativeShareAudioTrack(undefined, resolvedDevices.speaker)
+        : null;
+    if (nativeAudioTrack !== null && displayAudio !== null && displayVideo !== null) {
+      displayAudio.stop();
+      publishStream = new MediaStream([displayVideo, nativeAudioTrack]);
+    } else if (nativeAudioTrack !== null && displayVideo !== null) {
+      publishStream = new MediaStream([displayVideo, nativeAudioTrack]);
+    }
+    await sfuSession.startShare(publishStream);
+    if (target.kind === "window") {
+      watchShareSource(target.id); // ended never fires on window close (WGC)
+    }
+    const audioDescription = nativeAudioTrack !== null
+      ? target.kind === "window"
+        ? "native per-app process-loopback"
+        : "native process-loopback (desktop minus this client)"
+      : displayAudio !== null
+        ? `raw loopback (channels=${displayAudio.getSettings().channelCount ?? "?"})`
+        : "none";
+    log.info("share", `publishing ${target.kind} "${target.id}" (audio: ${audioDescription})`);
     appStore.patch({ sharing: true });
   } catch (error) {
     log.error("share", `share failed: ${errorMessage(error)}`);
+    releaseNativeShareAudio();
     if (localDisplayStream) {
       for (const track of localDisplayStream.getTracks()) {
         track.stop();
@@ -3095,6 +3337,8 @@ function teardownCall(): void {
     callSession.close();
     callSession = null;
   }
+  releaseNativeShareAudio();
+  watchShareSource(null);
   stopStream(callMicStream);
   stopStream(callCameraStream);
   stopStream(callDisplayStream);
@@ -3225,6 +3469,8 @@ export function getCallLocalVideoTrack(): MediaStreamTrack | null {
 
 async function stopCallShareInternal(): Promise<void> {
   await callSession?.stopShare();
+  releaseNativeShareAudio();
+  watchShareSource(null);
   stopStream(callDisplayStream);
   callDisplayStream = null;
   appStore.patch({ callSharing: false });
@@ -3266,10 +3512,40 @@ export async function callShareTarget(target: ShareTarget): Promise<void> {
     display.getVideoTracks()[0]?.addEventListener("ended", () => {
       void stopCallShareInternal();
     });
-    await session.startShare(display);
+    // Same native substitution as the room seam (#485): screens exclude our
+    // process (desktop minus this client), windows capture only the target
+    // app's tree (per-app INCLUDE). Failure falls back to the raw/no audio.
+    await stopStandaloneMonitorForShare();
+    let publishStream = display;
+    const displayAudio = display.getAudioTracks()[0] ?? null;
+    const displayVideo = display.getVideoTracks()[0] ?? null;
+    const nativeAudioTrack = target.kind === "window"
+      ? await acquireNativeShareAudioTrack(target.id, resolvedDevices.speaker)
+      : displayAudio !== null
+        ? await acquireNativeShareAudioTrack(undefined, resolvedDevices.speaker)
+        : null;
+    if (nativeAudioTrack !== null && displayAudio !== null && displayVideo !== null) {
+      displayAudio.stop();
+      publishStream = new MediaStream([displayVideo, nativeAudioTrack]);
+    } else if (nativeAudioTrack !== null && displayVideo !== null) {
+      publishStream = new MediaStream([displayVideo, nativeAudioTrack]);
+    }
+    await session.startShare(publishStream);
+    if (target.kind === "window") {
+      watchShareSource(target.id); // ended never fires on window close (WGC)
+    }
+    const audioDescription = nativeAudioTrack !== null
+      ? target.kind === "window"
+        ? "native per-app process-loopback"
+        : "native process-loopback"
+      : displayAudio !== null
+        ? "raw loopback"
+        : "none";
+    log.info("call", `share publishing ${target.kind} (audio: ${audioDescription})`);
     appStore.patch({ callSharing: true });
   } catch (error) {
     log.error("call", `call share failed: ${errorMessage(error)}`);
+    releaseNativeShareAudio();
     stopStream(callDisplayStream);
     callDisplayStream = null;
   }
@@ -3319,6 +3595,14 @@ export function setViewingFeed(feedId: number | null): void {
   sfuSession?.setViewingFeed(next);
   if (next === null) {
     voiceView.dropShareVideo();
+    return;
+  }
+  // A recycled m-line never re-fires ontrack: re-attach the retained share
+  // audio immediately (the video re-bind rides the view flip in VoiceRoom).
+  // With a genuinely fresh track the later delivery simply rebuilds the chain.
+  const retainedAudio = feedShareAudioTracks.get(next);
+  if (retainedAudio) {
+    roomAudio.attachShareTrack(next, retainedAudio.username, retainedAudio.track, persistedGain("share", retainedAudio.username));
   }
 }
 

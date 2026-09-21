@@ -3,6 +3,7 @@ import { useStore } from "../hooks/useStore";
 import { appStore, connectionDirectory, joinVoiceGuarded, setActiveChannel, settingsStore, toggleRoomView } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import { memberNameColor } from "../../domain/logic/roster-grouping";
+import { feedHasLiveVideo } from "../../core/classifier";
 import { displayNameOf } from "../../domain/logic/display-name";
 import type { Channel } from "../../types";
 import { MANAGE_CHANNELS_PERMISSION } from "../../types";
@@ -146,7 +147,7 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
                       if (channel.id === activeVoiceChannelId && username !== ownUsername) {
                         setVoiceMemberMenu({
                           username,
-                          hasShare: participants.some((feed) => feed.display === username && feed.streams.some((stream) => stream.type === "video")),
+                          hasShare: participants.some((feed) => feed.display === username && feedHasLiveVideo(feed)),
                           x: event.clientX,
                           y: event.clientY,
                         });

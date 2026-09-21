@@ -23,6 +23,7 @@ import {
   setShareVolume,
   setVoiceVolume,
   setViewingFeed,
+  getFeedVideoTrack,
   settingsStore,
   shareTarget,
   stopCallShare,
@@ -40,6 +41,7 @@ import type { ConnectionSession } from "../../domain/session/connection-session"
 import type { VoiceMemberMarks } from "../../domain/stores/VoiceControlStore";
 import type { FeedInfo } from "../../types";
 import { canActOn, memberNameColor, topPosition, type HierarchyView } from "../../domain/logic/roster-grouping";
+import { feedHasLiveVideo } from "../../core/classifier";
 import { displayNameOf } from "../../domain/logic/display-name";
 import type { NoiseEngineKind } from "../../media/noise-suppression";
 import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
@@ -319,7 +321,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
   }
 
   const channel = activeChannelId !== null ? session.channelStore.get(activeChannelId) : null;
-  const screenCount = participants.filter((feed) => feed.streams.some((stream) => stream.type === "video")).length;
+  const screenCount = participants.filter(feedHasLiveVideo).length;
 
   const ownMarks = marksByMember.get(session.username());
   const selfMuted = (ownMarks?.selfMuted ?? false) || (ownMarks?.modMuted ?? false);
@@ -496,6 +498,22 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
     };
   }, []);
 
+  // A re-watch must re-bind the RETAINED video track: Janus recycles the
+  // subscriber m-line for a publisher's next share — the same receiver.track
+  // mutes and unmutes, ontrack never re-fires, so the fresh view mount is the
+  // only re-bind moment (a genuinely fresh track overrides it on delivery).
+  useEffect(() => {
+    if (viewingFeedId === null) {
+      return;
+    }
+    const retained = getFeedVideoTrack(viewingFeedId);
+    const element = retained !== null ? shareVideoRefs.current.get(retained.username) : null;
+    if (element !== null && element !== undefined && retained !== null) {
+      element.srcObject = new MediaStream([retained.track]);
+      void element.play().catch(() => undefined);
+    }
+  }, [viewingFeedId, participants]);
+
   // The call's peer-video hook (the runtime routes the remote track here) —
   // mounted only in call mode; the track may have arrived before this render.
   useEffect(() => {
@@ -641,7 +659,7 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
   // share ("Your screen"/"Your camera"). The name (top-role color) + marks sit
   // BELOW; volumes live in the right-click card.
   const renderTile = (username: string, isSelf: boolean, feed: FeedInfo | null) => {
-    const hasVideo = feed !== null && feed.streams.some((stream) => stream.type === "video");
+    const hasVideo = feed !== null && feedHasLiveVideo(feed);
     const watched = feed !== null && feed.feedId === viewingFeedId;
     const ownMedia = isSelf && (cameraOn || sharing);
     return (
@@ -751,7 +769,7 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
   };
 
   const channel = activeChannelId !== null ? session.channelStore.get(activeChannelId) : null;
-  const screens = participants.filter((feed) => feed.streams.some((stream) => stream.type === "video")).length;
+  const screens = participants.filter(feedHasLiveVideo).length;
 
   return (
     <div className="room-view">
@@ -796,7 +814,7 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
           username={memberMenu.username}
           hasShare={callMode
             ? peerScreenOn
-            : participants.some((feed) => feed.display === memberMenu.username && feed.streams.some((stream) => stream.type === "video"))}
+            : participants.some((feed) => feed.display === memberMenu.username && feedHasLiveVideo(feed))}
           moderation={!callMode}
           x={memberMenu.x}
           y={memberMenu.y}

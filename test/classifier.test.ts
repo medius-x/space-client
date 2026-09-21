@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyFeed, diffSubscriptions, SlotMidTranslator, wantedStreams } from "../src/core/classifier";
+import { classifyFeed, diffSubscriptions, feedHasLiveVideo, SlotMidTranslator, wantedStreams } from "../src/core/classifier";
 import type { FeedInfo, FeedStream } from "../src/types";
 
 function stream(type: "audio" | "video", mid: string, mindex: number, disabled = false): FeedStream {
@@ -76,5 +76,28 @@ describe("SlotMidTranslator", () => {
 
     translator.forgetFeed(42);
     expect(translator.resolve("1")).toBeUndefined();
+  });
+});
+
+describe("feedHasLiveVideo", () => {
+  it("a sharing feed has live video; a STOPPED share (streams merely disabled) does not", () => {
+    // The wire truth of a stopped share: Janus keeps the streams listed on the
+    // feed, just disabled — counting `type === "video"` renders a ghost share.
+    expect(feedHasLiveVideo(sharingFeed())).toBe(true);
+    const stopped: FeedInfo = {
+      feedId: 42,
+      display: "alice",
+      streams: [
+        stream("audio", "0", 0),
+        stream("video", "1", 1, true),
+        stream("audio", "2", 2, true),
+      ],
+    };
+    expect(feedHasLiveVideo(stopped)).toBe(false);
+  });
+
+  it("a voice-only feed has no live video", () => {
+    const feed: FeedInfo = { feedId: 1, display: "bob", streams: [stream("audio", "0", 0)] };
+    expect(feedHasLiveVideo(feed)).toBe(false);
   });
 });
