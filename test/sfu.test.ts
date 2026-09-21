@@ -115,8 +115,12 @@ describe("SfuSession", () => {
 
     const publisherJoin = sends.find((entry) => entry.body.ptype === "publisher");
     expect(publisherJoin?.body).toMatchObject({ request: "join", room: 5, display: "alice", pin: "p" });
+    // The REMB ceiling rides both the join and every configure — without it
+    // Janus caps the publisher at the room's 1 Mbps default and every preset
+    // above that is silently crushed (the choppy-viewer live report).
+    expect(publisherJoin?.body.bitrate).toBe(20_000_000);
     const configure = sends.find((entry) => entry.body.request === "configure");
-    expect(configure?.body).toMatchObject({ audio: true, video: true });
+    expect(configure?.body).toMatchObject({ audio: true, video: true, bitrate: 20_000_000 });
 
     const publisher = FakePeerConnection.instances[0]!;
     // addTrack fired onnegotiationneeded internally — no extra offers may result from it.

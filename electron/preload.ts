@@ -187,20 +187,24 @@ contextBridge.exposeInMainWorld("spaceSysAudio", {
   },
 });
 
-/** Share pop-out bridge (M4) + the caption-bar controls of the borderless main
- *  window (oak chrome): min/max/close and the maximize-glyph flip. */
+/** Share pop-out bridge + the caption-bar controls of the borderless main
+ *  window (oak chrome): min/max/close and the maximize-glyph flip. The pop-out
+ *  runs its OWN videoroom subscription (2026-09-21) — main only ferries the
+ *  subscription target between the windows. */
 contextBridge.exposeInMainWorld("spaceWindow", {
   openPopout(): Promise<unknown> {
     return ipcRenderer.invoke("space-window:popout");
   },
-  sendFrame(dataUrl: string): void {
-    ipcRenderer.send("popout:frame", dataUrl);
+  retargetPopout(target: unknown): void {
+    ipcRenderer.send("space-window:retargetPopout", target);
   },
-  onFrame(callback: (dataUrl: string) => void): void {
-    ipcRenderer.on("popout:frame", (_event, dataUrl: unknown) => {
-      if (typeof dataUrl === "string") {
-        callback(dataUrl);
-      }
+  popoutParams(): Promise<unknown> {
+    return ipcRenderer.invoke("space-window:popoutParams");
+  },
+  onRetarget(callback: (target: unknown) => void): void {
+    ipcRenderer.removeAllListeners("popout:retarget");
+    ipcRenderer.on("popout:retarget", (_event, target: unknown) => {
+      callback(target);
     });
   },
   onClosed(callback: () => void): void {

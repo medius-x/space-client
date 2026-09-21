@@ -1,5 +1,5 @@
 import { isSystemAudioAvailable, startSystemAudio, stopSystemAudio } from "./system-audio";
-import { watchSourceLiveness } from "./window-liveness";
+import { getClientSize, isWindowConfirmedDead, watchSourceLiveness } from "./window-liveness";
 import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, globalShortcut, ipcMain, net, protocol, screen, session, shell } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -397,6 +397,23 @@ ipcMain.handle("space-kv:rotate-tokens", (_event, key: unknown, expectedRefreshT
 
 let pendingCaptureGrant: { sourceId: string; withAudio: boolean } | null = null;
 
+/** The share-grant anti-freeze cache: the picker's `space-capture:sources`
+ *  call enumerated everything seconds before Share, and re-running
+ *  desktopCapturer.getSources in the display-media grant handler would probe
+ *  EVERY window through WGC a second time (0.5–2 s of GPU churn on this
+ *  hardware — the share-start cursor-freeze suspect). A fresh FULL
+ *  enumeration (screens + windows) may serve the grant directly; window hits
+ *  are re-validated with a nanosecond IsWindow, and any miss falls back to
+ *  the ordinary re-enumeration — correctness first, the cache is only speed. */
+interface CaptureSourceCache {
+  sources: Electron.DesktopCapturerSource[];
+  enumeratedAt: number;
+}
+
+const CAPTURE_SOURCE_CACHE_TTL_MS = 30_000;
+
+let captureSourceCache: CaptureSourceCache | null = null;
+
 /** Caption-bar window controls (borderless chrome, oak parity). */
 ipcMain.on("space-window:minimize", () => mainWindowRef?.minimize());
 ipcMain.on("space-window:maximize", () => {
@@ -416,16 +433,40 @@ ipcMain.handle("space-capture:sources", async (_event, requestedTypes: unknown) 
     const requested = Array.isArray(requestedTypes)
       ? requestedTypes.filter((entry): entry is "screen" | "window" => entry === "screen" || entry === "window")
       : [];
+    const types: ("screen" | "window")[] = requested.length > 0 ? requested : ["screen", "window"];
     const sources = await desktopCapturer.getSources({
-      types: requested.length > 0 ? requested : ["screen", "window"],
+      types,
       thumbnailSize: { width: 320, height: 180 },
     });
-    return sources.map((source) => ({
-      id: source.id,
-      name: source.name,
-      kind: source.id.startsWith("screen:") ? ("screen" as const) : ("window" as const),
-      thumbnailDataUrl: source.thumbnail.isEmpty() ? null : source.thumbnail.toDataURL(),
-    }));
+    // Only a FULL enumeration can serve a later grant — a screens-only call
+    // (the self-test) would miss every window id.
+    if (types.includes("screen") && types.includes("window")) {
+      captureSourceCache = { sources, enumeratedAt: Date.now() };
+    }
+    // The picker's resolution cutoff: physical pixels per source. Screens by
+    // display_id (DIP size × scale factor), windows by the client-rect probe
+    // (WGC captures the client area). Unknown = null = no cutoff offered.
+    const screenSizes = new Map(screen.getAllDisplays().map((display) => [
+      String(display.id),
+      {
+        width: Math.round(display.size.width * display.scaleFactor),
+        height: Math.round(display.size.height * display.scaleFactor),
+      },
+    ]));
+    return sources.map((source) => {
+      const isScreen = source.id.startsWith("screen:");
+      const size = isScreen
+        ? screenSizes.get(source.display_id) ?? null
+        : getClientSize(source.id);
+      return {
+        id: source.id,
+        name: source.name,
+        kind: isScreen ? ("screen" as const) : ("window" as const),
+        thumbnailDataUrl: source.thumbnail.isEmpty() ? null : source.thumbnail.toDataURL(),
+        sourceWidth: size !== null ? size.width : null,
+        sourceHeight: size !== null ? size.height : null,
+      };
+    });
   } catch (error: unknown) {
     appendLog(`[main] capture sources failed: ${error instanceof Error ? error.message : String(error)}`);
     return [];
@@ -479,12 +520,18 @@ ipcMain.handle("space-sysaudio:stop", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Share pop-out window (M4): a separate BrowserWindow fed with JPEG frames from
-// the main window over IPC (MediaStream objects cannot cross renderer contexts).
+// Share pop-out window (M4; 2026-09-21 rework): a separate BrowserWindow that
+// runs its OWN videoroom subscription in its renderer (a MediaStream cannot
+// cross renderer contexts, but a second Janus subscriber can — full quality
+// and frame rate instead of the old 12.5 fps JPEG relay). Main only ferries
+// the subscription target between the windows.
 // ---------------------------------------------------------------------------
 
 let popoutWindow: BrowserWindow | null = null;
 let mainWindowRef: BrowserWindow | null = null;
+/** The last target the main window pushed — the pop-out's initial state (its
+ *  listener may mount after the retarget event was forwarded). */
+let popoutTarget: Record<string, unknown> | null = null;
 
 function loadRendererTarget(window: BrowserWindow, hash: string): Promise<void> {
   const devServerUrl = process.env.ELECTRON_RENDERER_URL;
@@ -522,6 +569,7 @@ ipcMain.handle("space-window:popout", () => {
   });
   popout.on("closed", () => {
     popoutWindow = null;
+    popoutTarget = null;
     mainWindowRef?.webContents.send("popout:closed");
   });
   void loadRendererTarget(popout, "popout").catch((error: unknown) => {
@@ -531,11 +579,14 @@ ipcMain.handle("space-window:popout", () => {
   return true;
 });
 
-ipcMain.on("popout:frame", (_event, dataUrl: unknown) => {
-  if (typeof dataUrl === "string" && popoutWindow && !popoutWindow.isDestroyed()) {
-    popoutWindow.webContents.send("popout:frame", dataUrl);
+ipcMain.on("space-window:retargetPopout", (_event, target: unknown) => {
+  popoutTarget = target !== null && typeof target === "object" ? target as Record<string, unknown> : null;
+  if (popoutWindow && !popoutWindow.isDestroyed()) {
+    popoutWindow.webContents.send("popout:retarget", target);
   }
 });
+
+ipcMain.handle("space-window:popoutParams", () => popoutTarget);
 
 // ---------------------------------------------------------------------------
 // Toast window (oak's NotificationToast): a frameless TRANSPARENT always-on-top
@@ -712,11 +763,37 @@ async function createWindow(): Promise<void> {
   session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
     const grant = pendingCaptureGrant;
     pendingCaptureGrant = null; // one grant per selection — never leak into a later request
+    const handOut = (chosen: Electron.DesktopCapturerSource, fromCache: boolean): void => {
+      const withLoopback = (grant?.withAudio ?? false) && request.audioRequested;
+      appendLog(`[main] display-media grant: ${chosen.id} audio=${withLoopback ? "loopback" : "none"}${fromCache ? " (picker cache)" : ""}`);
+      callback({ video: chosen, audio: withLoopback ? "loopback" : undefined });
+    };
+    // The anti-freeze fast path: the picker's own fresh enumeration serves the
+    // grant without a second full WGC probe. Window ids are re-validated with
+    // IsWindow (screen ids have no HWND — the probe does not apply to them);
+    // a dead window or a cache miss simply falls through to the ordinary path.
+    const cache = captureSourceCache;
+    if (grant !== null && cache !== null && Date.now() - cache.enumeratedAt < CAPTURE_SOURCE_CACHE_TTL_MS
+      && !(grant.sourceId.startsWith("window:") && isWindowConfirmedDead(grant.sourceId))) {
+      const cached = cache.sources.find((source) => source.id === grant.sourceId);
+      if (cached !== undefined) {
+        handOut(cached, true);
+        return;
+      }
+    }
     desktopCapturer
       .getSources({ types: grant ? ["screen", "window"] : ["screen"], thumbnailSize: { width: 0, height: 0 } })
       .then((sources) => {
         let chosen = grant ? sources.find((source) => source.id === grant.sourceId) : undefined;
         if (!chosen) {
+          if (grant) {
+            // The PICKED source died between the picker and the grant — refuse
+            // honestly (the renderer's share-failed path) instead of silently
+            // publishing the primary display as if it were the pick.
+            appendLog(`[main] display-media: picked source "${grant.sourceId}" is gone`);
+            callback({});
+            return;
+          }
           const primaryId = String(screen.getPrimaryDisplay().id);
           chosen = sources.find((source) => source.display_id === primaryId) ?? sources[0];
         }
@@ -725,9 +802,7 @@ async function createWindow(): Promise<void> {
           callback({});
           return;
         }
-        const withLoopback = (grant?.withAudio ?? false) && request.audioRequested;
-        appendLog(`[main] display-media grant: ${chosen.id} audio=${withLoopback ? "loopback" : "none"}`);
-        callback({ video: chosen, audio: withLoopback ? "loopback" : undefined });
+        handOut(chosen, false);
       })
       .catch((error: unknown) => {
         appendLog(`[main] ERROR display-media failed: ${error instanceof Error ? error.message : String(error)}`);

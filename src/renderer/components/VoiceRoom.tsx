@@ -8,6 +8,7 @@ import {
   getCallLocalVideoTrack,
   getCallPeerVideoTrack,
   getCameraTrack,
+  getVoiceRoomInfo,
   getVoiceShareTrack,
   hangUpCall,
   kickVoiceUser,
@@ -17,7 +18,6 @@ import {
   popoutClosed,
   resolveCallConflict,
   roomAudio,
-  sendPopoutFrame,
   serverDeafenUser,
   serverMuteUser,
   setShareVolume,
@@ -48,10 +48,7 @@ import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
 import { SharePickerModal } from "./SharePickerModal";
 import { Avatar } from "./Avatar";
 import { Modal } from "./Modal";
-
-/** Pop-out frame pump: ~12 JPEG frames/s, capped at 1280 wide (IPC, not raw bitmaps). */
-const POPOUT_FRAME_INTERVAL_MS = 80;
-const POPOUT_MAX_WIDTH = 1280;
+import type { PopoutTarget } from "../bridges";
 
 function formatCallSeconds(total: number): string {
   const minutes = Math.floor(total / 60);
@@ -603,41 +600,38 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
     }
   }, [callMode, callPeerMedia]);
 
-  // Pop-out frame pump: grabs the WATCHED tile's <video> into a canvas → JPEG → IPC.
+  // Pop-out target sync: the pop-out window runs its OWN videoroom subscription
+  // (the old 12.5 fps JPEG relay is gone). This effect only keeps its TARGET in
+  // step with what the main window watches — identical consecutive targets are
+  // skipped so an unrelated roster update never resubscribes the window.
+  const lastPopoutTargetRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!popoutActive || viewingFeedId === null || viewingUsername === null) {
+    if (!popoutActive) {
       return;
     }
-    const video = shareVideoRefs.current.get(viewingUsername) ?? null;
-    if (!video) {
-      return;
-    }
-    const canvas = document.createElement("canvas");
-    const context = canvas.getContext("2d");
-    if (context === null) {
-      return;
-    }
-    let timer = 0;
-    let cancelled = false;
-    const pump = () => {
-      if (cancelled) {
-        return;
+    let target: PopoutTarget | null = null;
+    if (viewingFeedId !== null) {
+      const room = getVoiceRoomInfo();
+      const feed = participants.find((entry) => entry.feedId === viewingFeedId);
+      const videoMid = feed?.streams.find((stream) => stream.type === "video" && stream.disabled !== true)?.mid;
+      if (room !== null && videoMid !== undefined) {
+        target = {
+          janusUrl: room.janusUrl,
+          roomId: room.roomId,
+          token: room.token,
+          pin: room.pin,
+          feedId: viewingFeedId,
+          videoMid,
+        };
       }
-      if (video.videoWidth > 0 && video.videoHeight > 0) {
-        const scale = Math.min(1, POPOUT_MAX_WIDTH / video.videoWidth);
-        canvas.width = Math.round(video.videoWidth * scale);
-        canvas.height = Math.round(video.videoHeight * scale);
-        context.drawImage(video, 0, 0, canvas.width, canvas.height);
-        sendPopoutFrame(canvas.toDataURL("image/jpeg", 0.75));
-      }
-      timer = window.setTimeout(pump, POPOUT_FRAME_INTERVAL_MS);
-    };
-    timer = window.setTimeout(pump, POPOUT_FRAME_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [popoutActive, viewingFeedId, viewingUsername]);
+    }
+    const fingerprint = target === null ? "null" : JSON.stringify(target);
+    if (fingerprint === lastPopoutTargetRef.current) {
+      return;
+    }
+    lastPopoutTargetRef.current = fingerprint;
+    window.spaceWindow?.retargetPopout(target);
+  }, [popoutActive, viewingFeedId, participants]);
 
   const setShareVideoRef = (username: string) => (element: HTMLVideoElement | null) => {
     if (element) {

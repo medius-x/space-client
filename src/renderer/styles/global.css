@@ -1601,6 +1601,135 @@ button.wide-add { width: 100%; }
 .picker-row:hover { border-color: var(--sp-hover); }
 .picker-row.chosen { border-color: var(--sp-accent); }
 
+/* ===== Share picker step two: Quality (oak's Picker, 2026-09-21) ===== */
+
+.quality-step {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.quality-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.quality-row-label {
+  width: 84px;
+  flex-shrink: 0;
+  color: var(--sp-text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.quality-select-wrap { position: relative; display: flex; flex: 1; min-width: 0; }
+/* The combo is a custom dropdown (a native <select> cannot host per-row delete
+   buttons); the trigger keeps the search scope selector's look. */
+.quality-select-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--sp-darkest);
+  border: 1px solid var(--sp-control);
+  border-radius: 4px;
+  color: var(--sp-text);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 5px 8px;
+  text-align: left;
+}
+.quality-select-trigger:hover { background: var(--sp-hover); }
+.quality-select-value {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.quality-select-arrow { font-size: 15px; color: var(--sp-text-muted); }
+.quality-select-trigger.open .quality-select-arrow { transform: rotate(180deg); }
+.quality-preset-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 5;
+  background: var(--sp-darkest);
+  border: 1px solid var(--sp-control);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.quality-preset-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--sp-text);
+  cursor: pointer;
+}
+.quality-preset-row:hover { background: var(--sp-selected); }
+.quality-preset-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.quality-preset-check { color: var(--sp-accent); font-size: 14px; }
+.quality-preset-delete {
+  background: transparent;
+  border: none;
+  padding: 2px;
+  font-size: 13px;
+  color: var(--sp-text-muted);
+  border-radius: 4px;
+}
+.quality-preset-delete:hover { background: var(--sp-red); color: #fff; }
+.quality-segments { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; min-width: 0; }
+.quality-segment {
+  padding: 4px 10px;
+  border: 1px solid var(--sp-control);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--sp-text-muted);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.quality-segment:hover { border-color: var(--sp-hover); color: var(--sp-text); }
+.quality-segment.chosen {
+  border-color: var(--sp-accent);
+  background: var(--sp-accent);
+  color: #fff;
+}
+.quality-save-row { display: flex; gap: 8px; margin-left: 94px; }
+.quality-save-row input {
+  flex: 1;
+  min-width: 0;
+  background: var(--sp-darkest);
+  border: 1px solid var(--sp-control);
+  border-radius: 4px;
+  color: var(--sp-text);
+  font-size: 13px;
+  font-family: inherit;
+  padding: 6px 8px;
+  outline: none;
+}
+.quality-audio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 94px;
+  color: var(--sp-text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.quality-summary { color: var(--sp-text-muted); font-size: 12px; margin-left: 94px; }
+
 .popout-root {
   width: 100vw;
   height: 100vh;
@@ -1610,7 +1739,10 @@ button.wide-add { width: 100%; }
   justify-content: center;
   overflow: hidden;
 }
-.popout-root img { max-width: 100%; max-height: 100%; object-fit: contain; }
+/* The pop-out renders its OWN WebRTC subscription (a live <video>, not the
+   old JPEG <img> relay). Without a stream the element collapses to 0×0 and
+   the waiting line centers alone. */
+.popout-root video { max-width: 100%; max-height: 100%; object-fit: contain; }
 .popout-waiting { color: var(--sp-text-dim); font-size: 14px; }
 
 /* ===== M5: 1:1 P2P calls ===== */

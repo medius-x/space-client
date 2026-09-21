@@ -1,6 +1,7 @@
 import { Emitter } from "../lib/store";
 import { kv } from "../persistence/kv-client";
 import { DEFAULT_KEYBINDS, resolveKeybinds, type ActionId } from "../logic/keybinds";
+import type { SavedSharePreset } from "../logic/share-quality";
 
 /**
  * App-wide client settings (oak's SettingsStore — the M7 subset that maps onto
@@ -55,6 +56,13 @@ export interface ClientSettings {
    *  Global-scope entries register OS-wide through the main process — the mute
    *  toggle works from an unfocused game; local entries match a window keydown. */
   keybinds: Partial<Record<ActionId, string>>;
+  /** User-saved share-quality presets (the picker's Quality step, oak's
+   *  sharePresets): the Save row upserts here, cap 30 in upsertPreset. */
+  sharePresets: SavedSharePreset[];
+  /** The audio checkbox seeds per source kind (oak persists per kind too) —
+   *  the last checkbox state pre-checks the next share of that kind. */
+  shareScreenAudio: boolean;
+  shareWindowAudio: boolean;
 }
 
 export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
@@ -76,6 +84,9 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   cameraDeviceId: null,
   cameraLabel: null,
   keybinds: { ...DEFAULT_KEYBINDS },
+  sharePresets: [],
+  shareScreenAudio: true,
+  shareWindowAudio: true,
 };
 
 const KV_KEY = "client-settings";
@@ -118,6 +129,10 @@ export class SettingsStore extends Emitter {
       // default, ids not in the catalog are dropped — the same forward-compat
       // sanitize as the engine list above).
       this.settings = { ...this.settings, keybinds: resolveKeybinds(rest.keybinds ?? {}) };
+      // Presets ride as an opaque list — anything not an array is stale/garbage.
+      if (!Array.isArray(this.settings.sharePresets)) {
+        this.settings = { ...this.settings, sharePresets: [] };
+      }
     }
     this.loaded = true;
     this.emit();

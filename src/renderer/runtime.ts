@@ -3,7 +3,7 @@ import { log } from "../logging";
 import { MemoryTokenStorage } from "../core/auth";
 import { ApiError, RestClient } from "../core/rest";
 import { JanusClient } from "../core/janus";
-import { SfuSession, RoomVanishedError, SubscriberTransportError, PublisherTransportError, type MediaSource } from "../core/sfu";
+import { SfuSession, RoomVanishedError, SubscriberTransportError, PublisherTransportError, type MediaSource, type VideoRtpCounters } from "../core/sfu";
 import { PeerCallSession, type PeerCallOptions, type PeerTrackKind } from "../core/peer-call";
 import { feedHasLiveVideo } from "../core/classifier";
 import { extractAudioFmtpLines } from "../core/sdp";
@@ -15,6 +15,7 @@ import { createSystemAudioSource, type SystemAudioSource } from "../media/system
 import { acquireNativeShareAudioTrack, isNativeShareActive, isShareMonitorWanted, monitorActiveShare, releaseNativeShareAudio, setActiveShareMonitorSink } from "../media/native-share-audio";
 import { modulatedNoise } from "../domain/logic/share-recenter";
 import { matchDeviceId } from "../domain/logic/device-match";
+import { cameraVideoConstraints, describeQuality, displayVideoConstraints, type ShareQuality } from "../domain/logic/share-quality";
 import {
   ConnectionDirectory,
   DEFAULT_NOTIFICATION_PREFS,
@@ -2339,6 +2340,11 @@ export interface ShareTarget {
   kind: "screen" | "window" | "camera";
   /** desktopCapturer source id, or the camera deviceId for kind="camera". */
   id: string;
+  /** The Quality step's decision (2026-09-21): capture caps + the video
+   *  sender's bitrate ceiling; width/height null = the uncapped "Source". */
+  quality: ShareQuality;
+  /** The step-2 audio checkbox — false = a deliberately video-only share. */
+  includeAudio: boolean;
 }
 
 async function stopCameraLocal(): Promise<void> {
@@ -2409,13 +2415,13 @@ export async function shareTarget(target: ShareTarget): Promise<void> {
         await stopCameraLocal();
       }
       const cameraStream = await navigator.mediaDevices.getUserMedia({
-        video: { deviceId: { exact: target.id }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: { deviceId: { exact: target.id }, ...cameraVideoConstraints(target.quality) },
         audio: false,
       });
       localCameraStream = cameraStream;
-      await sfuSession.startCamera(cameraStream);
+      await sfuSession.startCamera(cameraStream, target.quality.bitrate);
       appStore.patch({ cameraOn: true });
-      log.info("camera", `camera publishing (device ${target.id})`);
+      log.info("camera", `camera publishing (device ${target.id}, ${describeQuality(target.quality)})`);
       return;
     }
     if (appStore.getSnapshot().cameraOn) {
@@ -2425,13 +2431,18 @@ export async function shareTarget(target: ShareTarget): Promise<void> {
       await stopShareInternal();
     }
     // Tell main which source the NEXT getDisplayMedia grant should hand out; loopback
-    // system audio only exists for whole screens (windows and cameras never carry it).
-    await window.spaceCapture?.select(target.id, target.kind === "screen");
+    // system audio only exists for whole screens and only when the checkbox asked.
+    await window.spaceCapture?.select(target.id, target.kind === "screen" && target.includeAudio);
     const display = await navigator.mediaDevices.getDisplayMedia({
-      video: true,
-      audio: target.kind === "screen" ? LOOPBACK_AUDIO_CONSTRAINTS : false,
+      video: displayVideoConstraints(target.quality),
+      audio: target.kind === "screen" && target.includeAudio ? LOOPBACK_AUDIO_CONSTRAINTS : false,
     });
     localDisplayStream = display;
+    // What Chromium actually granted (the fps/resolution caps are REQUESTS —
+    // this line is the ground truth for "did the picker's choice reach the
+    // capturer" when a change looks like a no-op on screen).
+    const granted = display.getVideoTracks()[0]?.getSettings();
+    log.info("share", `capture settings: ${granted?.width ?? "?"}×${granted?.height ?? "?"} @ ${Math.round(granted?.frameRate ?? 0)} fps`);
     display.getVideoTracks()[0]?.addEventListener("ended", () => {
       void stopShareInternal();
     });
@@ -2445,18 +2456,23 @@ export async function shareTarget(target: ShareTarget): Promise<void> {
     let publishStream = display;
     const displayAudio = display.getAudioTracks()[0] ?? null;
     const displayVideo = display.getVideoTracks()[0] ?? null;
-    const nativeAudioTrack = target.kind === "window"
-      ? await acquireNativeShareAudioTrack(target.id, resolvedDevices.speaker)
-      : displayAudio !== null
-        ? await acquireNativeShareAudioTrack(undefined, resolvedDevices.speaker)
-        : null;
+    // The step-2 checkbox gates the native path wholesale — a video-only share
+    // captures no audio at all (screens request none; windows skip the native
+    // per-app capture entirely).
+    const nativeAudioTrack = target.includeAudio
+      ? (target.kind === "window"
+        ? await acquireNativeShareAudioTrack(target.id, resolvedDevices.speaker)
+        : displayAudio !== null
+          ? await acquireNativeShareAudioTrack(undefined, resolvedDevices.speaker)
+          : null)
+      : null;
     if (nativeAudioTrack !== null && displayAudio !== null && displayVideo !== null) {
       displayAudio.stop();
       publishStream = new MediaStream([displayVideo, nativeAudioTrack]);
     } else if (nativeAudioTrack !== null && displayVideo !== null) {
       publishStream = new MediaStream([displayVideo, nativeAudioTrack]);
     }
-    await sfuSession.startShare(publishStream);
+    await sfuSession.startShare(publishStream, target.quality.bitrate);
     if (target.kind === "window") {
       watchShareSource(target.id); // ended never fires on window close (WGC)
     }
@@ -2464,10 +2480,10 @@ export async function shareTarget(target: ShareTarget): Promise<void> {
       ? target.kind === "window"
         ? "native per-app process-loopback"
         : "native process-loopback (desktop minus this client)"
-      : displayAudio !== null
+      : target.includeAudio && displayAudio !== null
         ? `raw loopback (channels=${displayAudio.getSettings().channelCount ?? "?"})`
-        : "none";
-    log.info("share", `publishing ${target.kind} "${target.id}" (audio: ${audioDescription})`);
+        : "none (checkbox off)";
+    log.info("share", `publishing ${target.kind} "${target.id}" (${describeQuality(target.quality)}, audio: ${audioDescription})`);
     appStore.patch({ sharing: true });
   } catch (error) {
     log.error("share", `share failed: ${errorMessage(error)}`);
@@ -2785,9 +2801,10 @@ export function popoutClosed(): void {
   appStore.patch({ popoutActive: false });
 }
 
-/** A JPEG frame from the share <video> — relayed to the pop-out window. */
-export function sendPopoutFrame(dataUrl: string): void {
-  window.spaceWindow?.sendFrame(dataUrl);
+/** The live voice room's connection info — the pop-out viewer opens its own
+ *  subscription against the same room (token/pin included). */
+export function getVoiceRoomInfo(): RoomInfo | null {
+  return sfuSession?.getRoom() ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -3489,10 +3506,10 @@ export async function callShareTarget(target: ShareTarget): Promise<void> {
       }
       stopStream(callCameraStream);
       const cameraStream = await navigator.mediaDevices.getUserMedia({
-        video: { deviceId: { exact: target.id }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: { deviceId: { exact: target.id }, ...cameraVideoConstraints(target.quality) },
         audio: false,
       });
-      await session.setCameraStream(cameraStream);
+      await session.setCameraStream(cameraStream, target.quality.bitrate);
       callCameraStream = cameraStream;
       appStore.patch({ callCameraOn: true });
       return;
@@ -3503,34 +3520,39 @@ export async function callShareTarget(target: ShareTarget): Promise<void> {
     if (appStore.getSnapshot().callCameraOn) {
       await toggleCallCamera();
     }
-    await window.spaceCapture?.select(target.id, target.kind === "screen");
+    await window.spaceCapture?.select(target.id, target.kind === "screen" && target.includeAudio);
     const display = await navigator.mediaDevices.getDisplayMedia({
-      video: true,
-      audio: target.kind === "screen" ? LOOPBACK_AUDIO_CONSTRAINTS : false,
+      video: displayVideoConstraints(target.quality),
+      audio: target.kind === "screen" && target.includeAudio ? LOOPBACK_AUDIO_CONSTRAINTS : false,
     });
     callDisplayStream = display;
+    const granted = display.getVideoTracks()[0]?.getSettings();
+    log.info("call", `share capture settings: ${granted?.width ?? "?"}×${granted?.height ?? "?"} @ ${Math.round(granted?.frameRate ?? 0)} fps`);
     display.getVideoTracks()[0]?.addEventListener("ended", () => {
       void stopCallShareInternal();
     });
     // Same native substitution as the room seam (#485): screens exclude our
     // process (desktop minus this client), windows capture only the target
-    // app's tree (per-app INCLUDE). Failure falls back to the raw/no audio.
+    // app's tree (per-app INCLUDE). Failure falls back to the raw/no audio;
+    // the step-2 checkbox gates the native path wholesale (video-only share).
     await stopStandaloneMonitorForShare();
     let publishStream = display;
     const displayAudio = display.getAudioTracks()[0] ?? null;
     const displayVideo = display.getVideoTracks()[0] ?? null;
-    const nativeAudioTrack = target.kind === "window"
-      ? await acquireNativeShareAudioTrack(target.id, resolvedDevices.speaker)
-      : displayAudio !== null
-        ? await acquireNativeShareAudioTrack(undefined, resolvedDevices.speaker)
-        : null;
+    const nativeAudioTrack = target.includeAudio
+      ? (target.kind === "window"
+        ? await acquireNativeShareAudioTrack(target.id, resolvedDevices.speaker)
+        : displayAudio !== null
+          ? await acquireNativeShareAudioTrack(undefined, resolvedDevices.speaker)
+          : null)
+      : null;
     if (nativeAudioTrack !== null && displayAudio !== null && displayVideo !== null) {
       displayAudio.stop();
       publishStream = new MediaStream([displayVideo, nativeAudioTrack]);
     } else if (nativeAudioTrack !== null && displayVideo !== null) {
       publishStream = new MediaStream([displayVideo, nativeAudioTrack]);
     }
-    await session.startShare(publishStream);
+    await session.startShare(publishStream, target.quality.bitrate);
     if (target.kind === "window") {
       watchShareSource(target.id); // ended never fires on window close (WGC)
     }
@@ -3538,10 +3560,10 @@ export async function callShareTarget(target: ShareTarget): Promise<void> {
       ? target.kind === "window"
         ? "native per-app process-loopback"
         : "native process-loopback"
-      : displayAudio !== null
+      : target.includeAudio && displayAudio !== null
         ? "raw loopback"
-        : "none";
-    log.info("call", `share publishing ${target.kind} (audio: ${audioDescription})`);
+        : "none (checkbox off)";
+    log.info("call", `share publishing ${target.kind} (${describeQuality(target.quality)}, audio: ${audioDescription})`);
     appStore.patch({ callSharing: true });
   } catch (error) {
     log.error("call", `call share failed: ${errorMessage(error)}`);
@@ -3624,6 +3646,94 @@ window.setInterval(() => {
 
 let lastLoggedVerdict: string | null = null;
 
+// ---------------------------------------------------------------------------
+// Share-video telemetry (the diag "share out/in" lines): "the viewer sees it
+// choppy" reports get NUMBERS. Publisher side: capture input fps vs ENCODED
+// fps (input 75 while enc ≈ 20 = the encoder cannot keep up — CPU, not
+// network). Viewer side: decoded fps, dropped frames, loss, jitter. getStats
+// is async, so a 1 Hz poller feeds a cached string the 4 Hz diag panel reads;
+// it starts lazily with the first diag model build (panel open) and every
+// 10th tick lands in [share-stats] for post-mortems.
+// ---------------------------------------------------------------------------
+
+let shareStatsTimer: ReturnType<typeof setInterval> | null = null;
+let shareStatsTicks = 0;
+let lastOutCounters: VideoRtpCounters | null = null;
+let lastInCounters: VideoRtpCounters | null = null;
+const shareStatsCache = { out: "—", in: "—" };
+
+function shareStatsLine(kind: "out" | "in", current: VideoRtpCounters | null, previous: VideoRtpCounters | null): string {
+  if (current === null) {
+    return "—";
+  }
+  const dimensions = current.width !== null && current.height !== null ? `${current.width}×${current.height}` : "?";
+  if (kind === "out") {
+    const parts = [dimensions, `in ${current.framesPerSecond ?? "?"} fps`];
+    if (previous !== null) {
+      const seconds = Math.max(0.001, (current.timestamp - previous.timestamp) / 1000);
+      if (current.frames >= previous.frames) {
+        parts.push(`enc ${((current.frames - previous.frames) / seconds).toFixed(0)} fps`);
+      }
+      if (current.bytes >= previous.bytes) {
+        parts.push(`${(((current.bytes - previous.bytes) * 8 / seconds) / 1_000_000).toFixed(1)} Mbps`);
+      }
+    }
+    return parts.join(" · ");
+  }
+  const parts = [dimensions, `dec ${current.framesPerSecond?.toFixed(0) ?? "?"} fps`];
+  if (previous !== null) {
+    const seconds = Math.max(0.001, (current.timestamp - previous.timestamp) / 1000);
+    if (current.bytes >= previous.bytes) {
+      parts.push(`${(((current.bytes - previous.bytes) * 8 / seconds) / 1_000_000).toFixed(1)} Mbps`);
+    }
+  }
+  if (current.framesDropped !== null) {
+    parts.push(`drop ${current.framesDropped}`);
+  }
+  if (current.packetsLost !== null) {
+    parts.push(`loss ${current.packetsLost}`);
+  }
+  if (current.jitterMs !== null) {
+    parts.push(`jit ${Math.round(current.jitterMs)} ms`);
+  }
+  return parts.join(" · ");
+}
+
+async function pollShareStats(): Promise<void> {
+  let outCounters: VideoRtpCounters | null = null;
+  try {
+    outCounters = sfuSession !== null ? await sfuSession.getShareOutCounters() : null;
+  } catch {
+    outCounters = null;
+  }
+  shareStatsCache.out = shareStatsLine("out", outCounters, lastOutCounters);
+  lastOutCounters = outCounters;
+
+  const viewingFeedId = appStore.getSnapshot().viewingFeedId;
+  const viewedTrackId = viewingFeedId !== null ? feedVideoTracks.get(viewingFeedId)?.track.id ?? null : null;
+  let inCounters: VideoRtpCounters | null = null;
+  if (viewedTrackId !== null) {
+    try {
+      inCounters = sfuSession !== null ? await sfuSession.getInboundVideoCounters(viewedTrackId) : null;
+    } catch {
+      inCounters = null;
+    }
+  }
+  shareStatsCache.in = shareStatsLine("in", inCounters, lastInCounters);
+  lastInCounters = inCounters;
+
+  shareStatsTicks += 1;
+  if (shareStatsTicks % 10 === 0 && (outCounters !== null || inCounters !== null)) {
+    log.info("share-stats", `out: ${shareStatsCache.out} | in: ${shareStatsCache.in}`);
+  }
+}
+
+function ensureShareStatsPoller(): void {
+  if (shareStatsTimer === null) {
+    shareStatsTimer = setInterval(() => void pollShareStats(), 1000);
+  }
+}
+
 export function buildDiagModel(): DiagModel {
   const state = appStore.getSnapshot();
   const sentSdp = sfuSession?.getPublisherLocalSdp();
@@ -3656,6 +3766,7 @@ export function buildDiagModel(): DiagModel {
     + (activeNoisePipeline !== null
       ? " live" + (activeNoisePipeline.vad !== null ? ` vad ${activeNoisePipeline.vad.toFixed(2)}` : "")
       : " (idle)");
+  ensureShareStatsPoller();
   return {
     lines: [
       { key: "stomp", value: state.stompState },
@@ -3665,6 +3776,8 @@ export function buildDiagModel(): DiagModel {
       { key: "call", value: state.callState !== "idle" ? `${state.callState} → ${state.callPeer ?? "?"} (${state.callHealthy ? "healthy" : "reconnecting"})` : "—" },
       { key: "sub conn", value: sfuSession?.getSubscriberConnectionState() ?? "—" },
       { key: "subs", value: String(sfuSession?.getSubscribedCount() ?? 0) },
+      { key: "share out", value: shareStatsCache.out },
+      { key: "share in", value: shareStatsCache.in },
       { key: "inbound", value: inboundAudioLine },
       { key: "sent fmtp", value: sentLine ?? "—" },
       { key: "wire fmtp", value: wireLine ?? "—" },

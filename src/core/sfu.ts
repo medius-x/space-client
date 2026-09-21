@@ -96,6 +96,16 @@ export interface SfuSessionOptions {
 
 const ICE_GATHERING_TIMEOUT_MS = 2_000;
 
+/** The videoroom's REMB ceiling for our publisher. Janus defaults a room to
+ *  1 Mbps (oak-server's ensureRoom creates rooms without a `bitrate`), and
+ *  the gateway tells the browser's encoder about it via REMB — every picker
+ *  preset above 1 Mbps was silently crushed to it (the "viewer sees it
+ *  choppy at max settings" live report: 16 Mbps picked, ~1 Mbps encoded).
+ *  The join/configure `bitrate` overrides it per publisher; this constant
+ *  stays ABOVE the picker's max preset so the sender-side maxBitrate (the
+ *  user's actual choice) remains the only effective cap. */
+const PUBLISHER_BITRATE_CEILING_BPS = 20_000_000;
+
 /** Compact audio-fmtp summary for the log (the stereo evidence trail). */
 function fmtpSummary(sdp: string): string {
   const lines = extractAudioFmtpLines(sdp);
@@ -103,6 +113,56 @@ function fmtpSummary(sdp: string): string {
     return "(no audio m-lines)";
   }
   return lines.map((line) => `m${line.mindex}${line.mid ? `(${line.mid})` : ""}: ${line.fmtp ?? "no-fmtp"}`).join(" | ");
+}
+
+/** One raw snapshot for the share-video telemetry (the diag "share out/in"
+ *  lines): the counters exactly as getStats reports them — RATES are the
+ *  caller's delta job. Null fields = the stat was absent from the report. */
+export interface VideoRtpCounters {
+  timestamp: number;
+  bytes: number;
+  frames: number;
+  /** The track entry's own rate: capture input fps (out) / decoded fps (in). */
+  framesPerSecond: number | null;
+  width: number | null;
+  height: number | null;
+  framesDropped: number | null;
+  packetsLost: number | null;
+  jitterMs: number | null;
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/** Chrome links an rtp entry to its MediaStreamTrack through a two-hop:
+ *  rtp.trackId → the track-stats entry → trackIdentifier === track.id.
+ *  Returns BOTH entries when that track sends/receives video. */
+function videoEntriesForTrack(report: RTCStatsReport, direction: "outbound-rtp" | "inbound-rtp", trackIdentifier: string): { rtp: Record<string, unknown>; track: Record<string, unknown> } | null {
+  const trackStats = new Map<string, Record<string, unknown>>();
+  report.forEach((stat) => {
+    if (stat.type === "track" && stat.kind === "video") {
+      const record = stat as unknown as Record<string, unknown>;
+      if (typeof record.id === "string") {
+        trackStats.set(record.id, record);
+      }
+    }
+  });
+  let pair: { rtp: Record<string, unknown>; track: Record<string, unknown> } | null = null;
+  report.forEach((stat) => {
+    if (pair !== null || stat.type !== direction || stat.kind !== "video") {
+      return;
+    }
+    const rtp = stat as unknown as Record<string, unknown>;
+    if (typeof rtp.trackId !== "string") {
+      return;
+    }
+    const track = trackStats.get(rtp.trackId);
+    if (track !== undefined && track.trackIdentifier === trackIdentifier) {
+      pair = { rtp, track };
+    }
+  });
+  return pair;
 }
 
 export class SfuSession {
@@ -263,6 +323,7 @@ export class SfuSession {
       room: this.room.roomId,
       ptype: "publisher",
       display: this.username,
+      bitrate: PUBLISHER_BITRATE_CEILING_BPS,
     };
     if (this.room.pin) {
       joinBody.pin = this.room.pin;
@@ -309,8 +370,10 @@ export class SfuSession {
    * Screen share: video FIRST, then share audio — the m-line order [mic, screen,
    * shareAudio] is the classification contract. Renegotiates once. Mutually
    * exclusive with the camera (one outgoing video m-line per member, oak parity).
+   * videoBitrate — the Quality step's ceiling on the VIDEO sender (oak's
+   * applyScreenBitrate); null leaves WebRTC's congestion control unbounded.
    */
-  async startShare(displayStream: MediaStream): Promise<void> {
+  async startShare(displayStream: MediaStream, videoBitrate: number | null = null): Promise<void> {
     const videoTrack = displayStream.getVideoTracks()[0];
     const audioTrack = displayStream.getAudioTracks()[0] ?? null;
     if (!videoTrack || !this.publisherPc) {
@@ -320,6 +383,9 @@ export class SfuSession {
       throw new Error("camera is already publishing — stop it before sharing a screen");
     }
     this.screenVideoSender = this.publisherPc.addTrack(videoTrack, new MediaStream([videoTrack]));
+    if (videoBitrate !== null) {
+      await this.raiseSenderBitrate(this.screenVideoSender, videoBitrate);
+    }
     if (audioTrack) {
       this.shareAudioSender = this.publisherPc.addTrack(audioTrack, new MediaStream([audioTrack]));
       this.shareAudioTrack = audioTrack;
@@ -333,12 +399,14 @@ export class SfuSession {
       // share-audio ceiling well past voice-grade.
       await this.raiseSenderBitrate(this.shareAudioSender, 256_000);
     }
-    log.info("sfu", `share started (audio=${audioTrack ? audioTrack.id : "none"}, audio bitrate ceiling 256 kbps)`);
+    log.info("sfu", `share started (audio=${audioTrack ? audioTrack.id : "none"}, audio bitrate ceiling 256 kbps${videoBitrate !== null ? `, video ceiling ${videoBitrate} bps` : ""})`);
     await this.renegotiatePublisher();
   }
 
-  /** Camera publishing — a second outgoing VIDEO source riding its own m-line. */
-  async startCamera(cameraStream: MediaStream): Promise<void> {
+  /** Camera publishing — a second outgoing VIDEO source riding its own m-line.
+   *  videoBitrate — the Quality step's ceiling (null = unbounded, the pre-picker
+   *  behavior for the toggle/diag camera paths). */
+  async startCamera(cameraStream: MediaStream, videoBitrate: number | null = null): Promise<void> {
     const videoTrack = cameraStream.getVideoTracks()[0];
     if (!videoTrack || !this.publisherPc) {
       throw new Error("camera needs a video track and a live publisher");
@@ -347,6 +415,9 @@ export class SfuSession {
       throw new Error("screen share is already publishing — stop it before starting the camera");
     }
     this.cameraVideoSender = this.publisherPc.addTrack(videoTrack, new MediaStream([videoTrack]));
+    if (videoBitrate !== null) {
+      await this.raiseSenderBitrate(this.cameraVideoSender, videoBitrate);
+    }
     this.cameraTrack = videoTrack;
     log.info("sfu", `camera started (track ${videoTrack.id})`);
     await this.renegotiatePublisher();
@@ -813,7 +884,10 @@ export class SfuSession {
       log.info("sdp", `SENT offer fmtp: ${fmtpSummary(localDescription.sdp ?? "")}`);
     }
     const answer = await this.janus.send(this.publisherHandleId,
-      { request: "configure", audio: true, video: true },
+      // `bitrate` re-asserts the REMB ceiling on every (re)negotiation — the
+      // join-level value covers the session, this one survives any plugin
+      // restart of the publisher state.
+      { request: "configure", audio: true, video: true, bitrate: PUBLISHER_BITRATE_CEILING_BPS },
       { type: "offer", sdp: localDescription.sdp ?? "" });
     this.assertNoVideoroomError(answer.data, "publish");
     if (answer.jsep) {
@@ -868,6 +942,12 @@ export class SfuSession {
     return this.subscriberPc?.connectionState ?? "none";
   }
 
+  /** The room this session lives in — the pop-out viewer opens its own
+   *  subscription against the same room (token/pin included). */
+  getRoom(): RoomInfo {
+    return this.room;
+  }
+
   getPublisherLocalSdp(): string | null {
     return this.publisherPc?.localDescription?.sdp ?? null;
   }
@@ -893,6 +973,71 @@ export class SfuSession {
       return parts.length > 0 ? parts.join(" | ") : "no inbound audio";
     } catch {
       return "stats error";
+    }
+  }
+
+  /** Share-video OUT counters (publisher side): capture input fps, encoded
+   *  frames, bytes — the "encoder starvation" evidence behind choppy-viewer
+   *  reports (input 75 while enc ≈ 20 = the encoder cannot keep up). Null
+   *  when no share is publishing. */
+  async getShareOutCounters(): Promise<VideoRtpCounters | null> {
+    const sender = this.screenVideoSender;
+    if (!this.publisherPc || sender === null) {
+      return null;
+    }
+    const trackIdentifier = sender.track?.id;
+    if (trackIdentifier === undefined) {
+      return null;
+    }
+    try {
+      const report = await this.publisherPc.getStats();
+      const pair = videoEntriesForTrack(report, "outbound-rtp", trackIdentifier);
+      if (pair === null) {
+        return null;
+      }
+      return {
+        timestamp: numberOrNull(pair.rtp.timestamp) ?? 0,
+        bytes: numberOrNull(pair.rtp.bytesSent) ?? 0,
+        frames: numberOrNull(pair.rtp.framesEncoded) ?? 0,
+        framesPerSecond: numberOrNull(pair.track.framesPerSecond),
+        width: numberOrNull(pair.track.frameWidth),
+        height: numberOrNull(pair.track.frameHeight),
+        framesDropped: null,
+        packetsLost: null,
+        jitterMs: null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Share-video IN counters (viewer side) for one receiving track: decoded
+   *  fps, dropped frames, loss, jitter. Null when the track receives nothing
+   *  (not subscribed yet / video muted upstream). */
+  async getInboundVideoCounters(trackId: string): Promise<VideoRtpCounters | null> {
+    if (!this.subscriberPc) {
+      return null;
+    }
+    try {
+      const report = await this.subscriberPc.getStats();
+      const pair = videoEntriesForTrack(report, "inbound-rtp", trackId);
+      if (pair === null) {
+        return null;
+      }
+      const jitterSeconds = numberOrNull(pair.rtp.jitter);
+      return {
+        timestamp: numberOrNull(pair.rtp.timestamp) ?? 0,
+        bytes: numberOrNull(pair.rtp.bytesReceived) ?? 0,
+        frames: numberOrNull(pair.rtp.framesDecoded) ?? 0,
+        framesPerSecond: numberOrNull(pair.track.framesPerSecond),
+        width: numberOrNull(pair.track.frameWidth),
+        height: numberOrNull(pair.track.frameHeight),
+        framesDropped: numberOrNull(pair.track.framesDropped),
+        packetsLost: numberOrNull(pair.rtp.packetsLost),
+        jitterMs: jitterSeconds !== null ? jitterSeconds * 1000 : null,
+      };
+    } catch {
+      return null;
     }
   }
 

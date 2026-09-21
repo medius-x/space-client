@@ -249,10 +249,13 @@ export class PeerCallSession {
     this.signal({ type: enabled ? "DEAFEN_ON" : "DEAFEN_OFF", sdp: null, candidate: null });
   }
 
-  /** Camera on/off: swaps the video slot's track. */
-  async setCameraStream(cameraStream: MediaStream | null): Promise<void> {
+  /** Camera on/off: swaps the video slot's track. videoBitrate — the Quality
+   *  step's ceiling; null CLEARS a stale one (the slot is persistent, so a
+   *  dead share's ceiling must not cap the next camera share). */
+  async setCameraStream(cameraStream: MediaStream | null, videoBitrate: number | null = null): Promise<void> {
     const track = cameraStream?.getVideoTracks()[0] ?? null;
     await this.senderForSlot(MLINE_VIDEO)?.replaceTrack(track);
+    await this.applyVideoCeiling(videoBitrate);
     this.cameraActive = track !== null;
     this.signal({ type: track !== null ? "CAM_ON" : "CAM_OFF", sdp: null, candidate: null });
   }
@@ -261,16 +264,18 @@ export class PeerCallSession {
     return this.cameraActive;
   }
 
-  /** Screen share: video slot + the SECOND audio slot (stereo system loopback). */
-  async startShare(displayStream: MediaStream): Promise<void> {
+  /** Screen share: video slot + the SECOND audio slot (stereo system loopback).
+   *  videoBitrate — the Quality step's ceiling on the video sender. */
+  async startShare(displayStream: MediaStream, videoBitrate: number | null = null): Promise<void> {
     const videoTrack = displayStream.getVideoTracks()[0] ?? null;
     const audioTrack = displayStream.getAudioTracks()[0] ?? null;
     await this.senderForSlot(MLINE_VIDEO)?.replaceTrack(videoTrack);
     await this.senderForSlot(MLINE_SHARE_AUDIO)?.replaceTrack(audioTrack);
     await this.raiseShareBitrate();
+    await this.applyVideoCeiling(videoBitrate);
     this.screenActive = true;
     this.signal({ type: "SCREEN_ON", sdp: null, candidate: null });
-    log.info("call", `share started (audio=${audioTrack ? audioTrack.id : "none"})`);
+    log.info("call", `share started (audio=${audioTrack ? audioTrack.id : "none"}${videoBitrate !== null ? `, video ceiling ${videoBitrate} bps` : ""})`);
   }
 
   async stopShare(): Promise<void> {
@@ -493,6 +498,30 @@ export class PeerCallSession {
       await sender.setParameters(parameters);
     } catch (error: unknown) {
       log.warn("call", `share bitrate raise failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /** The Quality step's video ceiling on the persistent video slot — set it
+   *  for a quality-picked share/camera, CLEAR it (null) when the picker had
+   *  no say, so congestion control rules again. */
+  private async applyVideoCeiling(maxBitrate: number | null): Promise<void> {
+    const sender = this.senderForSlot(MLINE_VIDEO);
+    if (!sender) {
+      return;
+    }
+    try {
+      const parameters = sender.getParameters();
+      if (!parameters.encodings || parameters.encodings.length === 0) {
+        parameters.encodings = [{}];
+      }
+      if (maxBitrate === null) {
+        delete parameters.encodings[0]!.maxBitrate;
+      } else {
+        parameters.encodings[0]!.maxBitrate = maxBitrate;
+      }
+      await sender.setParameters(parameters);
+    } catch (error: unknown) {
+      log.warn("call", `video ceiling apply failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 }

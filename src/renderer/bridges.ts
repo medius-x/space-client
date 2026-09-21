@@ -11,6 +11,10 @@ export interface CaptureSourceInfo {
   kind: "screen" | "window";
   /** A small preview frame as a data URL (may be missing for some windows). */
   thumbnailDataUrl: string | null;
+  /** The source's pixel size (screens: physical, windows: client area) —
+   *  the quality step cuts resolutions above it. Null = unknown, no cutoff. */
+  sourceWidth: number | null;
+  sourceHeight: number | null;
 }
 
 export interface CaptureBridge {
@@ -26,12 +30,27 @@ export interface CaptureBridge {
   onSourceDead(callback: (sourceId: string) => void): void;
 }
 
+/** The pop-out viewer's subscription target: the window runs its OWN videoroom
+ *  subscription (2026-09-21) instead of the M4 JPEG relay — a MediaStream
+ *  cannot cross renderer contexts, but a second subscriber can. */
+export interface PopoutTarget {
+  janusUrl: string;
+  roomId: number;
+  token: string | null;
+  pin: string | null;
+  feedId: number;
+  /** The feed's VIDEO stream mid (video-only: the main window owns the audio). */
+  videoMid: string;
+}
+
 export interface WindowBridge {
   openPopout(): Promise<boolean>;
-  /** A JPEG frame for the pop-out viewer (main relays it to the popout window). */
-  sendFrame(dataUrl: string): void;
-  /** The pop-out window's frame sink. */
-  onFrame(callback: (dataUrl: string) => void): void;
+  /** Push the (newly) watched feed to the open pop-out; null = waiting state. */
+  retargetPopout(target: PopoutTarget | null): void;
+  /** The pop-out's initial target (main stores the last retarget). */
+  popoutParams(): Promise<PopoutTarget | null>;
+  /** Live retargets while the pop-out is open. */
+  onRetarget(callback: (target: PopoutTarget | null) => void): void;
   /** The main window's "the pop-out was closed" signal. */
   onClosed(callback: () => void): void;
   /* Caption-bar controls of the borderless main window (oak chrome). */
