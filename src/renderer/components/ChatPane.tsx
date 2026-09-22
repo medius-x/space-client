@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../hooks/useStore";
 import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
 import { ackActiveChannel, appStore, forwardCrossInstance, forwardRequestUpload, forwardUploadBytes } from "../runtime";
+import { closeDiscussionForEveryone, closeDiscussionView, openDiscussion, openDraftDiscussion } from "../runtime";
 import { connectionDirectory, settingsStore } from "../runtime";
 import { RecordTokenStorage } from "../../domain/session/connection-record";
 import type { ConnectionSession } from "../../domain/session/connection-session";
@@ -11,12 +12,13 @@ import { log } from "../../logging";
 import { computeGroupStarts, continuesGroup, formatHeaderStamp, formatTimeOfDay, toEpochMs, type GroupableMessage } from "../../domain/logic/message-grouping";
 import { firstHttpUrl, segmentMessageContent } from "../../domain/logic/mention-segmenter";
 import { displayNameOf } from "../../domain/logic/display-name";
+import { tileReplyLabel } from "../../domain/logic/discussions-view";
 import { linkPreviewFor, type LinkPreview } from "../link-preview";
 import { notifications } from "../notifications";
 import { dmDisplayName } from "../../domain/logic/dm-display";
 import { memberNameColor } from "../../domain/logic/roster-grouping";
 import { paletteColor } from "../../domain/logic/user-palette";
-import type { Channel, ChannelMyPermissions, DmChannel, ForwardInfo, Message, ReplyInfo } from "../../types";
+import type { Channel, ChannelMyPermissions, Discussion, DmChannel, ForwardInfo, Message, ReplyInfo } from "../../types";
 import { REACTION_CATALOG, REACTION_GLYPH_BY_SLUG } from "../../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { Modal } from "./Modal";
@@ -25,6 +27,7 @@ import { AttachmentView } from "./AttachmentView";
 import { isAudioFile, isImageFile, isVideoFile } from "../../domain/logic/attachment-layout";
 import { Avatar } from "./Avatar";
 import { NowPlayingBar } from "./NowPlayingBar";
+import { PinCard } from "./PinCard";
 
 /** The server's per-message attachment cap (MAX_ATTACHMENTS). */
 const MAX_STAGED_FILES = 10;
@@ -48,7 +51,7 @@ const QUOTE_DEPTH_MAX = 5;
  * the estimate→measure delta on every row and the extent never stopped moving
  * (live report). Grouping knowledge arrives via MessageList's startById map.
  */
-function estimateRowHeight(message: Message, startsGroup: boolean): number {
+function estimateRowHeight(message: Message, startsGroup: boolean, hasDiscussionTile = false): number {
   const CHARS_PER_LINE = 72;
   const lines = message.content === null ? 0 : Math.max(1, Math.ceil(message.content.length / CHARS_PER_LINE));
   let height = (startsGroup ? 30 : 24) + lines * 21;
@@ -60,6 +63,9 @@ function estimateRowHeight(message: Message, startsGroup: boolean): number {
   }
   if (message.reactions.length > 0) {
     height += 26;
+  }
+  if (hasDiscussionTile) {
+    height += 24;
   }
   // Media-aware attachment estimate (live report: a flat +22 made every
   // picture/video row JUMP on measure — the real mosaic is 200-500px, and the
@@ -134,7 +140,35 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
     dmMode && activeDmId !== null ? state.dms.find((entry) => entry.id === activeDmId) ?? null : null,
   );
   const activeChatId = dm !== null ? dm.id : activeChannelId;
-  const messages = useStore(session.messageStore, (store) => store.listFor(activeChatId ?? -1));
+  // The discussion view: while a thread of THIS channel is open, the chat surface (list,
+  // composer, picker) binds to the DISCUSSION channel; the header/sidebar keep pointing at
+  // the parent. The parent's own message list is untouched (still loaded in the store).
+  // A DRAFT (discussionId === null, lazy creation) shows the origin panel from the parent's
+  // own message list and an empty thread area — nothing exists server-side yet.
+  const activeDiscussionState = useStore(appStore, (state) => state.activeDiscussion);
+  const openDiscussionEntry = activeDiscussionState !== null && dm === null
+    && activeDiscussionState.channelId === activeChannelId ? activeDiscussionState : null;
+  // STRICT null check: `?.discussionId == null` would be TRUE for `openDiscussionEntry ===
+  // null` too (undefined == null under loose equality) — every plain channel rendered as a
+  // draft (live report: no text channel would open). The draft is ONLY an entry that EXISTS
+  // and still has no discussion id.
+  const isDiscussionDraft = openDiscussionEntry !== null && openDiscussionEntry.discussionId === null;
+  const discussionsVersion = useStore(session.discussionsStore, (store) => store.version);
+  const openDiscussionRow = useMemo(
+    () => openDiscussionEntry !== null && openDiscussionEntry.discussionId !== null
+      ? session.discussionsStore.byId(openDiscussionEntry.discussionId) ?? null
+      : null,
+    [openDiscussionEntry, session, discussionsVersion],
+  );
+  const draftOrigin = useMemo(
+    () => openDiscussionEntry !== null && isDiscussionDraft
+      ? session.messageStore.listFor(openDiscussionEntry.channelId)
+          .find((message) => message.id === openDiscussionEntry.originMessageId) ?? null
+      : null,
+    [openDiscussionEntry, isDiscussionDraft, session],
+  );
+  const chatChannelId = openDiscussionEntry?.discussionId ?? activeChatId;
+  const messages = useStore(session.messageStore, (store) => store.listFor(chatChannelId ?? -1));
   const channelPermissions = useStore(session.permissionStore, (state) =>
     activeChatId === null || dm !== null ? null : state.channels.get(activeChatId) ?? null,
   );
@@ -172,6 +206,9 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
   const [reactedBy, setReactedBy] = useState<{ x: number; y: number; names: readonly string[] } | null>(null);
   const reactedByRef = useRef<HTMLDivElement | null>(null);
   useOutsideDismiss(reactedByRef, () => setReactedBy(null));
+  // The Close confirmation (user request): closing is for EVERYONE and wipes the thread's
+  // messages — a bare glyph click must not do that unattended.
+  const [closeDiscussionTarget, setCloseDiscussionTarget] = useState<Discussion | null>(null);
 
   useEffect(() => {
     if (activeChatId === null) {
@@ -197,7 +234,17 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
       session.ensureChannelPermissions(activeChatId).catch((error: unknown) => {
         log.warn("chat", `permission check failed: ${error instanceof Error ? error.message : String(error)}`);
       });
+      // The channel's every discussion (the tiles under origin messages). Server TEXT
+      // channels only — DMs have none. The .discussions topic pushes keep it fresh.
+      session.fetchChannelDiscussions(activeChatId).catch((error: unknown) => {
+        log.warn("chat", `discussions unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      });
     }
+    // Pins are fetched once per channel (DMs included — any participant may pin);
+    // the .edited pushes keep the list fresh from here on.
+    session.loadPinned(activeChatId).catch((error: unknown) => {
+      log.warn("chat", `pins unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    });
   }, [activeChatId, dm, session]);
 
   const addStagedFiles = (fileList: readonly File[]) => {
@@ -246,6 +293,12 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
     : null;
   const permissions = dm !== null ? DM_CHANNEL_PERMISSIONS : channelPermissions;
   const chatTitlePrefix = dm !== null && dm.type === "DM" ? "@" : "#";
+  // The chat-surface binding while a discussion is open: a Channel-shaped adapter over the
+  // discussion channel (id is all the send/reaction paths need; permissions resolve through
+  // the parent server-side, so the parent's composer bits apply as-is).
+  const chatChannel: Channel = openDiscussionEntry !== null && openDiscussionEntry.discussionId !== null
+    ? { id: openDiscussionEntry.discussionId, name: "Discussion", type: "TEXT", createdAt: "", locked: false }
+    : viewChannel!; // the null viewChannel dead-ends above (chat-empty) before this line
 
   const exitSelection = () => {
     setSelectionMode(false);
@@ -315,7 +368,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
             <button className="danger" disabled={selection.size === 0}
               onClick={() => {
                 for (const messageId of selection) {
-                  void session.deleteMessage(viewChannel.id, messageId).catch((error: unknown) => {
+                  void session.deleteMessage(chatChannel.id, messageId).catch((error: unknown) => {
                     log.warn("chat", `bulk delete failed: ${error instanceof Error ? error.message : String(error)}`);
                   });
                 }
@@ -326,20 +379,39 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
         ) : null}
       </div>
       {historyError !== null ? <div className="chat-error">history: {historyError}</div> : null}
+      {/* The pin card hides while a discussion is open — the origin panel takes its slot. */}
+      {openDiscussionEntry === null ? <PinCard session={session} channelId={viewChannel.id} /> : null}
+      {openDiscussionRow !== null ? (
+        <DiscussionOriginPanel
+          session={session}
+          discussion={openDiscussionRow}
+          draftOrigin={null}
+          onCloseRequest={() => setCloseDiscussionTarget(openDiscussionRow)}
+        />
+      ) : null}
+      {isDiscussionDraft && draftOrigin !== null ? (
+        <DiscussionOriginPanel session={session} discussion={null} draftOrigin={draftOrigin} onCloseRequest={() => undefined} />
+      ) : null}
       <NowPlayingBar session={session} />
-      <MessageList
-        session={session}
-        channel={viewChannel}
-        messages={messages}
-        aroundTarget={aroundTarget}
-        actions={actions}
-        authorColor={authorColor}
-        editing={editing}
-        setEditing={setEditing}
-        onMenu={setMenu}
-        onPicker={setPicker}
-        onReactedBy={setReactedBy}
-      />
+      {isDiscussionDraft ? (
+        <div className="discussion-draft-hint">
+          The discussion starts with your first message — nothing is created until you send it.
+        </div>
+      ) : (
+        <MessageList
+          session={session}
+          channel={chatChannel}
+          messages={messages}
+          aroundTarget={aroundTarget}
+          actions={actions}
+          authorColor={authorColor}
+          editing={editing}
+          setEditing={setEditing}
+          onMenu={setMenu}
+          onPicker={setPicker}
+          onReactedBy={setReactedBy}
+        />
+      )}
       {replyTo !== null ? (
         <div className="reply-bar">
           <span>Replying to <strong>@{nameOf(replyTo.authorUsername)}</strong></span>
@@ -384,12 +456,42 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
             if (files.length > 0) {
               setUploading(true); // text-only sends are instant — no spinner (oak)
             }
+            // The DRAFT's first send materialises the thread (lazy creation): one call
+            // creates the discussion WITH this message, then the view snaps onto it.
+            if (isDiscussionDraft && openDiscussionEntry !== null) {
+              const origin = openDiscussionEntry;
+              const creating = session.startDiscussionWithMessage(
+                origin.channelId, origin.originMessageId, files, content.length > 0 ? content : null)
+                .then((created) => {
+                  appStore.patch({
+                    activeDiscussion: {
+                      channelId: created.parentChannelId,
+                      discussionId: created.id,
+                      originMessageId: created.originMessageId,
+                    },
+                  });
+                  return session.openDiscussion(created.id);
+                });
+              const clearing = creating.then(() => {
+                setStaged([]);
+                setCapNote(null);
+              }).finally(() => {
+                setUploading(false);
+              });
+              setReplyTo(null);
+              return clearing;
+            }
             const promise = files.length > 0
-              ? session.sendMessageWithFiles(viewChannel.id, files, content.length > 0 ? content : null, replyTo?.id)
-              : session.sendMessage(viewChannel.id, content, replyTo?.id);
+              ? session.sendMessageWithFiles(chatChannel.id, files, content.length > 0 ? content : null, replyTo?.id)
+              : session.sendMessage(chatChannel.id, content, replyTo?.id);
             const clearing = promise.then(() => {
               setStaged([]);
               setCapNote(null);
+              // "Wrote once → follows": the server auto-joined the poster as a participant;
+              // mirror it locally so the sidebar badge/list update without a mine refetch.
+              if (session.discussionsStore.byId(chatChannel.id) !== undefined) {
+                session.discussionsStore.setTracked(chatChannel.id, true);
+              }
             }).finally(() => {
               setUploading(false);
             });
@@ -407,6 +509,8 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
             beginSelection: () => setSelectionMode(true),
             openPicker: () => setPicker({ message: menu.message, x: menu.x, y: menu.y + 120 }),
             confirmDelete: () => setDeleteTarget(menu.message),
+            isDm: dm !== null,
+            canStartDiscussion: dm === null && openDiscussionEntry === null && (channelPermissions?.sendMessages ?? false),
           })}
           onClose={() => setMenu(null)}
         />
@@ -446,7 +550,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
             return (
               <button key={entry.slug} className="emoji-choice"
                 onClick={() => {
-                  void session.toggleReaction(viewChannel.id, picker.message.id, entry.slug, mine).catch(() => undefined);
+                  void session.toggleReaction(chatChannel.id, picker.message.id, entry.slug, mine).catch(() => undefined);
                   setPicker(null);
                 }}>
                 {entry.glyph}
@@ -464,9 +568,23 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
           <div className="modal-actions">
             <button className="ghost" onClick={() => setDeleteTarget(null)}>Cancel</button>
             <button className="danger" onClick={() => {
-              void session.deleteMessage(viewChannel.id, deleteTarget.id).catch(() => undefined);
+              void session.deleteMessage(deleteTarget.channelId, deleteTarget.id).catch(() => undefined);
               setDeleteTarget(null);
             }}>Delete</button>
+          </div>
+        </Modal>
+      ) : null}
+      {closeDiscussionTarget !== null ? (
+        <Modal title="Close discussion?" onClose={() => setCloseDiscussionTarget(null)}>
+          <div className="modal-note">
+            This closes the discussion for everyone and permanently removes its messages.
+          </div>
+          <div className="modal-actions">
+            <button className="ghost" onClick={() => setCloseDiscussionTarget(null)}>Cancel</button>
+            <button className="danger" onClick={() => {
+              closeDiscussionForEveryone(closeDiscussionTarget.id);
+              setCloseDiscussionTarget(null);
+            }}>Close</button>
           </div>
         </Modal>
       ) : null}
@@ -482,6 +600,8 @@ function messageMenuItems(
     beginSelection(): void;
     openPicker(): void;
     confirmDelete(): void;
+    isDm: boolean;
+    canStartDiscussion: boolean;
   },
 ): ContextMenuItem[] {
   const ownUsername = session.username();
@@ -492,6 +612,40 @@ function messageMenuItems(
   ];
   if ((message.content?.length ?? 0) > 0) {
     items.push({ label: "Copy text", action: () => void navigator.clipboard.writeText(message.content ?? "").catch(() => undefined) });
+  }
+  // Discord's pin gate: MANAGE_MESSAGES on server channels, ANY participant in a DM
+  // (the server's DM branch enforces the same). A 400 means the per-channel cap.
+  if (extra.isDm || canManageMessages) {
+    items.push({
+      label: message.pinned ? "Unpin" : "Pin",
+      action: () => {
+        const request = message.pinned
+          ? session.unpinMessage(message.channelId, message.id)
+          : session.pinMessage(message.channelId, message.id);
+        void request.catch((error: unknown) => {
+          notifications.showToast({
+            title: "space",
+            channelName: "",
+            body: error instanceof Error ? error.message : String(error),
+          });
+        });
+      },
+    });
+  }
+  // Discussions: one thread per message — open the existing one, or open the LAZY-CREATE
+  // draft ("Start discussion" creates NOTHING server-side; the first reply materialises
+  // the thread, conflicts are resolved server-side by reuse). Server TEXT channels only
+  // (not DMs, not inside a thread — the parent must be a TEXT channel).
+  if (extra.canStartDiscussion) {
+    const existing = session.discussionsStore.byOrigin(message.id);
+    if (existing !== undefined) {
+      items.push({ label: "Open discussion", action: () => openDiscussion(existing) });
+    } else {
+      items.push({
+        label: "Start a discussion",
+        action: () => openDraftDiscussion({ channelId: message.channelId, messageId: message.id }),
+      });
+    }
   }
   if (message.authorUsername === ownUsername) {
     items.push({ label: "Edit", action: () => actions.beginEdit(message) });
@@ -844,9 +998,22 @@ function MessageList(props: MessageListProps): React.JSX.Element {
     () => new Map(messages.map((message, index) => [message.id, groupStarts[index] ?? true])),
     [messages, groupStarts],
   );
+  // The discussion-tile flag rides the same estimator: rows carrying a thread tile are +24.
+  // Keyed on the store's version — the origin-id SET itself is derived (useMemo, never a
+  // selector — the infinite-rerender bug class).
+  const rowDiscussionsVersion = useStore(session.discussionsStore, (store) => store.version);
+  const discussionOriginIds = useMemo(() => {
+    void rowDiscussionsVersion; // the mutation key
+    const originIds = new Set<number>();
+    for (const discussion of session.discussionsStore.forParent(channel.id)) {
+      originIds.add(discussion.originMessageId);
+    }
+    return originIds;
+  }, [rowDiscussionsVersion, session, channel.id]);
   const groupedEstimateHeight = useCallback(
-    (message: Message): number => estimateRowHeight(message, startById.get(message.id) ?? true),
-    [startById],
+    (message: Message): number => estimateRowHeight(message, startById.get(message.id) ?? true,
+      discussionOriginIds.has(message.id)),
+    [startById, discussionOriginIds],
   );
 
   // Discord/oak rule: your OWN message is never "new" for you — the divider
@@ -907,6 +1074,7 @@ function MessageList(props: MessageListProps): React.JSX.Element {
             editing={editing?.id === message.id}
             highlighted={highlightId === message.id}
             selected={actions.selectionMode && actions.selection.has(message.id)}
+            discussion={session.discussionsStore.byOrigin(message.id)}
             actions={wiredActions}
             setEditing={props.setEditing}
             onMenu={props.onMenu}
@@ -936,6 +1104,9 @@ interface MessageRowProps {
   editing: boolean;
   highlighted: boolean;
   selected: boolean;
+  /** The thread living on THIS message (a tile under the body); undefined = none. A stable
+   *  shared row object from the DiscussionsStore — the memoized row re-renders on flip. */
+  discussion: Discussion | undefined;
   actions: ChatActions;
   setEditing(message: Message | null): void;
   onMenu(state: { message: Message; x: number; y: number }): void;
@@ -1192,10 +1363,113 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
             })}
           </div>
         ) : null}
+        {props.discussion !== undefined ? (
+          <button
+            className="message-discussion-tile"
+            title="Open the discussion on this message"
+            onClick={(event) => {
+              event.stopPropagation();
+              openDiscussion(props.discussion!);
+            }}
+          >
+            <span className="icon mdi-comment-text-outline" />
+            {tileReplyLabel(props.discussion)}
+          </button>
+        ) : null}
       </div>
     </div>
   );
 });
+
+/**
+ * The origin panel of an OPEN discussion (the pin-card slot): the frozen start-message
+ * snapshot (author nick through the live roster, snippet, time) with the thread's controls —
+ * back to the channel, Follow/Unfollow, and Close (MANAGE_MESSAGES, behind a confirm —
+ * closes for everyone). The DRAFT variant (lazy creation) renders the origin straight from
+ * the parent channel's own message list and carries no controls — the thread does not
+ * exist server-side until the first reply.
+ */
+function DiscussionOriginPanel({ session, discussion, draftOrigin, onCloseRequest }: {
+  session: ConnectionSession;
+  discussion: Discussion | null;
+  draftOrigin: Message | null;
+  onCloseRequest(): void;
+}): React.JSX.Element | null {
+  const rosterUsers = useStore(session.rosterStore, (state) => state.users);
+  const trackedVersion = useStore(session.discussionsStore, (store) => store.version);
+  void trackedVersion; // the row below is read imperatively; this re-renders on flips
+  const row = discussion !== null ? session.discussionsStore.byId(discussion.id) ?? discussion : null;
+  const canManageMessages = session.permissionStore.can("MANAGE_MESSAGES");
+  if (row === null) {
+    // The draft: the origin comes from the parent's own loaded list.
+    if (draftOrigin === null) {
+      return null;
+    }
+    return (
+      <div className="discussion-origin-panel">
+        <button className="discussion-origin-back" title="Back to the channel" onClick={() => closeDiscussionView()}>
+          <span className="icon mdi-arrow-left" />
+        </button>
+        <div className="discussion-origin-body">
+          <div className="discussion-origin-author">
+            {displayNameOf(rosterUsers, draftOrigin.authorUsername)}
+            <span className="discussion-origin-time">
+              {formatHeaderStamp(new Date(draftOrigin.createdAt).getTime(), Date.now())}
+            </span>
+          </div>
+          <div className="discussion-origin-snippet">{draftOrigin.content || "(attachment)"}</div>
+        </div>
+        <div className="discussion-origin-draft-tag">draft</div>
+      </div>
+    );
+  }
+  const originTime = row.originCreatedAt !== null
+    ? formatHeaderStamp(new Date(row.originCreatedAt).getTime(), Date.now())
+    : null;
+  return (
+    <div className="discussion-origin-panel">
+      <button
+        className="discussion-origin-back"
+        title="Back to the channel"
+        onClick={() => closeDiscussionView()}
+      >
+        <span className="icon mdi-arrow-left" />
+      </button>
+      <div className="discussion-origin-body">
+        <div className="discussion-origin-author">
+          {displayNameOf(rosterUsers, row.originAuthorName)}
+          {originTime !== null ? <span className="discussion-origin-time">{originTime}</span> : null}
+        </div>
+        <div className="discussion-origin-snippet">{row.originSnippet || "(attachment)"}</div>
+      </div>
+      <div className="discussion-origin-actions">
+        <button
+          className="discussion-origin-action"
+          title={row.tracked ? "Unfollow discussion" : "Follow discussion"}
+          onClick={() => {
+            const request = row.tracked
+              ? session.untrackDiscussion(row.id)
+              : session.trackDiscussion(row.id);
+            void request.catch((error: unknown) => {
+              notifications.showToast({ title: "space", channelName: "", body: error instanceof Error ? error.message : String(error) });
+            });
+          }}
+        >
+          <span className={"icon " + (row.tracked ? "mdi-eye-off-outline" : "mdi-eye-plus-outline")} />
+        </button>
+        {canManageMessages ? (
+          <button
+            className="discussion-origin-action danger"
+            title="Close discussion for everyone"
+            onClick={onCloseRequest}
+          >
+            <span className="icon mdi-close" />
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
 function QuoteCard({ level, depth, clickable, onJump, nameOf }: {
   level: ReplyInfo;

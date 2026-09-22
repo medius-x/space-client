@@ -96,6 +96,12 @@ export interface Message {
   reactions: ReactionSummary[];
   reply: ReplyInfo | null;
   forward: ForwardInfo | null;
+  /** Channel pin (Discord-style). pinnedBy is the PINNER's username (not the author),
+   *  pinnedAt the pin moment — both null while unpinned. Pin/unpin pushes ride the
+   *  .edited topic as a full row replacement. */
+  pinned: boolean;
+  pinnedBy: string | null;
+  pinnedAt: string | null;
 }
 
 /** GET /api/search/messages — one search page: the cursor-independent total hit count plus
@@ -104,6 +110,49 @@ export interface SearchMessagesResult {
   total: number;
   results: Message[];
 }
+
+// ---------------------------------------------------------------------------
+// Discussions (threads) — a DISCUSSION channel + a frozen origin-message snapshot
+// ---------------------------------------------------------------------------
+
+/** The discussion wire view. `id` is the DISCUSSION channel's id (messages/subscriptions are
+ *  addressed by it); the origin* block is the frozen start-message snapshot (survives the
+ *  origin's deletion); `tracked` is viewer-scoped (do I follow this discussion). */
+export interface Discussion {
+  id: number;
+  parentChannelId: number;
+  originMessageId: number;
+  originSnippet: string;
+  originAuthorId: number | null;
+  originAuthorName: string | null;
+  originCreatedAt: string | null;
+  createdAt: string;
+  lastMessageAt: string | null;
+  replyCount: number;
+  tracked: boolean;
+}
+
+/** Pushed on the PARENT channel's `/topic/channel.{parent}.discussions` topic. REMOVED is the
+ *  only close signal — an open view must kick back to the channel (its `discussion` is null).
+ *  CREATED/ACTIVITY carry the FULL row — a peer sitting in the channel never fetched the
+ *  channel's list, so the push itself must render the tile; the row's `tracked` is broadcast
+ *  as false for everyone (viewer-scoped by nature) and each client merges its own state.
+ *  `actorUsername` = who started/posted/closed — the origin author's client turns the FIRST
+ *  reply into a mention-style ping keyed on it. ACTIVITY also carries the posted `message`:
+ *  clients that never subscribed to the thread's own topic run MENTION detection over it
+ *  (a mention in a thread subscribes and notifies the mentioned user). */
+export interface DiscussionEvent {
+  type: "CREATED" | "ACTIVITY" | "REMOVED";
+  discussionId: number;
+  parentChannelId: number;
+  originMessageId: number;
+  lastMessageAt: string | null;
+  replyCount: number;
+  actorUsername: string | null;
+  discussion: Discussion | null;
+  message: Message | null;
+}
+
 
 // ---------------------------------------------------------------------------
 // Server profile (GET /api/server)

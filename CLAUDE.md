@@ -1886,21 +1886,117 @@ social-aggregate подписан на сторы фоновых сессий �
 только для записей без сессии (мёртвая семья токенов, упавший старт). Фоновая
 лестница реконнектов после исчерпания тихо перезапускается (пауза 30 с между
 циклами) — упавший сервер возвращается сам. Гейт 231/231.
-- **Бэклог: pinned messages — СЛЕДУЮЩИЙ РАУНД (юзер-решение 2026-09-21).** Discord-📌:
-  закрепление важных сообщений канала + список с прыжком к оригиналу. Реализации
-  нет НИ на сервере, ни у oak-клиента — раунд «сервер + клиент», ДЕПЛОЙ ПАРНЫЙ.
-  Готовый дизайновый набросок в oak-server/CLAUDE.md (роадмап): `Message` +=
-  pinned/pinned_by/pinned_at; `PUT|DELETE …/messages/{id}/pin` (MANAGE_MESSAGES,
-  override-aware; DM — любой участник); `GET …/messages/pinned` (кап 50, вытеснение
-  или 400 — решить); пуш пина через СУЩЕСТВУЮЩИЙ `.edited`-топик (полный
-  MessageResponse); `MessageResponse` += поля В КОНЕЦ (append-only, парный деплой).
-  Клиент: ПКМ Pin/Unpin + кнопка 📌 в шапке канала + список; прыжок = ГОТОВОЕ окно
-  ?around= (#481, openChannelAtMessage). **ЛОВУШКА, КОТОРУЮ НАДО ЗАКРЫТЬ: Storage
-  GC (#479) сносит старейшие сообщения при заполнении диска — пины ДОЛЖНЫ быть
-  защищены от чистки (иначе «важное» исчезает молча); кап 50 становится бюджетом
-  неуязвимости. Решение при реализации: исключить pinned из purge-выборки (и из
-  событийной чистки при удалении последней ссылки? — нет, там удаляется сообщение
-  целиком, пин умирает вместе с ним честно).**
+- **Pinned messages + discussions/threads (2026-09-22, ДЕПЛОЙ ПАРНЫЙ с oak-server + зеркало
+  oak-client; серверная часть — oak-server/CLAUDE.md).** Две фичи, сервер+клиент.
+  **(A) ПИНЫ:** юзер-решения — карусель «последний пин + стрелки ‹ › + счётчик i/N» (не
+  Discord-список!), кап 50 с 400-ошибкой. `Message` += `pinned/pinnedBy/pinnedAt` (append-only);
+  НОВЫЙ `PinnedStore` (Map по каналу, pinnedAt-ASC): снапшот из `GET /messages/pinned` на
+  открытии канала (`session.loadPinned`, DM включительно), live-обновления — `.edited`-пуш
+  кормит `applyFromMessage` ПРЯМО из подписки (НЕ через messageStore.applyEdited — старые
+  пины обычно ВНЕ загруженного окна, applyEdited их молча вернёт false); дедуп «эхо после
+  REST-ответа» сравнивает ТОЛЬКО рендерящиеся поля (pinnedBy/pinnedAt/content/fileNames) —
+  presigned-URL переподписываются на каждый fetch, байт-сравнение ложно-положительное.
+  **PinCard.tsx**: `.pin-card` (now-playing-идиома, margin 4px 16px) МЕЖДУ chat-error и
+  NowPlayingBar — первый сиблинг владеет верхним слотом, при стечении пин НАД аудио
+  (юзер-спека); клик по телу → `openChannelAtMessage` (готовое ?around=-окно #481);
+  карусель — `domain/logic/pinned-view.ts` (defaultPinIndex=count-1, stepPinIndex с
+  заворотом, pinSnippet 120 симв. + фолбэк на имя аттача) + тесты. ПКМ Pin/Unpin
+  (гейт dm || MANAGE_MESSAGES; 400 от капа → тост). Глиф mdi-pin (icons.css 47 глифов).
+  **(B) ОБСУЖДЕНИЯ (НЕ-Discord UI, юзер-спека):** тред = канал DISCUSSION на сервере;
+  клиент видит его только через discussion-API. `types.ts` += `Discussion` (11 полей,
+  tracked viewer-scoped) + `DiscussionEvent` (CREATED/ACTIVITY/REMOVED на родительском
+  `.discussions`-топике). НОВЫЙ `DiscussionsStore`: карты byOrigin/byId + снапшот mine
+  (СЫРЬЁ разделяется между видами), события upsert/purge, setTracked оптимистично,
+  `version`-счётчик (emit override) — селектор для императивных чтений (сторон —
+  синглтон, useStore по самому стору не триггерится); forParent/mineForParent
+  производные НА СПРОС (useMemo в компоненте — селектор-идентичность). Чистая логика
+  `discussions-view.ts` (groupMineByChannel для бейджей, sortMineByActivity nulls-last,
+  tileReplyLabel) + тесты. **Сессия:** `.discussions`-подписка в ensureChannelTopicFamily
+  (store.applyEvent + опц. хук `onDiscussionEvent`); НОВОЕ семейство
+  `ensureDiscussionTopicFamily(discussionId)` — ОТДЕЛЬНАЯ подписка на топики треда:
+  хендлеры пишут ТОЛЬКО в messageStore, `hooks.onLiveMessage` НЕ вызывается
+  (структурная защита: непрочитанные треда не бампят бейдж родителя, тосты не летают);
+  StompClient НЕ умеет unsubscribe — сет-guard от дублей, подписка живёт до сокета,
+  при РЕКОННЕКТЕ сет чистится и накатывается заново (guard иначе скипнул бы re-subscribe —
+  грабля поймана до смоука). Методы fetch/start(409 наружу)/track/untrack(оптимистично)/
+  close(локальный purge)/openDiscussion(loadHistory); forgetChannel дропает треды канала;
+  resyncAfterReconnect: mine-рефетч + ре-подписки + ТИХИЙ tail-хил тредов (mergeTail без
+  onLiveMessage). **runtime:** AppState += `activeDiscussion {channelId,discussionId}` +
+  `sidebarDiscussions`; сброс в teardown, чистка в setActiveChannel (обе ветки)/openDm/
+  toggleHomeMode; `openDiscussion` (parent становится active-каналом — подсветка сайдбара;
+  around чистится), `closeDiscussionView`, `closeDiscussionForEveryone` (Close-кнопка);
+  хук `onDiscussionEvent`: REMOVED по открытому → кик из вида + тост «Discussion was closed»
+  (REMOVED — единственный close-сигнал; bare-Long на channel.{id}.deleted отклонён:
+  числовое пространство id сообщений/каналов пересекается). **Sidebar:** малая кнопка
+  `mdi-comment-text-outline` (`.sidebar-toggle`) в server-header ДО шеврона
+  (stopPropagation — клик по шапке открывает меню сервера; 22px — 37px-инвариант высоты);
+  режим обсуждений = плитки `.discussion-tile` (search-hit-идиома: #родитель + автор +
+  2 строки сниппета) с крестиком отписки, «No tracked discussions…» пусто-состояние;
+  бейдж `.channel-badge.discussions` (глиф+число МОИХ тредов канала) рядом с unread.
+  **ChatPane:** при открытом треде чат-поверхность (список/композер/пикер/селекшн) вяжется
+  на Channel-адаптер `chatChannel` (id треда; права сервер делегирует родителю —
+  композер-гейты родителя валидны as-is); **PinCard скрыт**, вместо него
+  `DiscussionOriginPanel` (замороженный снапшот исходника + Назад mdi-arrow-left +
+  «Отслеживать/Отписаться от обсуждения» + Close (гейт MANAGE_MESSAGES, для всех));
+  тайл `.message-discussion-tile` (глиф + «Discussion · N replies») под reactions-row
+  через `discussion`-проп MessageRow (стабильная разделяемая строка — memo-ряд
+  перерисуется на флипе); оценка высоты строки += флаг тайла (+24), источник — useMemo
+  по version стора (СЕЛЕКТОР-ИДЕНТИЧНОСТЬ: производное в селекторе = infinite rerender).
+  ПКМ: «Start a discussion» (гейт sendMessages, не DM, не внутри треда) / «Open
+  discussion» если есть; 409 → fetchChannelDiscussions + открыть существующий (гонка).
+  REST += 7 методов; icons.css 47 глифов (mdi-pin, mdi-comment-text-outline, mdi-arrow-left).
+  Гейты: клиент 383/383 + typecheck + build; сервер 313/313; oak-client 247/247 (зеркало).
+  **Смоук-фиксы 1 (2026-09-22, три юзер-репорта):** (1) **второй клиент не видел чужие новые
+  треды до собственного Start** — CREATED/ACTIVITY несли counts-only, а стор игнорировал
+  события без локальной строки; теперь `DiscussionEvent` несёт ПОЛНУЮ строку обсуждения
+  (+`actorUsername`; REMOVED — null-строка), стор апсертит её напрямую (tracked локальной
+  строки ПОБЕЖДАЕТ broadcast-false — трекинг viewer-scoped); плитка/пункт «Open discussion»
+  появляются у пира из одного пуша. (2) **mentions в тредах не приходили** — само семейство
+  подписок треда не звало onLiveMessage (by design); добавлен хук `onDiscussionLiveMessage`:
+  runtime гоняет handleMessage с serverMode-полом MENTIONS (даже при ALL — трекнутый тред
+  НЕ тостит на каждое сообщение, только mention-путь; decider даёт non-mention → none),
+  заголовок тоста `#канал · discussion`, клик → openDiscussion; свой пост и открытый тред
+  гасят пинг. (3) **тред на чужом сообщении = mention автору исходника при первом ответе**
+  — сервер авто-джойнит автора исходника участником при create (тред сразу в его /mine,
+  интеграционный тест), а runtime-хук onDiscussionEvent на ACTIVITY с replyCount==1 и
+  originAuthorId==self шлёт mention-тост+bell (кроме случая своего первого ответа/открытого
+  треда) и локально setTracked; отправитель своего поста тоже локально setTracked после
+  send (сервер уже авто-джойнит — зеркало без рефетча mine). Гейты: сервер 314/314, клиент
+  384/384 + typecheck + build. Смоук продолжается. **Смоук-итерация 2 (юзер-решения):**
+  (а) Follow/Unfollow/Close в панели обсуждения — ГЛИФЫ (юзер выбрал «глаз+крест»):
+  mdi-eye-plus-outline / mdi-eye-off-outline / mdi-close, tooltip англ. «Follow discussion»
+  / «Unfollow discussion» / «Close discussion for everyone» (UI только англ. — русские
+  надписи кнопок были моим отступлением); Close-hover красный (danger-идиома).
+  (б) Переключатель каналы↔обсуждения ПЕРЕЕХАЛ: кнопка в шапке сервера УДАЛЕНА; заголовок
+  секции «Channels» кликабелен как название сервера (hover — text-only brighten,
+  `.sidebar-section-link`) и открывает выпадайку с единственным пунктом «Discussions»
+  (в режиме обсуждений — заголовок «Discussions» → пункт «Channels»); бейдж
+  `.channel-badge.discussions` на строке канала КЛИКАБЕЛЕН — клик (stopPropagation, канал
+  не открывается) переключает колонку в обсуждения; runtime: toggleSidebarDiscussionsMode →
+  `setSidebarDiscussions(boolean)`. icons.css 49 глифов (+eye-plus/off). Гейты: 384/384 +
+  typecheck + build. **Смоук-итерация 3 (юзер-решения):** (1) **упоминание в треде
+  подписывает и пингует упомянутого**: сервер в publishActivityCreated парсит USER-упоминания
+  и авто-джойнит их участниками (интеграционный тест); ACTIVITY-событие теперь несёт ПОЛНОЕ
+  сообщение (MessageResponse) — клиенты, не подписанные на топик треда, гоняют по нему ту же
+  формулу упоминания (mentionsIdentity: @user/@held-role/unsuppressed-@everyone) →
+  setTracked + тост+bell; гейты: свой пост/открытый тред гасят, автор-исходника-на-первом-
+  ответе пингует РАНЬШЕ и один раз (без дубля тостов); фоновой инстанс тостит с тегом
+  сервера, клик = `openDiscussionOnInstance` (НОВЫЙ pendingOpenDiscussion в AppState +
+  потребление в consumePendingOpen). Декаплинг: MessageService больше НЕ зависит от
+  DiscussionService — хук переехал в Spring-событие `MessagePostedInDiscussion`
+  (@EventListener), иначе цикл бинов (DiscussionService → MessageService для ленивого
+  создания). (2) **Ленивое создание (юзер-правило)**: «Start discussion» НЕ создаёт ничего
+  на сервере — открывается ЛОКАЛЬНЫЙ черновик (`activeDiscussion.discussionId === null` +
+  originMessageId; панель исходника рендерится из списка родителя с тегом «draft», вместо
+  MessageList — подсказка); первое сообщение уходит одним вызовом `startDiscussionWithMessage`
+  (REST create несёт content/attachments/idempotencyKey) — сервер создаёт тред ВМЕСТЕ с
+  сообщением (replyCount=1), а КОНФЛИКТ переиспользует чужой тред (200, сообщение не
+  теряется; голый messageId сохранил 409 для API-поверхности). Клиентский 409-путь убран
+  полностью. (3) **Confirm-модал на закрытие** («Close discussion? …permanently removes its
+  messages», Cancel/Close) — глиф Close открывает модал, не бьёт сразу. Гейты: сервер
+  318/318 (+4: lazy-create, conflict-reuse, mention-subscribe, юниты), клиент 384/384 +
+  typecheck + build. Серверный рестарт нужен (код), миграций нет.
+
 - Гейт после каждой фазы: `npm test` + `npm run typecheck` зелёные.
 - Новые файлы сразу `git add`. Коммиты только по явной команде; subject на английском.
 - Никаких single-letter имён (кроме i/j цикла и T/E/K/V генериков); комментарии в коде

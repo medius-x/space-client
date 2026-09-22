@@ -30,6 +30,9 @@ function message(id: number, reply: ReplyInfo | null, channelId = 1): Message {
     reactions: [],
     reply,
     forward: null,
+    pinned: false,
+    pinnedBy: null,
+    pinnedAt: null,
   };
 }
 

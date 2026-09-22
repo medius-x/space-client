@@ -27,6 +27,7 @@ import { ConnectionSession, type SessionHooks } from "../domain/session/connecti
 import { MAX_VOICE_REJOIN_ATTEMPTS, rejoinDelayMs, rejoinExhausted } from "../domain/logic/rejoin-ladder";
 import { dmDisplayName } from "../domain/logic/dm-display";
 import type { MentionIdentity } from "../domain/logic/notification-decider";
+import { messageHasEveryoneHere, messageMentionsRole, messageMentionsUser } from "../domain/logic/notification-decider";
 import { dmToastHeader, toastServerHeader } from "../domain/logic/toast-preview";
 import { paletteColor } from "../domain/logic/user-palette";
 import { displayNameOf } from "../domain/logic/display-name";
@@ -146,6 +147,17 @@ export interface AppState {
    *  window). Consumed by MessageList's first layout, which scrolls to it, flashes
    *  the highlight and nulls the field. */
   activeAround: { channelId: number; messageId: number } | null;
+  /** The OPEN discussion view: the parent channel stays the active channel (the
+   *  sidebar highlight), the chat area swaps to the thread (origin panel + the
+   *  thread's own message list/composer; discussionId===null is the LAZY-CREATE draft that
+   *  materialises on the first reply). Cleared by every channel/DM switch. */
+  activeDiscussion: { channelId: number; discussionId: number | null; originMessageId: number } | null;
+  /** The sidebar's channels↔discussions toggle (the discussions list replaces the
+   *  channel list under the same server header). */
+  sidebarDiscussions: boolean;
+  /** A thread of a NON-active instance (a background mention toast click): consumed by
+   *  openSession once that instance is up — same contract as pendingOpenChannel. */
+  pendingOpenDiscussion: { recordId: string; discussionId: number } | null;
 }
 
 class AppStore extends Emitter {
@@ -197,6 +209,9 @@ class AppStore extends Emitter {
     searchOpen: false,
     searchScope: "channel",
     activeAround: null,
+    activeDiscussion: null,
+    sidebarDiscussions: false,
+    pendingOpenDiscussion: null,
   };
 
   getSnapshot = (): AppState => this.state;
@@ -297,6 +312,56 @@ export const voiceView = {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Does a thread message mention ME (direct @user, held @role, unsuppressed @everyone)?
+ *  The one mention formula shared with notifications.handleMessage, over the identity of
+ *  THIS session — the discussion ACTIVITY path keys on it (the message rides the event). */
+function mentionsIdentity(message: import("../types").Message, session: ConnectionSession | null): boolean {
+  if (session === null) {
+    return false;
+  }
+  const identity = selfIdentityFor(session);
+  const suppress = notificationPrefsFor(session.recordId).suppressEveryoneHere;
+  return messageMentionsUser(message.mentions, identity.userId)
+    || messageMentionsRole(message.mentions, identity.roleIds)
+    || (messageHasEveryoneHere(message.mentions) && !suppress);
+}
+
+/** The discussion mention/origin toast (title=actor, header=parent channel · discussion);
+ *  the click opens the thread (switching instances when the event came from a background
+ *  server). Shared by the origin-author first-reply ping and the plain mention path. */
+function pingDiscussionEvent(
+  recordId: string,
+  session: ConnectionSession,
+  event: import("../types").DiscussionEvent,
+  body: string,
+): void {
+  const settings = settingsStore.getSnapshot();
+  if (!settings.notificationsEnabled) {
+    return;
+  }
+  const parentChannel = session.channelStore.get(event.parentChannelId);
+  notifications.showToast({
+    title: displayNameOf(session.rosterStore.getSnapshot().users, event.actorUsername),
+    channelName: toastServerHeader(serverDisplayName(recordId),
+      `#${parentChannel?.name ?? event.parentChannelId} · discussion`),
+    body,
+    mention: true,
+    onClick: () => {
+      const target = activeSession === session
+        ? session.discussionsStore.byId(event.discussionId)
+        : undefined;
+      if (target !== undefined) {
+        openDiscussion(target);
+      } else {
+        void openDiscussionOnInstance(recordId, event.discussionId);
+      }
+    },
+  });
+  if (settings.soundEnabled) {
+    notifications.playBell();
+  }
 }
 
 /** Loopback audio must arrive RAW. Without the explicit falses Chromium may run
@@ -1022,6 +1087,119 @@ function makeSessionHooks(recordId: string): SessionHooks {
         appStore.patch({ activeDmId: null }); // back to the Friends pane
       }
     },
+    onDiscussionEvent: (event) => {
+      if (!isActive()) {
+        // Background instance: only the MENTION path matters there (the thread pinged me);
+        // lifecycle cosmetics (close kicks, origin pings) belong to the instance on screen.
+        const backgroundSession = sessionMap.get(recordId);
+        if (backgroundSession === undefined) {
+          return;
+        }
+        if (event.type === "ACTIVITY" && event.discussion !== null && event.message !== null
+            && event.message.authorUsername !== (connectionDirectory.get(recordId)?.username ?? "?")
+            && mentionsIdentity(event.message, backgroundSession)) {
+          backgroundSession.discussionsStore.setTracked(event.discussionId, true); // server auto-joined me
+          const parentChannel = backgroundSession.channelStore.get(event.discussion.parentChannelId);
+          const settings = settingsStore.getSnapshot();
+          if (settings.notificationsEnabled) {
+            notifications.showToast({
+              title: displayNameOf(backgroundSession.rosterStore.getSnapshot().users, event.message.authorUsername),
+              channelName: toastServerHeader(serverDisplayName(recordId),
+                `#${parentChannel?.name ?? event.discussion.parentChannelId} · discussion`),
+              body: event.message.content ?? "(attachment)",
+              mention: true,
+              onClick: () => {
+                void openDiscussionOnInstance(recordId, event.discussionId);
+              },
+            });
+            if (settings.soundEnabled) {
+              notifications.playBell();
+            }
+          }
+        }
+        return;
+      }
+      // REMOVED is the only close signal: a view open on the closed thread kicks back to
+      // the parent channel (the store already purged the row; the toast explains why).
+      if (event.type === "REMOVED") {
+        if (appStore.getSnapshot().activeDiscussion?.discussionId === event.discussionId) {
+          closeDiscussionView();
+          notifications.showToast({ title: "space", channelName: "", body: "Discussion was closed" });
+        }
+        return;
+      }
+      if (event.type !== "ACTIVITY" || event.discussion === null) {
+        return;
+      }
+      const session = sessionMap.get(recordId) ?? activeSession;
+      if (session === null) {
+        return;
+      }
+      // The user rule: the FIRST reply into a thread on MY message behaves like a mention —
+      // the thread is already in my tracked list (the server auto-joined the origin author
+      // at creation); the ping fires once, from the actor the event carries.
+      const selfId = session.selfUserId();
+      if (event.replyCount === 1 && selfId !== null && event.discussion.originAuthorId === selfId
+          && event.actorUsername !== session.username()
+          && appStore.getSnapshot().activeDiscussion?.discussionId !== event.discussionId) {
+        session.discussionsStore.setTracked(event.discussionId, true); // server did; mirror now
+        pingDiscussionEvent(recordId, session, event, "replied in a discussion on your message");
+        return;
+      }
+      // The mention path (user rule): a thread message that @mentions me subscribes me
+      // (server-side already) and pings — even though I never subscribed to the thread's
+      // own topic; the message rides the event for exactly this. Skipped while the thread
+      // is open on screen (the live-message hook owns that case).
+      if (event.message !== null
+          && event.message.authorUsername !== session.username()
+          && appStore.getSnapshot().activeDiscussion?.discussionId !== event.discussionId
+          && mentionsIdentity(event.message, session)) {
+        session.discussionsStore.setTracked(event.discussionId, true); // server auto-joined me
+        pingDiscussionEvent(recordId, session, event, event.message.content ?? "(attachment)");
+      }
+    },
+    onDiscussionLiveMessage: (message) => {
+      const session = sessionMap.get(recordId) ?? activeSession;
+      if (!session || !isActive()) {
+        return; // only the active session ever holds an open discussion subscription
+      }
+      const recordUsername = connectionDirectory.get(recordId)?.username ?? "?";
+      if (message.authorUsername === recordUsername) {
+        return; // one's own message never pings
+      }
+      const discussion = session.discussionsStore.byId(message.channelId);
+      if (discussion === undefined) {
+        return; // an unknown thread — no context to render (and none we track)
+      }
+      const settings = settingsStore.getSnapshot();
+      const serverPrefs = notificationPrefsFor(recordId);
+      const openOnScreen = appStore.getSnapshot().activeDiscussion?.discussionId === message.channelId;
+      const parentChannel = session.channelStore.get(discussion.parentChannelId);
+      notifications.handleMessage(
+        message,
+        selfIdentityFor(session),
+        toastServerHeader(serverDisplayName(recordId),
+          `#${parentChannel?.name ?? discussion.parentChannelId} · discussion`),
+        document.hasFocus(),
+        openOnScreen,
+        {
+          // MENTIONS floor even when the server says ALL: a tracked thread must NOT toast
+          // on every message — only the mention path may fire (decider: non-mention → none).
+          serverMode: serverPrefs.mode === "ALL" ? "MENTIONS" : serverPrefs.mode,
+          suppressEveryoneHere: serverPrefs.suppressEveryoneHere,
+          notificationsEnabled: settings.notificationsEnabled,
+          soundEnabled: settings.soundEnabled,
+        },
+        () => {
+          const row = session.discussionsStore.byId(message.channelId);
+          if (row !== undefined) {
+            openDiscussion(row);
+          }
+        },
+        false,
+        displayNameOf(session.rosterStore.getSnapshot().users, message.authorUsername),
+      );
+    },
     onMemberKicked: (event) => {
       const reason = event.banned
         ? `You were banned by ${event.by}. A moderator must unban you before reconnecting.`
@@ -1378,8 +1556,11 @@ export async function teardownSession(): Promise<void> {
     serverSettingsOpen: false,
     searchOpen: false,
     activeAround: null,
-    // pendingOpenDm/pendingOpenChannel deliberately survive too — a switch that lands on the login
-    // modal should still open the clicked DM once the user re-logs in.
+    activeDiscussion: null,
+    sidebarDiscussions: false,
+    // pendingOpenDm/pendingOpenChannel/pendingOpenDiscussion deliberately survive too — a
+    // switch that lands on the login modal should still open the clicked chat once the
+    // user re-logs in.
     // userSettingsOpen is deliberately NOT reset here: the username rename
     // restarts the session WITH the settings window open (oak keeps it). Every
     // path that truly kills the session closes it explicitly (expired, kicked).
@@ -1407,6 +1588,7 @@ export function setActiveChannel(channelId: number, aroundMessageId?: number): v
       dmMode: false,
       activeDmId: null,
       roomViewOpen: false,
+      activeDiscussion: null,
       activeAround: { channelId, messageId: aroundMessageId },
     });
     void session.loadAround(channelId, aroundMessageId)
@@ -1425,7 +1607,7 @@ export function setActiveChannel(channelId: number, aroundMessageId?: number): v
     void connectionDirectory.update(session.recordId, { lastChannelId: channelId });
     return;
   }
-  appStore.patch({ activeChannelId: channelId, dmMode: false, activeDmId: null, roomViewOpen: false, activeAround: null });
+  appStore.patch({ activeChannelId: channelId, dmMode: false, activeDmId: null, roomViewOpen: false, activeAround: null, activeDiscussion: null });
   // A channel left in the AROUND state must not stay stuck on its window: loadHistory is
   // a no-op once isLoaded, so refetch the tail explicitly (applySnapshot clears the flag).
   if (session.messageStore.isAroundWithoutTail(channelId)) {
@@ -1489,13 +1671,113 @@ export function openChannelAtMessage(channelId: number, messageId: number): void
 }
 
 // ---------------------------------------------------------------------------
+// Discussions (threads)
+// ---------------------------------------------------------------------------
+
+/** The sidebar's channels↔discussions switch (the section-title dropdown and the channel
+ *  badges both land here). Entering the discussions side fetches the mine list. */
+export function setSidebarDiscussions(shown: boolean): void {
+  if (appStore.getSnapshot().sidebarDiscussions === shown) {
+    return;
+  }
+  appStore.patch({ sidebarDiscussions: shown });
+  if (shown && activeSession !== null) {
+    void activeSession.fetchMyDiscussions().catch((error: unknown) => {
+      log.warn("chat", `discussions list failed: ${errorMessage(error)}`);
+    });
+  }
+}
+
+/** Open a discussion view: the parent channel becomes the active channel (sidebar
+ *  highlight stays), the chat area swaps to the thread. The parent's own chat state
+ *  (around window etc.) is reset by the setActiveChannel pass-through. */
+export function openDiscussion(discussion: { id: number; parentChannelId: number; originMessageId: number }): void {
+  const session = activeSession;
+  if (!session) {
+    return;
+  }
+  const state = appStore.getSnapshot();
+  if (state.dmMode || state.activeChannelId !== discussion.parentChannelId) {
+    // setActiveChannel also clears activeDiscussion — patched again right after.
+    setActiveChannel(discussion.parentChannelId);
+  } else {
+    ackActiveChannel();
+  }
+  appStore.patch({
+    activeDiscussion: { channelId: discussion.parentChannelId, discussionId: discussion.id, originMessageId: discussion.originMessageId },
+    activeAround: null,
+    roomViewOpen: false,
+  });
+  void session.openDiscussion(discussion.id).catch((error: unknown) => {
+    log.warn("chat", `discussion open failed: ${errorMessage(error)}`);
+    closeDiscussionView();
+  });
+}
+
+/** The LAZY-CREATE draft (user rule): "Start discussion" opens the thread view WITHOUT a
+ *  server object — the discussion materialises with the first reply (ChatPane sends it
+ *  through session.startDiscussionWithMessage). The origin message renders from the
+ *  parent channel's own loaded list; no follow/close controls exist yet. */
+export function openDraftDiscussion(origin: { channelId: number; messageId: number }): void {
+  const session = activeSession;
+  if (!session) {
+    return;
+  }
+  const state = appStore.getSnapshot();
+  if (state.dmMode || state.activeChannelId !== origin.channelId) {
+    setActiveChannel(origin.channelId);
+  } else {
+    ackActiveChannel();
+  }
+  appStore.patch({
+    activeDiscussion: { channelId: origin.channelId, discussionId: null, originMessageId: origin.messageId },
+    activeAround: null,
+    roomViewOpen: false,
+  });
+}
+
+/** A thread of a NON-active instance (a background mention toast click): switch there
+ *  and open it once the session is up — same contract as openChannelOnInstance. */
+export function openDiscussionOnInstance(recordId: string, discussionId: number): void {
+  appStore.patch({ pendingOpenDiscussion: { recordId, discussionId } });
+  void switchConnection(recordId);
+}
+
+/** Leave the thread view — back to the parent channel's own chat (its message list is
+ *  still loaded; a discussion view never disturbs it). */
+export function closeDiscussionView(): void {
+  if (appStore.getSnapshot().activeDiscussion !== null) {
+    appStore.patch({ activeDiscussion: null });
+  }
+}
+
+/** The origin panel's Close button (MANAGE_MESSAGES): close for everyone, then leave
+ *  the view. The REMOVED push is idempotent on top of the local purge. */
+export function closeDiscussionForEveryone(discussionId: number): void {
+  const session = activeSession;
+  if (!session) {
+    return;
+  }
+  void session.closeDiscussion(discussionId)
+    .then(() => {
+      closeDiscussionView();
+      notifications.showToast({ title: "space", channelName: "", body: "Discussion closed" });
+    })
+    .catch((error: unknown) => {
+      notifications.showToast({ title: "space", channelName: "", body: errorMessage(error) });
+    });
+}
+
+
+
+// ---------------------------------------------------------------------------
 // Home mode (friends + DMs)
 // ---------------------------------------------------------------------------
 
 /** The Home button: toggle between the server view and the DM/friends view. */
 export function toggleHomeMode(): void {
   const next = !appStore.getSnapshot().dmMode;
-  appStore.patch({ dmMode: next, activeDmId: next ? appStore.getSnapshot().activeDmId : null });
+  appStore.patch({ dmMode: next, activeDmId: next ? appStore.getSnapshot().activeDmId : null, activeDiscussion: null });
   if (next && activeSession !== null) {
     // Entering the aggregated view refreshes every other instance's snapshot.
     void loadBackgroundSocial(connectionDirectory, activeSession.recordId);
@@ -1542,6 +1824,15 @@ function consumePendingOpen(session: ConnectionSession): void {
     appStore.patch({ pendingOpenChannel: null });
     if (session.channelStore.get(pendingChannel.channelId)?.locked !== true) {
       setActiveChannel(pendingChannel.channelId);
+      return;
+    }
+  }
+  const pendingDiscussion = state.pendingOpenDiscussion;
+  if (pendingDiscussion !== null && pendingDiscussion.recordId === session.recordId) {
+    appStore.patch({ pendingOpenDiscussion: null });
+    const row = session.discussionsStore.byId(pendingDiscussion.discussionId);
+    if (row !== undefined) {
+      openDiscussion(row);
       return;
     }
   }
@@ -1703,7 +1994,7 @@ export function openDm(channelId: number): void {
   if (appStore.getSnapshot().activeDmId !== channelId) {
     ackActiveChannel(); // oak acks the chat being LEFT before the switch lands
   }
-  appStore.patch({ dmMode: true, activeDmId: channelId, roomViewOpen: false });
+  appStore.patch({ dmMode: true, activeDmId: channelId, roomViewOpen: false, activeDiscussion: null });
   void session.loadHistory(channelId)
     .then(() => ackActiveChannel())
     .catch((error: unknown) => {
@@ -1748,6 +2039,9 @@ export function seedSyntheticMessages(count: number): void {
       reactions: index % 23 === 0 ? [{ reaction: "thumbsup", count: 2, userIds: [1, 2], usernames: ["alice", "bob"] }] : [],
       reply: index % 31 === 0 ? { messageId: Math.max(1, id - 1), authorId: 0, authorUsername: authors[(index + 3) % authors.length]!, preview: `synthetic message ${id - 1}`, createdAt: new Date(baseTime + (id - 1) * 60_000).toISOString(), deleted: false, forward: null, reply: null } : null,
       forward: null,
+      pinned: false,
+      pinnedBy: null,
+      pinnedAt: null,
     };
   });
   session.messageStore.applySnapshot(channelId, synthetic);

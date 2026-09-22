@@ -17,6 +17,9 @@ function message(id: number, channelId = 1, mentions: Message["mentions"] = []):
     reactions: [],
     reply: null,
     forward: null,
+    pinned: false,
+    pinnedBy: null,
+    pinnedAt: null,
   };
 }
 

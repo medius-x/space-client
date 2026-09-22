@@ -19,6 +19,7 @@
 }
 .icon.mdi-account-multiple::before { content: "\F000E"; }
 .icon.mdi-application::before { content: "\F08C6"; }
+.icon.mdi-arrow-left::before { content: "\F004D"; }
 .icon.mdi-attachment::before { content: "\F0066"; }
 .icon.mdi-cast-connected::before { content: "\F0119"; }
 .icon.mdi-check::before { content: "\F012C"; }
@@ -27,10 +28,13 @@
 .icon.mdi-chevron-right::before { content: "\F0142"; }
 .icon.mdi-close::before { content: "\F0156"; }
 .icon.mdi-cog::before { content: "\F0493"; }
+.icon.mdi-comment-text-outline::before { content: "\F0189"; }
 .icon.mdi-content-copy::before { content: "\F018F"; }
 .icon.mdi-download::before { content: "\F01DA"; }
 .icon.mdi-emoticon::before { content: "\F0C68"; }
 .icon.mdi-eye-off::before { content: "\F0209"; }
+.icon.mdi-eye-off-outline::before { content: "\F06D1"; }
+.icon.mdi-eye-plus-outline::before { content: "\F086C"; }
 .icon.mdi-file-video-outline::before { content: "\F0E2C"; }
 .icon.mdi-forward::before { content: "\F028D"; }
 .icon.mdi-headphones::before { content: "\F02CB"; }
@@ -48,6 +52,7 @@
 .icon.mdi-pencil::before { content: "\F03EB"; }
 .icon.mdi-phone::before { content: "\F03F2"; }
 .icon.mdi-phone-hangup::before { content: "\F03F5"; }
+.icon.mdi-pin::before { content: "\F0403"; }
 .icon.mdi-play::before { content: "\F040A"; }
 .icon.mdi-plus::before { content: "\F0415"; }
 .icon.mdi-pound::before { content: "\F0423"; }

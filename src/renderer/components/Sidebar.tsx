@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useStore } from "../hooks/useStore";
 import {
   appStore,
@@ -6,10 +6,12 @@ import {
   connectionDirectory,
   joinVoiceGuarded,
   openAccountSettings,
+  openDiscussion,
   openServerSettings,
   reloginConnection,
   removeConnection,
   setActiveChannel,
+  setSidebarDiscussions,
   settingsStore,
   toggleRoomView,
 } from "../runtime";
@@ -18,6 +20,7 @@ import type { ConnectionRecord } from "../../domain/session/connection-record";
 import { memberNameColor } from "../../domain/logic/roster-grouping";
 import { feedHasLiveVideo } from "../../core/classifier";
 import { displayNameOf } from "../../domain/logic/display-name";
+import { groupMineByChannel, sortMineByActivity } from "../../domain/logic/discussions-view";
 import type { Channel } from "../../types";
 import { MANAGE_CHANNELS_PERMISSION } from "../../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
@@ -48,6 +51,16 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
   const badgeEnabled = useStore(settingsStore, (settings) => settings.badgeEnabled);
   const activeVoiceChannelId = useStore(appStore, (state) => state.activeVoiceChannelId);
   const ownUsername = useStore(appStore, (state) => state.ownUsername);
+  const sidebarDiscussions = useStore(appStore, (state) => state.sidebarDiscussions);
+  // The mine list's REFERENCE changes on every store mutation — that is what the memos
+  // below key on (the store object itself is a stable singleton).
+  const mineDiscussions = useStore(session.discussionsStore, (store) => store.mine());
+  const channelIds = useMemo(() => channels.map((channel) => channel.id), [channels]);
+  // Derived arrays live in useMemo ONLY (the selector-identity contract): the per-channel
+  // tracked counts feed the channel-row badges, the activity-sorted mine feeds the list.
+  const trackedCountsByChannel = useMemo(
+    () => groupMineByChannel(mineDiscussions, channelIds), [mineDiscussions, channelIds]);
+  const trackedDiscussions = useMemo(() => sortMineByActivity(mineDiscussions), [mineDiscussions]);
 
   const [menu, setMenu] = useState<{ channel: Channel; x: number; y: number } | null>(null);
   const [createType, setCreateType] = useState<"TEXT" | "VOICE" | null>(null);
@@ -57,6 +70,11 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
   // menu used to hold, now behind a visible chevron on the server name.
   const serverHeaderRef = useRef<HTMLDivElement | null>(null);
   const [serverMenu, setServerMenu] = useState<{ x: number; y: number } | null>(null);
+  // The section-title dropdown (the channels↔discussions switch): "Channels" opens a menu
+  // with the single "Discussions" entry, and vice versa — the server header's toggle
+  // button is gone, the title itself carries the switch now.
+  const sectionTitleRef = useRef<HTMLDivElement | null>(null);
+  const [sectionMenu, setSectionMenu] = useState<{ x: number; y: number } | null>(null);
   const [reloginTarget, setReloginTarget] = useState<ConnectionRecord | null>(null);
   const [deleteServerTarget, setDeleteServerTarget] = useState<ConnectionRecord | null>(null);
   // oak's showVoiceMemberMenu, sidebar surface: the card only fires for a row
@@ -139,36 +157,84 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
             </span>
             <span className="icon mdi-chevron-down sidebar-server-chevron" />
           </div>
-          <div className="sidebar-section-title">
-            <span>Channels</span>
-            {canManageChannels ? (
-              <button className="section-add" title="Create channel" onClick={() => setCreateType("TEXT")}>+</button>
-            ) : null}
-          </div>
-          {textChannels.map((channel) => {
-            const unread = readStates.get(channel.id);
-            return (
-              <div
-                key={channel.id}
-                className={"channel-row"
-                  + (channel.id === activeChannelId ? " active" : "")
-                  + (channel.locked ? " locked" : "")}
-                title={channel.locked ? "Locked for you" : undefined}
-                onClick={() => onTextChannelClick(channel)}
-                onContextMenu={openMenu(channel)}
-              >
-                <ChannelGlyph voice={false} locked={channel.locked} />
-                <span className="channel-name">{channel.name}</span>
-                {/* oak: the badge never shows on the SELECTED channel (refresh gating). */}
-                {channel.id !== activeChannelId && badgeEnabled && unread !== undefined && unread.unreadCount > 0 ? (
-                  <span className={"channel-badge" + (unread.mentionCount > 0 ? " mention" : "")}>
-                    {unread.unreadCount > 99 ? "99+" : unread.unreadCount}
-                  </span>
+          {sidebarDiscussions ? (
+            <>
+              <div className="sidebar-section-title" ref={sectionTitleRef}>
+                {/* The title is the switch's trigger (user decision): click opens a
+                    one-entry dropdown — same interaction as the server-name header. */}
+                <span
+                  className="sidebar-section-link"
+                  onClick={() => {
+                    const rect = sectionTitleRef.current?.getBoundingClientRect();
+                    if (rect !== undefined) {
+                      setSectionMenu({ x: rect.left, y: rect.bottom + 4 });
+                    }
+                  }}
+                >Discussions</span>
+              </div>
+              <DiscussionsList
+                session={session}
+                channels={channels}
+                discussions={trackedDiscussions}
+              />
+            </>
+          ) : (
+            <>
+              <div className="sidebar-section-title" ref={sectionTitleRef}>
+                <span
+                  className="sidebar-section-link"
+                  onClick={() => {
+                    const rect = sectionTitleRef.current?.getBoundingClientRect();
+                    if (rect !== undefined) {
+                      setSectionMenu({ x: rect.left, y: rect.bottom + 4 });
+                    }
+                  }}
+                >Channels</span>
+                {canManageChannels ? (
+                  <button className="section-add" title="Create channel" onClick={() => setCreateType("TEXT")}>+</button>
                 ) : null}
               </div>
-            );
-          })}
-          {voiceChannels.map((channel) => (
+              {textChannels.map((channel) => {
+                const unread = readStates.get(channel.id);
+                const trackedCount = trackedCountsByChannel.get(channel.id) ?? 0;
+                return (
+                  <div
+                    key={channel.id}
+                    className={"channel-row"
+                      + (channel.id === activeChannelId ? " active" : "")
+                      + (channel.locked ? " locked" : "")}
+                    title={channel.locked ? "Locked for you" : undefined}
+                    onClick={() => onTextChannelClick(channel)}
+                    onContextMenu={openMenu(channel)}
+                  >
+                    <ChannelGlyph voice={false} locked={channel.locked} />
+                    <span className="channel-name">{channel.name}</span>
+                    {/* The tracked-discussions count: how many threads I follow live here.
+                        Clicking the badge switches the column to the discussions list
+                        (user request) — it must not open the channel underneath. */}
+                    {trackedCount > 0 ? (
+                      <span
+                        className="channel-badge discussions"
+                        title={trackedCount === 1 ? "1 discussion you follow — click to show discussions" : `${trackedCount} discussions you follow — click to show discussions`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSidebarDiscussions(true);
+                        }}
+                      >
+                        <span className="icon mdi-comment-text-outline" />
+                        {trackedCount}
+                      </span>
+                    ) : null}
+                    {/* oak: the badge never shows on the SELECTED channel (refresh gating). */}
+                    {channel.id !== activeChannelId && badgeEnabled && unread !== undefined && unread.unreadCount > 0 ? (
+                      <span className={"channel-badge" + (unread.mentionCount > 0 ? " mention" : "")}>
+                        {unread.unreadCount > 99 ? "99+" : unread.unreadCount}
+                      </span>
+                    ) : null}
+                  </div>
+                );
+              })}
+              {voiceChannels.map((channel) => (
             /* oak's ChannelNode is ONE VBox: the name row AND the member list
                below it share the hover/active background and form a SINGLE click
                target — a click on a member row bubbles up as a click on the room. */
@@ -219,10 +285,22 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
               })}
             </div>
           ))}
+              </>
+            )}
         </>
       )}
 
       {menu !== null ? <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} /> : null}
+      {sectionMenu !== null ? (
+        <ContextMenu
+          x={sectionMenu.x}
+          y={sectionMenu.y}
+          items={[sidebarDiscussions
+            ? { label: "Channels", action: () => setSidebarDiscussions(false) }
+            : { label: "Discussions", action: () => setSidebarDiscussions(true) }]}
+          onClose={() => setSectionMenu(null)}
+        />
+      ) : null}
       {serverMenu !== null ? (
         <ContextMenu x={serverMenu.x} y={serverMenu.y} items={serverMenuItems} onClose={() => setServerMenu(null)} />
       ) : null}
@@ -258,6 +336,60 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
       {renameTarget !== null ? <RenameChannelModal session={session} channel={renameTarget} onClose={() => setRenameTarget(null)} /> : null}
       {deleteTarget !== null ? <DeleteChannelModal session={session} channel={deleteTarget} onClose={() => setDeleteTarget(null)} /> : null}
     </aside>
+  );
+}
+
+/**
+ * The sidebar's discussions side (the toggle under the server header): the threads THIS
+ * viewer follows, most recently active first. Tiles clone the search-hit idiom — the
+ * parent channel line over the origin author + a two-line snippet — plus a per-tile
+ * unsubscribe (mdi-close): tracking is personal, untracking hides it from this list only.
+ */
+function DiscussionsList({ session, channels, discussions }: {
+  session: ConnectionSession;
+  channels: readonly Channel[];
+  discussions: readonly import("../../types").Discussion[];
+}): React.JSX.Element {
+  const activeDiscussionId = useStore(appStore, (state) => state.activeDiscussion?.discussionId ?? null);
+  const parentName = (parentChannelId: number): string =>
+    channels.find((channel) => channel.id === parentChannelId)?.name ?? "#deleted";
+  return (
+    <>
+      {/* No section title here — Sidebar renders the clickable "Discussions" caption
+          (the channels↔discussions switch) above this list. */}
+      {discussions.length === 0 ? (
+        <div className="discussions-empty">No tracked discussions — start one from a message's context menu.</div>
+      ) : (
+        <div className="discussions-list">
+          {discussions.map((discussion) => (
+            <div
+              key={discussion.id}
+              className={"discussion-tile" + (discussion.id === activeDiscussionId ? " active" : "")}
+              onClick={() => openDiscussion(discussion)}
+            >
+              <div className="discussion-tile-row">
+                <span className="icon mdi-pound" />
+                <span className="discussion-tile-channel">{parentName(discussion.parentChannelId)}</span>
+                <button
+                  className="discussion-tile-untrack"
+                  title="Stop following this discussion"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void session.untrackDiscussion(discussion.id).catch(() => undefined);
+                  }}
+                >
+                  <span className="icon mdi-close" />
+                </button>
+              </div>
+              <div className="discussion-tile-snippet">
+                <span className="discussion-tile-author">{discussion.originAuthorName}</span>
+                {discussion.originSnippet.length > 0 ? ` ${discussion.originSnippet}` : ""}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 

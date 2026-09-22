@@ -22,6 +22,9 @@ function message(id: number): Message {
     reactions: [],
     reply: null,
     forward: null,
+    pinned: false,
+    pinnedBy: null,
+    pinnedAt: null,
   };
 }
 
@@ -59,6 +62,27 @@ describe("RestClient chat + channels + profile (M1)", () => {
     expect(fake.requests[0]?.path).toBe("/api/channels/5/messages");
     expect(fake.requests[0]?.body).toEqual({ content: "hi there", replyToId: 2 });
     expect(created.id).toBe(3);
+  });
+
+  it("pin/unpin/pinned hit the pin routes with the right verbs", async () => {
+    const pinned = { ...message(3), pinned: true, pinnedBy: "alice", pinnedAt: "2026-09-22T00:00:00Z" };
+    const fake = new FakeFetch(() => ({ status: 200, body: pinned }));
+    const client = new RestClient({
+      baseUrl: "http://x",
+      tokenStorage: new MemoryTokenStorage(),
+      fetchImpl: fake.call,
+    });
+
+    await client.pinMessage(5, 3);
+    await client.unpinMessage(5, 3);
+    await client.getPinnedMessages(5);
+
+    expect(fake.requests[0]?.method).toBe("PUT");
+    expect(fake.requests[0]?.path).toBe("/api/channels/5/messages/3/pin");
+    expect(fake.requests[1]?.method).toBe("DELETE");
+    expect(fake.requests[1]?.path).toBe("/api/channels/5/messages/3/pin");
+    expect(fake.requests[2]?.method).toBe("GET");
+    expect(fake.requests[2]?.path).toBe("/api/channels/5/messages/pinned");
   });
 
   it("createChannel / renameChannel / deleteChannel hit the exact routes", async () => {

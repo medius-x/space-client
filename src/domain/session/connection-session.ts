@@ -5,6 +5,8 @@ import type {
   CallIceCandidate,
   CallSignalType,
   Channel,
+  Discussion,
+  DiscussionEvent,
   DmChannel,
   DmChannelEvent,
   IncomingCallSignal,
@@ -25,6 +27,8 @@ import { ChannelStore } from "../stores/ChannelStore";
 import { MessageStore } from "../stores/MessageStore";
 import { MemberStore } from "../stores/MemberStore";
 import { PermissionStore } from "../stores/PermissionStore";
+import { PinnedStore } from "../stores/PinnedStore";
+import { DiscussionsStore } from "../stores/DiscussionsStore";
 import { ReadStateStore } from "../stores/ReadStateStore";
 import { RosterStore } from "../stores/RosterStore";
 import { SocialStore } from "../stores/SocialStore";
@@ -66,6 +70,13 @@ export interface SessionHooks {
   onCallSignal(signal: IncomingCallSignal): void;
   /** A DM vanished (closed everywhere or left by me) — the runtime re-homes the open chat. */
   onDmClosed(channelId: number): void;
+  /** A discussion lifecycle event on a parent channel's .discussions topic — the runtime
+   *  kicks an open view closed on REMOVED and pings the origin author on the first reply. */
+  onDiscussionEvent?(event: DiscussionEvent): void;
+  /** A live message posted into an OPEN discussion (its own topic family): the runtime
+   *  runs MENTION detection only — thread unread never feeds the parent's badge, and
+   *  non-mention messages stay silent (only the mention toast/bell path fires). */
+  onDiscussionLiveMessage?(message: Message): void;
   /** /user/queue/member.kick — the SERVER removed me: the runtime tears the session down. */
   onMemberKicked(event: MemberKickEvent): void;
 }
@@ -106,6 +117,8 @@ export class ConnectionSession {
   readonly stomp: StompClient;
   readonly channelStore = new ChannelStore();
   readonly messageStore = new MessageStore();
+  readonly pinnedStore = new PinnedStore();
+  readonly discussionsStore = new DiscussionsStore();
   readonly rosterStore = new RosterStore();
   readonly memberStore = new MemberStore();
   readonly socialStore = new SocialStore();
@@ -131,6 +144,10 @@ export class ConnectionSession {
   private readonly hooks: SessionHooks;
   private readonly tokenStorage: RecordTokenStorage;
   private readonly subscribedChannelIds = new Set<number>();
+  /** Discussion channels whose topic family we hold (the OPEN one; StompClient has no
+   *  unsubscribe, so the wire SUBSCRIBE lives until the socket — the set only guards
+   *  duplicates, and the handlers are messageStore-only (harmless after the view closes). */
+  private readonly subscribedDiscussionIds = new Set<number>();
   private disposed = false;
 
   constructor(options: ConnectionSessionOptions) {
@@ -254,6 +271,13 @@ export class ConnectionSession {
     // coalescing queue and re-run afterwards.
     this.socialRefresh.request();
     this.memberRefresh.request();
+    // The tracked-discussions snapshot seeds the sidebar badges and the "mine" list from the
+    // very first paint (live report: without it nothing showed until the user toggled the
+    // sidebar to discussions and back — the only other mine-fetch site). The .discussions
+    // topic subscriptions above keep it fresh from here on.
+    void this.fetchMyDiscussions().catch((error: unknown) => {
+      log.warn("session", `discussions snapshot failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
 
     log.info("session", `connection up: ${this.username()} @ ${this.hostUrl()} (${channels.length} channels)`);
   }
@@ -393,6 +417,116 @@ export class ConnectionSession {
     this.messageStore.applyReactions(channelId, messageId, reactions);
   }
 
+  /** Fetch the channel's pin list once per channel (DMs included — the endpoint is the
+   *  same); the .edited pushes keep it fresh afterwards. */
+  async loadPinned(channelId: number): Promise<void> {
+    if (this.disposed || this.pinnedStore.isLoaded(channelId)) {
+      return;
+    }
+    const pins = await this.rest.getPinnedMessages(channelId);
+    if (!this.disposed) {
+      this.pinnedStore.applySnapshot(channelId, pins);
+    }
+  }
+
+  /** Pin/unpin: the REST answer is applied immediately (message row + pin list); the
+   *  .edited WS echo lands idempotently on top of both. A 400 (channel pin cap hit)
+   *  propagates to the caller — it surfaces the toast. */
+  async pinMessage(channelId: number, messageId: number): Promise<void> {
+    const updated = await this.rest.pinMessage(channelId, messageId);
+    this.messageStore.applyEdited(updated);
+    this.pinnedStore.applyFromMessage(updated);
+  }
+
+  async unpinMessage(channelId: number, messageId: number): Promise<void> {
+    const updated = await this.rest.unpinMessage(channelId, messageId);
+    this.messageStore.applyEdited(updated);
+    this.pinnedStore.applyFromMessage(updated);
+  }
+
+  // --- Discussions (threads) ---
+
+  /** The channel's every discussion (the tiles under origin messages). Server TEXT channels
+   *  only — DMs have no discussions. */
+  async fetchChannelDiscussions(parentChannelId: number): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
+    const discussions = await this.rest.getChannelDiscussions(parentChannelId);
+    if (!this.disposed) {
+      this.discussionsStore.applyParentSnapshot(parentChannelId, discussions);
+    }
+  }
+
+  /** The viewer's tracked discussions — the sidebar's discussions list. */
+  async fetchMyDiscussions(): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
+    const mine = await this.rest.getMyDiscussions();
+    if (!this.disposed) {
+      this.discussionsStore.applyMineSnapshot(mine);
+    }
+  }
+
+  /** The LAZY-CREATE flow (user rule): "Start discussion" opens a local draft, and the
+   *  first reply lands here — uploads (if any), then ONE create call carrying the content,
+   *  so the discussion is born WITH its first message. A create race reuses the winner's
+   *  thread server-side (the message is never lost — no 409 path exists for the client). */
+  async startDiscussionWithMessage(parentChannelId: number, originMessageId: number,
+    files: readonly File[], content: string | null): Promise<Discussion> {
+    const refs: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null }[] = [];
+    for (const file of files) {
+      const slot = await this.rest.requestAttachmentUpload(sanitizeSlotFileName(file.name));
+      await this.rest.uploadBytes(slot.uploadUrl, await file.arrayBuffer(), file.type || "application/octet-stream");
+      const reference: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null }
+        = { key: slot.key, fileName: file.name, thumbnailKey: null, durationMillis: null };
+      if (isVideoFile(file.name)) {
+        const preview = await generateVideoPreview(file);
+        if (preview !== null) {
+          const thumbSlot = await this.rest.requestAttachmentUpload(sanitizeSlotFileName(`${file.name}-preview.jpg`));
+          await this.rest.uploadBytes(thumbSlot.uploadUrl, await preview.jpegBlob.arrayBuffer(), "image/jpeg");
+          reference.thumbnailKey = thumbSlot.key;
+          reference.durationMillis = preview.durationMillis;
+        }
+      }
+      refs.push(reference);
+    }
+    const created = await this.rest.createDiscussion(
+      parentChannelId, originMessageId, content, refs, crypto.randomUUID());
+    this.discussionsStore.applyParentSnapshot(parentChannelId,
+      [created, ...this.discussionsStore.forParent(parentChannelId)]);
+    return created;
+  }
+
+  /** Explicit follow — optimistic tracked flip, the 204 answer needs no merge. */
+  async trackDiscussion(discussionId: number): Promise<void> {
+    this.discussionsStore.setTracked(discussionId, true);
+    await this.rest.trackDiscussion(discussionId);
+  }
+
+  /** Unfollow — optimistic flip first (personal only). */
+  async untrackDiscussion(discussionId: number): Promise<void> {
+    this.discussionsStore.setTracked(discussionId, false);
+    await this.rest.untrackDiscussion(discussionId);
+  }
+
+  /** Close for everyone (MANAGE_MESSAGES via the parent). The local purge is immediate; the
+   *  REMOVED echo on the parent topic is idempotent on top. */
+  async closeDiscussion(discussionId: number): Promise<void> {
+    await this.rest.closeDiscussion(discussionId);
+    this.discussionsStore.dropDiscussion(discussionId);
+    this.messageStore.dropChannel(discussionId);
+    this.subscribedDiscussionIds.delete(discussionId);
+  }
+
+  /** Open a discussion: subscribe its topic family (messageStore-only — no unread/toast
+   *  accounting) and load its history once per discussion id. */
+  async openDiscussion(discussionId: number): Promise<void> {
+    this.ensureDiscussionTopicFamily(discussionId);
+    await this.loadHistory(discussionId);
+  }
+
   /** Same-instance forward — the server copies content/attachments/origin itself. */
   async forwardMessage(targetChannelId: number, sourceMessageId: number, comment: string | null): Promise<void> {
     const forwarded = await this.rest.forwardMessage(targetChannelId, { sourceMessageId, content: comment });
@@ -490,6 +624,14 @@ export class ConnectionSession {
   forgetChannel(channelId: number): void {
     if (this.channelStore.applyDeleted(channelId)) {
       this.messageStore.dropChannel(channelId);
+      this.pinnedStore.dropChannel(channelId);
+      // the channel's discussions die with it (their channel rows are not in channelStore —
+      // drop their message lists and topic-guard entries one by one)
+      for (const discussion of this.discussionsStore.forParent(channelId)) {
+        this.messageStore.dropChannel(discussion.id);
+        this.subscribedDiscussionIds.delete(discussion.id);
+      }
+      this.discussionsStore.dropParent(channelId);
       this.permissionStore.dropChannel(channelId);
       this.readStateStore.dropChannel(channelId);
       this.subscribedChannelIds.delete(channelId);
@@ -854,7 +996,12 @@ export class ConnectionSession {
       }
     });
     this.stomp.subscribe(`${destination}.edited`, (raw) => {
-      this.messageStore.applyEdited(JSON.parse(raw) as Message);
+      const edited = JSON.parse(raw) as Message;
+      this.messageStore.applyEdited(edited);
+      // Pin/unpin ride the same .edited push. Fed DIRECTLY here, not via applyEdited's
+      // return: an old pin usually lives OUTSIDE the loaded window and applyEdited
+      // would return false for it — the pin card must never go stale over that.
+      this.pinnedStore.applyFromMessage(edited);
     });
     this.stomp.subscribe(`${destination}.deleted`, (raw) => {
       this.messageStore.applyDeleted(channelId, JSON.parse(raw) as number);
@@ -862,6 +1009,48 @@ export class ConnectionSession {
     this.stomp.subscribe(`${destination}.reactions`, (raw) => {
       const event = JSON.parse(raw) as ReactionEvent;
       this.messageStore.applyReactions(channelId, event.messageId, event.reactions);
+    });
+    this.stomp.subscribe(`${destination}.discussions`, (raw) => {
+      const event = JSON.parse(raw) as DiscussionEvent;
+      this.discussionsStore.applyEvent(event);
+      this.hooks.onDiscussionEvent?.(event);
+    });
+    // NOTE: the mention notification for NON-open threads rides the ACTIVITY event above
+    // (it carries the posted message) — only clients holding the thread's own family (the
+    // open view, via onDiscussionLiveMessage) would otherwise see the message at all.
+  }
+
+  /**
+   * The OPEN discussion's own topic family — a SEPARATE subscribe (not the channel family):
+   * handlers write into messageStore but NEVER fire {@link SessionHooks.onLiveMessage}, so
+   * thread messages bump no unread badge and update no DM preview (the structural fix for
+   * the discussion leak). Mentions are the deliberate exception: the base-topic handler
+   * fires {@link SessionHooks.onDiscussionLiveMessage}, whose runtime side runs mention
+   * detection ONLY (a plain thread message stays silent; an @ping toasts and rings).
+   * Idempotent per discussion id (the wire SUBSCRIBE itself is deduplicated by StompClient).
+   */
+  private ensureDiscussionTopicFamily(discussionId: number): void {
+    if (this.subscribedDiscussionIds.has(discussionId)) {
+      return;
+    }
+    this.subscribedDiscussionIds.add(discussionId);
+    const destination = `/topic/channel.${discussionId}`;
+    this.stomp.subscribe(destination, (raw) => {
+      const message = JSON.parse(raw) as Message;
+      this.messageStore.applyLive(message);
+      this.hooks.onDiscussionLiveMessage?.(message);
+    });
+    this.stomp.subscribe(`${destination}.edited`, (raw) => {
+      const edited = JSON.parse(raw) as Message;
+      this.messageStore.applyEdited(edited);
+      this.pinnedStore.applyFromMessage(edited);
+    });
+    this.stomp.subscribe(`${destination}.deleted`, (raw) => {
+      this.messageStore.applyDeleted(discussionId, JSON.parse(raw) as number);
+    });
+    this.stomp.subscribe(`${destination}.reactions`, (raw) => {
+      const event = JSON.parse(raw) as ReactionEvent;
+      this.messageStore.applyReactions(discussionId, event.messageId, event.reactions);
     });
   }
 
@@ -926,15 +1115,54 @@ export class ConnectionSession {
     } catch (error: unknown) {
       log.warn("session", `read states resync failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+    // Pin/unpin pushes missed over the gap would leave the pin card stale — refetch
+    // every fetched pin list (a handful of channels at most, one light GET each).
+    for (const channelId of this.pinnedStore.loadedChannelIds()) {
+      if (this.disposed) {
+        return;
+      }
+      try {
+        this.pinnedStore.applySnapshot(channelId, await this.rest.getPinnedMessages(channelId));
+      } catch (error: unknown) {
+        log.warn("session", `pins resync failed for #${channelId}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    // Discussions: the mine list and the tracked rows went stale over the gap the same way.
+    try {
+      this.discussionsStore.applyMineSnapshot(await this.rest.getMyDiscussions());
+    } catch (error: unknown) {
+      log.warn("session", `discussions resync failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    // The OPEN discussion's topic families live on the new socket — re-subscribe. The guard
+    // set SURVIVED the socket loss (it only tracks our bookkeeping), so it must be cleared
+    // first or the early-return would skip every re-subscribe.
+    const openDiscussionIds = [...this.subscribedDiscussionIds];
+    this.subscribedDiscussionIds.clear();
+    for (const discussionId of openDiscussionIds) {
+      this.ensureDiscussionTopicFamily(discussionId);
+    }
     await this.resyncMessageTails();
   }
 
   /** Sequential on purpose: a reconnect after a long gap can hold many loaded
-   *  channels, and a burst of parallel history fetches would stampede the server. */
+   *  channels, and a burst of parallel history fetches would stampede the server. Discussion
+   *  channels heal SILENTLY: mergeTail without the live accounting (thread unread must never
+   *  feed the parent's badge or raise a toast). */
   private async resyncMessageTails(): Promise<void> {
     for (const channelId of this.messageStore.loadedChannelIds()) {
       if (this.disposed) {
         return;
+      }
+      if (this.subscribedDiscussionIds.has(channelId)) {
+        try {
+          const threadPage = await this.rest.getMessages(channelId, undefined, RESYNC_TAIL_LIMIT);
+          if (!this.disposed) {
+            this.messageStore.mergeTail(channelId, threadPage);
+          }
+        } catch (error: unknown) {
+          log.warn("session", `discussion #${channelId} tail resync failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        continue;
       }
       try {
         const page = await this.rest.getMessages(channelId, undefined, RESYNC_TAIL_LIMIT);

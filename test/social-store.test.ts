@@ -36,6 +36,9 @@ function message(id: number, channelId: number, createdAt: string): Message {
     reactions: [],
     reply: null,
     forward: null,
+    pinned: false,
+    pinnedBy: null,
+    pinnedAt: null,
   };
 }
 

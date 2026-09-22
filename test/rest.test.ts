@@ -170,7 +170,7 @@ describe("RestClient", () => {
         if (attempts === 1) {
           throw new TypeError("Failed to fetch");
         }
-        return { status: 201, body: { id: 42, channelId: 1, authorId: 1, authorUsername: "alice", content: "hi", createdAt: "now", attachments: [], mentions: [], reactions: [], editedAt: null, reply: null, forward: null } };
+        return { status: 201, body: { id: 42, channelId: 1, authorId: 1, authorUsername: "alice", content: "hi", createdAt: "now", attachments: [], mentions: [], reactions: [], editedAt: null, reply: null, forward: null, pinned: false, pinnedBy: null, pinnedAt: null } };
       }
       return { status: 200, body: [] };
     });

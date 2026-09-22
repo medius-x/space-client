@@ -9,6 +9,7 @@ import type {
   ChannelReadState,
   ChannelType,
   ChannelUserOverride,
+  Discussion,
   DmChannel,
   ForwardMessageRequest,
   Message,
@@ -237,6 +238,81 @@ export class RestClient {
 
   async deleteMessage(channelId: number, messageId: number): Promise<void> {
     await this.request<unknown>(`/api/channels/${channelId}/messages/${messageId}`, { method: "DELETE" });
+  }
+
+  /** Pin/unpin a message. Both return the updated full row (200) — the acting client applies
+   *  it directly, the .edited WS echo lands idempotently on top. A 400 means the per-channel
+   *  pin cap was hit (surfaced as a toast by the caller). */
+  async pinMessage(channelId: number, messageId: number): Promise<Message> {
+    return this.request<Message>(`/api/channels/${channelId}/messages/${messageId}/pin`, {
+      method: "PUT",
+    });
+  }
+
+  async unpinMessage(channelId: number, messageId: number): Promise<Message> {
+    return this.request<Message>(`/api/channels/${channelId}/messages/${messageId}/pin`, {
+      method: "DELETE",
+    });
+  }
+
+  /** The channel's pinned messages, oldest pin first (the card renders the LAST element as
+   *  the latest pin). Gate: READ_MESSAGE_HISTORY server-side. */
+  async getPinnedMessages(channelId: number): Promise<Message[]> {
+    return this.request<Message[]>(`/api/channels/${channelId}/messages/pinned`, { method: "GET" });
+  }
+
+  // --- Discussions (threads) ---
+
+  /** Start a discussion on one message — the LAZY-CREATE contract (user rule): the client's
+   *  draft carries its first reply in `content` (plus optional uploaded attachment refs), so
+   *  the discussion is created WITH its first message in one call; a create conflict REUSES
+   *  the existing thread (200 — the message is never lost to a 409). A bare messageId still
+   *  creates an empty discussion (kept for the API surface; the client never sends it). */
+  async createDiscussion(channelId: number, messageId: number, content?: string | null,
+    attachments?: readonly { key: string; fileName: string; thumbnailKey?: string | null; durationMillis?: number | null }[] | null,
+    idempotencyKey?: string): Promise<Discussion> {
+    return this.request<Discussion>(`/api/channels/${channelId}/discussions`, {
+      method: "POST",
+      body: JSON.stringify({
+        messageId,
+        content: content ?? null,
+        attachments: attachments ?? null,
+        idempotencyKey: idempotencyKey ?? null,
+      }),
+      idempotencyKey,
+    });
+  }
+
+  /** Every discussion under the channel (the tiles under origin messages), tracked-flagged
+   *  for THIS viewer. */
+  async getChannelDiscussions(channelId: number): Promise<Discussion[]> {
+    return this.request<Discussion[]>(`/api/channels/${channelId}/discussions`, { method: "GET" });
+  }
+
+  /** The discussions THIS viewer follows (across every readable channel), most recently
+   *  active first — the sidebar's discussions list. */
+  async getMyDiscussions(): Promise<Discussion[]> {
+    return this.request<Discussion[]>("/api/discussions/mine", { method: "GET" });
+  }
+
+  async getDiscussion(discussionId: number): Promise<Discussion> {
+    return this.request<Discussion>(`/api/discussions/${discussionId}`, { method: "GET" });
+  }
+
+  /** Follow the discussion (idempotent, 204). */
+  async trackDiscussion(discussionId: number): Promise<void> {
+    await this.request<unknown>(`/api/discussions/${discussionId}/track`, { method: "PUT" });
+  }
+
+  /** Unfollow (idempotent, 204; personal only). */
+  async untrackDiscussion(discussionId: number): Promise<void> {
+    await this.request<unknown>(`/api/discussions/${discussionId}/track`, { method: "DELETE" });
+  }
+
+  /** Close the discussion for everyone (MANAGE_MESSAGES on the parent channel). 204; the
+   *  REMOVED push on the parent topic is the signal clients act on. */
+  async closeDiscussion(discussionId: number): Promise<void> {
+    await this.request<unknown>(`/api/discussions/${discussionId}`, { method: "DELETE" });
   }
 
   /** Both reaction calls return the message's full reaction snapshot (200). */
