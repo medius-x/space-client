@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useStore } from "./hooks/useStore";
-import { appStore, closeServerSettings, sessionBinding, toggleUserSettings } from "./runtime";
+import { appStore, closeServerSettings, connectionDirectory, sessionBinding, toggleUserSettings } from "./runtime";
 import type { ConnectionSession } from "../domain/session/connection-session";
 import { CaptionBar } from "./components/CaptionBar";
 import { LoginModal } from "./components/LoginModal";
@@ -78,8 +78,15 @@ export function App(): React.JSX.Element {
 }
 
 /** No live session (fresh install / the active server was removed): the rail —
- *  its "+" opens the login modal — plus an empty content area. */
+ *  its "+" opens the login modal — plus an empty content area. The one other
+ *  no-session state is the BOOT RESUME LADDER: a network-dead server at
+ *  startup keeps "connecting" alive with no session, and the empty screen then
+ *  says the server is being reached instead of inviting the user to add one. */
 function EmptyMainScreen(): React.JSX.Element {
+  const records = useStore(connectionDirectory, (allRecords) => allRecords);
+  const stompState = useStore(appStore, (state) => state.stompState);
+  const bootConnecting = stompState === "connecting";
+  const target = records[0];
   return (
     <div className="main-shell">
       <div className="left-section">
@@ -89,7 +96,11 @@ function EmptyMainScreen(): React.JSX.Element {
         </div>
       </div>
       <main className="content">
-        <div className="chat-empty">No server connected — add one with the + on the rail.</div>
+        <div className="chat-empty">
+          {bootConnecting
+            ? `Connecting to ${target?.cachedServerName ?? target?.hostUrl ?? "the server"}…`
+            : "No server connected — add one with the + on the rail."}
+        </div>
       </main>
     </div>
   );

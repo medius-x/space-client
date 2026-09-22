@@ -177,3 +177,21 @@ export class AttachmentCache extends Emitter {
     }
   }
 }
+
+let dormantInstance: AttachmentCache | null = null;
+
+/**
+ * The session-less disk-only reader: the rail's saved server icons still render
+ * while NO connection is live (the server was down at startup — the avatars ARE
+ * on the shared main-process disk, there is just no session to read them
+ * through). `rest: () => null` plus a null image URL keeps it off the network —
+ * a miss just falls back to the initials disc. The default disk budget is
+ * deliberate: this instance never WRITES, so it can only ever see what the live
+ * sessions' own budget discipline (purge at 0) left on disk.
+ */
+export function dormantAttachmentCache(): AttachmentCache {
+  if (dormantInstance === null) {
+    dormantInstance = new AttachmentCache(() => null);
+  }
+  return dormantInstance;
+}

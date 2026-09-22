@@ -1280,6 +1280,69 @@ function watchDeviceSettings(): void {
   update();
 }
 
+// ---------------------------------------------------------------------------
+// Boot auto-resume ladder (a network-dead server at startup)
+// ---------------------------------------------------------------------------
+
+/** Set while the boot ladder owns a record: openSession failed on a NETWORK
+ *  error (the tokens are fine, the server is simply not answering), and the
+ *  client keeps retrying quietly — fast at first, then every 30 s forever — so
+ *  it snaps on the moment the server appears, with no manual rail click (live
+ *  report: the client sat dead on the empty screen even after the server came
+ *  up). Unlike the mid-session STOMP ladder this one never goes terminal: the
+ *  empty screen has no ↻ affordance, and "the server is not started yet" can
+ *  take arbitrarily long. Any user action that produces a session (login, rail
+ *  switch) or a dead token family stops it. Also EXCLUDES the record from
+ *  startBackgroundSessions — a background start racing the ladder could be
+ *  PROMOTED half-started by openSession. */
+let bootResumeRecordId: string | null = null;
+let bootResumeAttempt = 0;
+let bootResumeTimer: number | null = null;
+
+function scheduleBootResume(recordId: string, delaySeconds: number): void {
+  if (bootResumeTimer !== null) {
+    return; // one ladder, one timer
+  }
+  bootResumeTimer = window.setTimeout(() => {
+    bootResumeTimer = null;
+    void retryBootResume(recordId);
+  }, delaySeconds * 1000);
+}
+
+async function retryBootResume(recordId: string): Promise<void> {
+  const record = connectionDirectory.get(recordId);
+  if (!record || activeSession !== null || record.token === EXPIRED_MARKER || record.refreshToken === "") {
+    // The user acted (a session is live), the record is gone, or its token
+    // family died mid-ladder (the login modal is already up). Stand down —
+    // a live session owns stompState, only clear what we painted ourselves.
+    if (activeSession === null && appStore.getSnapshot().stompState === "connecting") {
+      appStore.patch({ stompState: "off" });
+    }
+    bootResumeRecordId = null;
+    // The record is no longer ladder-owned — give it its background pass (it
+    // was excluded from startBackgroundSessions while we held it).
+    startBackgroundSessions();
+    return;
+  }
+  bootResumeAttempt += 1;
+  try {
+    await openSession(recordId);
+    log.info("app", `auto-resumed ${record.username} @ ${record.hostUrl} (boot attempt ${bootResumeAttempt})`);
+    bootResumeRecordId = null;
+    return; // connected — openSession took it from here
+  } catch (error) {
+    log.info("app", `boot resume attempt ${bootResumeAttempt} failed (${errorMessage(error)})`);
+  }
+  if (!connectionDirectory.get(recordId)) {
+    bootResumeRecordId = null;
+    return; // removed while the attempt was flying
+  }
+  // stompState was reset to "off" by teardownSession inside the failed attempt —
+  // repaint "connecting" so the empty screen keeps saying we are reaching out.
+  appStore.patch({ stompState: "connecting" });
+  scheduleBootResume(recordId, Math.min(2 ** bootResumeAttempt, 30));
+}
+
 /** App entry: load the directory, auto-resume the most recently used connection. */
 export async function bootstrapApp(): Promise<void> {
   await settingsStore.load();
@@ -1298,7 +1361,17 @@ export async function bootstrapApp(): Promise<void> {
       await openSession(newest.id);
       log.info("app", `auto-resumed ${newest.username} @ ${newest.hostUrl}`);
     } catch (error) {
-      log.info("app", `auto-resume failed (${errorMessage(error)}) — login screen`);
+      const record = connectionDirectory.get(newest.id);
+      if (record && record.token !== EXPIRED_MARKER && record.refreshToken !== "") {
+        // A NETWORK failure (server down): the family is alive, keep reaching
+        // out in the background instead of sitting dead until a rail click.
+        log.info("app", `auto-resume failed (${errorMessage(error)}) — boot retry ladder armed`);
+        bootResumeRecordId = newest.id;
+        appStore.patch({ stompState: "connecting" });
+        scheduleBootResume(newest.id, 2);
+      } else {
+        log.info("app", `auto-resume failed (${errorMessage(error)}) — login screen`);
+      }
     }
   }
   // Every other record comes up as a LIVE background session (oak phase 2).
@@ -1487,10 +1560,29 @@ async function openSession(recordId: string): Promise<void> {
   }
 }
 
+/** A quiet revival pass for background records whose start() failed — the
+ *  server may simply have been down (at startup or later); without this the
+ *  record stayed on REST snapshots forever. Mirrors onStompExhausted's 30 s
+ *  background restart cadence. */
+let backgroundRevivalTimer: number | null = null;
+
+function scheduleBackgroundRevival(): void {
+  if (backgroundRevivalTimer !== null) {
+    return; // one pass, one timer — failures restack it
+  }
+  backgroundRevivalTimer = window.setTimeout(() => {
+    backgroundRevivalTimer = null;
+    startBackgroundSessions();
+  }, 30_000);
+}
+
 /** Start (once) a background session for every saved record that has none. */
 function startBackgroundSessions(): void {
   for (const record of connectionDirectory.getSnapshot()) {
-    if (record.token === EXPIRED_MARKER || record.refreshToken === "" || record.id === activeSession?.recordId) {
+    // bootResumeRecordId: the boot ladder owns that record — a background start
+    // racing the ladder could be PROMOTED half-started by openSession.
+    if (record.token === EXPIRED_MARKER || record.refreshToken === ""
+      || record.id === activeSession?.recordId || record.id === bootResumeRecordId) {
       continue;
     }
     if (sessionMap.has(record.id)) {
@@ -1500,8 +1592,9 @@ function startBackgroundSessions(): void {
     sessionMap.set(record.id, session);
     bindLiveBackgroundSession(session, connectionDirectory);
     void session.start().catch((error: unknown) => {
-      log.warn("app", `background session for ${record.username} @ ${record.hostUrl} failed (${errorMessage(error)}) — REST snapshots only`);
+      log.warn("app", `background session for ${record.username} @ ${record.hostUrl} failed (${errorMessage(error)}) — REST snapshots, will retry`);
       disposeBackgroundSession(record.id);
+      scheduleBackgroundRevival();
     });
   }
 }
