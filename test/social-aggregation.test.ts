@@ -100,6 +100,30 @@ describe("mergeDmRows (the cross-instance DM union)", () => {
     expect(rows[0]!.selfUsername).toBe("other-me");
     expect(rows[0]!.unread).toBe(3);
   });
+
+  it("equal-recency rows order by name — IDENTICALLY whatever record is active", () => {
+    // The live-report regression: ties used to keep INPUT order, which flips
+    // with the active record (its rows enter the merge first). Mirror the
+    // composition both ways — the rendered order must not move.
+    const conversations = [
+      dm(1, null, "zeta"), // never-messaged, ties with 2
+      dm(2, null, "alpha"),
+      dm(3, "2026-09-12T10:00:00Z", "same-age-b"), // equal timestamps, names break the tie
+      dm(4, "2026-09-12T10:00:00Z", "same-age-a"),
+      dm(5, "2026-09-12T12:00:00Z", "fresh"), // strictly newest — always first
+    ];
+    const orderOf = (rows: ReturnType<typeof mergeDmRows>) => rows.map((row) => row.dm.name);
+    const aActive = mergeDmRows(
+      { recordId: "a", serverName: "A", serverAvatar: null, selfUsername: "me", dms: conversations.slice(0, 2), unreadOf: () => ({ unread: 0, mention: 0 }) },
+      [snapshot("b", { dms: conversations.slice(2) })],
+    );
+    const bActive = mergeDmRows(
+      { recordId: "b", serverName: "B", serverAvatar: null, selfUsername: "me", dms: conversations.slice(2), unreadOf: () => ({ unread: 0, mention: 0 }) },
+      [snapshot("a", { dms: conversations.slice(0, 2) })],
+    );
+    expect(orderOf(aActive)).toEqual(["fresh", "same-age-a", "same-age-b", "alpha", "zeta"]);
+    expect(orderOf(bActive)).toEqual(orderOf(aActive));
+  });
 });
 
 describe("backgroundDmCounts (the read-state seed)", () => {

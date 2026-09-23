@@ -16,11 +16,12 @@ const nullRosterStore = {
  * A user's avatar: roster lookup by username → cached image by stable avatarKey;
  * the fallback is a palette-colored circle with the initial (oak's deterministic
  * username→color wheel). `override` wins over the roster — friends and DM
- * participants may not be server members. `session: null` marks a row of a
- * NON-active instance (the aggregated lists): the roster is meaningless there,
- * and the override image loads uncached (no session → no attachment cache).
- * `showPresence` overlays the presence dot on the avatar's bottom-right corner
- * (oak's MemberNode).
+ * participants may not be server members. `session: null` = a row OUTSIDE any
+ * live session's scope (the aggregated cross-instance lists): the roster is
+ * meaningless there and the image loads through the SHARED dormant cache — its
+ * objectURLs survive instance switches, so promoting a record never flashes the
+ * fallbacks (live report 2026-09-24). `showPresence` overlays the presence dot
+ * on the avatar's bottom-right corner (oak's MemberNode).
  */
 export function Avatar({ session, username, size, override, showPresence = false, online = false }: {
   session: ConnectionSession | null;
@@ -36,10 +37,13 @@ export function Avatar({ session, username, size, override, showPresence = false
   const imageSpec = source !== null && source.avatarKey !== null && source.avatarUrl !== null
     ? { key: source.avatarKey, url: source.avatarUrl }
     : null;
-  // Both hooks run unconditionally (hook rules); the session picks the winner.
+  // Both hooks run unconditionally (hook rules). The cached path wins whenever
+  // it has anything (the session's own cache, or the shared dormant one); the
+  // uncached presigned <img> is only a stopgap for a null-session row while the
+  // dormant cache is still resolving (or cannot fetch that URL at all).
   const cachedUrl = useAttachmentImage(session, imageSpec);
-  const uncachedUrl = useUncachedImage(session === null ? imageSpec : null);
-  const imageUrl = session !== null ? cachedUrl : uncachedUrl;
+  const uncachedUrl = useUncachedImage(session === null && cachedUrl === null ? imageSpec : null);
+  const imageUrl = cachedUrl ?? uncachedUrl;
 
   return (
     <span className="avatar-wrap" style={{ width: size, height: size }}>

@@ -25,6 +25,9 @@ declare global {
 }
 
 const MEMORY_CAP = 32;
+/** The session-less shared cache serves EVERY aggregated-list avatar (DM rows,
+ *  friend rows) — its LRU headroom is larger than a per-session cache's. */
+const DORMANT_MEMORY_CAP = 128;
 
 export interface CacheableImage {
   key: string;
@@ -37,12 +40,14 @@ export class AttachmentCache extends Emitter {
   private readonly memory = new Map<string, string>(); // key → objectURL, LRU by insertion
   private readonly inFlight = new Map<string, Promise<string | null>>();
   private readonly rest: () => RestClient | null;
+  private readonly memoryCap: number;
   /** Disk budget in bytes; 0 = memory-only (client settings, M7). */
   private diskBudgetBytes = 256 * 1024 * 1024;
 
-  constructor(rest: () => RestClient | null) {
+  constructor(rest: () => RestClient | null, memoryCap: number = MEMORY_CAP) {
     super();
     this.rest = rest;
+    this.memoryCap = memoryCap;
   }
 
   /** Instant-apply disk budget; 0 also purges whatever is already on disk. */
@@ -118,7 +123,7 @@ export class AttachmentCache extends Emitter {
   private remember(key: string, bytes: Uint8Array): string {
     const objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart]));
     this.memory.set(key, objectUrl);
-    while (this.memory.size > MEMORY_CAP) {
+    while (this.memory.size > this.memoryCap) {
       const oldestKey = this.memory.keys().next().value;
       if (oldestKey === undefined) {
         break;
@@ -181,17 +186,21 @@ export class AttachmentCache extends Emitter {
 let dormantInstance: AttachmentCache | null = null;
 
 /**
- * The session-less disk-only reader: the rail's saved server icons still render
- * while NO connection is live (the server was down at startup — the avatars ARE
- * on the shared main-process disk, there is just no session to read them
- * through). `rest: () => null` plus a null image URL keeps it off the network —
- * a miss just falls back to the initials disc. The default disk budget is
- * deliberate: this instance never WRITES, so it can only ever see what the live
- * sessions' own budget discipline (purge at 0) left on disk.
+ * The SESSION-LESS SHARED cache — one instance for every avatar that must NOT
+ * depend on which record is active (the aggregated DM/friend rows, the rail's
+ * saved server icons). Disk-first (the shared main-process cache), then a
+ * direct fetch of the row's own presigned URL; `rest: () => null` means no
+ * fresh-link mint — a miss falls back to the initials disc. Because the cache
+ * OBJECT survives instance switches, its in-memory objectURLs do too — the
+ * rows never flash fallbacks on promote (live report 2026-09-24). Also the
+ * offline-startup path: server icons render from disk while no connection is
+ * live. The default disk budget is deliberate: whatever it writes comes from
+ * row URLs, and the live sessions' budget discipline (purge at 0) still owns
+ * the disk as a whole.
  */
 export function dormantAttachmentCache(): AttachmentCache {
   if (dormantInstance === null) {
-    dormantInstance = new AttachmentCache(() => null);
+    dormantInstance = new AttachmentCache(() => null, DORMANT_MEMORY_CAP);
   }
   return dormantInstance;
 }

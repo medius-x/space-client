@@ -46,6 +46,7 @@ import type { NotificationPrefs } from "../types";
 import { notifications } from "./notifications";
 import {
   bindLiveBackgroundSession,
+  hasLiveSession,
   loadBackgroundSocial,
   socialDirectory,
   unbindLiveBackgroundSession,
@@ -1526,8 +1527,17 @@ async function openSession(recordId: string): Promise<void> {
     const demoted = activeSession;
     activeSession = existing;
     sessionMap.delete(recordId);
+    // The promoted record must STOP feeding the aggregated directory: a live
+    // binding (or its leftover entry) on the ACTIVE record merges its DMs with
+    // its own live rows — duplicate row keys orphaned React nodes (live report:
+    // stale dm-rows stacked above the channel list after home↔server toggles).
+    unbindLiveBackgroundSession(recordId);
+    socialDirectory.drop(recordId);
     if (demoted !== null && demoted !== existing && !demoted.isDisposed()) {
       sessionMap.set(demoted.recordId, demoted);
+      if (!hasLiveSession(demoted.recordId)) {
+        bindLiveBackgroundSession(demoted, connectionDirectory); // it feeds the directory now
+      }
     }
     sessionBinding.set(existing);
     appStore.patch({
@@ -1550,6 +1560,9 @@ async function openSession(recordId: string): Promise<void> {
   const session = new ConnectionSession({ directory: connectionDirectory, recordId, hooks: makeSessionHooks(recordId) });
   activeSession = session;
   sessionBinding.set(session);
+  // Same invariant on the fresh-session path: a REST-fallback entry of this
+  // record from its sessionless days must not survive its activation.
+  socialDirectory.drop(recordId);
   try {
     await session.start();
     session.attachmentCache.setDiskBudget(settingsStore.getSnapshot().imageCacheMegabytes * 1024 * 1024);
@@ -1887,8 +1900,9 @@ export function closeDiscussionForEveryone(discussionId: number): void {
 
 /** The Home button: toggle between the server view and the DM/friends view. */
 export function toggleHomeMode(): void {
-  const next = !appStore.getSnapshot().dmMode;
-  appStore.patch({ dmMode: next, activeDmId: next ? appStore.getSnapshot().activeDmId : null, activeDiscussion: null });
+  const state = appStore.getSnapshot();
+  const next = !state.dmMode;
+  appStore.patch({ dmMode: next, activeDmId: next ? state.activeDmId : null, activeDiscussion: null });
   if (next && activeSession !== null) {
     // Entering the aggregated view refreshes every other instance's snapshot.
     void loadBackgroundSocial(connectionDirectory, activeSession.recordId);

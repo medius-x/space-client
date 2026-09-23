@@ -1,4 +1,20 @@
 import type { ChannelReadState, DmChannel, Relationship } from "../../types";
+import { dmDisplayName } from "./dm-display";
+
+/** Newest-first for ISO timestamps, with never-messaged (null) rows last.
+ *  Equal values return 0 — the callers' deterministic ladders take over. */
+function compareRecencyDesc(left: string | null, right: string | null): number {
+  if (left === right) {
+    return 0;
+  }
+  if (left === null) {
+    return 1;
+  }
+  if (right === null) {
+    return -1;
+  }
+  return right.localeCompare(left);
+}
 
 /**
  * Pure helpers for the oak-style CROSS-INSTANCE aggregation of friends and DMs
@@ -64,7 +80,21 @@ export function mergeFriendRows(active: {
       });
     }
   }
-  rows.sort((left, right) => left.relationship.username.localeCompare(right.relationship.username));
+  rows.sort((left, right) => {
+    const byUsername = left.relationship.username.localeCompare(right.relationship.username);
+    if (byUsername !== 0) {
+      return byUsername;
+    }
+    // The same username on two instances is two people (oak) — break the tie
+    // DETERMINISTICALLY, not by input order: the input order depends on which
+    // record is ACTIVE (its rows enter first), so ties used to reshuffle on
+    // every instance switch (live report, see mergeDmRows).
+    const byRecord = left.recordId.localeCompare(right.recordId);
+    if (byRecord !== 0) {
+      return byRecord;
+    }
+    return left.relationship.userId - right.relationship.userId;
+  });
   return rows;
 }
 
@@ -80,7 +110,8 @@ export interface DmRowModel {
 }
 
 /** The union of all instances' DMs, globally sorted by recency (newest first,
- *  nulls last — oak's Comparator). */
+ *  nulls last — oak's Comparator); equal-recency rows fall through to a
+ *  deterministic name → server → recordId → dm-id ladder (render-stable). */
 export function mergeDmRows(active: {
   recordId: string;
   serverName: string;
@@ -112,18 +143,30 @@ export function mergeDmRows(active: {
     }
   }
   rows.sort((left, right) => {
-    const leftAt = left.dm.lastMessageAt;
-    const rightAt = right.dm.lastMessageAt;
-    if (leftAt === null && rightAt === null) {
-      return 0;
+    const byRecency = compareRecencyDesc(left.dm.lastMessageAt, right.dm.lastMessageAt);
+    if (byRecency !== 0) {
+      return byRecency;
     }
-    if (leftAt === null) {
-      return 1; // nulls last
+    // Equal recency (same timestamp, or several never-messaged rows): a
+    // DETERMINISTIC ladder. The old sort left ties in input order — which
+    // depends on WHICH record is active (its rows enter first, snapshots
+    // after) — so switching DMs reshuffled the equal rows every promote
+    // (live report 2026-09-24). Name → server → recordId → dm id is a total
+    // order: the list renders identically every time, whatever the mix.
+    const byName = dmDisplayName(left.dm, left.selfUsername)
+      .localeCompare(dmDisplayName(right.dm, right.selfUsername));
+    if (byName !== 0) {
+      return byName;
     }
-    if (rightAt === null) {
-      return -1;
+    const byServer = left.serverName.localeCompare(right.serverName);
+    if (byServer !== 0) {
+      return byServer;
     }
-    return rightAt.localeCompare(leftAt); // newest first (ISO strings compare)
+    const byRecord = left.recordId.localeCompare(right.recordId);
+    if (byRecord !== 0) {
+      return byRecord;
+    }
+    return right.dm.id - left.dm.id;
   });
   return rows;
 }

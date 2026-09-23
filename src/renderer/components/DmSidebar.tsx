@@ -24,7 +24,17 @@ export function DmSidebar({ session }: { session: ConnectionSession }): React.JS
   const dms = useStore(session.socialStore, (state) => state.dms);
   const relationships = useStore(session.socialStore, (state) => state.relationships);
   const readStates = useStore(session.readStateStore, (states) => states);
-  const background = useStore(socialDirectory, (snapshots) => snapshots);
+  const backgroundAll = useStore(socialDirectory, (snapshots) => snapshots);
+  // The ACTIVE record's own snapshot must never merge with its live rows — its
+  // keys would duplicate and orphan React nodes (live report: stale dm-rows
+  // stacked above the channel list). The directory drops the entry on
+  // activation, but the coalesced 1 s rebuild makes this belt worth having.
+  // Filtered OUTSIDE the selector: a fresh array per selector call would loop
+  // useSyncExternalStore (the M6 lesson).
+  const background = useMemo(
+    () => backgroundAll.filter((entry) => entry.recordId !== session.recordId),
+    [backgroundAll, session.recordId],
+  );
   const record = useStore(connectionDirectory, (records) =>
     records.find((entry) => entry.id === session.recordId) ?? null);
   const activeDmId = useStore(appStore, (state) => state.activeDmId);
@@ -120,6 +130,9 @@ export function DmSidebar({ session }: { session: ConnectionSession }): React.JS
               setMenu({ row, x: event.clientX, y: event.clientY });
             } : undefined}
           >
+            {/* session=null for EVERY row: all DM avatars load through the ONE
+                shared dormant cache, so promoting a record never swaps the
+                loading path under them (the fallback flash, live report). */}
             {row.dm.type === "GROUP_DM" ? (
               <span
                 className="avatar avatar-fallback dm-group-avatar"
@@ -128,7 +141,7 @@ export function DmSidebar({ session }: { session: ConnectionSession }): React.JS
                 {name.trim().length === 0 ? "?" : name.trim().slice(0, 2).toUpperCase()}
               </span>
             ) : (
-              <Avatar session={row.active ? session : null} username={name} size={36} override={peerOverride} />
+              <Avatar session={null} username={name} size={36} override={peerOverride} />
             )}
             <div className="dm-text">
               <span className="dm-name">{name}</span>

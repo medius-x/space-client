@@ -64,7 +64,10 @@ export function hasLiveSession(recordId: string): boolean {
 }
 
 /** Subscribe a background session's stores; every emit schedules ONE coalesced
- *  rebuild (oak's bgBadgeDebounce — 1s after the FIRST pending change). */
+ *  rebuild (oak's bgBadgeDebounce — 1s after the FIRST pending change). The
+ *  BINDING itself rebuilds IMMEDIATELY: it is structural (a record switched
+ *  roles), and the 1 s delay made the Home DM list visibly oscillate — the
+ *  demoted record's rows vanished for the window and popped back (live report). */
 export function bindLiveBackgroundSession(session: ConnectionSession, directory: ConnectionDirectory): void {
   const binding: LiveBinding = { session, directory, unsubscribers: [] };
   liveBindings.set(session.recordId, binding);
@@ -73,7 +76,7 @@ export function bindLiveBackgroundSession(session: ConnectionSession, directory:
     binding.unsubscribers.push(store.subscribe(touch));
   }
   binding.unsubscribers.push(directory.subscribe(touch));
-  scheduleLiveRebuild();
+  rebuildLiveEntries();
 }
 
 export function unbindLiveBackgroundSession(recordId: string): void {
@@ -85,7 +88,7 @@ export function unbindLiveBackgroundSession(recordId: string): void {
   for (const unsubscribe of binding.unsubscribers) {
     unsubscribe();
   }
-  scheduleLiveRebuild();
+  rebuildLiveEntries();
 }
 
 function scheduleLiveRebuild(): void {

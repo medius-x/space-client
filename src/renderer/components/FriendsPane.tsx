@@ -43,9 +43,18 @@ export function FriendsPane({ session }: { session: ConnectionSession }): React.
   const tab = useStore(appStore, (state) => state.friendsTab);
   const relationships = useStore(session.socialStore, (state) => state.relationships);
   const presence = useStore(session.rosterStore, (state) => state.presence);
-  const background = useStore(socialDirectory, (snapshots) => snapshots);
+  const backgroundAll = useStore(socialDirectory, (snapshots) => snapshots);
   const record = useStore(connectionDirectory, (records) =>
     records.find((entry) => entry.id === session.recordId) ?? null);
+  // The ACTIVE record's own snapshot must never merge with its live rows —
+  // duplicate keys orphan React nodes (see DmSidebar; the directory drops the
+  // entry on activation, this belt covers the coalesced-rebuild window).
+  // Filtered OUTSIDE the selector — a fresh array per call loops
+  // useSyncExternalStore (the M6 lesson).
+  const background = useMemo(
+    () => backgroundAll.filter((entry) => entry.recordId !== session.recordId),
+    [backgroundAll, session.recordId],
+  );
 
   const rows = useMemo(
     () => mergeFriendRows(
@@ -172,7 +181,10 @@ function FriendRow({ session, row }: { session: ConnectionSession; row: FriendRo
   return (
     <div className="list-row">
       <span className={"presence-dot" + (relationship.type === "FRIEND" && row.online ? " online" : "")} />
-      <Avatar session={row.active ? session : null} username={relationship.username} size={40} override={relationship} />
+      {/* session=null for EVERY row: all friend avatars load through the ONE
+          shared dormant cache, so promoting a record never swaps the loading
+          path under them (the fallback flash, live report). */}
+      <Avatar session={null} username={relationship.username} size={40} override={relationship} />
       <div className="friend-info">
         <span className="friend-name">{relationship.displayName ?? relationship.username}</span>
         <span className="friend-status">{statusText}</span>
