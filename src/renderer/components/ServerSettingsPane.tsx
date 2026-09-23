@@ -929,7 +929,7 @@ function RoleMembers({ session, role }: {
         <div className="settings-empty">No members have this role</div>
       ) : (
         holders.map((member) => (
-          <div key={member.userId} className="friend-row">
+          <div key={member.userId} className="list-row">
             <Avatar session={session} username={member.username} size={28} />
             <span className="member-name" style={{ color: memberNameColor(member, roles) ?? undefined }}>{member.nickname}</span>
             {/* oak's removal glyph: the small close icon on the row's right
@@ -1016,6 +1016,32 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
     }
     const hierarchyOf = (entry: ServerMember) => ({ owner: entry.owner, topPosition: topPosition(entry, roles) });
     return canActOn(hierarchyOf(self), hierarchyOf(member));
+  };
+
+  /** Role-removal gates (the server's assignRoles mirrored client-side):
+   *  MANAGE_MEMBERS + hierarchy over the target + the actor's top role strictly
+   *  above the role being removed (canAssignRole's formula; the OWNER row never
+   *  renders a button — that role is not in roleIds, it has its own row). */
+  const canRemoveRole = (member: ServerMember, role: Role): boolean => {
+    if (!permissions.includes(MANAGE_MEMBERS_PERMISSION)) {
+      return false;
+    }
+    const self = members.find((entry) => entry.userId === selfId);
+    if (self === undefined) {
+      return false;
+    }
+    const hierarchyOf = (entry: ServerMember) => ({ owner: entry.owner, topPosition: topPosition(entry, roles) });
+    return canActOn(hierarchyOf(self), hierarchyOf(member)) && hierarchyOf(self).topPosition > role.position;
+  };
+
+  /** Full-replacement PUT minus the one role (RoleMembers' setHolding pattern);
+   *  the /topic/members push repaints the pane, failures surface via alert. */
+  const removeRole = async (member: ServerMember, role: Role): Promise<void> => {
+    try {
+      await session.rest.updateMemberRoles(member.userId, member.roleIds.filter((id) => id !== role.id));
+    } catch (error: unknown) {
+      window.alert(`Could not remove role: ${error instanceof Error ? error.message : String(error)}`);
+    }
   };
 
   const applyRename = async (member: ServerMember): Promise<void> => {
@@ -1150,11 +1176,11 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
                 <span className="settings-status">{renameStatus ?? ""}</span>
               </div>
             ) : null}
-            <div className="settings-hint">Roles (managed in Roles → Members)</div>
+            <div className="settings-hint">Roles</div>
             {/* oak lists the OWNER row explicitly — the OWNER role is not among
                 the roles, so the owner would otherwise read as "No roles". */}
             {active.owner ? (
-              <div className="friend-row">
+              <div className="list-row">
                 <span className="role-color-chip" style={{ background: "var(--sp-role-chip-default)" }} />
                 <span>Owner</span>
               </div>
@@ -1167,9 +1193,18 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
                 .filter((entry): entry is Role => entry !== undefined)
                 .sort((left, right) => right.position - left.position)
                 .map((entry) => (
-                  <div key={entry.id} className="friend-row">
+                  <div key={entry.id} className="list-row">
                     <span className="role-color-chip" style={{ background: entry.color !== null ? argbIntToCss(entry.color) : "var(--sp-role-chip-default)" }} />
                     <span>{entry.name}</span>
+                    {canRemoveRole(active, entry) ? (
+                      <button
+                        className="ghost member-role-remove"
+                        title="Remove role"
+                        onClick={() => void removeRole(active, entry)}
+                      >
+                        <span className="icon mdi-close" />
+                      </button>
+                    ) : null}
                   </div>
                 ))
             )}
@@ -1671,7 +1706,7 @@ function ChannelAccessTab({ session, channel }: {
             <div className="settings-empty">No roles granted</div>
           ) : (
             grantedRoleList.map((role) => (
-              <div key={role.id} className="friend-row">
+              <div key={role.id} className="list-row">
                 <span className="role-color-chip" style={{ background: role.color !== null ? argbIntToCss(role.color) : "var(--sp-role-chip-default)" }} />
                 <span>{role.name}</span>
                 <button className="ghost tiny role-remove" title="Revoke" onClick={() => {
@@ -1688,7 +1723,7 @@ function ChannelAccessTab({ session, channel }: {
             <div className="settings-empty">No members granted</div>
           ) : (
             [...state.grantedUserIds].map((userId) => (
-              <div key={userId} className="friend-row">
+              <div key={userId} className="list-row">
                 <Avatar session={session} username={state.usernames.get(userId) ?? `#${userId}`} size={24} />
                 <span>{grantedUserLabel(userId)}</span>
                 <button className="ghost tiny role-remove" title="Revoke" onClick={() => {

@@ -170,7 +170,7 @@ function FriendRow({ session, row }: { session: ConnectionSession; row: FriendRo
   ];
 
   return (
-    <div className="friend-row">
+    <div className="list-row">
       <span className={"presence-dot" + (relationship.type === "FRIEND" && row.online ? " online" : "")} />
       <Avatar session={row.active ? session : null} username={relationship.username} size={40} override={relationship} />
       <div className="friend-info">

@@ -2130,14 +2130,19 @@ button.wide-add { width: 100%; }
   text-transform: uppercase;
   padding: 12px 16px 4px;
 }
-.friend-row {
+.list-row {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 8px 16px;
   border-bottom: 1px solid var(--sp-surface);
 }
-.friend-row:hover { background: var(--sp-hover); }
+.list-row:hover { background: var(--sp-hover); }
+/* The per-role remove button in Server Settings → Members: pushed to the row's
+   right edge, sized to the row's text (not the global 8px 14px button padding). */
+.member-role-remove { margin-left: auto; padding: 2px 6px; }
+.member-role-remove .icon { font-size: 13px; }
+.member-role-remove:hover { color: var(--sp-red); }
 .friend-info { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .friend-name { font-weight: 600; }
 .friend-status { font-size: 11px; color: var(--sp-text-dim); }
