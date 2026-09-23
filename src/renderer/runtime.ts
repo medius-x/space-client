@@ -158,6 +158,12 @@ export interface AppState {
   /** A thread of a NON-active instance (a background mention toast click): consumed by
    *  openSession once that instance is up — same contract as pendingOpenChannel. */
   pendingOpenDiscussion: { recordId: string; discussionId: number } | null;
+  /** The server dropdown (settings/re-login/delete), opened by BOTH the Sidebar's
+   *  server-name header and a right-click on the rail's server avatar (the old
+   *  pre-2026-09-21 rail affordance, restored 2026-09-24). The recordId targets the
+   *  ROW — session-bound entries appear only for the ACTIVE record. Rendered by
+   *  ServerMenu.tsx. */
+  serverMenu: { recordId: string; x: number; y: number } | null;
 }
 
 class AppStore extends Emitter {
@@ -212,6 +218,7 @@ class AppStore extends Emitter {
     activeDiscussion: null,
     sidebarDiscussions: false,
     pendingOpenDiscussion: null,
+    serverMenu: null,
   };
 
   getSnapshot = (): AppState => this.state;
@@ -1487,6 +1494,16 @@ export function beginAddServer(): void {
   appStore.patch({ loginFormOpen: true, loginError: null, loginPrefill: null });
 }
 
+/** The server dropdown's two triggers: the Sidebar's server-name header (anchored
+ *  under it) and a right-click on a rail avatar (at the cursor, any record). */
+export function openServerMenu(recordId: string, x: number, y: number): void {
+  appStore.patch({ serverMenu: { recordId, x, y } });
+}
+
+export function closeServerMenu(): void {
+  appStore.patch({ serverMenu: null });
+}
+
 /** ✕ / Esc on the login modal. */
 export function closeLoginForm(): void {
   appStore.patch({ loginFormOpen: false, loginError: null });
@@ -1651,6 +1668,7 @@ export async function teardownSession(): Promise<void> {
     activeAround: null,
     activeDiscussion: null,
     sidebarDiscussions: false,
+    serverMenu: null,
     // pendingOpenDm/pendingOpenChannel/pendingOpenDiscussion deliberately survive too — a
     // switch that lands on the login modal should still open the clicked chat once the
     // user re-logs in.
@@ -1978,6 +1996,37 @@ export function toggleUserSettings(): void {
  *  to General + Account (the server-scoped identity sections). */
 export function openAccountSettings(): void {
   appStore.patch({ userSettingsOpen: true, userSettingsScope: "account" });
+}
+
+/** The Server Settings gate for ANY record: the active session's own mask, or the
+ *  record's live BACKGROUND session's (the rail right-click on a non-active server
+ *  — every healthy record holds a background session, so the gate is real; with no
+ *  live session the entry hides, and switching would land on the login modal anyway). */
+export function canManageServerSettingsOfRecord(recordId: string): boolean {
+  if (activeSession?.recordId === recordId) {
+    return canManageServerSettings(activeSession);
+  }
+  const background = sessionMap.get(recordId);
+  return background !== undefined && !background.isDisposed() && canManageServerSettings(background);
+}
+
+/** The settings entries of a NON-active record (user request 2026-09-24): switch
+ *  to that server first, then open the surface. switchConnection swallows its own
+ *  failures (the login modal is already up) — the settings open only when the
+ *  switch actually LANDED, so a failed switch never opens the previous server's
+ *  settings against a dead binding. */
+export async function switchAndOpenServerSettings(recordId: string): Promise<void> {
+  await switchConnection(recordId);
+  if (activeSession?.recordId === recordId) {
+    openServerSettings(); // re-checks the gate against the now-active session
+  }
+}
+
+export async function switchAndOpenAccountSettings(recordId: string): Promise<void> {
+  await switchConnection(recordId);
+  if (activeSession?.recordId === recordId) {
+    openAccountSettings();
+  }
 }
 
 function notificationPrefsFor(recordId: string): NotificationPrefs {

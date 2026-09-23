@@ -2047,6 +2047,26 @@ social-aggregate подписан на сторы фоновых сессий �
   (не репортился; тот же класс дрейфа — если всплывёт, обернуть той же лестницей).
   Гейты: 388/388 + typecheck + build.
 
+- **Серверное меню: ПКМ на аватарке в рейле возвращён (2026-09-24, юзер-просьба —
+  «сохранить и текущую реализацию, и добавить старую»).** Меню поднято из локального
+  стата Sidebar в appStore: `serverMenu {recordId,x,y} | null` + `openServerMenu/
+  closeServerMenu`. НОВЫЙ `ServerMenu.tsx` (монтируется в App рядом с LoginModal —
+  работает и без живой сессии) рендерит dropdown + ReloginModal + delete-confirm
+  (переехали из Sidebar дословно). ДВА триггера: клик по шапке сервера в Sidebar
+  (якорь под шапкой, активная запись) и ПКМ по `.rail-wrap` в рейле (курсор, ЛЮБАЯ
+  запись). Состав per-record: Re-login / Delete (любая) — и настройки: Server Settings
+  (гейт `canManageServerSettingsOfRecord` — маска САМОЙ записи: активная сессия или её
+  живая фоновая; без живой сессии пункт скрыт — свитч всё равно уйдёт в логин-модал) /
+  Account settings (безгейтовый). На НЕактивной записи оба пункта настроек СНАЧАЛА
+  переключают на неё, потом открывают (юзер-просьба 2026-09-24):
+  `switchAndOpenServerSettings/switchAndOpenAccountSettings` — switchConnection глотает
+  свои ошибки (логин-модал уже открыт), поэтому настройки открываются ТОЛЬКО если свитч
+  приземлился (`activeSession.recordId === recordId`) — иначе упавший свитч открыл бы
+  настройки ПРЕДЫДУЩЕГО сервера против мёртвой binding. Sidebar постройчал:
+  serverMenuItems/reloginTarget/deleteServerTarget/ReloginModal удалены, импорты
+  почищены. ContextMenu закрывается ДО action — модалки рендерятся ВНЕ menu-null-гейта.
+  Гейты: 388/388 + typecheck + build.
+
 - Гейт после каждой фазы: `npm test` + `npm run typecheck` зелёные.
 - Новые файлы сразу `git add`. Коммиты только по явной команде; subject на английском.
 - Никаких single-letter имён (кроме i/j цикла и T/E/K/V генериков); комментарии в коде

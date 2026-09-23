@@ -7,6 +7,7 @@ import {
   beginAddServer,
   connectionDirectory,
   exitHomeMode,
+  openServerMenu,
   settingsStore,
   switchConnection,
   toggleHomeMode,
@@ -37,9 +38,10 @@ const nullSocialStore = {
  * The Discord-style server rail: the Home button (friends + DMs) on top, then
  * one squircle icon per saved connection — the server's AVATAR when it has
  * one, a palette-colored initials disc otherwise (oak's ServerNode) — then the
- * "+" row. Click switches, hover shows the name bubble. The per-server menu
- * (settings/re-login/delete) moved to the Sidebar's server-name dropdown
- * (2026-09-21) — nothing hides behind a right-click anymore.
+ * "+" row. Click switches, right-click opens the server dropdown (restored
+ * 2026-09-24 — the same menu as the Sidebar's server-name header), hover shows
+ * the name bubble. The per-server menu (settings/re-login/delete) moved to the
+ * Sidebar's server-name dropdown (2026-09-21).
  */
 export function ServerRail({ activeRecordId, session }: {
   activeRecordId: string | null;
@@ -161,6 +163,13 @@ function RailRow({ record, active, expired, busy, session, onActivate }: {
     <div
       className={"rail-wrap" + (active ? " active" : "")}
       onClick={onActivate}
+      onContextMenu={(event) => {
+        // The restored pre-2026-09-21 affordance (user request): the SAME server
+        // dropdown the Sidebar's header opens, at the cursor, for ANY record —
+        // session-bound entries hide themselves for non-active rows.
+        event.preventDefault();
+        openServerMenu(record.id, event.clientX, event.clientY);
+      }}
       onMouseEnter={() => {
         if (bubbleTimerRef.current !== null) {
           window.clearTimeout(bubbleTimerRef.current);

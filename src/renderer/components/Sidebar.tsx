@@ -2,21 +2,16 @@ import { useMemo, useRef, useState } from "react";
 import { useStore } from "../hooks/useStore";
 import {
   appStore,
-  canManageServerSettings,
   connectionDirectory,
   joinVoiceGuarded,
-  openAccountSettings,
   openDiscussion,
-  openServerSettings,
-  reloginConnection,
-  removeConnection,
+  openServerMenu,
   setActiveChannel,
   setSidebarDiscussions,
   settingsStore,
   toggleRoomView,
 } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
-import type { ConnectionRecord } from "../../domain/session/connection-record";
 import { memberNameColor } from "../../domain/logic/roster-grouping";
 import { feedHasLiveVideo } from "../../core/classifier";
 import { displayNameOf } from "../../domain/logic/display-name";
@@ -66,17 +61,15 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
   const [createType, setCreateType] = useState<"TEXT" | "VOICE" | null>(null);
   const [renameTarget, setRenameTarget] = useState<Channel | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Channel | null>(null);
-  // The server dropdown (2026-09-21): everything the rail's hidden right-click
-  // menu used to hold, now behind a visible chevron on the server name.
+  // The server dropdown (2026-09-21 behind the chevron; 2026-09-24 also on the
+  // rail avatar's right-click): the state lives in appStore — ServerMenu.tsx
+  // renders the card and the dialogs for BOTH triggers.
   const serverHeaderRef = useRef<HTMLDivElement | null>(null);
-  const [serverMenu, setServerMenu] = useState<{ x: number; y: number } | null>(null);
   // The section-title dropdown (the channels↔discussions switch): "Channels" opens a menu
   // with the single "Discussions" entry, and vice versa — the server header's toggle
   // button is gone, the title itself carries the switch now.
   const sectionTitleRef = useRef<HTMLDivElement | null>(null);
   const [sectionMenu, setSectionMenu] = useState<{ x: number; y: number } | null>(null);
-  const [reloginTarget, setReloginTarget] = useState<ConnectionRecord | null>(null);
-  const [deleteServerTarget, setDeleteServerTarget] = useState<ConnectionRecord | null>(null);
   // oak's showVoiceMemberMenu, sidebar surface: the card only fires for a row
   // under the room the VIEWER is in, and never for self.
   const [voiceMemberMenu, setVoiceMemberMenu] = useState<{ username: string; hasShare: boolean; x: number; y: number } | null>(null);
@@ -112,30 +105,6 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
     { label: "Delete channel", danger: true, action: () => setDeleteTarget(menu.channel) },
   ];
 
-  const serverMenuItems: ContextMenuItem[] = serverMenu === null ? [] : [
-    // Gated live: without any settings permission the entry never appears (oak parity).
-    ...(canManageServerSettings(session)
-      ? [
-        { label: "Server Settings", action: () => openServerSettings() },
-        { label: "", separator: true, action: () => undefined },
-      ]
-      : []),
-    { label: "Account settings", action: () => openAccountSettings() },
-    { label: "", separator: true, action: () => undefined },
-    { label: "Re-login", action: () => {
-      const record = connectionDirectory.get(session.recordId);
-      if (record !== null) {
-        setReloginTarget(record);
-      }
-    } },
-    { label: "Delete", danger: true, action: () => {
-      const record = connectionDirectory.get(session.recordId);
-      if (record !== null) {
-        setDeleteServerTarget(record);
-      }
-    } },
-  ];
-
   return (
     <aside className="sidebar">
       {dmMode ? (
@@ -148,7 +117,7 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
             onClick={() => {
               const rect = serverHeaderRef.current?.getBoundingClientRect();
               if (rect !== undefined) {
-                setServerMenu({ x: rect.left, y: rect.bottom + 4 });
+                openServerMenu(session.recordId, rect.left, rect.bottom + 4);
               }
             }}
           >
@@ -301,27 +270,6 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
           onClose={() => setSectionMenu(null)}
         />
       ) : null}
-      {serverMenu !== null ? (
-        <ContextMenu x={serverMenu.x} y={serverMenu.y} items={serverMenuItems} onClose={() => setServerMenu(null)} />
-      ) : null}
-      {reloginTarget !== null ? (
-        <ReloginModal record={reloginTarget} onClose={() => setReloginTarget(null)} />
-      ) : null}
-      {deleteServerTarget !== null ? (
-        <Modal title="Delete server" onClose={() => setDeleteServerTarget(null)}>
-          {/* oak's ConfirmDialog wording verbatim. */}
-          <div className="modal-note">
-            {`Remove the connection to "${deleteServerTarget.cachedServerName ?? deleteServerTarget.hostUrl}"? The account is not affected, you can re-add it later.`}
-          </div>
-          <div className="modal-actions left">
-            <button className="ghost" onClick={() => setDeleteServerTarget(null)}>Cancel</button>
-            <button className="danger" onClick={() => {
-              void removeConnection(deleteServerTarget.id);
-              setDeleteServerTarget(null);
-            }}>Delete</button>
-          </div>
-        </Modal>
-      ) : null}
       {voiceMemberMenu !== null ? (
         <VoiceMemberCard
           session={session}
@@ -390,55 +338,6 @@ function DiscussionsList({ session, channels, discussions }: {
         </div>
       )}
     </>
-  );
-}
-
-/** oak's showReloginDialog: one password field, "Log in", no persistence. */
-function ReloginModal({ record, onClose }: {
-  record: ConnectionRecord;
-  onClose(): void;
-}): React.JSX.Element {
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const serverName = record.cachedServerName ?? record.hostUrl.replace(/^https?:\/\//, "");
-
-  const submit = async (): Promise<void> => {
-    if (busy || password.length === 0) {
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      await reloginConnection(record.id, password);
-      onClose();
-    } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : String(submitError));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Modal title="Re-login" onClose={onClose}>
-      <div className="modal-note">{`Re-enter the password for "${record.username}" on ${serverName}.`}</div>
-      <input
-        autoFocus
-        type="password"
-        value={password}
-        onChange={(event) => setPassword(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            void submit();
-          }
-        }}
-      />
-      <div className="error-line">{error ?? ""}</div>
-      <div className="modal-actions left">
-        <button className="ghost" onClick={onClose}>Cancel</button>
-        <button className="primary" disabled={busy || password.length === 0} onClick={() => void submit()}>Log in</button>
-      </div>
-    </Modal>
   );
 }
 

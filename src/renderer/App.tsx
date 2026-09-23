@@ -5,6 +5,7 @@ import type { ConnectionSession } from "../domain/session/connection-session";
 import { CaptionBar } from "./components/CaptionBar";
 import { LoginModal } from "./components/LoginModal";
 import { MainScreen } from "./components/MainScreen";
+import { ServerMenu } from "./components/ServerMenu";
 import { ServerRail } from "./components/ServerRail";
 import { ServerSettingsPane } from "./components/ServerSettingsPane";
 import { UserSettingsModal } from "./components/UserSettingsModal";
@@ -46,6 +47,10 @@ export function App(): React.JSX.Element {
               the rail and an empty content area (oak parity); login is a modal. */}
           {session !== null ? <MainScreen session={session} /> : <EmptyMainScreen />}
           {loginFormOpen ? <LoginModal /> : null}
+          {/* The server dropdown (the Sidebar header click AND the rail avatar's
+              right-click): mounted here so the rail path works with no live
+              session too (Re-login/Delete need none). */}
+          <ServerMenu />
         </div>
         {/* Settings overlays are DIRECT children of #app: they cover the whole
             window below the caption, nothing in between can constrain them.
