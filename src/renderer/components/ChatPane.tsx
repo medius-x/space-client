@@ -95,6 +95,59 @@ function estimateRowHeight(message: Message, startsGroup: boolean, hasDiscussion
   return height;
 }
 
+/**
+ * A jump's first scroll lands on ESTIMATED row heights; the real measurements
+ * (text wrapping, late image decodes) shift the content under the viewport for
+ * a while after — and the virtualizer's own reconcile stops after a single
+ * stable frame, so the drift past that frame never gets corrected. Re-assert
+ * the centered jump on a decaying schedule until the layout has settled (live
+ * report: the first pin-click jump after a cold start landed "somewhere in the
+ * chat"; the second click — every row already measured — landed on the pin).
+ * ANY user scroll/pointer/key input cancels the ladder: it must never fight
+ * the reader. Returns the cancel; the caller chains jumps through a ref so a
+ * new jump replaces the previous ladder instead of racing it.
+ */
+function scheduleSettlingJump(
+  listRef: { current: VirtualListHandle | null },
+  key: string,
+  onAttempt?: () => void,
+): () => void {
+  const DELAYS_MS = [0, 120, 360, 840, 1800, 3000];
+  const timers: number[] = [];
+  let cancelled = false;
+  const cancel = () => {
+    if (cancelled) {
+      return;
+    }
+    cancelled = true;
+    for (const timer of timers) {
+      window.clearTimeout(timer);
+    }
+    for (const eventType of ["wheel", "pointerdown", "keydown"] as const) {
+      window.removeEventListener(eventType, cancel, true);
+    }
+  };
+  // Capture-phase, once: the FIRST sign of the user taking over the viewport
+  // ends the re-assertions. The listeners attach after the jump-triggering
+  // click has fully dispatched, so arming input never cancels itself.
+  for (const eventType of ["wheel", "pointerdown", "keydown"] as const) {
+    window.addEventListener(eventType, cancel, { capture: true, once: true });
+  }
+  for (const delay of DELAYS_MS) {
+    timers.push(window.setTimeout(() => {
+      if (cancelled || listRef.current === null) {
+        return;
+      }
+      if (!listRef.current.scrollToKey(key, "center")) {
+        cancel(); // the target left the list (a channel switch) — stop re-asserting
+        return;
+      }
+      onAttempt?.();
+    }, delay));
+  }
+  return cancel;
+}
+
 interface ChatActions {
   replyTo: Message | null;
   setReplyTo(message: Message | null): void;
@@ -696,6 +749,10 @@ function MessageList(props: MessageListProps): React.JSX.Element {
   const [dividerReadId, setDividerReadId] = useState<number | null>(null);
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [beginReached, setBeginReached] = useState(false);
+  // One settling-jump ladder at a time — a new jump cancels the previous
+  // ladder's re-assertions (two ladders would fight over the viewport).
+  const settlingJumpCancelRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => settlingJumpCancelRef.current?.(), []);
 
   // oak's divider lifecycle (MainController, Java-ported): it appears above the
   // first unread (channel open, or a live batch while the user is away) and is
@@ -766,11 +823,13 @@ function MessageList(props: MessageListProps): React.JSX.Element {
     const around = session.messageStore.isAroundWithoutTail(channel.id);
     belowEndRef.current = around;
     setJumpToPresent(around);
-    for (let attempt = 0; attempt < 4; attempt++) {
-      window.setTimeout(() => listRef.current?.scrollToKey(String(aroundTarget), "center"), 30 * attempt);
-    }
-    setHighlightId(aroundTarget);
-    window.setTimeout(() => setHighlightId(null), HIGHLIGHT_TTL_MS);
+    settlingJumpCancelRef.current?.();
+    settlingJumpCancelRef.current = scheduleSettlingJump(listRef, String(aroundTarget), () => {
+      // Re-flash with every re-assertion: the row may only ENTER the viewport
+      // on a late attempt, when the original highlight is long gone.
+      setHighlightId(aroundTarget);
+      window.setTimeout(() => setHighlightId(null), HIGHLIGHT_TTL_MS);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [aroundTarget, messages]);
 
@@ -858,12 +917,11 @@ function MessageList(props: MessageListProps): React.JSX.Element {
       return;
     }
     pendingJumpRef.current = null;
-    for (let attempt = 0; attempt < 4; attempt++) {
-      window.setTimeout(() => listRef.current?.scrollToKey(String(target), "center"), 30 * attempt);
-    }
-    setHighlightId(target);
-    const timer = window.setTimeout(() => setHighlightId(null), HIGHLIGHT_TTL_MS);
-    return () => window.clearTimeout(timer);
+    settlingJumpCancelRef.current?.();
+    settlingJumpCancelRef.current = scheduleSettlingJump(listRef, String(target), () => {
+      setHighlightId(target);
+      window.setTimeout(() => setHighlightId(null), HIGHLIGHT_TTL_MS);
+    });
   }, [messages]);
 
   const loadOlder = () => {
@@ -953,11 +1011,11 @@ function MessageList(props: MessageListProps): React.JSX.Element {
     ...actions,
     jumpTo: (messageId: number) => {
       if (messages.some((message) => message.id === messageId)) {
-        setHighlightId(messageId);
-        window.setTimeout(() => setHighlightId(null), HIGHLIGHT_TTL_MS);
-        for (let attempt = 0; attempt < 4; attempt++) {
-          window.setTimeout(() => listRef.current?.scrollToKey(String(messageId), "center"), 30 * attempt);
-        }
+        settlingJumpCancelRef.current?.();
+        settlingJumpCancelRef.current = scheduleSettlingJump(listRef, String(messageId), () => {
+          setHighlightId(messageId);
+          window.setTimeout(() => setHighlightId(null), HIGHLIGHT_TTL_MS);
+        });
         return;
       }
       pendingJumpRef.current = messageId;
