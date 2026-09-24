@@ -94,6 +94,11 @@ export function VirtualList<Item>(props: VirtualListProps<Item>): React.JSX.Elem
     }
     lastFirstRef.current = { key: firstKey, start: virtualizer.measurementsCache[0]?.start ?? 0 };
   });
+  // NOTE on resize: do NOT add width-change handling here. The engine's own
+  // per-row ResizeObservers + scroll adjustments ride a width change natively
+  // (the view stays anchored); the measured-cache-clearing + estimate-based
+  // re-anchoring tried here in 2026-09-24 only THREW the viewport — an
+  // estimated offset is half the real one on image-heavy chats.
 
   useImperativeHandle(ref, () => ({
     scrollToKey(key: string, align: "start" | "center" = "start"): boolean {

@@ -1,6 +1,6 @@
 import { isSystemAudioAvailable, startSystemAudio, stopSystemAudio } from "./system-audio";
 import { getClientSize, isWindowConfirmedDead, watchSourceLiveness } from "./window-liveness";
-import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, globalShortcut, ipcMain, net, protocol, screen, session, shell } from "electron";
+import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, globalShortcut, ipcMain, nativeTheme, net, protocol, screen, session, shell } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -55,6 +55,28 @@ function registerSpaceAssetProtocol(): void {
 // disagree — set it both here and on the window below, and the renderer also calls
 // audioContext.resume() from the login click.
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
+
+// Hardware acceleration rescue. On hybrid-graphics laptops (NVIDIA dGPU +
+// Intel iGPU) Chromium creates ANGLE on the Intel adapter, and its driver
+// build can sit on the GPU blocklist — the whole compositor then silently
+// falls back to SOFTWARE (log evidence: gpu_compositing/2d_canvas/raster all
+// "disabled_software"), which renders exactly as the resize report described:
+// the window flashes transparent and repaints from a small top-left rect,
+// video decode eats CPU, and scrolling drags. Force past the blocklist and
+// pin ANGLE to D3D11 (the stable Windows backend); harmless on healthy GPUs.
+app.commandLine.appendSwitch("ignore-gpu-blocklist");
+app.commandLine.appendSwitch("use-angle", "d3d11");
+// NOTE (resize artifact, 2026-09-24): during a live WIDTH drag the window
+// shows the previous frame in a left rect with a transparent edge, and a full
+// frame only paints on release. Tried and REJECTED here: --disable-direct-
+// composition (changed the artifact to a full-height strip and let the window
+// freeze mid-drag — strictly worse) and --disable-features=CalculateNative-
+// WinOcclusion (no effect). Root cause is upstream: the Win32 modal resize
+// loop blocks Chromium's browser main thread waiting for a right-sized
+// renderer frame (CEF reports the same since Chromium ~138; plain Chrome on
+// the same machine is clean). Renderer-side ruled out by logs: zero longtasks
+// during the drag, near-empty channels flicker identically. Revisit at the
+// packaging round (#470): newer Electron, packaged build, frame:true compare.
 
 // Two-instance smoke on one machine is a FEATURE here: `electron . --space-instance=b`
 // partitions userData (and with it the disk cache and localStorage — the second client
@@ -738,6 +760,33 @@ async function createWindow(): Promise<void> {
       backgroundThrottling: false,
     },
   });
+  // Windows-only white-flash killer on resize: the exposed strip behind the
+  // not-yet-composited frame gets erased with the window class's WHITE brush
+  // via WM_ERASEBKGND (0x14) — a dark frameless window flashes white on every
+  // resize step, and no CSS/backgroundColor can help (it happens below the
+  // page). Hooking the message swallows the erase entirely (Electron drops
+  // hooked messages instead of running the default handling).
+  if (process.platform === "win32") {
+    mainWindow.hookWindowMessage(0x0014, () => undefined);
+  }
+
+  // Sliver-collapse guard (2026-09-24, live report): during a live resize drag
+  // the window's REAL bounds were being flipped to a ~44px-wide sliver and
+  // back on every tick (log-verified; visible as the whole-window flicker with
+  // the content surviving only in a narrow left strip). The shrink never goes
+  // through Electron's JS resize API (a prototype trap logged nothing) — it
+  // arrives natively, will-resize being the only interception point. A window
+  // wider than 500px never legitimately jumps below 300px in ONE step (a real
+  // drag produces a tick ladder), so swallow exactly that transition; genuine
+  // step-by-step shrinking by the user passes untouched. Candidate root-cause
+  // hunt (koffi native modules in this process?) queued for the packaging
+  // round (#470).
+  mainWindow.on("will-resize", (event, newBounds) => {
+    if (newBounds.width < 300 && mainWindow.getBounds().width > 500) {
+      event.preventDefault();
+    }
+  });
+
   // The caption's maximize glyph flips on restore (oak's ▢↔❐).
   mainWindow.on("maximize", () => mainWindow.webContents.send("space-window:maximized", true));
   mainWindow.on("unmaximize", () => mainWindow.webContents.send("space-window:maximized", false));
@@ -829,6 +878,11 @@ async function createWindow(): Promise<void> {
 }
 
 app.whenReady().then(() => {
+  // The app is dark, period — regardless of the Windows color scheme. Among
+  // other things this makes Electron apply the DWM immersive-dark styling to
+  // the native window, so any native paint behind the compositor (resize
+  // exposure among them) is DARK instead of the light-theme white.
+  nativeTheme.themeSource = "dark";
   registerSpaceAssetProtocol();
   void createWindow();
   app.on("activate", () => {

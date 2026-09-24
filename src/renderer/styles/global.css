@@ -55,6 +55,15 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
+html {
+  /* The html-level canvas is WHITE by default. During a window resize the
+     body (100vh) lags a frame behind the new size and the exposed strip
+     painted white (live report: the window "жутко моргает белым"). Paint the
+     canvas the app's darkest chrome color; the transparent toast overlay
+     gets its own reset below, like body. */
+  background: var(--sp-darkest);
+}
+
 body {
   background: var(--sp-darkest);
   color: var(--sp-text);
@@ -66,6 +75,7 @@ body {
    body background above belongs to the main window only. CSS-side guard next
    to the runtime inline reset (a lost effect once painted the whole overlay
    black, live report). */
+html:has(.toast-stack),
 body:has(.toast-stack) {
   background: transparent;
 }
