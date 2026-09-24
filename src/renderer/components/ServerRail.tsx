@@ -8,6 +8,8 @@ import {
   connectionDirectory,
   exitHomeMode,
   openServerMenu,
+  sessionForRecord,
+  sessionsIndex,
   settingsStore,
   switchConnection,
   toggleHomeMode,
@@ -84,6 +86,16 @@ export function ServerRail({ activeRecordId, session }: {
   );
 }
 
+/** The live session OWNING a record (active first, then its background twin),
+ *  re-resolved whenever the set of live sessions changes — see sessionsIndex. */
+function useRecordSession(recordId: string, activeSession: ConnectionSession | null): ConnectionSession | null {
+  useStore(sessionsIndex, (version) => version);
+  if (activeSession !== null && activeSession.recordId === recordId) {
+    return activeSession;
+  }
+  return sessionForRecord(recordId);
+}
+
 /**
  * The server icon at ANY size (the settings preview reuses it): the avatar by
  * stable key (live presigned URL for the active session) or the palette
@@ -133,13 +145,14 @@ function RailRow({ record, active, expired, busy, session, onActivate }: {
   onActivate(): void;
 }): React.JSX.Element {
   const name = record.cachedServerName ?? record.hostUrl.replace(/^https?:\/\//, "");
-  // The ACTIVE record gets the live presigned URL (its own session mints it);
-  // inactive records render from the disk cache keyed by the stable avatarKey.
-  const liveAvatarUrl = session !== null && session.recordId === record.id
-    ? session.serverProfile?.avatarUrl ?? null
-    : null;
+  // Every record resolves its OWN session (the active one or its background
+  // twin) — the avatar loads through ITS rest/attachment cache, so a missing
+  // disk copy still mints and fetches even with the disk cache OFF; a record
+  // with no live session falls back to the dormant disk-only cache.
+  const ownSession = useRecordSession(record.id, session);
+  const liveAvatarUrl = ownSession?.serverProfile?.avatarUrl ?? null;
   const iconUrl = useAttachmentImage(
-    session,
+    ownSession,
     record.cachedServerAvatarKey !== null ? { key: record.cachedServerAvatarKey, url: liveAvatarUrl } : null,
   );
   const badge = useServerBadge(record.id, session);

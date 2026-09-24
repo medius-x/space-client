@@ -11,6 +11,11 @@ const MAX_SIDE = 480;
 export interface VideoPreview {
   jpegBlob: Blob;
   durationMillis: number;
+  /** The video's INTRINSIC frame dimensions (full resolution, not the capped
+   *  preview JPEG) — the uploader ships them on the wire so the renderer
+   *  reserves the exact aspect box before any bytes arrive. */
+  width: number;
+  height: number;
 }
 
 export function generateVideoPreview(file: File): Promise<VideoPreview | null> {
@@ -62,7 +67,12 @@ export function generateVideoPreview(file: File): Promise<VideoPreview | null> {
         }
         context.drawImage(video, 0, 0, canvas.width, canvas.height);
         canvas.toBlob((blob) => {
-          finish(blob === null ? null : { jpegBlob: blob, durationMillis: Math.round(video.duration * 1000) });
+          finish(blob === null ? null : {
+            jpegBlob: blob,
+            durationMillis: Math.round(video.duration * 1000),
+            width: naturalWidth,
+            height: naturalHeight,
+          });
         }, "image/jpeg", 0.8);
       } catch {
         finish(null);

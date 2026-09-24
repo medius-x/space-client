@@ -102,3 +102,22 @@ export function isAudioFile(fileName: string): boolean {
 export function isVideoFile(fileName: string): boolean {
   return VIDEO_EXTENSIONS.has(extensionOf(fileName));
 }
+
+/** The video card's thumb box (2026-09-25, the exact-reservation round): the
+ *  CSS shows the preview at its own aspect, capped by max-height 320 and the
+ *  block's width. This is the same fit computed BEFORE the bytes arrive, from
+ *  the wire's intrinsic dimensions (or a learned-cache aspect) — the row then
+ *  reserves the exact height and the decode never shifts the layout. Zero/absent
+ *  dimensions fall back to the historical 16:9 plate (320×180). */
+export function reservedVideoThumbBox(naturalWidth: number, naturalHeight: number, maxWidth: number, maxHeight: number):
+  { width: number; height: number } {
+  if (naturalWidth <= 0 || naturalHeight <= 0) {
+    const side = Math.min(320, Math.max(120, maxWidth));
+    return { width: side, height: Math.round(side * 9 / 16) };
+  }
+  const scale = Math.min(maxWidth / naturalWidth, maxHeight / naturalHeight, 1);
+  return {
+    width: Math.max(1, Math.round(naturalWidth * scale)),
+    height: Math.max(1, Math.round(naturalHeight * scale)),
+  };
+}

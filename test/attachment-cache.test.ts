@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AttachmentCache, dormantAttachmentCache } from "../src/media/attachment-cache";
 
+/** A rest stand-in whose only job is minting fresh links on demand. */
+function restWithMint(mint: () => string | null): { freshAttachmentLink(key: string): Promise<string | null> } {
+  return {
+    freshAttachmentLink: async () => mint(),
+  };
+}
+
 /** In-memory stand-in for the main-process disk bridge (the renderer reaches it
  *  through window.spaceMedia, which does not exist in the node test env). */
 function stubDiskBridge(): { disk: Map<string, Uint8Array> } {
@@ -49,5 +56,59 @@ describe("AttachmentCache dormant reads (offline rail icons)", () => {
 
   it("dormantAttachmentCache() hands out one shared instance", () => {
     expect(dormantAttachmentCache()).toBe(dormantAttachmentCache());
+  });
+
+  it("a 404 verified against a fresh mint kills the key for the session", async () => {
+    // The scroll-freeze regression: the virtual list remounts rows on every
+    // pass, and a dead object re-ran the whole fetch chain each time.
+    const fetchMock = vi.fn(async () => new Response(null, { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const cache = new AttachmentCache(() => restWithMint(() => "http://minio/fresh") as never);
+    expect(await cache.loadImage({ key: "dead/video", url: "http://minio/row" })).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2); // row link 404 → fresh mint → 404 again
+    await cache.loadImage({ key: "dead/video", url: "http://minio/row" });
+    await cache.loadImage({ key: "dead/video", url: null }); // even disk-only path is silent
+    expect(fetchMock).toHaveBeenCalledTimes(2); // no further traffic this session
+  });
+
+  it("a 404 with no mint available still kills the key (dormant-style)", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const cache = new AttachmentCache(() => null);
+    expect(await cache.loadImage({ key: "gone", url: "http://minio/row" })).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await cache.loadImage({ key: "gone", url: "http://minio/row" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a transient failure only backs off — the retry goes out after the window", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () => {
+      throw new TypeError("network is down");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const cache = new AttachmentCache(() => restWithMint(() => "http://minio/fresh") as never);
+    expect(await cache.loadImage({ key: "flaky", url: "http://minio/row" })).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2); // two attempts with a mint between
+    await cache.loadImage({ key: "flaky", url: "http://minio/row" });
+    expect(fetchMock).toHaveBeenCalledTimes(2); // inside the backoff — silent
+    vi.advanceTimersByTime(31_000);
+    await cache.loadImage({ key: "flaky", url: "http://minio/row" });
+    expect(fetchMock).toHaveBeenCalledTimes(4); // the window passed — full retry
+    vi.useRealTimers();
+  });
+
+  it("a null-URL row NEVER mints — /attachments/link 404s server icons (memory-only cache)", async () => {
+    // Regression guard: minting for url-null rows poisoned server-icon keys
+    // with backoff loops — the link endpoint validates MESSAGE attachments
+    // only, so an avatar key always mint-404s. The URL must arrive with the
+    // server profile instead (sessionsIndex re-render path).
+    stubDiskBridge();
+    const fetchMock = vi.fn(async () => new Response(new Uint8Array([7, 7, 7])));
+    vi.stubGlobal("fetch", fetchMock);
+    const cache = new AttachmentCache(() => restWithMint(() => "http://minio/minted") as never);
+    cache.setDiskBudget(0); // memory-only — the disk layer is off entirely
+    expect(await cache.loadImage({ key: "server-avatars/x/icon.png", url: null })).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled(); // no mint, no fetch, no backoff noise
   });
 });

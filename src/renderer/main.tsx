@@ -32,6 +32,43 @@ try {
   // observers unavailable — diagnostics only, never fatal
 }
 
+// Frame-stall tracer (diagnostics): longtask only sees MAIN-thread blocks —
+// freezes that drop frames on the compositor/raster threads (image decode,
+// texture upload while scrolling) stay invisible there. A rAF loop sees every
+// frame the page actually presented: 2+ consecutive slow frames open a stall,
+// the first fast frame closes it and logs the totals.
+try {
+  const SLOW_FRAME_MS = 34; // below ~30 fps
+  let lastFrame = performance.now();
+  let stallFrames = 0;
+  let stallTotal = 0;
+  let stallLongest = 0;
+  const frameTick = (now: number): void => {
+    const gap = now - lastFrame;
+    lastFrame = now;
+    if (gap >= 1000) {
+      // the page was hidden (rAF throttled) — not a stall, never mind
+    } else if (gap >= SLOW_FRAME_MS) {
+      stallFrames += 1;
+      stallTotal += gap;
+      stallLongest = Math.max(stallLongest, gap);
+    } else if (stallFrames >= 2) {
+      log.warn("perf", `frame-stall ${Math.round(stallTotal)}ms over ${stallFrames} frames (longest ${Math.round(stallLongest)}ms)`);
+      stallFrames = 0;
+      stallTotal = 0;
+      stallLongest = 0;
+    } else {
+      stallFrames = 0;
+      stallTotal = 0;
+      stallLongest = 0;
+    }
+    requestAnimationFrame(frameTick);
+  };
+  requestAnimationFrame(frameTick);
+} catch {
+  // diagnostics only, never fatal
+}
+
 const container = document.querySelector<HTMLElement>("#root");
 if (!container) {
   throw new Error("#root not found");

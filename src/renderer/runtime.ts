@@ -279,6 +279,31 @@ class SessionBinding extends Emitter {
 
 export const sessionBinding = new SessionBinding();
 
+/** Version counter bumped whenever the SET of live sessions changes (a
+ *  background session starts or dies, the active one switches). The rail
+ *  re-resolves each record's OWN session through it — an inactive record's
+ *  avatar mints and fetches via ITS session, not the active one's (a foreign
+ *  rest client cannot mint another instance's object keys). */
+class SessionsIndex extends Emitter {
+  private version = 0;
+  getSnapshot = (): number => this.version;
+  bump = (): void => {
+    this.version += 1;
+    this.emit();
+  };
+}
+export const sessionsIndex = new SessionsIndex();
+
+/** The live session OWNING a record: the active one when it matches, else the
+ *  record's background session, else null (dead tokens — disk-cache only). */
+export function sessionForRecord(recordId: string): ConnectionSession | null {
+  if (activeSession !== null && activeSession.recordId === recordId && !activeSession.isDisposed()) {
+    return activeSession;
+  }
+  const background = sessionMap.get(recordId);
+  return background !== undefined && !background.isDisposed() ? background : null;
+}
+
 /** Live voice-session objects — owned here, not per ConnectionSession (M4 moves them). */
 let janusClient: JanusClient | null = null;
 let sfuSession: SfuSession | null = null;
@@ -1540,6 +1565,7 @@ async function openSession(recordId: string): Promise<void> {
       }
     }
     sessionBinding.set(existing);
+    sessionsIndex.bump();
     appStore.patch({
       loginFormOpen: false,
       loginError: null,
@@ -1560,6 +1586,7 @@ async function openSession(recordId: string): Promise<void> {
   const session = new ConnectionSession({ directory: connectionDirectory, recordId, hooks: makeSessionHooks(recordId) });
   activeSession = session;
   sessionBinding.set(session);
+  sessionsIndex.bump();
   // Same invariant on the fresh-session path: a REST-fallback entry of this
   // record from its sessionless days must not survive its activation.
   socialDirectory.drop(recordId);
@@ -1620,6 +1647,7 @@ function startBackgroundSessions(): void {
     }
     const session = new ConnectionSession({ directory: connectionDirectory, recordId: record.id, hooks: makeSessionHooks(record.id) });
     sessionMap.set(record.id, session);
+    sessionsIndex.bump();
     bindLiveBackgroundSession(session, connectionDirectory);
     void session.start().catch((error: unknown) => {
       log.warn("app", `background session for ${record.username} @ ${record.hostUrl} failed (${errorMessage(error)}) — REST snapshots, will retry`);
@@ -1637,6 +1665,7 @@ function disposeBackgroundSession(recordId: string): void {
     return;
   }
   sessionMap.delete(recordId);
+  sessionsIndex.bump();
   session.dispose();
   unbindLiveBackgroundSession(recordId);
   // A live background-call card dies with its session (nothing to accept on).
@@ -1654,6 +1683,7 @@ export async function teardownSession(): Promise<void> {
   const dying = activeSession;
   activeSession = null;
   sessionBinding.set(null);
+  sessionsIndex.bump();
   if (dying !== null) {
     sessionMap.delete(dying.recordId);
     dying.dispose();
@@ -2233,7 +2263,7 @@ export function ackActiveChannel(): void {
 /** Cross-instance forward: a THROWAWAY client for the target record (v1: one active session). */
 export async function forwardCrossInstance(targetRecordId: string, targetChannelId: number, snapshot: {
   content: string | null;
-  attachments?: { key: string; fileName: string }[] | null;
+  attachments?: { key: string; fileName: string; width: number | null; height: number | null }[] | null;
   originServer: string;
   originChannel: string;
   originAuthorId: number;

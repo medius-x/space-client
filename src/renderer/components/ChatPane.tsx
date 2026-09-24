@@ -24,7 +24,8 @@ import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { Modal } from "./Modal";
 import { VirtualList, type VirtualListHandle } from "./VirtualList";
 import { AttachmentView } from "./AttachmentView";
-import { isAudioFile, isImageFile, isVideoFile } from "../../domain/logic/attachment-layout";
+import { isAudioFile, isImageFile, isVideoFile, reservedVideoThumbBox, singleTileBox } from "../../domain/logic/attachment-layout";
+import { learnedDims } from "../media-dims";
 import { Avatar } from "./Avatar";
 import { NowPlayingBar } from "./NowPlayingBar";
 import { PinCard } from "./PinCard";
@@ -69,16 +70,27 @@ function estimateRowHeight(message: Message, startsGroup: boolean, hasDiscussion
   }
   // Media-aware attachment estimate (live report: a flat +22 made every
   // picture/video row JUMP on measure — the real mosaic is 200-500px, and the
-  // estimate→fact delta shifted everything below it). Rough by design: the
-  // natural image size is unknown before the decode; the point is the ORDER
-  // of magnitude, not the pixel.
+  // estimate→fact delta shifted everything below it). Rough by design — but the
+  // 2026-09-25 exact-reservation round upgrades it: the wire now carries the
+  // media's intrinsic dimensions (and legacy rows learn them after one decode),
+  // so single images and video thumbs estimate by their real aspect instead of
+  // a flat magnitude. Multi-image mosaics stay count-based (square crops).
   let attachmentEstimate = 0;
   let imageTiles = 0;
+  let singleImage: { width: number; height: number } | null = null;
   for (const attachment of message.attachments) {
+    const known = attachment.width !== null && attachment.height !== null
+      ? { width: attachment.width, height: attachment.height }
+      : learnedDims(attachment.key);
     if (isImageFile(attachment.fileName)) {
       imageTiles += 1;
+      if (singleImage === null) {
+        singleImage = known;
+      }
     } else if (isVideoFile(attachment.fileName)) {
-      attachmentEstimate += 340; // the card: preview capped at 320 high + name
+      attachmentEstimate += known !== null
+        ? reservedVideoThumbBox(known.width, known.height, 480, 320).height + 24
+        : 340; // unknown aspect — the historical flat card
     } else if (isAudioFile(attachment.fileName)) {
       attachmentEstimate += 56;
     } else {
@@ -87,9 +99,11 @@ function estimateRowHeight(message: Message, startsGroup: boolean, hasDiscussion
   }
   if (imageTiles > 0) {
     const tiles = Math.min(imageTiles, 10);
-    // Mosaic rows: 1 → a bounded square (~300), 2–3 → one row (~210),
-    // 4+ → a 2-column grid of square crops.
-    attachmentEstimate += tiles === 1 ? 300 : tiles <= 3 ? 210 : Math.ceil(tiles / 2) * 220;
+    // Mosaic rows: 1 → its real aspect box when known (~300 flat otherwise),
+    // 2–3 → one row (~210), 4+ → a 2-column grid of square crops.
+    attachmentEstimate += tiles === 1
+      ? (singleImage !== null ? singleTileBox(480, singleImage.width, singleImage.height).height : 300)
+      : tiles <= 3 ? 210 : Math.ceil(tiles / 2) * 220;
   }
   height += attachmentEstimate;
   return height;
@@ -279,7 +293,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
     // loadAround — a loadHistory here would be a no-op (isLoaded) anyway, but the skip
     // keeps the two paths from ever interleaving.
     if (appStore.getSnapshot().activeAround?.channelId !== activeChatId) {
-      session.loadHistory(activeChatId).catch((error: unknown) => {
+      session.loadHistory(activeChatId).then(() => session.scheduleMediaPrefetch(activeChatId)).catch((error: unknown) => {
         setHistoryError(error instanceof Error ? error.message : String(error));
       });
     }
@@ -1942,7 +1956,9 @@ function ForwardDialog({ session, source, sourceChannel, onClose }: {
         for (const message of source) {
           // Cross-instance attachments are re-uploaded: mint a slot on the TARGET
           // instance, pull the bytes from the source's (possibly re-minted) link.
-          const targetAttachments: { key: string; fileName: string }[] = [];
+          // The re-uploaded bytes are identical — the source's measured intrinsic
+          // dimensions stay valid and ride along.
+          const targetAttachments: { key: string; fileName: string; width: number | null; height: number | null }[] = [];
           for (const attachment of message.attachments) {
             if (attachment.key === null) {
               continue;
@@ -1954,7 +1970,12 @@ function ForwardDialog({ session, source, sourceChannel, onClose }: {
             const bytes = new Uint8Array(await session.rest.downloadBytes(fresh));
             const targetSlot = await forwardRequestUpload(targetRecordId, attachment.fileName);
             await forwardUploadBytes(targetRecordId, targetSlot.uploadUrl, bytes);
-            targetAttachments.push({ key: targetSlot.key, fileName: attachment.fileName });
+            targetAttachments.push({
+              key: targetSlot.key,
+              fileName: attachment.fileName,
+              width: attachment.width ?? null,
+              height: attachment.height ?? null,
+            });
           }
           await forwardCrossInstance(targetRecordId, targetChannelId, {
             content: (message.content?.length ?? 0) > 0 ? message.content : comment,

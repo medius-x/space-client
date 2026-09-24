@@ -7,8 +7,10 @@ import {
   isAudioFile,
   isImageFile,
   isVideoFile,
+  reservedVideoThumbBox,
   singleTileBox,
 } from "../../domain/logic/attachment-layout";
+import { learnedDims, rememberDims } from "../media-dims";
 import type { Attachment, Message } from "../../types";
 import { Lightbox } from "./Lightbox";
 import { VideoModal } from "./VideoModal";
@@ -159,8 +161,11 @@ function TileRemoveButton({ attachment, removal }: {
 /** The SINGLE image: bounded by the row width and its OWN smaller natural side
  *  — never upscaled (64×64 stays 64×64) — and the box HUGS the image's aspect
  *  ratio: no letterbox bars (user decision; oak keeps the square bounding box,
- *  and the black padding read as broken rendering). Until the decode lands the
- *  placeholder is the full usable-width square (oak's rule). */
+ *  and the black padding read as broken rendering). The FIRST box comes from
+ *  the wire's intrinsic dimensions (or the learned cache on legacy rows) —
+ *  only pre-field rows with no cache left fall back to the full usable-width
+ *  square until the decode lands. The decode itself remembers the measured
+ *  size for the next render. */
 function SingleTileView({ session, attachment, usableWidth, removal, onClick }: {
   session: ConnectionSession;
   attachment: Attachment;
@@ -169,7 +174,12 @@ function SingleTileView({ session, attachment, usableWidth, removal, onClick }: 
   onClick(): void;
 }): React.JSX.Element {
   const url = useAttachmentImage(session, attachment.key !== null && attachment.url !== null ? { key: attachment.key, url: attachment.url } : null);
-  const [box, setBox] = useState(() => singleTileBox(usableWidth, 0, 0));
+  const [box, setBox] = useState(() => {
+    const known = attachment.width !== null && attachment.height !== null
+      ? { width: attachment.width, height: attachment.height }
+      : learnedDims(attachment.key);
+    return singleTileBox(usableWidth, known?.width ?? 0, known?.height ?? 0);
+  });
   const marked = removal?.markedKeys.has(attachment.key) ?? false;
   return (
     <div
@@ -183,8 +193,12 @@ function SingleTileView({ session, attachment, usableWidth, removal, onClick }: 
           src={url}
           alt={attachment.fileName}
           draggable={false}
-          onLoad={(event) =>
-            setBox(singleTileBox(usableWidth, event.currentTarget.naturalWidth, event.currentTarget.naturalHeight))}
+          onLoad={(event) => {
+            const naturalWidth = event.currentTarget.naturalWidth;
+            const naturalHeight = event.currentTarget.naturalHeight;
+            rememberDims(attachment.key, naturalWidth, naturalHeight);
+            setBox(singleTileBox(usableWidth, naturalWidth, naturalHeight));
+          }}
         />
       ) : (
         <div className="mosaic-loading" />
@@ -228,18 +242,39 @@ function VideoCardView({ session, attachment, onOpen }: {
       : null,
   );
   const durationSeconds = attachment.durationMillis !== null ? attachment.durationMillis / 1000 : null;
+  // The reserved box: the wire's intrinsic frame dimensions when present, else
+  // the learned cache (the preview shares the frame's aspect), else the
+  // historical 16:9 plate — sized against a nominal row width (the CSS caps at
+  // max-height 320 / max-width 100% of the block).
+  const known = attachment.width !== null && attachment.height !== null
+    ? { width: attachment.width, height: attachment.height }
+    : learnedDims(attachment.key);
+  const reserved = reservedVideoThumbBox(known?.width ?? 0, known?.height ?? 0, 480, 320);
   return (
     <div className="video-card" onClick={onOpen} title={attachment.fileName}>
       {thumbUrl !== null ? (
         /* The thumb box HUGS the frame's own aspect ratio (vertical phone videos
            are narrow — a minimum width lefted a black bar on the right, live report). */
         <div className="video-thumb">
-          <img src={thumbUrl} alt={attachment.fileName} draggable={false} />
+          <img
+            src={thumbUrl}
+            alt={attachment.fileName}
+            draggable={false}
+            onLoad={(event) => {
+              // The preview JPEG shares the frame's aspect — remembering it lets
+              // LEGACY rows (no wire dims) reserve exactly from the next render.
+              rememberDims(attachment.key, event.currentTarget.naturalWidth, event.currentTarget.naturalHeight);
+            }}
+          />
           <span className="video-play-overlay">▶</span>
           {durationSeconds !== null ? <span className="video-duration-badge">{formatClock(durationSeconds)}</span> : null}
         </div>
+      ) : attachment.thumbnailKey !== null ? (
+        /* Preview exists but is still loading: hold the RESERVED box (the exact
+           aspect from the wire/cache) so the row never reflows when it lands. */
+        <div className="video-thumb video-thumb-loading" style={{ width: reserved.width, height: reserved.height }} />
       ) : (
-        <div className="video-thumb video-thumb-fallback">
+        <div className="video-thumb video-thumb-fallback" style={{ width: reserved.width, height: reserved.height }}>
           <span className="video-thumb-glyph"><span className="icon mdi-file-video-outline" /></span>
           <span className="video-play-overlay">▶</span>
           {durationSeconds !== null ? <span className="video-duration-badge">{formatClock(durationSeconds)}</span> : null}

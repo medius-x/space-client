@@ -28,6 +28,9 @@ const MEMORY_CAP = 32;
 /** The session-less shared cache serves EVERY aggregated-list avatar (DM rows,
  *  friend rows) — its LRU headroom is larger than a per-session cache's. */
 const DORMANT_MEMORY_CAP = 128;
+/** A transient failure (network down, 5xx) only backs off for this long — it
+ *  must not poison the cache for a whole offline minute. */
+const TRANSIENT_BACKOFF_MS = 30_000;
 
 export interface CacheableImage {
   key: string;
@@ -36,13 +39,41 @@ export interface CacheableImage {
   url: string | null;
 }
 
+interface ActivityCounters {
+  diskHits: number;
+  diskMisses: number;
+  fetches: number;
+  fetchBytes: number;
+  fetchWorstMs: number;
+  deadSkips: number;
+  backoffSkips: number;
+}
+
+function createEmptyActivity(): ActivityCounters {
+  return { diskHits: 0, diskMisses: 0, fetches: 0, fetchBytes: 0, fetchWorstMs: 0, deadSkips: 0, backoffSkips: 0 };
+}
+
 export class AttachmentCache extends Emitter {
   private readonly memory = new Map<string, string>(); // key → objectURL, LRU by insertion
   private readonly inFlight = new Map<string, Promise<string | null>>();
   private readonly rest: () => RestClient | null;
   private readonly memoryCap: number;
+  /** Session negative cache. The virtual list remounts rows on every scroll
+   *  pass, and each remount of a DEAD object (404) used to re-run the whole
+   *  disk→fetch→mint→fetch chain — the scroll freeze on attachment-heavy
+   *  channels (live report 2026-09-25). A 404 verified against a freshly
+   *  minted link kills the key for the session; transient failures (network,
+   *  5xx) only get a short backoff instead. */
+  private readonly deadKeys = new Set<string>();
+  private readonly backoffUntil = new Map<string, number>();
   /** Disk budget in bytes; 0 = memory-only (client settings, M7). */
   private diskBudgetBytes = 256 * 1024 * 1024;
+  /** Rolling activity window (diagnostics): what the cache actually did over
+   *  the last flush interval — correlates scroll freezes with disk/fetch
+   *  storms in space.log ([media] activity lines). */
+  private activityCounters = createEmptyActivity();
+  private activityTimer: ReturnType<typeof setTimeout> | null = null;
+  private trimTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(rest: () => RestClient | null, memoryCap: number = MEMORY_CAP) {
     super();
@@ -54,6 +85,28 @@ export class AttachmentCache extends Emitter {
   setDiskBudget(bytes: number): void {
     this.diskBudgetBytes = Math.max(0, bytes);
     void this.trimDisk();
+  }
+
+  /** Count something the cache did; arms the 5s flush that logs the window. */
+  private noteActivity(record: (counters: ActivityCounters) => void): void {
+    record(this.activityCounters);
+    if (this.activityTimer === null) {
+      this.activityTimer = setTimeout(() => this.flushActivity(), 5000);
+    }
+  }
+
+  private flushActivity(): void {
+    this.activityTimer = null;
+    const counters = this.activityCounters;
+    if (counters.diskHits + counters.diskMisses + counters.fetches + counters.deadSkips + counters.backoffSkips > 0) {
+      log.warn(
+        "media",
+        `activity: ${counters.diskHits} disk hits, ${counters.diskMisses} disk misses, `
+          + `${counters.fetches} fetches (${Math.round(counters.fetchBytes / 1024)}KB, worst ${counters.fetchWorstMs}ms), `
+          + `${counters.deadSkips} dead-skips, ${counters.backoffSkips} backoff-skips`,
+      );
+    }
+    this.activityCounters = createEmptyActivity();
   }
 
   getSnapshot = (): ReadonlyMap<string, string> => this.memory;
@@ -85,44 +138,103 @@ export class AttachmentCache extends Emitter {
   }
 
   private async doLoad(image: CacheableImage): Promise<string | null> {
+    if (this.deadKeys.has(image.key)) {
+      this.noteActivity((counters) => { counters.deadSkips += 1; });
+      return null; // 404-verified this session — a stable placeholder, no traffic
+    }
+    const backoff = this.backoffUntil.get(image.key);
+    if (backoff !== undefined && backoff > Date.now()) {
+      this.noteActivity((counters) => { counters.backoffSkips += 1; });
+      return null;
+    }
     const diskBytes = await this.readDisk(image.key);
     if (diskBytes !== null) {
+      this.noteActivity((counters) => { counters.diskHits += 1; });
       return this.remember(image.key, diskBytes);
     }
+    this.noteActivity((counters) => { counters.diskMisses += 1; });
 
     let url = image.url;
-    if (url !== null) {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          const response = await fetch(url);
-          if (response.ok) {
-            const bytes = new Uint8Array(await response.arrayBuffer());
-            void this.writeDisk(image.key, bytes);
-            return this.remember(image.key, bytes);
-          }
-          if (response.status === 404) {
-            return null; // the object is gone for good
-          }
-        } catch {
-          // network error — fall through to the recovery mint
-        }
-        const client = this.rest();
-        if (client === null) {
-          return null;
-        }
-        const fresh = await client.freshAttachmentLink(image.key).catch(() => null);
-        if (fresh === null || fresh === undefined) {
-          return null;
-        }
-        url = fresh;
-      }
+    if (url === null) {
+      // A disk-only row (an inactive record's icon before its profile
+      // arrives): nothing to fetch and nothing to back off — the URL arrives
+      // with the server profile and the directory update re-renders the rail.
+      // Minting is NOT attempted: /attachments/link validates MESSAGE
+      // attachments only, so a server-icon key mint-404s (live report
+      // 2026-09-25 — the backoff it poisoned kept the initials forever).
+      return null;
     }
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const startedAt = Date.now();
+        const response = await fetch(url);
+        if (response.ok) {
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          this.noteActivity((counters) => {
+            counters.fetches += 1;
+            counters.fetchBytes += bytes.byteLength;
+            counters.fetchWorstMs = Math.max(counters.fetchWorstMs, Date.now() - startedAt);
+          });
+          void this.writeDisk(image.key, bytes);
+          return this.remember(image.key, bytes);
+        }
+        if (response.status === 404) {
+          // 404 is NoSuchKey (an EXPIRED presigned link answers 400, not
+          // 404) — but the row's URL could predate things, so verify against
+          // a FRESH mint before declaring the object dead.
+          if (attempt === 0) {
+            const fresh = await this.mintFreshLink(image.key);
+            if (fresh !== null) {
+              url = fresh;
+              continue;
+            }
+          }
+          this.markDead(image.key, "404");
+          return null;
+        }
+      } catch {
+        // network error — fall through to the recovery mint
+      }
+      const fresh = await this.mintFreshLink(image.key);
+      if (fresh === null) {
+        this.markBackoff(image.key);
+        return null;
+      }
+      url = fresh;
+    }
+    this.markBackoff(image.key);
     return null;
+  }
+
+  /** A fresh presigned link, or null when this cache has no rest client (the
+   *  dormant one) or the mint itself failed. */
+  private async mintFreshLink(key: string): Promise<string | null> {
+    const client = this.rest();
+    if (client === null) {
+      return null;
+    }
+    return client.freshAttachmentLink(key).catch(() => null);
+  }
+
+  private markDead(key: string, reason: string): void {
+    if (this.deadKeys.size > 1000) {
+      this.deadKeys.clear(); // growth guard — a wiped cache only costs retries
+    }
+    this.deadKeys.add(key);
+    this.backoffUntil.delete(key);
+    log.warn("media", `attachment ${key} is gone (${reason}) — placeholder for the rest of the session`);
+  }
+
+  private markBackoff(key: string): void {
+    this.backoffUntil.set(key, Date.now() + TRANSIENT_BACKOFF_MS);
+    log.warn("media", `attachment ${key} unavailable (transient) — retry in ${TRANSIENT_BACKOFF_MS / 1000}s`);
   }
 
   private remember(key: string, bytes: Uint8Array): string {
     const objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart]));
     this.memory.set(key, objectUrl);
+    this.deadKeys.delete(key); // a revived object rehabilitates fully
+    this.backoffUntil.delete(key);
     while (this.memory.size > this.memoryCap) {
       const oldestKey = this.memory.keys().next().value;
       if (oldestKey === undefined) {
@@ -164,10 +276,23 @@ export class AttachmentCache extends Emitter {
     }
     try {
       await bridge.cachePut(key, bytes);
-      await this.trimDisk();
+      this.scheduleTrim();
     } catch (error) {
       log.warn("cache", `disk write for ${key} failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  /** A trim walks the whole cache directory (an IPC round trip + one stat per
+   *  file) — the idle prefetch used to fire one after EVERY downloaded image,
+   *  hammering the main process. One per 30 s of write activity is plenty. */
+  private scheduleTrim(): void {
+    if (this.trimTimer !== null) {
+      return;
+    }
+    this.trimTimer = setTimeout(() => {
+      this.trimTimer = null;
+      void this.trimDisk();
+    }, 30_000);
   }
 
   private async trimDisk(): Promise<void> {

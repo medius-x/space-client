@@ -1178,6 +1178,8 @@ button.wide-add { width: 100%; }
    lefted a black bar on the right of narrow vertical videos, live report). */
 .video-thumb { position: relative; border-radius: 6px; overflow: hidden; background: #000; width: fit-content; }
 .video-thumb img { display: block; max-height: 320px; max-width: 100%; width: auto; height: auto; }
+/* The loading preview holds the reserved aspect box (wire/learned dims). */
+.video-thumb-loading { background: #000; }
 /* The no-preview fallback keeps a standard 16:9 plate. */
 .video-thumb-fallback { width: 320px; height: 180px; }
 .video-thumb-glyph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 32px; }

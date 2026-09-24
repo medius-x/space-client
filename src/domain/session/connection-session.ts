@@ -37,7 +37,8 @@ import { CoalescingRefresher } from "../lib/refresher";
 import { AttachmentCache } from "../../media/attachment-cache";
 import { PlaybackService } from "../../media/playback";
 import { generateVideoPreview } from "../../media/video-thumbnail";
-import { isVideoFile } from "../logic/attachment-layout";
+import { measureImageSize } from "../../media/image-size";
+import { isImageFile, isVideoFile } from "../logic/attachment-layout";
 import { sanitizeSlotFileName } from "../logic/ascii-name";
 import { ConnectionDirectory, RecordTokenStorage } from "./connection-record";
 
@@ -100,6 +101,16 @@ export const NEWER_PAGE = 50;
 /** Newest-page size a reconnect gap-heal refetches per loaded channel. A gap
  *  wider than this leaves holes in the middle — that is no longer a blip. */
 const RESYNC_TAIL_LIMIT = 100;
+/** Idle media prefetch: how many loads fly at once (see scheduleMediaPrefetch). */
+const MEDIA_PREFETCH_CONCURRENCY = 2;
+/** Prefetch budget in OBJECTS per sweep. The first sweep ran UNBOUNDED over
+ *  every loaded message — a heavy channel downloaded 200+ MB of full-size
+ *  originals in the first seconds after opening (live [media] activity log,
+ *  2026-09-25: 164 fetches / 221691KB in one 5s window). Warming the nearest
+ *  screenful is the point; the rest loads lazily on scroll. */
+const MEDIA_PREFETCH_MAX_ITEMS = 24;
+/** The latest scheduled media-prefetch sweep — a newer call aborts the older one. */
+let mediaPrefetchRunCounter = 0;
 
 function toWsUrl(hostUrl: string): string {
   return hostUrl.replace(/^http/, "ws") + "/ws";
@@ -326,6 +337,65 @@ export class ConnectionSession {
     }
   }
 
+  /**
+   * Idle thumbnail prefetch (2026-09-25, the media round): warm the attachment
+   * cache for the channel's LOADED messages on requestIdleCallback — thumbs
+   * first (video previews are small and dominate scroll-in cost), then the
+   * image bodies, capped to a small concurrency so an eager sweep cannot
+   * starve the network. Already-cached and session-dead keys are skipped by
+   * the cache itself (peek / the negative cache); a superseded call (a newer
+   * sweep scheduled) aborts. Best-effort by design: nothing here is
+   * load-bearing for correctness, only for scroll smoothness on real networks.
+   */
+  scheduleMediaPrefetch(channelId: number): void {
+    if (this.disposed) {
+      return;
+    }
+    const runId = ++mediaPrefetchRunCounter;
+    const idle: (callback: () => void) => void = typeof requestIdleCallback === "function"
+      ? (callback) => requestIdleCallback(callback)
+      : (callback) => window.setTimeout(callback, 400);
+    idle(() => {
+      if (this.disposed || runId !== mediaPrefetchRunCounter) {
+        return; // a newer sweep superseded this one
+      }
+      const queue: { key: string; url: string | null }[] = [];
+      const messages = this.messageStore.listFor(channelId);
+      // Newest first: the reader starts at the bottom — warming the tail of the
+      // channel is what makes the first scroll smooth, not its head.
+      for (let index = messages.length - 1; index >= 0 && queue.length < MEDIA_PREFETCH_MAX_ITEMS; index -= 1) {
+        for (const attachment of messages[index]!.attachments) {
+          if (queue.length >= MEDIA_PREFETCH_MAX_ITEMS) {
+            break;
+          }
+          if (attachment.thumbnailKey !== null && attachment.thumbnailUrl !== null) {
+            queue.push({ key: attachment.thumbnailKey, url: attachment.thumbnailUrl });
+          } else if (isImageFile(attachment.fileName) && attachment.key !== null && attachment.url !== null) {
+            queue.push({ key: attachment.key, url: attachment.url });
+          }
+        }
+      }
+      let next = 0;
+      const launch = (): void => {
+        if (this.disposed || runId !== mediaPrefetchRunCounter) {
+          return;
+        }
+        while (next < queue.length) {
+          const image = queue[next]!;
+          next += 1;
+          if (this.attachmentCache.peek(image.key) !== null) {
+            continue; // already cached — free
+          }
+          void this.attachmentCache.loadImage(image).then(launch);
+          return; // one in flight per worker slot; the completion re-arms
+        }
+      };
+      for (let slot = 0; slot < MEDIA_PREFETCH_CONCURRENCY; slot += 1) {
+        launch();
+      }
+    });
+  }
+
   /** Fetch (once) the override-aware composer bits for a channel. */
   async ensureChannelPermissions(channelId: number): Promise<void> {
     if (this.disposed || this.permissionStore.channelPermissions(channelId) !== null) {
@@ -355,14 +425,14 @@ export class ConnectionSession {
    * never blocks the send.
    */
   async sendMessageWithFiles(channelId: number, files: readonly File[], content: string | null, replyToId?: number): Promise<void> {
-    const refs: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null }[] = [];
+    const refs: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null; width: number | null; height: number | null }[] = [];
     for (const file of files) {
       // The slot name feeds only the object KEY (the server 400s on non-ASCII);
       // the ORIGINAL name stays on the message as the display fileName.
       const slot = await this.rest.requestAttachmentUpload(sanitizeSlotFileName(file.name));
       await this.rest.uploadBytes(slot.uploadUrl, await file.arrayBuffer(), file.type || "application/octet-stream");
-      const reference: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null }
-        = { key: slot.key, fileName: file.name, thumbnailKey: null, durationMillis: null };
+      const reference: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null; width: number | null; height: number | null }
+        = { key: slot.key, fileName: file.name, thumbnailKey: null, durationMillis: null, width: null, height: null };
       if (isVideoFile(file.name)) {
         const preview = await generateVideoPreview(file);
         if (preview !== null) {
@@ -370,6 +440,14 @@ export class ConnectionSession {
           await this.rest.uploadBytes(thumbSlot.uploadUrl, await preview.jpegBlob.arrayBuffer(), "image/jpeg");
           reference.thumbnailKey = thumbSlot.key;
           reference.durationMillis = preview.durationMillis;
+          reference.width = preview.width;
+          reference.height = preview.height;
+        }
+      } else if (isImageFile(file.name)) {
+        const size = await measureImageSize(file);
+        if (size !== null) {
+          reference.width = size.width;
+          reference.height = size.height;
         }
       }
       refs.push(reference);
@@ -475,12 +553,12 @@ export class ConnectionSession {
    *  thread server-side (the message is never lost — no 409 path exists for the client). */
   async startDiscussionWithMessage(parentChannelId: number, originMessageId: number,
     files: readonly File[], content: string | null): Promise<Discussion> {
-    const refs: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null }[] = [];
+    const refs: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null; width: number | null; height: number | null }[] = [];
     for (const file of files) {
       const slot = await this.rest.requestAttachmentUpload(sanitizeSlotFileName(file.name));
       await this.rest.uploadBytes(slot.uploadUrl, await file.arrayBuffer(), file.type || "application/octet-stream");
-      const reference: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null }
-        = { key: slot.key, fileName: file.name, thumbnailKey: null, durationMillis: null };
+      const reference: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null; width: number | null; height: number | null }
+        = { key: slot.key, fileName: file.name, thumbnailKey: null, durationMillis: null, width: null, height: null };
       if (isVideoFile(file.name)) {
         const preview = await generateVideoPreview(file);
         if (preview !== null) {
@@ -488,6 +566,14 @@ export class ConnectionSession {
           await this.rest.uploadBytes(thumbSlot.uploadUrl, await preview.jpegBlob.arrayBuffer(), "image/jpeg");
           reference.thumbnailKey = thumbSlot.key;
           reference.durationMillis = preview.durationMillis;
+          reference.width = preview.width;
+          reference.height = preview.height;
+        }
+      } else if (isImageFile(file.name)) {
+        const size = await measureImageSize(file);
+        if (size !== null) {
+          reference.width = size.width;
+          reference.height = size.height;
         }
       }
       refs.push(reference);

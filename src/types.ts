@@ -42,6 +42,11 @@ export interface Attachment {
   thumbnailKey: string | null;
   thumbnailUrl: string | null;
   durationMillis: number | null;
+  /** Intrinsic pixel dimensions (measured by the uploader's decode; null on
+   *  rows from before the field — the renderer then estimates until the bytes
+   *  arrive). Server passthrough, wire append-only. */
+  width: number | null;
+  height: number | null;
 }
 
 /** M2 surface — carried verbatim so the wire type never needs re-touching. */
@@ -298,7 +303,7 @@ export const REACTION_GLYPH_BY_SLUG: Readonly<Record<string, string>> = Object.f
 export interface ForwardMessageRequest {
   sourceMessageId: number | null;
   content: string | null;
-  attachments?: { key: string; fileName: string; thumbnailKey?: string | null; durationMillis?: number | null }[] | null;
+  attachments?: { key: string; fileName: string; thumbnailKey?: string | null; durationMillis?: number | null; width?: number | null; height?: number | null }[] | null;
   originServer?: string | null;
   originChannel?: string | null;
   originAuthorId?: number | null;

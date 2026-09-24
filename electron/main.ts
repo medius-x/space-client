@@ -127,13 +127,17 @@ if (traceFramesArgument) {
 // File logging — the same workflow as oak-client's ~/.oak-client/*.log: smoke first,
 // then the assistant reads the log file from disk. Every renderer line arrives over IPC
 // (sandboxed renderers cannot touch the fs) and lands here next to the main-process ones.
+// Ordered ASYNC appends: a sync write per line blocked the main thread (the
+// cache IPC handlers share it — 2026-09-25 scroll-freeze round).
+const fsp = fs.promises;
 const logFilePath = path.join(app.getPath("userData"), "space.log");
+let logWriteChain: Promise<void> = Promise.resolve();
 function appendLog(line: string): void {
-  try {
-    fs.appendFileSync(logFilePath, `${new Date().toISOString()} ${line}\n`);
-  } catch {
-    // logging must never take the app down
-  }
+  logWriteChain = logWriteChain
+    .then(() => fsp.appendFile(logFilePath, `${new Date().toISOString()} ${line}\n`))
+    .catch(() => {
+      // logging must never take the app down
+    });
 }
 ipcMain.on("space-log", (_event, line: unknown) => {
   if (typeof line === "string") {
@@ -224,6 +228,12 @@ ipcMain.handle("space-kv:keys", (_event, prefix: unknown) => {
 
 // Disk cache for attachment images, keyed by the STABLE MinIO key (presigned URLs
 // re-sign per fetch, so the HTTP cache is useless). Trim is LRU-by-mtime.
+// ALL of it is ASYNC fs: IPC handlers run on the MAIN thread, and the sync
+// trio (writeFileSync per put, readFileSync per get, readdir+stat per trim)
+// used to block the whole process — scroll over a cached channel queued dozens
+// of sync reads while the idle prefetch's after-every-put trim walked EVERY
+// cache file with statSync; the renderer starved waiting for IPC replies and
+// dropped frames (live report 2026-09-25).
 function cacheDir(): string {
   const dir = path.join(app.getPath("userData"), "cache");
   try {
@@ -238,51 +248,57 @@ function cachePath(key: string): string {
   return path.join(cacheDir(), key.replace(/[^a-z0-9-_.]/gi, "_"));
 }
 
-ipcMain.handle("space-cache:put", (_event, key: unknown, bytes: unknown) => {
+ipcMain.handle("space-cache:put", async (_event, key: unknown, bytes: unknown) => {
   if (typeof key !== "string" || !(bytes instanceof Uint8Array)) {
     return false;
   }
   try {
-    fs.writeFileSync(cachePath(key), bytes);
+    await fsp.writeFile(cachePath(key), bytes);
     return true;
   } catch {
     return false;
   }
 });
 
-ipcMain.handle("space-cache:get", (_event, key: unknown) => {
+ipcMain.handle("space-cache:get", async (_event, key: unknown) => {
   if (typeof key !== "string") {
     return null;
   }
   try {
-    const bytes = fs.readFileSync(cachePath(key));
-    // touch for LRU
-    fs.utimesSync(cachePath(key), new Date(), new Date());
+    const filePath = cachePath(key);
+    const bytes = await fsp.readFile(filePath);
+    const now = new Date();
+    // touch for LRU — best effort, never blocks the read
+    void fsp.utimes(filePath, now, now).catch(() => undefined);
     return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   } catch {
     return null;
   }
 });
 
-ipcMain.handle("space-cache:trim", (_event, maxBytes: unknown) => {
+ipcMain.handle("space-cache:trim", async (_event, maxBytes: unknown) => {
   const budget = typeof maxBytes === "number" ? maxBytes : 256 * 1024 * 1024;
   try {
     const dir = cacheDir();
-    const entries = fs
-      .readdirSync(dir)
-      .map((name) => {
-        const full = path.join(dir, name);
-        const stat = fs.statSync(full);
-        return { full, size: stat.size, mtime: stat.mtimeMs };
-      })
-      .sort((left, right) => left.mtime - right.mtime); // oldest first
+    const names = await fsp.readdir(dir);
+    const entries: { full: string; size: number; mtime: number }[] = [];
+    for (const name of names) {
+      const full = path.join(dir, name);
+      try {
+        const stat = await fsp.stat(full);
+        entries.push({ full, size: stat.size, mtime: stat.mtimeMs });
+      } catch {
+        // raced away — skip it
+      }
+    }
+    entries.sort((left, right) => left.mtime - right.mtime); // oldest first
     let total = entries.reduce((sum, entry) => sum + entry.size, 0);
     for (const entry of entries) {
       if (total <= budget) {
         break;
       }
       try {
-        fs.unlinkSync(entry.full);
+        await fsp.unlink(entry.full);
         total -= entry.size;
       } catch {
         // already gone
