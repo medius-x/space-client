@@ -210,6 +210,12 @@ contextBridge.exposeInMainWorld("spaceWindow", {
   onClosed(callback: () => void): void {
     ipcRenderer.on("popout:closed", () => callback());
   },
+  /** The window close was forestalled ~900ms — leave voice/call NOW so the
+   *  peers' tiles drop instantly instead of on Janus's own timeout. */
+  onClosing(callback: () => void): void {
+    ipcRenderer.removeAllListeners("app:closing");
+    ipcRenderer.on("app:closing", () => callback());
+  },
   popoutVolume(username: string, volume: number): void {
     ipcRenderer.send("space-window:popoutVolume", username, volume);
   },

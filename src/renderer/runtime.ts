@@ -1386,6 +1386,7 @@ export async function bootstrapApp(): Promise<void> {
   installSourceDeadListener(); // the window-share liveness watchdog reports here
   installPopoutVolumeListener(); // the share pop-out's volume slider lands here
   installPopoutVoiceActionListener(); // the pop-out's mirrored voice-panel buttons land here
+  installAppClosingListener(); // the forestalled window close leaves voice/call cleanly
   settingsStore.subscribe(pushPopoutVoiceState); // an NS engine flip recolors the pop-out's button
   pushPopoutVoiceState(); // the initial mirror (the pop-out reads it on mount)
   notifications.setToastConfig({
@@ -2938,6 +2939,24 @@ function installPopoutVoiceActionListener(): void {
         settingsStore.apply({ noiseSuppressionEngine: engine as ClientSettings["noiseSuppressionEngine"] });
       }
     }
+  });
+}
+
+/** Graceful shutdown (live report 2026-09-25: closing the app in a voice room
+ *  left ~1min PHANTOM tiles — Janus keeps the dead publisher session until its
+ *  own timeout). Main forestalls the window close ~900ms; that window pays for
+ *  the explicit exit: SFU/Janus teardown (the destroy HTTP POST is what kills
+ *  the feeds for everyone) + the STOMP voice.leave + tearing down a live call.
+ *  Fire-and-forget on purpose — the window dies right after either way. */
+function installAppClosingListener(): void {
+  window.spaceWindow?.onClosing(() => {
+    const channelId = appStore.getSnapshot().activeVoiceChannelId;
+    teardownCall();
+    void teardownVoice().then(() => {
+      if (channelId !== null) {
+        activeSession?.stomp.send("/app/voice.leave", { channelId });
+      }
+    }).catch(() => undefined);
   });
 }
 

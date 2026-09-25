@@ -241,7 +241,11 @@ export function PopoutScreen(): React.JSX.Element {
     <div className="popout-frame">
       <CaptionBar subtitle="Screen share" />
       <div className={"popout-root" + (fullscreen && !toolbarVisible ? " hide-cursor" : "")}>
-        <video ref={videoRef} autoPlay playsInline />
+        {/* display:none while streamless: a DEAD stream leaves the element
+            sized (frozen last frame) inside the centering flex — the waiting
+            line then sat OFF-CENTER next to it (live report 2026-09-25:
+            sharer closed their client). */}
+        <video ref={videoRef} autoPlay playsInline style={{ display: hasVideo ? "block" : "none" }} />
         {hasVideo ? null : <div className="popout-waiting">Waiting for the video…</div>}
         {hasVideo ? (
           <div ref={toolbarRef} className={"popout-toolbar" + (toolbarVisible ? " visible" : "")}>

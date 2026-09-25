@@ -72,6 +72,8 @@ export interface WindowBridge {
   onRetarget(callback: (target: PopoutTarget | null) => void): void;
   /** The main window's "the pop-out was closed" signal. */
   onClosed(callback: () => void): void;
+  /** The main window's close was FORESTALLED ~900ms: leave voice/call now. */
+  onClosing(callback: () => void): void;
   /** The POP-OUT's volume slider → the main window's share playout (the audio
    *  lives there; the pop-out subscribes video-only — one audible stream). */
   popoutVolume(username: string, volume: number): void;

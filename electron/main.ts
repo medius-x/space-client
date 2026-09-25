@@ -881,6 +881,24 @@ async function createWindow(): Promise<void> {
     popoutWindow?.close();
   });
 
+  // Graceful close (live report 2026-09-25): closing the app while in a voice
+  // room left PHANTOM tiles for ~a minute — the server drops the voice member
+  // on the WS cut, but JANUS keeps the dead publisher session until its own
+  // timeout. The first close is forestalled ~900ms while the renderer leaves
+  // the room explicitly (voice.leave STOMP + Janus destroy HTTP) — the peers'
+  // tiles drop instantly. A hard kill (crash/taskkill) still pays the Janus
+  // timeout: nothing client-side survives that.
+  let closeDeferred = false;
+  mainWindow.on("close", (event) => {
+    if (closeDeferred || mainWindow.webContents.isDestroyed()) {
+      return;
+    }
+    closeDeferred = true;
+    event.preventDefault();
+    mainWindow.webContents.send("app:closing");
+    setTimeout(() => mainWindow.close(), 900);
+  });
+
   // Security: this spike never navigates anywhere except its own local page.
   mainWindowRef = mainWindow;
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
