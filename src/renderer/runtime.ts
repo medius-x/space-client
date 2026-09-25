@@ -1066,6 +1066,7 @@ function makeSessionHooks(recordId: string): SessionHooks {
       voiceCompliance.shareAudioMuted = state.modMuted;
       voiceCompliance.deafened = state.deafened;
       applyComplianceToLiveSession();
+      pushPopoutVoiceState(); // the pop-out's mirrored voice-panel buttons follow
       log.info("voice", `compliance: mic=${state.muted ? "muted" : "open"} (self=${state.selfMuted} mod=${state.modMuted})`
         + ` deafened=${state.deafened} shareAudio=${state.modMuted ? "muted" : "open"}`);
     },
@@ -1383,6 +1384,10 @@ export async function bootstrapApp(): Promise<void> {
   watchDeviceSettings(); // device picks re-resolve (hashes die across restarts)
   installHotkeys(); // global OS chords + the window keydown (local binds)
   installSourceDeadListener(); // the window-share liveness watchdog reports here
+  installPopoutVolumeListener(); // the share pop-out's volume slider lands here
+  installPopoutVoiceActionListener(); // the pop-out's mirrored voice-panel buttons land here
+  settingsStore.subscribe(pushPopoutVoiceState); // an NS engine flip recolors the pop-out's button
+  pushPopoutVoiceState(); // the initial mirror (the pop-out reads it on mount)
   notifications.setToastConfig({
     dismissSeconds: () => settingsStore.getSnapshot().toastDismissSeconds,
     maxToasts: () => settingsStore.getSnapshot().maxToasts,
@@ -2899,6 +2904,43 @@ function installSourceDeadListener(): void {
   });
 }
 
+/** The pop-out window's volume slider remote-controls THIS window's share
+ *  playout (the pop-out subscribes video-only — one audible stream). The same
+ *  path the roster's member card slider takes: live chain + persisted gain. */
+function installPopoutVolumeListener(): void {
+  window.spaceWindow?.onPopoutVolume((username, volume) => {
+    setShareVolume(username, volume);
+  });
+}
+
+/** Push the voice-panel mirror (mute/deafen glyphs + NS engine) into the
+ *  pop-out — called from every point that flips any of them. */
+function pushPopoutVoiceState(): void {
+  window.spaceWindow?.pushPopoutVoiceState({
+    muted: voiceCompliance.micMuted,
+    deafened: voiceCompliance.deafened,
+    nsEngine: settingsStore.getSnapshot().noiseSuppressionEngine,
+  });
+}
+
+/** The pop-out's voice-panel buttons duplicate the main panel (user request
+ *  2026-09-25): presses run HERE, through the same functions the panel and
+ *  the global hotkeys use. */
+function installPopoutVoiceActionListener(): void {
+  window.spaceWindow?.onPopoutVoiceAction((action, engine) => {
+    if (action === "toggle-mute") {
+      toggleSelfMute();
+    } else if (action === "toggle-deafen") {
+      toggleSelfDeafen();
+    } else if (action === "ns-engine" && engine !== null) {
+      const valid: string[] = ["rnnoise", "deepfilternet3", "dtln", "speex", "gate", "off"];
+      if (valid.includes(engine)) {
+        settingsStore.apply({ noiseSuppressionEngine: engine as ClientSettings["noiseSuppressionEngine"] });
+      }
+    }
+  });
+}
+
 async function stopShareInternal(): Promise<void> {
   if (sfuSession) {
     await sfuSession.stopShare().catch(() => undefined);
@@ -4115,6 +4157,7 @@ export function setVoiceVolume(username: string, gain: number): void {
   if (activeSession) {
     connectionDirectory.setVolume(activeSession.recordId, "voice", username, gain);
   }
+  volumeChanges.publish({ kind: "voice", username, gain, nonce: volumeChangeNonce++ });
 }
 
 export function setShareVolume(username: string, gain: number): void {
@@ -4122,7 +4165,31 @@ export function setShareVolume(username: string, gain: number): void {
   if (activeSession) {
     connectionDirectory.setVolume(activeSession.recordId, "share", username, gain);
   }
+  volumeChanges.publish({ kind: "share", username, gain, nonce: volumeChangeNonce++ });
+  window.spaceWindow?.pushPopoutVolume(username, gain); // the pop-out slider follows
 }
+
+/** Live volume-change feed: an open member card's sliders follow changes made
+ *  ANYWHERE (the pop-out's slider, another card) — VolumeRow is otherwise a
+ *  snapshot of initialGain. */
+export interface VolumeChange {
+  kind: "voice" | "share";
+  username: string;
+  gain: number;
+  nonce: number;
+}
+
+class VolumeChangesStore extends Emitter {
+  private state: VolumeChange | null = null;
+  getSnapshot = (): VolumeChange | null => this.state;
+  publish(change: VolumeChange): void {
+    this.state = change;
+    this.emit();
+  }
+}
+
+let volumeChangeNonce = 0;
+export const volumeChanges = new VolumeChangesStore();
 
 export function setViewingFeed(feedId: number | null): void {
   const next = appStore.getSnapshot().viewingFeedId === feedId ? null : feedId;

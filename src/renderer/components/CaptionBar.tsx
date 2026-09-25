@@ -5,9 +5,11 @@ import { useEffect, useState } from "react";
  * the brand on the left and 46×32 window buttons on the right — close hovers
  * red, the maximize glyph flips on restore. The bar drags the window (except
  * the buttons); double-click maximizes. Native Aero Snap is lost by design —
- * the price of the custom chrome (documented oak trade-off).
+ * the price of the custom chrome (documented oak trade-off). The window
+ * control IPC acts on the SENDER's window, so the same bar serves the main
+ * window and the share pop-out (subtitle "Screen share").
  */
-export function CaptionBar(): React.JSX.Element {
+export function CaptionBar({ subtitle }: { subtitle?: string }): React.JSX.Element {
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
@@ -16,7 +18,10 @@ export function CaptionBar(): React.JSX.Element {
 
   return (
     <div className="caption-bar">
-      <span className="caption-brand">SPACE</span>
+      <span className="caption-brand">
+        SPACE
+        {subtitle === undefined ? null : <span className="caption-subtitle">{subtitle}</span>}
+      </span>
       <div className="caption-buttons">
         <button className="caption-button" title="Minimize" onClick={() => window.spaceWindow?.minimize()}>
           <span className="icon mdi-window-minimize" />

@@ -43,6 +43,14 @@ export function feedHasLiveVideo(feed: FeedInfo): boolean {
   return feed.streams.some((stream) => stream.type === "video" && !stream.disabled);
 }
 
+/** Whether the feed currently carries SHARE audio (a video-only share answers
+ *  false — the pop-out's volume control disables itself on it). Two or more
+ *  enabled audio streams = the publisher's voice plus at least one share
+ *  track, per the lowest-mindex-is-voice invariant of classifyFeed. */
+export function feedHasShareAudio(feed: FeedInfo): boolean {
+  return feed.streams.filter((stream) => stream.type === "audio" && !stream.disabled).length >= 2;
+}
+
 export interface StreamRef {
   feed: number;
   mid: string;

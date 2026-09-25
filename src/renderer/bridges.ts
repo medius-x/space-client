@@ -41,6 +41,25 @@ export interface PopoutTarget {
   feedId: number;
   /** The feed's VIDEO stream mid (video-only: the main window owns the audio). */
   videoMid: string;
+  /** The sharing publisher's USERNAME (feed display) — the pop-out's volume
+   *  slider is a REMOTE control for the main window's share playout, whose
+   *  gain persists per username. */
+  shareUsername: string | null;
+  /** False on a video-only share — the pop-out's volume slider disables. */
+  shareAudio: boolean;
+  /** The persisted share gain 0..1 at retarget time. */
+  shareVolume: number;
+}
+
+/** The voice-panel mirror the main window pushes into the share pop-out: its
+ *  mute/deafen/NS buttons duplicate the main window's panel (user request
+ *  2026-09-25) — the pop-out has no runtime of its own, the state travels. */
+export interface PopoutVoiceState {
+  /** UNION of self and moderator marks — what the main panel's glyph shows. */
+  muted: boolean;
+  deafened: boolean;
+  /** The active noise-suppression engine ("off" = the grey button). */
+  nsEngine: string;
 }
 
 export interface WindowBridge {
@@ -53,6 +72,31 @@ export interface WindowBridge {
   onRetarget(callback: (target: PopoutTarget | null) => void): void;
   /** The main window's "the pop-out was closed" signal. */
   onClosed(callback: () => void): void;
+  /** The POP-OUT's volume slider → the main window's share playout (the audio
+   *  lives there; the pop-out subscribes video-only — one audible stream). */
+  popoutVolume(username: string, volume: number): void;
+  /** The MAIN window's sink for the pop-out slider above. */
+  onPopoutVolume(callback: (username: string, volume: number) => void): void;
+  /** MAIN → pop-out: the share gain changed in the main window — the pop-out's
+   *  slider follows (two-way sync). */
+  pushPopoutVolume(username: string, gain: number): void;
+  /** The POP-OUT's sink for the push above. */
+  onPopoutVolumeSync(callback: (username: string, gain: number) => void): void;
+  /** The voice-panel state mirrored into the pop-out (mute/deafen/NS buttons). */
+  pushPopoutVoiceState(state: PopoutVoiceState): void;
+  /** The pop-out's initial voice-panel state (main keeps the last pushed). */
+  popoutVoiceState(): Promise<PopoutVoiceState | null>;
+  /** The POP-OUT's sink for voice-state pushes. */
+  onPopoutVoiceState(callback: (state: PopoutVoiceState) => void): void;
+  /** The pop-out's voice-panel buttons → the main window's actions. */
+  popoutVoiceAction(action: "toggle-mute" | "toggle-deafen", engine?: undefined): void;
+  popoutVoiceAction(action: "ns-engine", engine: string): void;
+  /** The MAIN window's sink for the actions above. */
+  onPopoutVoiceAction(callback: (action: "toggle-mute" | "toggle-deafen" | "ns-engine", engine: string | null) => void): void;
+  /** Toggle the SENDER window's fullscreen (the pop-out's ⛶ button). */
+  toggleFullscreen(): void;
+  /** Fullscreen flips of the sender window (restore-glyph swap, Esc-to-leave). */
+  onFullscreenChange(callback: (fullscreen: boolean) => void): void;
   /* Caption-bar controls of the borderless main window (oak chrome). */
   minimize(): void;
   toggleMaximize(): void;

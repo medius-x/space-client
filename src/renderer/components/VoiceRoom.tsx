@@ -15,6 +15,7 @@ import {
   leaveVoice,
   openSharePopout,
   persistedGain,
+  volumeChanges,
   popoutClosed,
   resolveCallConflict,
   roomAudio,
@@ -41,7 +42,7 @@ import type { ConnectionSession } from "../../domain/session/connection-session"
 import type { VoiceMemberMarks } from "../../domain/stores/VoiceControlStore";
 import type { FeedInfo } from "../../types";
 import { canActOn, memberNameColor, topPosition, type HierarchyView } from "../../domain/logic/roster-grouping";
-import { feedHasLiveVideo } from "../../core/classifier";
+import { feedHasLiveVideo, feedHasShareAudio } from "../../core/classifier";
 import { displayNameOf } from "../../domain/logic/display-name";
 import type { NoiseEngineKind } from "../../media/noise-suppression";
 import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
@@ -558,9 +559,15 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
     };
   }, []);
 
-  // The pop-out's "closed" signal — stop pumping frames.
+  // The pop-out's "closed" signal — stop pumping frames. The target fingerprint
+  // RESETS here: re-opening the pop-out on the SAME feed must re-push the
+  // (unchanged) target, or the new window sits on "Waiting for the video…"
+  // forever — main also drops its stored target on close (live report 2026-09-25).
   useEffect(() => {
-    window.spaceWindow?.onClosed(() => popoutClosed());
+    window.spaceWindow?.onClosed(() => {
+      popoutClosed();
+      popoutTargetFingerprintRef.current = null;
+    });
   }, []);
 
   // Own tile preview (VOICE ROOM): the live LOCAL track — the camera OR the shared screen.
@@ -604,7 +611,7 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
   // (the old 12.5 fps JPEG relay is gone). This effect only keeps its TARGET in
   // step with what the main window watches — identical consecutive targets are
   // skipped so an unrelated roster update never resubscribes the window.
-  const lastPopoutTargetRef = useRef<string | null>(null);
+  const popoutTargetFingerprintRef = useRef<string | null>(null);
   useEffect(() => {
     if (!popoutActive) {
       return;
@@ -614,7 +621,12 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
       const room = getVoiceRoomInfo();
       const feed = participants.find((entry) => entry.feedId === viewingFeedId);
       const videoMid = feed?.streams.find((stream) => stream.type === "video" && stream.disabled !== true)?.mid;
-      if (room !== null && videoMid !== undefined) {
+      if (room !== null && videoMid !== undefined && feed !== undefined) {
+        // feed.display IS the publisher's username (we join with display =
+        // username) — the pop-out's volume slider remote-controls the main
+        // window's share playout, persisted per username. The value is a
+        // RETARGET-TIME snapshot; volume pushes from the pop-out travel their
+        // own IPC channel and never restart this effect (not a dependency).
         target = {
           janusUrl: room.janusUrl,
           roomId: room.roomId,
@@ -622,14 +634,17 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
           pin: room.pin,
           feedId: viewingFeedId,
           videoMid,
+          shareUsername: feed.display,
+          shareAudio: feedHasShareAudio(feed),
+          shareVolume: persistedGain("share", feed.display),
         };
       }
     }
     const fingerprint = target === null ? "null" : JSON.stringify(target);
-    if (fingerprint === lastPopoutTargetRef.current) {
+    if (fingerprint === popoutTargetFingerprintRef.current) {
       return;
     }
-    lastPopoutTargetRef.current = fingerprint;
+    popoutTargetFingerprintRef.current = fingerprint;
     window.spaceWindow?.retargetPopout(target);
   }, [popoutActive, viewingFeedId, participants]);
 
@@ -826,13 +841,24 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
 /** One 0–200% volume row with a 0 ↔ last-positive mute toggle (oak's volume rows).
  *  The caption appears ONLY when both rows are visible (oak shows no caption on
  *  the lone voice slider) — label=null renders the row uncaptioned. */
-function VolumeRow({ label, initialGain, onChange }: {
+function VolumeRow({ label, initialGain, remoteGain, onChange }: {
   label: string | null;
   initialGain: number;
+  /** A change made elsewhere (the pop-out's slider, another surface) that THIS
+   *  row follows live; null = nothing to apply. */
+  remoteGain: number | null;
   onChange(gain: number): void;
 }): React.JSX.Element {
   const [gain, setGain] = useState(initialGain);
   const lastPositiveRef = useRef(initialGain > 0 ? initialGain : 1);
+  useEffect(() => {
+    if (remoteGain !== null) {
+      setGain(remoteGain);
+      if (remoteGain > 0) {
+        lastPositiveRef.current = remoteGain;
+      }
+    }
+  }, [remoteGain]);
   return (
     <div className="volume-row">
       {label !== null ? <span className="volume-row-label">{label}</span> : null}
@@ -901,14 +927,20 @@ export function VoiceMemberCard({ session, username, hasShare, moderation = true
 
   const left = Math.min(Math.max(8, x), window.innerWidth - 250);
   const top = Math.min(Math.max(8, y), window.innerHeight - 8 - (hasShare ? 190 : 150));
+  // Live volume sync (2026-09-25): a change made anywhere (the pop-out's
+  // slider, another surface) moves THIS card's open slider too — VolumeRow is
+  // otherwise a snapshot of initialGain.
+  const volumeChange = useStore(volumeChanges, (change) => change);
+  const remoteVoiceGain = volumeChange !== null && volumeChange.kind === "voice" && volumeChange.username === username ? volumeChange.gain : null;
+  const remoteShareGain = volumeChange !== null && volumeChange.kind === "share" && volumeChange.username === username ? volumeChange.gain : null;
   // The rename model: the card's heading is the NICKNAME from the live roster.
   const rosterUsers = useStore(session.rosterStore, (state) => state.users);
   return (
     <div ref={cardRef} className="member-card" style={{ left, top }}>
       <div className="member-card-title">{displayNameOf(rosterUsers, username)}</div>
-      <VolumeRow label={hasShare ? "Voice" : null} initialGain={persistedGain("voice", username)} onChange={(gain) => setVoiceVolume(username, gain)} />
+      <VolumeRow label={hasShare ? "Voice" : null} initialGain={persistedGain("voice", username)} remoteGain={remoteVoiceGain} onChange={(gain) => setVoiceVolume(username, gain)} />
       {hasShare ? (
-        <VolumeRow label="Share audio" initialGain={persistedGain("share", username)} onChange={(gain) => setShareVolume(username, gain)} />
+        <VolumeRow label="Share audio" initialGain={persistedGain("share", username)} remoteGain={remoteShareGain} onChange={(gain) => setShareVolume(username, gain)} />
       ) : null}
       {canMute || canDeafen || canKick ? <div className="member-card-separator" /> : null}
       {canMute ? (

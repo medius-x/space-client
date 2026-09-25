@@ -1981,9 +1981,17 @@ button.wide-add { width: 100%; }
 }
 .quality-summary { color: var(--sp-text-muted); font-size: 12px; margin-left: 94px; }
 
-.popout-root {
-  width: 100vw;
+/* The pop-out is a borderless window like the main one (2026-09-25 style
+   round): the app CaptionBar on top, the video below it. */
+.popout-frame {
   height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+.popout-root {
+  position: relative; /* the viewer toolbar anchors to the video area */
+  flex: 1;
+  min-height: 0;
   background: #000;
   display: flex;
   align-items: center;
@@ -1995,6 +2003,68 @@ button.wide-add { width: 100%; }
    the waiting line centers alone. */
 .popout-root video { max-width: 100%; max-height: 100%; object-fit: contain; }
 .popout-waiting { color: var(--sp-text-dim); font-size: 14px; }
+/* The viewer toolbar (lightbox idiom: a translucent GRAY pill per control —
+   a bare white glyph vanishes on bright frames). Volume is a REMOTE for the
+   main window's share playout; disabled (dim, volume-off glyph) when the
+   share carries no audio. Reveal on hovering THE PILL ITSELF (user request),
+   driven by a pointer-coordinate test in JS — CSS :hover goes stale after a
+   leave-fullscreen transition (Chromium), the pill then never revealed. */
+.popout-toolbar {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(128, 128, 128, 0.45);
+  color: #fff;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease-out;
+}
+.popout-toolbar.visible { opacity: 1; pointer-events: auto; }
+/* While the toolbar is hidden in fullscreen, the IDLE cursor hides with it
+   (video-player semantics; user request 2026-09-25) — any movement brings
+   both back. */
+.popout-root.hide-cursor { cursor: none; }
+.popout-toolbar .icon { font-size: 18px; color: #fff; }
+.popout-toolbar:has(.popout-volume:disabled) .popout-toolbar-volume { opacity: 0.55; }
+/* The mirrored voice-panel buttons (mute/deafen/NS): transparent 26×26, the
+   "on" tint follows the panel's semantics (yellow self-state; NS green). */
+.popout-voice-toggle {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.popout-voice-toggle .icon { font-size: 17px; }
+.popout-voice-toggle:hover { background: rgba(255, 255, 255, 0.18); }
+/* The panel's on-semantics, mirrored: mute/deafen RED, an NS engine running GREEN. */
+.popout-voice-toggle.on { background: var(--sp-red); color: #fff; }
+.popout-voice-toggle.ns.on { background: var(--sp-green); color: #fff; }
+.popout-toolbar-sep { width: 1px; height: 18px; background: rgba(255, 255, 255, 0.35); }
+.popout-toolbar-volume { display: inline-flex; align-items: center; }
+.popout-volume { width: 90px; flex: none; margin: 0; }
+.popout-volume:disabled { opacity: 0.45; }
+.popout-fullscreen {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.popout-fullscreen:hover { color: var(--sp-text); }
 
 /* ===== M5: 1:1 P2P calls ===== */
 /* Round 8 (oak parity): a call does NOT take the chat pane — it renders through
@@ -3264,6 +3334,7 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
   user-select: none;
 }
 .caption-brand { font-size: 13px; font-weight: 700; color: var(--sp-text); padding: 0 12px; }
+.caption-subtitle { font-size: 12px; font-weight: 400; color: var(--sp-text-dim); margin-left: 8px; }
 .caption-buttons { display: flex; height: 100%; -webkit-app-region: no-drag; }
 .caption-button {
   width: 46px;

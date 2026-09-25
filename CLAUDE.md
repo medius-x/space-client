@@ -2251,6 +2251,103 @@ social-aggregate подписан на сторы фоновых сессий �
   fetch'ем по живому URL (157KB), longtask при старте нет. Гейты: 399/399 +
   typecheck + build.
 
+- **Попап шара приведён к общему стилю окна (2026-09-25, юзер-репорт «Open in window
+  не в стиле приложения»).** Главное окно — borderless с фирменной шапкой CaptionBar
+  (32px #1e1f22, SPACE, кнопки 46×32, close-hover красный), а попап шара выезжал с
+  НАТИВНОЙ системной рамкой. Теперь: попап `frame: false` + рендерит ТОТ ЖЕ CaptionBar
+  (с subtitle «Screen share» — проп, .caption-subtitle dim); IPC window-контролов
+  (space-window:minimize/maximize/close) резолвят окно по SENDER'у
+  (BrowserWindow.fromWebContents(event.sender)) — раньше хардкод mainWindowRef, кнопки
+  попапа закрывали бы главное; maximize/unmaximize-события теперь летят и в webContents
+  попапа (глиф restore flip работает); попапу зеркальны защиты главного окна:
+  hookWindowMessage(0x14) (белые вспышки при ресайзе) и will-resize sliver-гвард;
+  minWidth 420 / minHeight 300; лэйаут .popout-frame (caption + flex-тело .popout-root
+  с чёрным видео). Гейты: 399/399 + typecheck + build.
+
+- **Попап шара: громкость + fullscreen (2026-09-25, юзер-просьба).** (1) **Громкость —
+  ПУЛЬТ к плейауту главного окна** (попап подписан video-only, «один звучащий стрим» —
+  дубль аудио невозможен по архитектуре): PopoutTarget += shareUsername (feed.display =
+  username паблишера) / shareAudio / shareVolume (persistedGain share на момент
+  ретаргета; volume НЕ является dep fingerprint-детектора ретаргет-эффекта — смены
+  громкости не перезапускают подписку попапа); НОВАЯ чистая `feedHasShareAudio(feed)`
+  в classifier.ts (enabled audio ≥2 = voice+share по инварианту classifyFeed;
+  видео-only шар → false → слайдер DISABLED, глиф mdi-volume-off, тултип «This share
+  has no audio» — юзер-выбор «показывать но дизейблить»); цепочка: слайдер → IPC
+  space-window:popoutVolume → main (кламп 0..1, типы) → `popout:volume` в главное
+  окно → installPopoutVolumeListener (bootstrap, рядом с sourceDead) →
+  `setShareVolume(username, gain)` — ТОТ ЖЕ путь, что слайдер ростера: живая цепь +
+  персист в запись (цепи нет → персист применится при следующем attach). (2)
+  **Fullscreen**: кнопка в тулбаре (IPC space-window:toggleFullscreen, sender-based
+  setFullScreen), enter/leave-full-screen → `space-window:fullscreen` в webContents
+  попапа (глиф fullscreen↔fullscreen-exit); Esc в fullscreen — выход (keydown;
+  Chromium не выходит сам из программного setFullScreen). Тулбар — пилюля
+  лайтбокс-идиомы rgba(128,128,128,.45) внизу-справа видео-области (.popout-root
+  position:relative), иконка динамика + range 0..1 + кнопка. icons.css 51 глиф
+  (+fullscreen/-exit). Гейты: 399/399 + typecheck + build.
+
+- **Попап шара, раунд 2: ре-открытие + ховер-тулбар + зеркало voice-panel + живой
+  синк громкости (2026-09-25, три юзер-репорта).** (1) **Баг «закрыл крестиком →
+  Waiting for video»**: fingerprint-детектор ретаргет-эффекта НЕ сбрасывался при
+  закрытии попапа, а main ещё и дропал сохранённый target → повторное открытие ТОГО ЖЕ
+  фида не перепушивало ничего (fingerprint совпал). Фикс: onClosed-обработчик сбрасывает
+  `popoutTargetFingerprintRef` (ref переименован) — ретаргет уезжает заново. (2)
+  **Тулбар по ховеру**: opacity 0 + pointer-events none → показ при .popout-root:hover
+  (и :focus-within). (3) **Зеркало voice-panel в попапе**: слева от слайдера
+  mute/deafen/NS (те же глифы и on-семантика панели: mute/deafen КРАСНЫЙ фон, NS
+  ЗЕЛЁНЫЙ при живом движке); состояние едет каналом `popout:voiceState`
+  {muted: UNION self+mod (как панель), deafened, nsEngine} — пушится из runtime при
+  КАЖДОМ изменении (onOwnVoiceControlState — echo сервера, и settingsStore.subscribe
+  для NS-движка) + начальный invoke (main хранит последний); клики обратно
+  `popout:voiceAction` (toggle-mute/toggle-deafen = runtime toggleSelfMute/Deafen — тот
+  же путь что хоткеи; ns-engine = settingsStore.apply с валидацией каталога); NS-кнопка
+  открывает ТО ЖЕ NsEngineMenu (проп-овый компонент из VoiceRoom, fixed-координаты).
+  Camera/share/leave в попап СОЗНАТЕЛЬНО не зеркалились (сессий-управление из
+  попапа просмотра не нужно). (4) **Живой синк громкости в обе стороны**: НОВАЯ стора
+  `volumeChanges` (runtime, Emitter {kind, username, gain, nonce}) — setVoiceVolume/
+  setShareVolume публикуют; ОТКРЫТАЯ карточка роста (VoiceMemberCard → VolumeRow
+  += remoteGain-проп с useEffect) двигает слайдер при изменении ИЗ ПОПАПА; обратно
+  `popout:volumeSync` (setShareVolume → push в попап) обновляет слайдер попапа при
+  изменении в главном, с GRACE-окном 400мс (эхо собственного драга не должно драться
+  с ползунком; username-фильтр через ref, не замыкание). Слайдер попапа 0..2 (как
+  карточка — гейны до 200%). Гейты: 399/399 + typecheck + build.
+
+- **Попап шара, раунд 3 — показ тулбара (2026-09-25, два юзер-репорта: «появляется
+  при наведении на окно, а не на плашку» + «hover умирает после выхода из
+  fullscreen»).** CSS `:hover` УБРАН полностью: reveal ведёт POINTER-ТЕСТ по
+  прямоугольнику самой плашки (window pointermove → getBoundingClientRect →
+  inside → класс .visible; скрытая плашка pointer-events:none, показанная auto).
+  Причины: (а) юзер хочет появление строго при наведении на ПЛАШКУ, не на всё
+  окно; (б) ГРАБЛЯ CHROMIUM: hover-состояние ЗАЛИПАЕТ после leave-fullscreen —
+  селектор .popout-root:hover переставал срабатывать вовсе, pointermove живёт
+  всегда. Держатели видимости: курсор внутри плашки ИЛИ фокус на её контроле
+  (слайдер с клавиатуры) ИЛИ открыто NS-меню (курсор уходит в fixed-карточку над
+  плашкой; nsMenuAt в deps эффекта — подписка перезаводится при открытии/закрытии).
+  **Итерация 2 (юзер-репорт «в fullscreen и после выхода панель перестаёт
+  СКРЫВАТЬСЯ»): при развороте/выходе окно меняет размеры — плашка у corner-anchor
+  ПЕРЕПРЫГИВАЕТ, курсор неподвижен, pointermove не стреляет → видимость никто не
+  пересчитывает. Фикс: onFullscreenChange и window-resize ГАСЯТ плашку (следующее
+  движение курсора проявит её снова, если накрывает).** **Итерация 3 (юзер-репорт
+  «в fullscreen hover не работает вообще; после выхода показывается и не
+  скрывается»): focus-держатель toolbar.contains(activeElement) был источником
+  залипания — клик по кнопке плашки оставлял фокус в ней, и ЛЮБОЙ pointermove
+  держал visible навсегда; в fullscreen юзер нащупывал плашку по оконным
+  координатам, а она сместилась на высоту шапки. Финальная семантика
+  (видеоплеерная): ОКОННЫЙ режим — показ при курсоре в прямоугольнике плашки
+  ±24px хит-зона, скрытие по уходу курсора; FULLSCREEN — ЛЮБОЕ движение курсора
+  показывает плашку, автоскрытие через 2.5с бездействия (таймер перевзводится
+  каждым pointermove); focus-держатель УДАЛЁН, единственный не-курсорный держатель —
+  открытое NS-меню; fullscreen-флип и resize по-прежнему гасят (якорь
+  перепрыгивает под неподвижным курсором).** **Итерация 4 (юзер-репорты: «плашку
+  по центру снизу», «в оконном режиме курсор УШЁЛ ИЗ ОКНА с плашки — плашка не
+  гаснет», «в fullscreen курсор не прячется при бездействии»): плашка
+  left:50%+translateX(-50%) по центру низа; document mouseleave (стреляет при
+  уходе курсора ИЗ ОКНА — pointermove там больше не приходит, последний тест
+  говорил inside) гасит плашку (держатель — только открытое NS-меню); скрытие
+  КУРСОРА в fullscreen синхронизировано с плашкой — класс .hide-cursor
+  (cursor:none) на .popout-root когда fullscreen && !toolbarVisible: бездействие
+  уводит и плашку, и курсор; движение возвращает обоих.** Гейты: 399/399 +
+  typecheck + build.
+
 - Гейт после каждой фазы: `npm test` + `npm run typecheck` зелёные.
 - Новые файлы сразу `git add`. Коммиты только по явной команде; subject на английском.
 - Никаких single-letter имён (кроме i/j цикла и T/E/K/V генериков); комментарии в коде

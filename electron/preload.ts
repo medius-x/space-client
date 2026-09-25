@@ -210,6 +210,62 @@ contextBridge.exposeInMainWorld("spaceWindow", {
   onClosed(callback: () => void): void {
     ipcRenderer.on("popout:closed", () => callback());
   },
+  popoutVolume(username: string, volume: number): void {
+    ipcRenderer.send("space-window:popoutVolume", username, volume);
+  },
+  onPopoutVolume(callback: (username: string, volume: number) => void): void {
+    ipcRenderer.removeAllListeners("popout:volume");
+    ipcRenderer.on("popout:volume", (_event, username: unknown, volume: unknown) => {
+      if (typeof username === "string" && typeof volume === "number") {
+        callback(username, volume);
+      }
+    });
+  },
+  pushPopoutVolume(username: string, gain: number): void {
+    ipcRenderer.send("space-window:pushPopoutVolume", username, gain);
+  },
+  onPopoutVolumeSync(callback: (username: string, gain: number) => void): void {
+    ipcRenderer.removeAllListeners("popout:volumeSync");
+    ipcRenderer.on("popout:volumeSync", (_event, username: unknown, gain: unknown) => {
+      if (typeof username === "string" && typeof gain === "number") {
+        callback(username, gain);
+      }
+    });
+  },
+  pushPopoutVoiceState(state: unknown): void {
+    ipcRenderer.send("space-window:pushPopoutVoiceState", state);
+  },
+  popoutVoiceState(): Promise<unknown> {
+    return ipcRenderer.invoke("space-window:popoutVoiceState");
+  },
+  onPopoutVoiceState(callback: (state: never) => void): void {
+    ipcRenderer.removeAllListeners("popout:voiceState");
+    ipcRenderer.on("popout:voiceState", (_event, state: unknown) => {
+      callback(state as never);
+    });
+  },
+  popoutVoiceAction(action: string, engine?: string): void {
+    ipcRenderer.send("space-window:popoutVoiceAction", action, engine ?? null);
+  },
+  onPopoutVoiceAction(callback: (action: string, engine: string | null) => void): void {
+    ipcRenderer.removeAllListeners("popout:voiceAction");
+    ipcRenderer.on("popout:voiceAction", (_event, action: unknown, engine: unknown) => {
+      if (typeof action === "string") {
+        callback(action, typeof engine === "string" ? engine : null);
+      }
+    });
+  },
+  toggleFullscreen(): void {
+    ipcRenderer.send("space-window:toggleFullscreen");
+  },
+  onFullscreenChange(callback: (fullscreen: boolean) => void): void {
+    ipcRenderer.removeAllListeners("space-window:fullscreen");
+    ipcRenderer.on("space-window:fullscreen", (_event, fullscreen: unknown) => {
+      if (typeof fullscreen === "boolean") {
+        callback(fullscreen);
+      }
+    });
+  },
   minimize(): void {
     ipcRenderer.send("space-window:minimize");
   },

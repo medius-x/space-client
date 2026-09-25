@@ -37,6 +37,8 @@
 .icon.mdi-eye-plus-outline::before { content: "\F086C"; }
 .icon.mdi-file-video-outline::before { content: "\F0E2C"; }
 .icon.mdi-forward::before { content: "\F028D"; }
+.icon.mdi-fullscreen::before { content: "\F0293"; }
+.icon.mdi-fullscreen-exit::before { content: "\F0294"; }
 .icon.mdi-headphones::before { content: "\F02CB"; }
 .icon.mdi-headphones-off::before { content: "\F07CE"; }
 .icon.mdi-home::before { content: "\F02DC"; }

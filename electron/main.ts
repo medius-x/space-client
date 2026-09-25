@@ -452,16 +452,66 @@ const CAPTURE_SOURCE_CACHE_TTL_MS = 30_000;
 
 let captureSourceCache: CaptureSourceCache | null = null;
 
-/** Caption-bar window controls (borderless chrome, oak parity). */
-ipcMain.on("space-window:minimize", () => mainWindowRef?.minimize());
-ipcMain.on("space-window:maximize", () => {
-  if (mainWindowRef?.isMaximized()) {
-    mainWindowRef.unmaximize();
+/** Caption-bar window controls (borderless chrome, oak parity). Resolved by
+ *  SENDER: the main window and the share pop-out both render a CaptionBar,
+ *  and each button must act on ITS OWN window. */
+ipcMain.on("space-window:minimize", (event) => {
+  BrowserWindow.fromWebContents(event.sender)?.minimize();
+});
+ipcMain.on("space-window:maximize", (event) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (window === undefined || window === null) {
+    return;
+  }
+  if (window.isMaximized()) {
+    window.unmaximize();
   } else {
-    mainWindowRef?.maximize();
+    window.maximize();
   }
 });
-ipcMain.on("space-window:close", () => mainWindowRef?.close());
+ipcMain.on("space-window:close", (event) => {
+  BrowserWindow.fromWebContents(event.sender)?.close();
+});
+// The pop-out's volume slider: the AUDIO plays in the main window (the pop-out
+// subscribes video-only), so the value forwards there and applies to the share
+// chain / persists per username.
+ipcMain.on("space-window:popoutVolume", (_event, username: unknown, volume: unknown) => {
+  if (typeof username !== "string" || typeof volume !== "number" || !Number.isFinite(volume)) {
+    return;
+  }
+  mainWindowRef?.webContents.send("popout:volume", username, Math.min(2, Math.max(0, volume)));
+});
+// MAIN → pop-out: the share gain changed in the main window (slider sync).
+ipcMain.on("space-window:pushPopoutVolume", (_event, username: unknown, gain: unknown) => {
+  if (typeof username !== "string" || typeof gain !== "number" || !Number.isFinite(gain)) {
+    return;
+  }
+  popoutWindow?.webContents.send("popout:volumeSync", username, gain);
+});
+// MAIN → pop-out: the voice-panel mirror (mute/deafen/NS) — kept for the
+// pop-out's initial state, forwarded live while it is open.
+let lastPopoutVoiceState: Record<string, unknown> | null = null;
+ipcMain.on("space-window:pushPopoutVoiceState", (_event, state: unknown) => {
+  if (state === null || typeof state !== "object") {
+    return;
+  }
+  lastPopoutVoiceState = state as Record<string, unknown>;
+  popoutWindow?.webContents.send("popout:voiceState", state);
+});
+ipcMain.handle("space-window:popoutVoiceState", () => lastPopoutVoiceState);
+// POP-OUT → main: voice-panel button presses run in the MAIN window's runtime.
+ipcMain.on("space-window:popoutVoiceAction", (_event, action: unknown, engine: unknown) => {
+  if (action !== "toggle-mute" && action !== "toggle-deafen" && action !== "ns-engine") {
+    return;
+  }
+  mainWindowRef?.webContents.send("popout:voiceAction", action, typeof engine === "string" ? engine : null);
+});
+ipcMain.on("space-window:toggleFullscreen", (event) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (window !== undefined && window !== null) {
+    window.setFullScreen(!window.isFullScreen());
+  }
+});
 
 ipcMain.handle("space-capture:sources", async (_event, requestedTypes: unknown) => {
   try {
@@ -587,7 +637,10 @@ ipcMain.handle("space-window:popout", () => {
   const popout = new BrowserWindow({
     width: 880,
     height: 520,
+    minWidth: 420,
+    minHeight: 300,
     title: "space — screen share",
+    frame: false, // the SAME borderless chrome as the main window — the pop-out renders its own CaptionBar (2026-09-25 style round)
     backgroundColor: "#1e1f22",
     webPreferences: {
       preload: path.join(__dirname, "..", "preload", "preload.js"),
@@ -598,6 +651,21 @@ ipcMain.handle("space-window:popout", () => {
       backgroundThrottling: false, // frames must flow while the main window is focused
     },
   });
+  // The main window's resize protections, mirrored here: the WM_ERASEBKGND
+  // swallow (dark borderless windows flash WHITE on resize steps) and the
+  // sliver-collapse guard (the unexplained native 44px flip).
+  if (process.platform === "win32") {
+    popout.hookWindowMessage(0x0014, () => undefined);
+  }
+  popout.on("will-resize", (event, newBounds) => {
+    if (newBounds.width < 300 && popout.getBounds().width > 500) {
+      event.preventDefault();
+    }
+  });
+  popout.on("maximize", () => popout.webContents.send("space-window:maximized", true));
+  popout.on("unmaximize", () => popout.webContents.send("space-window:maximized", false));
+  popout.on("enter-full-screen", () => popout.webContents.send("space-window:fullscreen", true));
+  popout.on("leave-full-screen", () => popout.webContents.send("space-window:fullscreen", false));
   popoutWindow = popout;
   popout.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   popout.webContents.on("will-navigate", (event, url) => {
