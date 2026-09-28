@@ -13,6 +13,7 @@ import type {
   ChannelOverride,
   ChannelType,
   ChannelUserOverride,
+  CustomEmoji,
   PermissionCatalogEntry,
   Role,
   ServerMember,
@@ -23,6 +24,7 @@ import {
   CHANGE_NICKNAME_PERMISSION,
   KICK_MEMBERS_PERMISSION,
   MANAGE_CHANNELS_PERMISSION,
+  MANAGE_EMOJIS_PERMISSION,
   MANAGE_MEMBERS_PERMISSION,
   MANAGE_NICKNAMES_PERMISSION,
   MANAGE_ROLES_PERMISSION,
@@ -44,6 +46,10 @@ import {
 } from "../../domain/logic/channel-access";
 import { argbIntToCss, canActOn, memberNameColor, topPosition } from "../../domain/logic/roster-grouping";
 import { ApiError } from "../../core/rest";
+import { useAttachmentImage } from "../hooks/useAttachmentImage";
+import { measureImageSize } from "../../media/image-size";
+import { sanitizeSlotFileName } from "../../domain/logic/ascii-name";
+import { emojiNameFromFileName } from "../../domain/logic/emoji-picker";
 import { moveRoleIdTowards } from "../../domain/logic/role-drag";
 import { Modal } from "./Modal";
 import { Avatar } from "./Avatar";
@@ -94,7 +100,7 @@ const PERMISSION_INFO: Record<string, { label: string; description: string }> = 
 
 /** Permissions with no server endpoint behind them yet (marked in the editor, oak parity). */
 const NOT_IMPLEMENTED: ReadonlySet<string> = new Set([
-  "MANAGE_SERVER", "MANAGE_NICKNAMES", "CHANGE_NICKNAME", "VIEW_AUDIT_LOG", "MANAGE_EMOJIS",
+  "MANAGE_SERVER", "MANAGE_NICKNAMES", "CHANGE_NICKNAME", "VIEW_AUDIT_LOG",
   "MANAGE_MESSAGES", "EMBED_LINKS", "MENTION_EVERYONE", "USE_EXTERNAL_EMOJIS",
   "ADD_REACTIONS", "SPEAK", "USE_VAD", "PRIORITY_SPEAKER", "STREAM", "REQUEST_TO_SPEAK",
 ]);
@@ -147,6 +153,7 @@ export function ServerSettingsPane({ session }: { session: ConnectionSession }):
     { key: "roles" as const, label: "Roles", enabled: can(MANAGE_ROLES_PERMISSION) },
     { key: "members" as const, label: "Members", enabled: can(MANAGE_MEMBERS_PERMISSION) || can(KICK_MEMBERS_PERMISSION) || can(BAN_MEMBERS_PERMISSION) },
     { key: "channels" as const, label: "Channels", enabled: can(MANAGE_CHANNELS_PERMISSION) },
+    { key: "emojis" as const, label: "Emoji", enabled: can(MANAGE_EMOJIS_PERMISSION) },
     { key: "server" as const, label: "Server", enabled: can(MANAGE_STORAGE_PERMISSION) },
   ].filter((entry) => entry.enabled);
   const active = sections.find((entry) => entry.key === section) ?? sections[0];
@@ -174,6 +181,8 @@ export function ServerSettingsPane({ session }: { session: ConnectionSession }):
           <RolesSection session={session} />
         ) : active.key === "members" ? (
           <MembersSection session={session} />
+        ) : active.key === "emojis" ? (
+          <ServerEmojiSection session={session} />
         ) : active.key === "server" ? (
           <ServerStorageSection session={session} />
         ) : (
@@ -615,8 +624,11 @@ function RoleEditor({ session, role, canManageMembers }: {
               }}
             />
           ) : (
+            /* The SPAN also shows the DRAFT, not role.name: the name is only PATCHed
+               on "Save Changes", so reading the store here reverted the display to
+               the old name on every blur/tab-switch while the draft was intact. */
             <span className="role-editor-name" style={{ color: role.color !== null ? argbIntToCss(role.color) : undefined }}>
-              {role.name}
+              {name}
             </span>
           )}
           {!builtin && !editingName && tab === "appearance" ? (
@@ -1848,6 +1860,178 @@ function setsOfIdsEqual(left: ReadonlySet<number>, right: ReadonlySet<number>): 
 // ---------------------------------------------------------------------------
 // Shared bits
 // ---------------------------------------------------------------------------
+
+/** One catalog cell of the Emoji section: the image, the ":name:" label and the
+ *  delete cross (a ConfirmModal follows). */
+function EmojiCatalogCell({ session, emoji, onDelete }: {
+  session: ConnectionSession;
+  emoji: CustomEmoji;
+  onDelete(emoji: CustomEmoji): void;
+}): React.JSX.Element {
+  const imageUrl = useAttachmentImage(
+    session,
+    emoji.url !== null ? { key: emoji.key, url: emoji.url } : null,
+  );
+  return (
+    <div className="emoji-cell">
+      {imageUrl !== null
+        ? <img src={imageUrl} alt={emoji.name} draggable={false} />
+        : <span className="emoji-cell-fallback">{emoji.name.slice(0, 2)}</span>}
+      <span className="emoji-cell-name" title={`:${emoji.name}:`}>:{emoji.name}:</span>
+      <button className="icon-button emoji-cell-remove" title="Delete emoji" onClick={() => onDelete(emoji)}>
+        <span className="icon mdi-close" />
+      </button>
+    </div>
+  );
+}
+
+function ServerEmojiSection({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const emojiState = useStore(session.emojiStore, (state) => state);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [pendingKey, setPendingKey] = useState<string | null>(null);
+  const [nameDraft, setNameDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<CustomEmoji | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const resetPending = (): void => {
+    setPendingFile(null);
+    setPendingKey(null);
+    setNameDraft("");
+    setError(null);
+  };
+
+  // The client-side validation ladder BEFORE any network work: extension → size →
+  // dimensions (warn-only) → the name (prefilled from the file name, regex + local
+  // uniqueness). The server re-validates everything (400/409 surface here verbatim).
+  const pickFile = (file: File | null): void => {
+    if (file === null) {
+      return;
+    }
+    const lower = file.name.toLowerCase();
+    if (!lower.endsWith(".png") && !lower.endsWith(".gif") && !lower.endsWith(".webp")) {
+      setError("Pick a PNG, GIF or WebP image.");
+      return;
+    }
+    if (file.size > 1024 * 1024) {
+      setError("The file is larger than 1 MB.");
+      return;
+    }
+    void measureImageSize(file).then((size) => {
+      if (size !== null && (size.width > 256 || size.height > 256)) {
+        log.warn("settings", `emoji ${file.name} is ${size.width}x${size.height} — larger than 256px, it will render downscaled`);
+      }
+    });
+    const suggested = emojiNameFromFileName(file.name);
+    if (emojiState.names.has(suggested)) {
+      setError(`The name ":${suggested}:" is already taken — pick another.`);
+    }
+    setPendingFile(file);
+    setNameDraft(suggested);
+    setPendingKey(null);
+  };
+
+  const uploadPending = async (): Promise<void> => {
+    if (pendingFile === null) {
+      return;
+    }
+    const name = nameDraft.trim();
+    if (!/^[a-z0-9_-]{1,32}$/.test(name)) {
+      setError("The name must be 1-32 chars of a-z, 0-9, _ and -.");
+      return;
+    }
+    if (emojiState.names.has(name)) {
+      setError(`The name ":${name}:" is already taken.`);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      let key = pendingKey;
+      if (key === null) {
+        const slot = await session.rest.requestEmojiUploadSlot(sanitizeSlotFileName(pendingFile.name));
+        await session.rest.uploadBytes(slot.uploadUrl, await pendingFile.arrayBuffer(), pendingFile.type || "image/png");
+        key = slot.key;
+        setPendingKey(key); // a name conflict retries ONLY the create step
+      }
+      await session.rest.createEmoji({ name, fileKey: key });
+      session.refreshEmojis();
+      resetPending();
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : String(uploadError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="settings-section">
+      <h2 className="section-title">Emoji</h2>
+      <div className="emoji-upload-row">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/gif,image/webp"
+          hidden
+          onChange={(event) => {
+            pickFile(event.target.files?.[0] ?? null);
+            event.target.value = ""; // let the same file be re-picked after a fix
+          }}
+        />
+        <button className="primary" disabled={busy || !emojiState.supported} onClick={() => fileInputRef.current?.click()}>
+          Upload emoji
+        </button>
+        <span className="emoji-count">{emojiState.emojis.length} / 200</span>
+      </div>
+      <div className="settings-hint">PNG, GIF or WebP · up to 1 MB · larger than 256×256 renders downscaled</div>
+      {pendingFile !== null ? (
+        <div className="emoji-upload-form">
+          <span className="emoji-upload-file" title={pendingFile.name}>{pendingFile.name}</span>
+          <div className="emoji-upload-form-row">
+            <input
+              type="text"
+              value={nameDraft}
+              maxLength={32}
+              placeholder="name"
+              onChange={(event) => setNameDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !busy) {
+                  event.preventDefault();
+                  void uploadPending();
+                }
+              }}
+            />
+            <button className="primary" disabled={busy} onClick={() => void uploadPending()}>Save</button>
+            <button className="ghost" disabled={busy} onClick={resetPending}>Cancel</button>
+          </div>
+        </div>
+      ) : null}
+      <div className="error-line">{error ?? ""}</div>
+      {emojiState.emojis.length === 0 ? (
+        <div className="emoji-empty">No custom emojis yet — upload a PNG, GIF or WebP up to 1 MB.</div>
+      ) : (
+        <div className="emoji-grid">
+          {emojiState.emojis.map((emoji) => (
+            <EmojiCatalogCell key={emoji.id} session={session} emoji={emoji} onDelete={setDeleteTarget} />
+          ))}
+        </div>
+      )}
+      {deleteTarget !== null ? (
+        <ConfirmModal
+          title="Delete emoji"
+          note={`Delete :${deleteTarget.name}:? Messages using it will fall back to plain text.`}
+          confirmLabel="Delete"
+          onConfirm={async () => {
+            await session.rest.deleteEmoji(deleteTarget.id);
+            session.refreshEmojis();
+          }}
+          onClose={() => setDeleteTarget(null)}
+        />
+      ) : null}
+    </div>
+  );
+}
 
 function ConfirmModal({ title, note, confirmLabel, onConfirm, onClose }: {
   title: string;

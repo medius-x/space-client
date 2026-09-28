@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../hooks/useStore";
+import { useAttachmentImage } from "../hooks/useAttachmentImage";
 import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
 import { ackActiveChannel, appStore, forwardCrossInstance, forwardRequestUpload, forwardUploadBytes } from "../runtime";
 import { closeDiscussionForEveryone, closeDiscussionView, openDiscussion, openDraftDiscussion } from "../runtime";
@@ -11,6 +12,12 @@ import { RestClient } from "../../core/rest";
 import { log } from "../../logging";
 import { computeGroupStarts, continuesGroup, formatHeaderStamp, formatTimeOfDay, toEpochMs, type GroupableMessage } from "../../domain/logic/message-grouping";
 import { firstHttpUrl, segmentMessageContent } from "../../domain/logic/mention-segmenter";
+import {
+  filterEmojis,
+  isEmojiOnlyMessage,
+  jumboEmojiEstimateExtra,
+  JUMBO_EMOJI_DEFAULT_PX,
+} from "../../domain/logic/emoji-picker";
 import { displayNameOf } from "../../domain/logic/display-name";
 import { tileReplyLabel } from "../../domain/logic/discussions-view";
 import { linkPreviewFor, type LinkPreview } from "../link-preview";
@@ -18,7 +25,7 @@ import { notifications } from "../notifications";
 import { dmDisplayName } from "../../domain/logic/dm-display";
 import { memberNameColor } from "../../domain/logic/roster-grouping";
 import { paletteColor } from "../../domain/logic/user-palette";
-import type { Channel, ChannelMyPermissions, Discussion, DmChannel, ForwardInfo, Message, ReplyInfo } from "../../types";
+import type { Channel, ChannelMyPermissions, CustomEmoji, Discussion, DmChannel, ForwardInfo, Message, ReplyInfo } from "../../types";
 import { REACTION_CATALOG, REACTION_GLYPH_BY_SLUG } from "../../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { Modal } from "./Modal";
@@ -52,10 +59,13 @@ const QUOTE_DEPTH_MAX = 5;
  * the estimate→measure delta on every row and the extent never stopped moving
  * (live report). Grouping knowledge arrives via MessageList's startById map.
  */
-function estimateRowHeight(message: Message, startsGroup: boolean, hasDiscussionTile = false): number {
+function estimateRowHeight(message: Message, startsGroup: boolean, hasDiscussionTile = false, jumboEmojiPx = JUMBO_EMOJI_DEFAULT_PX): number {
   const CHARS_PER_LINE = 72;
   const lines = message.content === null ? 0 : Math.max(1, Math.ceil(message.content.length / CHARS_PER_LINE));
   let height = (startsGroup ? 30 : 24) + lines * 21;
+  // A potentially-jumbo row (emoji-only content) grows with the reader's size
+  // setting — prepaid here so measurement does not shift rows below it.
+  height += jumboEmojiEstimateExtra(message.content, jumboEmojiPx);
   if (message.reply !== null) {
     height += 34;
   }
@@ -578,6 +588,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
             confirmDelete: () => setDeleteTarget(menu.message),
             isDm: dm !== null,
             canStartDiscussion: dm === null && openDiscussionEntry === null && (channelPermissions?.sendMessages ?? false),
+            canReact: dm !== null || session.permissionStore.can("ADD_REACTIONS"),
           })}
           onClose={() => setMenu(null)}
         />
@@ -617,7 +628,10 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
             return (
               <button key={entry.slug} className="emoji-choice"
                 onClick={() => {
-                  void session.toggleReaction(chatChannel.id, picker.message.id, entry.slug, mine).catch(() => undefined);
+                  // A failed toggle (revoked permission, network) must leave a
+                  // trace — the silent catch made 403s look like dead buttons.
+                  void session.toggleReaction(chatChannel.id, picker.message.id, entry.slug, mine)
+                    .catch((reactionError) => log.warn("reactions", `toggle ${entry.slug} failed: ${String(reactionError)}`));
                   setPicker(null);
                 }}>
                 {entry.glyph}
@@ -669,14 +683,19 @@ function messageMenuItems(
     confirmDelete(): void;
     isDm: boolean;
     canStartDiscussion: boolean;
+    canReact: boolean;
   },
 ): ContextMenuItem[] {
   const ownUsername = session.username();
   const canManageMessages = session.permissionStore.can("MANAGE_MESSAGES");
-  const items: ContextMenuItem[] = [
-    { label: "Add reaction…", action: extra.openPicker },
-    { label: "Reply", action: () => actions.setReplyTo(message) },
-  ];
+  const items: ContextMenuItem[] = [];
+  // Gate SYMMETRY with the hover button (canAddReactions): a member without
+  // ADD_REACTIONS must not see a context-menu path the server will 403 (live
+  // report: the menu item opened the picker, the pick silently did nothing).
+  if (extra.canReact) {
+    items.push({ label: "Add reaction…", action: extra.openPicker });
+  }
+  items.push({ label: "Reply", action: () => actions.setReplyTo(message) });
   if ((message.content?.length ?? 0) > 0) {
     items.push({ label: "Copy text", action: () => void navigator.clipboard.writeText(message.content ?? "").catch(() => undefined) });
   }
@@ -1074,6 +1093,9 @@ function MessageList(props: MessageListProps): React.JSX.Element {
   // Keyed on the store's version — the origin-id SET itself is derived (useMemo, never a
   // selector — the infinite-rerender bug class).
   const rowDiscussionsVersion = useStore(session.discussionsStore, (store) => store.version);
+  // The jumbo size rides the row ESTIMATE too (not just the render): a changed
+  // setting re-sizes both in one frame, so no measure-driven row drift.
+  const emojiJumboSize = useStore(settingsStore, (settings) => settings.emojiJumboSize);
   const discussionOriginIds = useMemo(() => {
     void rowDiscussionsVersion; // the mutation key
     const originIds = new Set<number>();
@@ -1084,8 +1106,8 @@ function MessageList(props: MessageListProps): React.JSX.Element {
   }, [rowDiscussionsVersion, session, channel.id]);
   const groupedEstimateHeight = useCallback(
     (message: Message): number => estimateRowHeight(message, startById.get(message.id) ?? true,
-      discussionOriginIds.has(message.id)),
-    [startById, discussionOriginIds],
+      discussionOriginIds.has(message.id), emojiJumboSize),
+    [startById, discussionOriginIds, emojiJumboSize],
   );
 
   // Discord/oak rule: your OWN message is never "new" for you — the divider
@@ -1186,6 +1208,38 @@ interface MessageRowProps {
   onReactedBy(state: { x: number; y: number; names: readonly string[] }): void;
 }
 
+/** One ":name:" token rendered as an inline catalog image (a fixed em box — zero
+ *  layout shift). Falls back to the literal text while the image is not there yet
+ *  (no cache hit) or after the emoji was deleted — never a broken <img>.
+ *  `large` is Discord's jumbo mode: an emoji-only message renders its tokens
+ *  big instead of text-height — the exact size is the reader's own setting
+ *  (Settings → Appearance; default 48 = Discord parity). */
+function InlineEmoji({ session, name, large = false }: {
+  session: ConnectionSession;
+  name: string;
+  large?: boolean;
+}): React.JSX.Element {
+  const emoji = useStore(session.emojiStore, (state) => state.byName.get(name) ?? null);
+  const jumboSize = useStore(settingsStore, (settings) => settings.emojiJumboSize);
+  const imageUrl = useAttachmentImage(
+    session,
+    emoji !== null && emoji.url !== null ? { key: emoji.key, url: emoji.url } : null,
+  );
+  if (emoji === null || imageUrl === null) {
+    return <span>{`:${name}:`}</span>;
+  }
+  return (
+    <img
+      className={large ? "inline-emoji inline-emoji-large" : "inline-emoji"}
+      style={large ? { height: `${jumboSize}px` } : undefined}
+      src={imageUrl}
+      alt={`:${name}:`}
+      title={`:${name}:`}
+      draggable={false}
+    />
+  );
+}
+
 /**
  * Memoized: the VirtualList recomputes its window on every scroll frame, which
  * re-runs renderItem for the whole visible window — with memo, rows whose props
@@ -1204,6 +1258,10 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
   // repaints every author at once); the username never shows.
   const rosterUsers = useStore(session.rosterStore, (state) => state.users);
   const nameOf = (username: string): string => displayNameOf(rosterUsers, username);
+  // Custom emojis resolve through the LIVE catalog: an upload/delete republished by
+  // /topic/emojis must repaint already-mounted (memoized) rows — the row owns the
+  // name-set subscription, the token lookup happens per segment in InlineEmoji.
+  const emojiNames = useStore(session.emojiStore, (state) => state.names);
 
   useEffect(() => {
     setDraft(message.content ?? "");
@@ -1289,25 +1347,33 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
     </>
   ) : (
     <div className="message-content">
-      {segmentMessageContent(message.content, message.mentions).map((segment, segmentIndex) =>
-        segment.kind === "mention"
-          ? <span key={segmentIndex} className="mention">{segment.text}</span>
-          : segment.kind === "link"
-            ? (
-              <a
-                key={segmentIndex}
-                className="body-link"
-                href={segment.url}
-                onClick={(event) => {
-                  event.preventDefault(); // the app never navigates — the system browser opens
-                  void window.spaceMedia?.openExternal(segment.url);
-                }}
-              >
-                {segment.text}
-              </a>
-            )
-            : <span key={segmentIndex}>{segment.text}</span>,
-      )}
+      {(() => {
+        // Computed once per render: the segments feed the mapping AND the jumbo
+        // check (an emoji-only message renders its tokens large — Discord rule).
+        const segments = segmentMessageContent(message.content, message.mentions, emojiNames);
+        const emojiOnly = isEmojiOnlyMessage(segments);
+        return segments.map((segment, segmentIndex) =>
+          segment.kind === "mention"
+            ? <span key={segmentIndex} className="mention">{segment.text}</span>
+            : segment.kind === "link"
+              ? (
+                <a
+                  key={segmentIndex}
+                  className="body-link"
+                  href={segment.url}
+                  onClick={(event) => {
+                    event.preventDefault(); // the app never navigates — the system browser opens
+                    void window.spaceMedia?.openExternal(segment.url);
+                  }}
+                >
+                  {segment.text}
+                </a>
+              )
+              : segment.kind === "emoji"
+                ? <InlineEmoji key={segmentIndex} session={session} name={segment.name} large={emojiOnly} />
+                : <span key={segmentIndex}>{segment.text}</span>,
+        );
+      })()}
       {message.editedAt !== null ? <span className="message-edited">(edited)</span> : null}
     </div>
   );
@@ -1419,7 +1485,8 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
                   key={summary.reaction}
                   className={"reaction-chip" + (mine ? " mine" : "")}
                   title={summary.usernames.join(", ")}
-                  onClick={() => void session.toggleReaction(channel.id, message.id, summary.reaction, mine).catch(() => undefined)}
+                  onClick={() => void session.toggleReaction(channel.id, message.id, summary.reaction, mine)
+                    .catch((reactionError) => log.warn("reactions", `toggle ${summary.reaction} failed: ${String(reactionError)}`))}
                   onContextMenu={(event) => {
                     // oak's showReactedByMenu: right-click a chip to see who reacted.
                     event.preventDefault();
@@ -1670,6 +1737,26 @@ function LinkPreviewCard({ url }: { url: string }): React.JSX.Element | null {
 // Composer
 // ---------------------------------------------------------------------------
 
+/** One catalog tile in the composer's emoji popup (a component so the image hook
+ *  runs per tile, never inside the grid's map loop). */
+function EmojiTile({ session, emoji, onPick }: {
+  session: ConnectionSession;
+  emoji: CustomEmoji;
+  onPick(): void;
+}): React.JSX.Element {
+  const imageUrl = useAttachmentImage(
+    session,
+    emoji.url !== null ? { key: emoji.key, url: emoji.url } : null,
+  );
+  return (
+    <button className="emoji-tile" title={`:${emoji.name}:`} onClick={onPick}>
+      {imageUrl !== null
+        ? <img src={imageUrl} alt={emoji.name} draggable={false} />
+        : <span className="emoji-tile-fallback">{emoji.name.slice(0, 2)}</span>}
+    </button>
+  );
+}
+
 function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCancelReply, onPaste, onSend }: {
   session: ConnectionSession;
   placeholder: string;
@@ -1685,12 +1772,18 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
   const [error, setError] = useState<string | null>(null);
   const [mentionQuery, setMentionQuery] = useState<{ token: string; caret: number } | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
+  const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
+  const [emojiQuery, setEmojiQuery] = useState("");
+  const emojiPickerRef = useRef<HTMLDivElement>(null);
+  const emojiButtonRef = useRef<HTMLButtonElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const users = useStore(session.rosterStore, (state) => state.users);
   const roles = useStore(session.memberStore, (state) => state.roles);
   const ownUsername = useStore(appStore, (state) => state.ownUsername);
   const ctrlEnterSends = useStore(settingsStore, (settings) => settings.ctrlEnterSends);
+  const emojiState = useStore(session.emojiStore, (state) => state);
+  const emojiMatches = useMemo(() => filterEmojis(emojiState.emojis, emojiQuery), [emojiState.emojis, emojiQuery]);
 
   // oak's MentionSuggester order: @everyone/@here first, then MENTIONABLE roles,
   // then users — one flat list the keyboard walks (live report: roles and the
@@ -1752,6 +1845,35 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
     });
   };
 
+  /** Inserts ":name:" at the caret (the applyMention mechanic: rAF refocus so a
+   *  mouse click on the grid doesn't steal the typing flow). The picker STAYS
+   *  open — Discord's behavior — until Escape/outside-click closes it. */
+  const applyEmoji = (name: string): void => {
+    const node = composerInputRef.current;
+    const caret = node !== null ? node.selectionStart ?? text.length : text.length;
+    const replaced = `${text.slice(0, caret)}:${name}:${text.slice(caret)}`;
+    setText(replaced);
+    setMentionQuery(null);
+    window.requestAnimationFrame(() => {
+      const field = composerInputRef.current;
+      if (field !== null) {
+        field.focus();
+        const nextCaret = caret + name.length + 2;
+        field.setSelectionRange(nextCaret, nextCaret);
+      }
+    });
+  };
+
+  // The BUTTON rides as the popup's anchor: its own press does not count as
+  // "outside", so the onClick toggle closes the picker instead of racing the
+  // outside-dismiss into a reopen (live report).
+  useOutsideDismiss(emojiPickerRef, () => {
+    if (emojiPickerOpen) {
+      setEmojiPickerOpen(false);
+      setEmojiQuery("");
+    }
+  }, emojiButtonRef);
+
   const submit = async (): Promise<void> => {
     const content = text.trim();
     if ((!content && !allowEmptySend) || busy) {
@@ -1763,6 +1885,10 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
       await onSend(content);
       setText("");
       setMentionQuery(null);
+      // A sent message closes the picker (user request) — but a FAILED send
+      // keeps it: the draft survives, so does the picker.
+      setEmojiPickerOpen(false);
+      setEmojiQuery("");
     } catch (submitError) {
       // Keep the text — a failed send must never eat the draft.
       setError(submitError instanceof Error ? submitError.message : String(submitError));
@@ -1789,6 +1915,37 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
               <span>{candidate.label}</span>
             </div>
           ))}
+        </div>
+      ) : null}
+      {emojiPickerOpen && emojiState.supported ? (
+        <div ref={emojiPickerRef} className="emoji-popup">
+          <input
+            className="emoji-popup-search"
+            type="text"
+            placeholder="Search emojis"
+            value={emojiQuery}
+            onChange={(event) => setEmojiQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.stopPropagation(); // the textarea's own Escape handlers stay quiet
+                setEmojiPickerOpen(false);
+                setEmojiQuery("");
+              }
+            }}
+          />
+          {emojiMatches.length === 0 ? (
+            <div className="emoji-popup-empty">
+              {emojiState.emojis.length === 0
+                ? "No emojis yet — upload them in Server Settings."
+                : "Nothing matches."}
+            </div>
+          ) : (
+            <div className="emoji-popup-grid">
+              {emojiMatches.map((emoji) => (
+                <EmojiTile key={emoji.id} session={session} emoji={emoji} onPick={() => applyEmoji(emoji.name)} />
+              ))}
+            </div>
+          )}
         </div>
       ) : null}
       <div className="composer-card">
@@ -1874,6 +2031,21 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
           }
         }}
         />
+        {/* The emoji button sits at the card's RIGHT edge (user request) — unlike
+            the paperclip it is not ATTACH_FILES-gated: picker access needs no
+            permission, only the server supporting the catalog. */}
+        {emojiState.supported ? (
+          <button
+            ref={emojiButtonRef}
+            className="composer-attach"
+            title="Emoji"
+            onClick={() => {
+              setEmojiPickerOpen((open) => !open);
+              setEmojiQuery("");
+              setMentionQuery(null); // the two popups are mutually exclusive
+            }}
+          ><span className="icon mdi-emoticon" /></button>
+        ) : null}
       </div>
       {/* No hint line under the card (oak has none) — the composer's bottom
           inset matches the left overlay card's, so the two read as a pair.

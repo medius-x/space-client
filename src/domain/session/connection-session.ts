@@ -29,6 +29,7 @@ import { MemberStore } from "../stores/MemberStore";
 import { PermissionStore } from "../stores/PermissionStore";
 import { PinnedStore } from "../stores/PinnedStore";
 import { DiscussionsStore } from "../stores/DiscussionsStore";
+import { EmojiStore } from "../stores/EmojiStore";
 import { ReadStateStore } from "../stores/ReadStateStore";
 import { RosterStore } from "../stores/RosterStore";
 import { SocialStore } from "../stores/SocialStore";
@@ -130,6 +131,7 @@ export class ConnectionSession {
   readonly messageStore = new MessageStore();
   readonly pinnedStore = new PinnedStore();
   readonly discussionsStore = new DiscussionsStore();
+  readonly emojiStore = new EmojiStore();
   readonly rosterStore = new RosterStore();
   readonly memberStore = new MemberStore();
   readonly socialStore = new SocialStore();
@@ -150,6 +152,10 @@ export class ConnectionSession {
    */
   private readonly socialRefresh = new CoalescingRefresher(() => this.doRefreshSocial());
   private readonly memberRefresh = new CoalescingRefresher(() => this.doRefreshMembers());
+  /** The custom-emoji catalog: fetched once on start, refetched on /topic/emojis pings
+   *  (any catalog mutation broadcasts one). A 404 marks the server too old — the
+   *  feature hides (picker button, settings section). */
+  private readonly emojiRefresh = new CoalescingRefresher(() => this.doRefreshEmojis());
 
   private readonly directory: ConnectionDirectory;
   private readonly hooks: SessionHooks;
@@ -282,6 +288,7 @@ export class ConnectionSession {
     // coalescing queue and re-run afterwards.
     this.socialRefresh.request();
     this.memberRefresh.request();
+    this.emojiRefresh.request();
     // The tracked-discussions snapshot seeds the sidebar badges and the "mine" list from the
     // very first paint (live report: without it nothing showed until the user toggled the
     // sidebar to discussions and back — the only other mine-fetch site). The .discussions
@@ -912,6 +919,28 @@ export class ConnectionSession {
     this.syncDmSubscriptions();
   }
 
+  private async doRefreshEmojis(): Promise<void> {
+    if (this.disposed || !this.emojiStore.getSnapshot().supported) {
+      return;
+    }
+    const emojis = await this.rest.getEmojis();
+    if (this.disposed) {
+      return;
+    }
+    if (emojis === null) {
+      // The server predates the feature (404) — hide every surface, quietly.
+      log.warn("session", "server has no custom-emoji endpoint — the feature stays hidden");
+      this.emojiStore.markUnsupported();
+      return;
+    }
+    this.emojiStore.applySnapshot(emojis);
+  }
+
+  /** Public re-fetch for the settings screen after its own mutations. */
+  refreshEmojis(): void {
+    this.emojiRefresh.request();
+  }
+
   private async doRefreshMembers(): Promise<void> {
     if (this.disposed) {
       return;
@@ -1018,6 +1047,11 @@ export class ConnectionSession {
       // leaves a dead-clickable channel behind (live report: entering it fails
       // with a READ_MESSAGE_HISTORY 403).
       void this.refetchChannels();
+    });
+    this.stomp.subscribe("/topic/emojis", () => {
+      // Any catalog mutation pings here (bare timestamp) — the whole catalog is
+      // small, refetch beats event-merging.
+      this.emojiRefresh.request();
     });
     this.stomp.subscribe("/user/queue/member.kick", (raw) => {
       const event = JSON.parse(raw) as MemberKickEvent;
@@ -1193,6 +1227,7 @@ export class ConnectionSession {
       });
     this.socialRefresh.request();
     this.memberRefresh.request();
+    this.emojiRefresh.request();
     void this.refetchChannels();
     // Read states BEFORE the tail heal: applySnapshot REPLACES per-channel
     // state, so a snapshot landing after the heals would erase their bumps.

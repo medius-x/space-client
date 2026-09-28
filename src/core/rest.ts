@@ -1,6 +1,7 @@
 import type {
   AttachmentLink,
   AttachmentUploadSlot,
+  CustomEmoji,
   AuthTokens,
   Channel,
   CallConfig,
@@ -357,6 +358,39 @@ export class RestClient {
       method: "POST",
       body: JSON.stringify({ fileName }),
     });
+  }
+
+  /** The custom-emoji catalog; null on 404 — an older server has no endpoint and the
+   *  feature silently hides (picker button, settings section). */
+  async getEmojis(): Promise<CustomEmoji[] | null> {
+    try {
+      return await this.request<CustomEmoji[]>("/api/emojis", { method: "GET" });
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  /** Phase 1 of the emoji upload: a custom-emojis/ slot (MANAGE_EMOJIS on the server). */
+  async requestEmojiUploadSlot(fileName: string): Promise<AttachmentUploadSlot> {
+    return this.request<AttachmentUploadSlot>("/api/emojis/slot", {
+      method: "POST",
+      body: JSON.stringify({ fileName }),
+    });
+  }
+
+  /** Phase 2: the catalog row for an uploaded key. */
+  async createEmoji(request: { name: string; fileKey: string }): Promise<CustomEmoji> {
+    return this.request<CustomEmoji>("/api/emojis", {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  }
+
+  async deleteEmoji(emojiId: number): Promise<void> {
+    await this.request<unknown>(`/api/emojis/${emojiId}`, { method: "DELETE" });
   }
 
   /**

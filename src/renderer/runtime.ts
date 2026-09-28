@@ -127,7 +127,7 @@ export interface AppState {
   stompCountdown: number | null;
   /** Server settings screen (in-app, replaces the content area) — M7. */
   serverSettingsOpen: boolean;
-  serverSettingsSection: "overview" | "roles" | "members" | "channels" | "server";
+  serverSettingsSection: "overview" | "roles" | "members" | "channels" | "emojis" | "server";
   /** User settings modal — M7. The SCOPE splits the sections (user decision
    *  2026-09-21): "account" = General + Account (opened from the server
    *  header's dropdown — server-scoped identity), "client" = everything else
@@ -2019,7 +2019,7 @@ export function canManageServerSettings(session: ConnectionSession | null): bool
   const permissions = session.permissionStore.getSnapshot().my?.permissions ?? [];
   return permissions.some((name) =>
     name === "MANAGE_ROLES" || name === "MANAGE_MEMBERS" || name === "KICK_MEMBERS"
-    || name === "BAN_MEMBERS" || name === "MANAGE_CHANNELS" || name === "MANAGE_STORAGE");
+    || name === "BAN_MEMBERS" || name === "MANAGE_CHANNELS" || name === "MANAGE_EMOJIS" || name === "MANAGE_STORAGE");
 }
 
 export function openServerSettings(): void {

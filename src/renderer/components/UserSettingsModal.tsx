@@ -15,6 +15,7 @@ import { notifications } from "../notifications";
 import { ApiError } from "../../core/rest";
 import type { ClientSettings } from "../../domain/stores/SettingsStore";
 import { advertisedAddress, DISK_CACHE_CHOICES, diskCacheLabel } from "../../domain/logic/settings-format";
+import { JUMBO_EMOJI_DEFAULT_PX, JUMBO_EMOJI_MAX_PX, JUMBO_EMOJI_MIN_PX } from "../../domain/logic/emoji-picker";
 import { deviceLabelFor, matchDeviceId } from "../../domain/logic/device-match";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import { DEFAULT_NOTIFICATION_PREFS } from "../../domain/session/connection-record";
@@ -636,6 +637,29 @@ function AppearanceSection({ staged }: { staged: StagedSettings }): React.JSX.El
       <div className="settings-hint">
         When off, message timestamps always show the date (for example,
         Aug 20 at 14:05) instead of Today / Yesterday.
+      </div>
+      <h3>Emoji</h3>
+      <label className="settings-field"><span>Jumbo emoji size</span>
+        <span className="jumbo-size-row">
+          <input
+            type="range"
+            min={JUMBO_EMOJI_MIN_PX}
+            max={JUMBO_EMOJI_MAX_PX}
+            step={2}
+            value={staged.value("emojiJumboSize")}
+            onChange={(event) => staged.set("emojiJumboSize", Number(event.target.value))}
+          />
+          <span className="jumbo-size-value">{staged.value("emojiJumboSize")} px</span>
+          <button
+            className="jumbo-reset"
+            disabled={staged.value("emojiJumboSize") === JUMBO_EMOJI_DEFAULT_PX}
+            onClick={() => staged.set("emojiJumboSize", JUMBO_EMOJI_DEFAULT_PX)}
+          >Reset to default</button>
+        </span>
+      </label>
+      <div className="settings-hint">
+        A message made of emojis only renders them at this size.
+        Your own view only — other members keep their own setting.
       </div>
       <h3>Images</h3>
       <label className="settings-field"><span>Disk cache size</span>

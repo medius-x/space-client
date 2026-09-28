@@ -113,3 +113,37 @@ describe("RestClient message mutations", () => {
     expect(fake.requests[2]?.body).toBeNull();
   });
 });
+
+/** Wire contracts for the custom-emoji catalog (phase 1). */
+describe("RestClient custom emojis", () => {
+  it("getEmojis returns null on 404 — an older server hides the feature", async () => {
+    const fake = new FakeFetch(() => ({ status: 404, body: { message: "no route" } }));
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: new MemoryTokenStorage(), fetchImpl: fake.call });
+
+    expect(await client.getEmojis()).toBeNull();
+  });
+
+  it("the two-phase upload: slot POSTs {fileName}, create POSTs {name, fileKey}", async () => {
+    const fake = new FakeFetch(() => ({ status: 200, body: { id: 1, name: "cat", url: null, key: "custom-emojis/u/cat.png", uploadedBy: 2 } }));
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: new MemoryTokenStorage(), fetchImpl: fake.call });
+
+    await client.requestEmojiUploadSlot("cat.png");
+    expect(fake.requests[0]?.method).toBe("POST");
+    expect(fake.requests[0]?.path).toBe("/api/emojis/slot");
+    expect(fake.requests[0]?.body).toEqual({ fileName: "cat.png" });
+
+    await client.createEmoji({ name: "cat", fileKey: "custom-emojis/u/cat.png" });
+    expect(fake.requests[1]?.method).toBe("POST");
+    expect(fake.requests[1]?.path).toBe("/api/emojis");
+    expect(fake.requests[1]?.body).toEqual({ name: "cat", fileKey: "custom-emojis/u/cat.png" });
+  });
+
+  it("deleteEmoji DELETEs the row route", async () => {
+    const fake = new FakeFetch(() => ({ status: 204 }));
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: new MemoryTokenStorage(), fetchImpl: fake.call });
+
+    await client.deleteEmoji(7);
+    expect(fake.requests[0]?.method).toBe("DELETE");
+    expect(fake.requests[0]?.path).toBe("/api/emojis/7");
+  });
+});

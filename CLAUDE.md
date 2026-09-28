@@ -2367,6 +2367,113 @@ social-aggregate подписан на сторы фоновых сессий �
   (элемент остаётся в DOM — onTrack назначает srcObject в него как раньше).**
   Гейты: 399/399 + typecheck + build.
 
+- **Кастомные эмодзи, фаза 1 из 3 — клиент (2026-09-25; серверная половина —
+  oak-server/CLAUDE.md; деплой: сервер первым, клиент следом, НЕ строго парный —
+  старый сервер → getEmojis 404 → `EmojiStore.markUnsupported()`, кнопка пикера и секция
+  настроек скрываются, один warn в логе).** Осознанные v1-отступления: клавиатурная
+  навигация в пикере (мышь-only), инлайн-редактор без пикера, тосты/превью поиска
+  показывают `:name:` текстом. **(C1) Фундамент:** types.ts += `CustomEmoji` +
+  MANAGE_EMOJIS_PERMISSION; rest.ts += getEmojis (**404→null** — толерантность),
+  requestEmojiUploadSlot/createEmoji/deleteEmoji; НОВЫЙ `EmojiStore` — снапшот несёт
+  САМИ производные (emojis + names: ReadonlySet + byName: ReadonlyMap, ребилд ТОЛЬКО в
+  applySnapshot — идентичность для useStore-селекторов, грабля M6) + supported-флаг;
+  ConnectionSession += emojiStore + emojiRefresh (CoalescingRefresher; фетч в start()
+  рядом с memberRefresh, подписка `/topic/emojis` → ping-рефетч, resyncAfterReconnect,
+  публичный refreshEmojis() для секции). **(C2) Парсинг и рендер:** сегментер +=
+  `{kind:"emoji"}`-сегмент, сигнатура `segmentMessageContent(content, mentions,
+  emojiNames?)` — эмодзи-пас ПОСЛЕ splitLinks (URL-порт `:8080:` не режется) exec-циклом
+  с `lastIndex = match.index + 1` на непопавший токен (`:a:b:` находит `:b:`; matchAll
+  так не умеет); без сета — байт-идентичное старое поведение. MessageRow (memo!)
+  подписан на `state.names` стора — upload/delete перекрашивает СМОНТИРОВАННЫЕ строки;
+  НОВЫЙ `InlineEmoji` (поиск по byName + useAttachmentImage; null → текст `:name:`, без
+  битых картинок) + `.inline-emoji` ФИКСИРОВАННЫЙ em-бокс 1.375em (нулевой layout shift —
+  медиа-раунд-урок; estimateRowHeight не тронут). Картинки едут через attachmentCache:
+  re-mint валиден (серверный /link-OR), негативный кеш глушит удалённые. **(C3) Пикер
+  композера:** НОВАЯ чистая `domain/logic/emoji-picker.ts` (emojiNameFromFileName —
+  lowercase/strip-ext/invalid→-/кламп-32; filterEmojis — substring-поиск); кнопка
+  `mdi-emoticon` (32×32 сосед скрепки; видна при supported, НЕ гейтится ATTACH_FILES);
+  попап `.emoji-popup` в mention-popup-слоте НАД картой: поиск-инпут + сетка 8×34px
+  (`EmojiTile` — компонент, хуки вне цикла); клик → вставка `:name:` на каретке
+  (applyMention-механика: rAF-рефокус), попап ОСТАЁТСЯ открытым (Discord); Escape в
+  поиске — stopPropagation; взаимоисключение с @-попапом; useOutsideDismiss закрывает;
+  пустой каталог → «No emojis yet — upload them in Server Settings». **(C4) Server
+  Settings → Emoji:** appStore-union += "emojis", canManageServerSettings += MANAGE_EMOJIS,
+  MANAGE_EMOJIS убран из NOT_IMPLEMENTED (право больше не «future»); НОВАЯ
+  `ServerEmojiSection` (ServerStorageSection-идиома): грид `EmojiCatalogCell` (превью +
+  `:name:` + × → ConfirmModal «Messages using it will fall back to plain text») →
+  rest.deleteEmoji → refreshEmojis; upload: hidden input accept png/gif/webp →
+  клиентская лестница (расширение → ≤256KB → measureImageSize warn-only >128px → имя
+  из emojiNameFromFileName + regex + локальная уникальность) → слот → uploadBytes →
+  createEmoji; ОСОБЕННОСТЬ: pendingKey кешируется — дубль-имени (409) ретраит ТОЛЬКО
+  create, не перекачивая байты. **(C5) Тесты:** emoji-segmenter (7: гэп/URL-порт/
+  не-в-каталоге/частичный-резюм/смежность/офсеты-упоминаний/без-сета), emoji-store (4:
+  сорт+производные/идентичность/ребилд/markUnsupported), emoji-picker (7: санитайз×4+
+  фильтр×3), rest-mutations += 3 (404→null/формы слот+create/delete). Гейты: 420/420 +
+  typecheck + build. **Смоук-полиш 1 (2026-09-28, 3 юзер-запроса + 1 баг):** (1) кнопка
+  эмодзи ПЕРЕМЕЩЕНА на ПРАВЫЙ край composer-карты (за textarea; юзер-решение). (2) **Jumbo-
+  рендер** (репорт «гиф 288×160 в чате не видно»): сообщение ТОЛЬКО из эмодзи (пробелы
+  между токенами не мешают) рендерит токены КРУПНО — `.inline-emoji-large` height 48px /
+  width auto (аспект гифа) / max-width 220 + contain (широкая полоса не растягивает строку);
+  правило — чистая `isEmojiOnlyMessage(segments)` в emoji-picker.ts (+5 тестов: одиночный/
+  с пробелами/текст-деградация/link-деградация/пусто); деградация при удалении эмодзи
+  автоматична (сегментер не матчит имя → text-сегмент → не jumbo); estimateRowHeight НЕ
+  тронут — оценка head-строки 51px ≈ факт jumbo (~50px), дельта в допуске. (3) Под кнопкой
+  Upload emoji — hint-строка требований: «PNG, GIF or WebP · up to 256 KB · name a-z 0-9 _ -
+  · larger than 128×128 renders downscaled». (4) **БАГ Roles (не эмодзи):** после blur или
+  смены вкладки поле имени роли показывало СТАРОЕ имя (черновик жив до Save Changes, а span
+  читал role.name из стора) — span теперь рендерит name-стейт (черновик); Escape и Enter
+  ведут себя как раньше. Гейты: 425/425 + typecheck + build. Сервер не тронут — рестарт клиента.
+  **Смоук-полиш 2 (2026-09-29, юзер-правки upload-формы):** hint без требований к имени
+  (оно живёт в ошибке валидации «The name must be 1-32 chars of a-z, 0-9, _ and -.»);
+  форма в ДВЕ строки (имя файла отдельно, поле имени + Save/Cancel строкой ниже —
+  .emoji-upload-form-row); суффикс-двоеточие после поля УДАЛЕНО; полю добавлен
+  placeholder «name» (виден при пустом автоимени). Гейты: 425/425 + typecheck + build.
+  **Полиш 3 (2026-09-29): лимиты подняты — размер ≤1 МБ (клиентская лестница + hint +
+  empty-строка), warn-порог рекомендованного размера 128→256px** (сервер лимита размера
+  не имеет — presigned-модель; правка клиент-only). Гейты: 425/425 + typecheck + build.
+  **Полиш 4 (2026-09-29): НАСТРАИВАЕМЫЙ размер jumbo — чисто КЛИЕНТСКАЯ настройка**
+  (юзер-решение после взвешивания «серверная vs клиентская»: размер влияет только на
+  смотрящего; Discord-канон — платформенная константа, кастомизация локальна; серверная
+  версия требовала бы V7/wire/пуш без выгоды). Settings → Appearance → «Jumbo emoji
+  size»: слайдер 18–96px (шаг 2), дефолт 48 (= Discord jumboable; минимум ≈ инлайн
+  1.375em), STAGED-модель секции (Apply коммитит через settingsStore.apply);
+  ClientSettings += `emojiJumboSize` (санация clampJumboEmojiSize в load — garbage→48).
+  Рендер: height ушёл из CSS-класса в инлайн-стиль (InlineEmoji подписан на настройку;
+  max-width 220 и vertical-align остались в .inline-emoji-large). **Превентивный
+  анти-джамп: estimateRowHeight += jumboEmojiEstimateExtra(content, jumboPx)** — чистая
+  функция: emoji-only контент (regex-надмножество сегментера) доплачивает max(0,
+  jumboPx−48); ≤48px доплаты НЕТ (живой смоук доказал: 48px вписывается в обычную
+  head-строку без дрейфа), выше — линейно по размеру; MessageList подписан на настройку
+  и передаёт её в estimate (рендер и оценка меняются одним кадром). Тесты: clamp
+  (в-диапазоне/за/мусор) + estimate (emoji-only 18/48→0, 96→48; текст/null→0;
+  отсутствующий-в-каталоге токен всё равно доплачивает — лёгкая переоценка до меры).
+  Гейты: 431/431 + typecheck + build. **Полиш 5 (2026-09-29): закрытие пикера**
+  (2 репорта): (1) повторный клик по кнопке эмодзи РЕОТКРЫВАЛ пикер — гонка
+  «outside-dismiss (pointerdown, capture) закрыл → onClick-тоггл открыл»; фикс =
+  НОВЫЙ опциональный 3-й параметр useOutsideDismiss `anchorRef` (якорь-триггер
+  считается ВНУТРИ поверхности — его пресс не дисмиссит, тоггл честно закрывает);
+  кнопке добавлен emojiButtonRef. (2) отправка сообщения закрывает пикер (в
+  УСПЕШНОЙ ветке submit — провал сохраняет черновик И пикер). Гейты: 431/431 +
+  typecheck + build. **Полиш 6 / БАГ реакций (2026-09-29, репорт «admin23 пишет, но
+  реакции не ставятся»): КОРЕНЬ СЕРВЕРНЫЙ** — @everyone живой dev-БД засеян ДО бита
+  ADD_REACTIONS (сидер идемпотентен по presence и существующую строку не чинил; см.
+  oak-server/CLAUDE.md — там ensureEveryoneAddReactions-ремонт). Клиентская половина
+  бага — НЕСИММЕТРИЯ гейтов: hover-кнопка гейтится canReact (dm || ADD_REACTIONS), а
+  ПКМ-пункт «Add reaction…» был виден ВСЕМ → плебей открывал пикер, PUT ловил 403,
+  а `.catch(() => undefined)` глотал его молча («ничего не происходит»). Фиксы:
+  пункт «Add reaction…» гейтится canReact (extra.canReact, симметрия с hover-кнопкой);
+  оба toggleReaction-catch логируют `[reactions] toggle … failed` в space.log вместо
+  молчания. Гейты: сервер 333/333 (+1 регрессионный), клиент 431/431 + typecheck +
+  build. **Деплой: рестарт сервера (ремонт @everyone в логе) → рестарт клиента.**
+  **Полиш 7 (2026-09-29):** (1) сердце реакций было БЕСЦВЕТНЫМ — глиф `"❤"` (U+2764)
+  без VS16 рендерится Chromium'ом текстовой монохромной формой; фикс `+ U+FE0F`
+  (эмодзи-презентация; единственный текстовый кодпоинт каталога — остальные 9
+  полно-эмодзи). (2) Hint jumbo-слайдера без скобочной справки + кнопка «Reset to
+  default» (disabled на 48; staged-модель — коммит по Apply); итерация 2: кнопка
+  переведена с ghost на ВИДИМУЮ серую пилюлю `.jumbo-reset` (--sp-control,
+  keybinds-reset-идиома — ghost читался как текст). Гейты: 431/431 +
+  typecheck + build.
+
 - Гейт после каждой фазы: `npm test` + `npm run typecheck` зелёные.
 - Новые файлы сразу `git add`. Коммиты только по явной команде; subject на английском.
 - Никаких single-letter имён (кроме i/j цикла и T/E/K/V генериков); комментарии в коде

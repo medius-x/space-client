@@ -835,6 +835,152 @@ button.wide-add { width: 100%; }
   font-weight: 600;
 }
 .message-content .body-link { color: #00a8fc; text-decoration: underline; cursor: pointer; }
+/* A custom ":name:" emoji — a FIXED em box so a row's height never shifts when the
+   image lands (the media-round lesson); containment keeps GIFs from stretching. */
+.inline-emoji {
+  height: 1.375em;
+  width: 1.375em;
+  vertical-align: text-bottom;
+  object-fit: contain;
+  display: inline-block;
+}
+/* Discord's jumbo mode: an emoji-ONLY message renders its tokens big. The HEIGHT
+   comes from the reader's own setting (Settings → Appearance, inline style); width
+   follows the GIF's aspect (288×160 → 86×48); the cap keeps a wide strip from
+   stretching the row (contain letterboxes inside the cap). */
+.inline-emoji-large {
+  width: auto;
+  max-width: 220px;
+  vertical-align: bottom;
+}
+
+/* The composer's custom-emoji popup (the mention-popup slot: a sibling above the
+   composer card — nothing clips it, no portal needed). Search on top, grid below. */
+.emoji-popup {
+  margin-bottom: 4px;
+  background: var(--sp-surface);
+  border: 1px solid var(--sp-control);
+  border-radius: 8px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.emoji-popup-search {
+  background: var(--sp-input);
+  border: none;
+  border-radius: 4px;
+  color: var(--sp-text);
+  font-size: 13px;
+  padding: 6px 8px;
+}
+.emoji-popup-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 34px);
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.emoji-popup-empty {
+  color: var(--sp-text-muted);
+  font-size: 13px;
+  padding: 12px 4px;
+  max-width: 280px;
+}
+.emoji-tile {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.emoji-tile:hover { background: var(--sp-hover); }
+.emoji-tile img { width: 26px; height: 26px; object-fit: contain; }
+.emoji-tile-fallback { font-size: 10px; color: var(--sp-text-muted); }
+
+/* The Server Settings → Emoji section: an upload row, a name form for the picked
+   file, and the catalog grid (image + :name: + delete cross per cell). */
+.emoji-upload-row { display: flex; align-items: center; gap: 12px; margin: 8px 0 12px; }
+.emoji-count { color: var(--sp-text-muted); font-size: 12px; }
+/* Settings → Appearance: the jumbo-emoji size slider and its live value. */
+.jumbo-size-row { display: flex; align-items: center; gap: 8px; flex: 1; }
+.jumbo-size-row input[type="range"] { width: 160px; }
+.jumbo-size-value { min-width: 44px; text-align: right; color: var(--sp-text-muted); font-size: 12px; }
+/* The reset rides as a VISIBLE grey pill (the keybinds-reset idiom) — the ghost
+   variant read as plain text next to the slider (live report). */
+.jumbo-reset {
+  padding: 5px 10px;
+  color: var(--sp-text-muted);
+  background: var(--sp-control);
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.jumbo-reset:hover:not(:disabled) { color: var(--sp-text); background: var(--sp-card-hover); }
+.jumbo-reset:disabled { opacity: 0.5; }
+/* The upload form stacks: file name on its own line, the name field + actions
+   below (user request — the field is the primary input, it earns a full row). */
+.emoji-upload-form { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-bottom: 12px; }
+.emoji-upload-form-row { display: flex; align-items: center; gap: 8px; }
+.emoji-upload-form input {
+  background: var(--sp-input);
+  border: none;
+  border-radius: 4px;
+  color: var(--sp-text);
+  font-size: 13px;
+  padding: 6px 8px;
+  width: 180px;
+}
+.emoji-upload-file {
+  color: var(--sp-text-muted);
+  font-size: 12px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.emoji-empty { color: var(--sp-text-muted); font-size: 13px; padding: 16px 0; }
+.emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 140px);
+  gap: 8px;
+}
+.emoji-cell {
+  position: relative;
+  background: var(--sp-input);
+  border-radius: 6px;
+  padding: 10px 8px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.emoji-cell img { width: 32px; height: 32px; object-fit: contain; }
+.emoji-cell-fallback { font-size: 12px; color: var(--sp-text-muted); height: 32px; }
+.emoji-cell-name {
+  font-size: 11px;
+  color: var(--sp-text-muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.emoji-cell-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  padding: 0;
+}
+.emoji-cell-remove .icon { font-size: 13px; }
+.emoji-cell-remove:hover { background: var(--sp-red); color: #fff; }
 
 /* oak's OG preview card: title + description (≤2 lines) + 72×72 thumbnail,
    click → system browser; shows nothing while loading or on failure. */

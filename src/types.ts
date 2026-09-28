@@ -187,6 +187,17 @@ export interface AttachmentLink {
   url: string;
 }
 
+/** GET /api/emojis row — the server-scoped custom-emoji catalog (phase 1, flat list).
+ *  `url` re-signs on every fetch (the attachment discipline); clients cache by `key`.
+ *  Message text references emojis as plain ":name:" tokens resolved CLIENT-side. */
+export interface CustomEmoji {
+  id: number;
+  name: string;
+  url: string | null;
+  key: string;
+  uploadedBy: number | null;
+}
+
 /** The public user view (avatar confirm/remove responses, GET /api/users/me). */
 export interface UserResponse {
   id: number;
@@ -216,6 +227,7 @@ export const MANAGE_MEMBERS_PERMISSION = "MANAGE_MEMBERS";
 export const CHANGE_NICKNAME_PERMISSION = "CHANGE_NICKNAME";
 export const MANAGE_NICKNAMES_PERMISSION = "MANAGE_NICKNAMES";
 export const MANAGE_STORAGE_PERMISSION = "MANAGE_STORAGE";
+export const MANAGE_EMOJIS_PERMISSION = "MANAGE_EMOJIS";
 
 /** GET/PUT /api/server/storage — the "Server" settings screen (MANAGE_STORAGE). */
 export interface StoragePolicy {
@@ -282,7 +294,7 @@ export const REACTION_CATALOG: readonly { slug: string; glyph: string }[] = [
   { slug: "hundred", glyph: "💯" },
   { slug: "thumbsup", glyph: "👍" },
   { slug: "thumbsdown", glyph: "👎" },
-  { slug: "heart", glyph: "❤" },
+  { slug: "heart", glyph: "❤️" }, // U+FE0F matters: the bare U+2764 renders TEXT-style (monochrome black) in Chromium
   { slug: "eyes", glyph: "👀" },
   { slug: "cry", glyph: "😢" },
   { slug: "smile", glyph: "😄" },

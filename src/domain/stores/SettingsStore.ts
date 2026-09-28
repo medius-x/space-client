@@ -1,6 +1,7 @@
 import { Emitter } from "../lib/store";
 import { kv } from "../persistence/kv-client";
 import { DEFAULT_KEYBINDS, resolveKeybinds, type ActionId } from "../logic/keybinds";
+import { clampJumboEmojiSize } from "../logic/emoji-picker";
 import type { SavedSharePreset } from "../logic/share-quality";
 
 /**
@@ -63,6 +64,12 @@ export interface ClientSettings {
    *  the last checkbox state pre-checks the next share of that kind. */
   shareScreenAudio: boolean;
   shareWindowAudio: boolean;
+  /** Render size (px) of emojis in jumbo (emoji-only) messages — a purely
+   *  client-side preference (2026-09-29 user decision): it changes nothing
+   *  for anyone else, so unlike Discord's fixed constant everyone picks
+   *  their own. Range 18 (= inline text height) .. 96, default 48 (Discord
+   *  parity). */
+  emojiJumboSize: number;
 }
 
 export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
@@ -87,6 +94,7 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   sharePresets: [],
   shareScreenAudio: true,
   shareWindowAudio: true,
+  emojiJumboSize: 48,
 };
 
 const KV_KEY = "client-settings";
@@ -133,6 +141,9 @@ export class SettingsStore extends Emitter {
       if (!Array.isArray(this.settings.sharePresets)) {
         this.settings = { ...this.settings, sharePresets: [] };
       }
+      // A stored jumbo size may be garbage or out of range (hand-edited KV) —
+      // the clamp restores the default rather than rendering a broken row.
+      this.settings = { ...this.settings, emojiJumboSize: clampJumboEmojiSize(rest.emojiJumboSize) };
     }
     this.loaded = true;
     this.emit();

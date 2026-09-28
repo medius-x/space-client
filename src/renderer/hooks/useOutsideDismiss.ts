@@ -5,12 +5,25 @@ import { useEffect, type RefObject } from "react";
  * press OUTSIDE of it — including RIGHT-button presses, so opening a second
  * menu replaces the first one (oak's popup behavior; a plain "click" listener
  * misses right-clicks). Window blur, resize and Escape close it as well.
+ *
+ * `anchorRef` (optional) marks a trigger element that counts as INSIDE the
+ * surface: its own pointerdown does not dismiss, so the trigger's onClick can
+ * toggle the surface honestly. Without it the sequence "outside-press closes →
+ * click toggles open again" makes the toggle button unable to ever close the
+ * surface (live report: the composer's emoji button reopened the picker).
  */
-export function useOutsideDismiss(ref: RefObject<HTMLElement | null>, onClose: () => void): void {
+export function useOutsideDismiss(
+  ref: RefObject<HTMLElement | null>,
+  onClose: () => void,
+  anchorRef?: RefObject<HTMLElement | null>,
+): void {
   useEffect(() => {
     const dismiss = (event: PointerEvent): void => {
       const surface = ref.current;
-      if (surface === null || !surface.contains(event.target as Node)) {
+      const anchor = anchorRef?.current ?? null;
+      const target = event.target as Node;
+      const inside = (surface !== null && surface.contains(target)) || (anchor !== null && anchor.contains(target));
+      if (!inside) {
         onClose();
       }
     };
@@ -29,5 +42,5 @@ export function useOutsideDismiss(ref: RefObject<HTMLElement | null>, onClose: (
       window.removeEventListener("blur", onClose);
       window.removeEventListener("resize", onClose);
     };
-  }, [ref, onClose]);
+  }, [ref, onClose, anchorRef]);
 }
