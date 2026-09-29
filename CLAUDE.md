@@ -2474,6 +2474,110 @@ social-aggregate подписан на сторы фоновых сессий �
   keybinds-reset-идиома — ghost читался как текст). Гейты: 431/431 +
   typecheck + build.
 
+- **Кастомные стикеры с паками, фаза 2 из 3 (2026-09-29, код готов, смоук pending;
+  серверная половина — oak-server/CLAUDE.md; ДЕПЛОЙ: сервер первым, клиент следом —
+  новый клиент на старом сервере прячет кнопку/секцию по 404 каталога).** Юзер-решения:
+  гейт управления — существующий `MANAGE_EMOJIS` (лейбл стал «Manage Emojis &
+  Stickers», новых битов нет); **отправка — мгновенная по клику в трее** (стикер-only
+  сообщение, черновик текста НЕ трогается, вооружённый reply переносится) — без
+  chip-состояния в композере. Осознанные v1-границы: rename/перемещение паков нет,
+  клавиатурной навигации в трее нет (мышь-only, как эмодзи-пикер). **(Фундамент)**
+  types.ts += `Sticker`/`StickerPack`/`StickerRef` + `Message.sticker` (последним
+  полем); rest.ts += getStickerPacks (**404→null**)/createStickerPack/
+  deleteStickerPack/requestStickerUploadSlot/createSticker/deleteSticker;
+  sendMessage-body += `stickerId`. НОВЫЙ `StickerStore` (снапшот несёт паки (name-сорт,
+  стикеры внутри пака тоже дефенсивно сорт-порядок — wire уже отсортирован, но не
+  доверяем), плоский список + byId ТОЛЬКО в applySnapshot — идентичность, грабля M6;
+  totalStickers для счётчика; markUnsupported). ConnectionSession: stickerStore +
+  stickerRefresh (CoalescingRefresher; фетч в start(), подписка `/topic/stickers` →
+  ping-рефетч, resyncAfterReconnect, публичный refreshStickers) + НОВЫЙ
+  `sendMessageWithSticker(channelId, sticker, replyToId?)` (content null + stickerId +
+  idempotencyKey → applyLive). **(Чистая логика)** `domain/logic/sticker-picker.ts`:
+  filterStickerPacks (substring по имени стикера, пак без матчей дропается при
+  непустом query), STICKER_RENDER_PX=160 + stickerEstimateExtra (фикс-высота →
+  преплата точна: медиа-урок), stickerForwardFileName (хвост ключа, dotless→.png —
+  классификатору тайлов нужно расширение). **(Трей композера)** кнопка `mdi-sticker`
+  СЛЕВА от эмодзи-кнопки (icons.css реген, 52 глифа; видна при supported, НЕ гейтится
+  ATTACH_FILES); трей `.sticker-tray` (372px, max-height 380) в emoji-popup-слоте:
+  поиск + секции по пакам (заголовок имя+счётчик) с сеткой `StickerTile` 96px (хук вне
+  цикла, disabled при busy, фолбэк-инициалы); `sendSticker` делит `busy` с submit
+  (Enter и клик не interleav'ятся), успех закрывает трей, провал — composer-error и трей
+  жив; useOutsideDismiss с anchorRef (тоггл-гонка); взаимоисключение трёх попапов.
+  **(Рендер)** `InlineSticker`: `.message-sticker` height 160px ФИКС / width auto /
+  max-width 240 / contain; мёртвый объект → tombstone `.message-sticker-dead` (dim-плейт
+  с mdi-sticker + именем — «что умерло», не серый квадрат); блок после attachmentView до
+  reactions-row В ОБЕИХ ветках (ForwardCard-children и плоский фрагмент), рендерится и
+  при редактировании (стикер не редактируется); estimateRowHeight +=
+  stickerEstimateExtra (пересечений с jumbo нет — стикер вне сегментера).
+  **(Кросс-инстанс форвард стикер-only** — иначе сервер 400 «Forward must have content
+  or an attachment»): ForwardDialog.submit, кросс-ветка — при отсутствии контента и
+  аттачей байты стикера ре-аплоадятся как обычная картинка (freshAttachmentLink →
+  downloadBytes → forwardRequestUpload → forwardUploadBytes; fileName =
+  stickerForwardFileName; размеры null) — копия рендерится картинкой на чужом сервере.
+  **(Server Settings → Stickers)** секция между Emoji и Server (гейт MANAGE_EMOJIS);
+  шапка: New pack (input+Create pack) + счётчик «N / 200 · M / 20»; вертикальный стек
+  пак-блоков (header имя/счётчик/Upload sticker/🗑 + грид ячеек 96px c :name: и ×);
+  upload-лестница = эмодзи-калька с warn-порогом 512px и уникальностью имени В ПАКЕ;
+  pendingKey кешируется на 409-ретрай; ConfirmModal на стикер/пак («will show a
+  placeholder»). **(Тосты)** `toastBodyFallback` в logic/toast-preview.ts: без текста →
+  `[Sticker] name` (формат серверной reply-цитаты), иначе `(attachment)` — заменяет
+  оба `content ?? "(attachment)"` в runtime + notifications. Тесты: sticker-store (4),
+  sticker-picker (6: фильтр×3/estimate×1/fileName×2), rest-mutations += «RestClient
+  stickers» (5: 404→null/пак-маршруты/слот+create-тела/delete/sendMessage-stickerId
+  точное тело), toast-preview += toastBodyFallback (3); фабрики Message в 9 тест-файлах
+  + runtime-seed += `sticker: null`. Гейты: клиент **449/449** + typecheck + build;
+  сервер 355/355. **Смоук-сценарий в плане (goofy-leaping-sutton.md): A(owner) пак+стикер
+  → мгновенная отправка с черновиком → B трей/рендер без перезагрузки → tombstone на
+  удаление → форварды intra/cross → GC слот.** **Смоук-полиш 1 (2026-09-30, 2
+  юзер-репорта):** (1) пустой трей — «No stickers yet.» БЕЗ хвоста «upload them in
+  Server Settings» (подсказка бессмысленна для плебея без MANAGE_EMOJIS — секции у него
+  нет); (2) стикер-only карточка поиска больше не пустая плитка с одним ником — метка
+  `[Sticker] name` (единый формат с reply-цитатой и тостом; `.search-hit-sticker` dim,
+  НЕ link-синий имён файлов — это ярлык, а не скачиваемое). Гейты: 449/449 +
+  typecheck + build. **Итерация 2 (репорт «по-прежнему пустая»): ГРАБЛЯ — условие
+  рендера было `segments.length === 0`, но `highlightSegments("")` возвращает массив
+  ИЗ ОДНОГО пустого сегмента (контракт #481 «null/empty query yields one plain
+  segment»), длина всегда 1 → ветка не срабатывала никогда; правильный гейт —
+  `preview.length === 0`. Урок: пустая строка ≠ пустой массив сегментов.** Гейты:
+  449/449 + typecheck + build. **Полиш 2 (2026-09-30, не стикеры — поиск #481):**
+  Ctrl+F открывал панель поиска с ПУСТОЙ строкой, а крестик `.search-clear`
+  показывался только при непустом query → вернуть ростер без «что-нибудь напечатать»
+  было нельзя (юзер-репорт); условие рендера крестика переведено с `query.length > 0`
+  на `searchOpen` (крестик = Escape: чистит поле + гасит панель). Гейты: 449/449 +
+  typecheck + build. **Полиш 3 — ОБЪЕДИНЁННЫЙ ПИКЕР ВЫРАЖЕНИЙ (2026-09-30, юзер-решение
+  по модели Discord):** кнопка-стикер УДАЛЕНА, осталась ОДНА кнопка-смайл справа;
+  единый попап `.composer-picker` (ФИКС ширина 372px, прижат ВПРАВО к content pane —
+  `align-self: flex-end`, юзер-замечание; попапы прежде были разной ширины: эмодзи
+  во всю, стикеры фикс-слева): вверху вкладки **Emoji | Stickers** андэрлайном
+  (`.picker-tab`, settings-tab-идиома из Roles — юзер сам предложил), общий поиск
+  `.picker-search`, единый скролл-владелец `.picker-body` (эмодзи-грид 8×34 без
+  собственного скролла — класс переименован `.emoji-popup-grid`→`.emoji-tile-grid`;
+  стикерные секции паков как были). Асимметрия клика СОХРАНЕНА (юзер подтвердил):
+  эмодзи — вставка `:name:`, попап живёт; стикер — мгновенная отправка, попал
+  закрывается, черновик цел. ВКЛАДКА ПЕРЕЖИВАЕТ ПЕРЕЗАПУСК (юзер-решение: не сессия,
+  глобально): `ClientSettings.pickerLastTab: "emoji" | "stickers"` (дефолт emoji,
+  санация в load — мусор/переименование → emoji), пишется ТИХО при переключении
+  (`settingsStore.apply` — категория persistedGain, в окне настроек не светится);
+  запомненный Stickers при unsupported-стикерах фолбэкится на Emoji. Стейты
+  Composer схлопнулись: `emojiPickerOpen`+`stickerTrayOpen`+2 query → `pickerOpen` +
+  `pickerQuery` (+ вкладка из стора); `closePicker()` один на все пути (Escape,
+  outside, тоггл, submit, sendSticker). Юзер-оговорка: «старого сервера» не
+  проектируем — клиент и сервер всегда парные (существующие supported-гейты
+  остались, но новых усложнений под толерантность не добавляем). **Итерация 2 (2
+  репорта):** (1) пикер всё равно прижимался ВЛЕВО — ГРАБЛЯ: `.composer` был обычным
+  block, `align-self` на нём НЕ работает (фикс-ширина → левый край); фикс =
+  `.composer` стал column-flex (карта/mention-popup/error сохраняют полную ширину
+  через stretch, пикер честно прижался вправо); (2) вкладки пикера 12→13px — тот же
+  кегль, что поиск (один голос внутри попапа). **Итерация 3 (репорт «контент слева от
+  пикера пропадает»): поток-сиблинг фикс-ширины ВЫТАЛКИВАЛ список и оставлял пустую
+  полосу слева от себя — пикер переведён в ABSOLUTE-оверлей (Discord-модель:
+  перекрывает список, а не сдвигает): `.composer` position:relative,
+  `.composer-picker` absolute right:0 bottom:calc(100%+4px) (право = край карты с
+  учётом 8px-паддинга композера), z-index 5 + тень; column-flex композера откатен
+  (больше не нужен).** **Итерация 4:** карточки каталога эмодзи в Server Settings
+  сужены 140→96px — выровнены со стикерными ячейками (юзер-репорт «слишком широкие»;
+  140 был произволом фазы 1, длинные `:name:` и так ellipsis'ятся). Гейты: build.
+
 - Гейт после каждой фазы: `npm test` + `npm run typecheck` зелёные.
 - Новые файлы сразу `git add`. Коммиты только по явной команде; subject на английском.
 - Никаких single-letter имён (кроме i/j цикла и T/E/K/V генериков); комментарии в коде

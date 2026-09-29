@@ -17,6 +17,7 @@ import type {
   Relationship,
   Role,
   ServerProfile,
+  Sticker,
   UserSummary,
   VoiceControlCommand,
   VoiceControlEvent,
@@ -30,6 +31,7 @@ import { PermissionStore } from "../stores/PermissionStore";
 import { PinnedStore } from "../stores/PinnedStore";
 import { DiscussionsStore } from "../stores/DiscussionsStore";
 import { EmojiStore } from "../stores/EmojiStore";
+import { StickerStore } from "../stores/StickerStore";
 import { ReadStateStore } from "../stores/ReadStateStore";
 import { RosterStore } from "../stores/RosterStore";
 import { SocialStore } from "../stores/SocialStore";
@@ -132,6 +134,7 @@ export class ConnectionSession {
   readonly pinnedStore = new PinnedStore();
   readonly discussionsStore = new DiscussionsStore();
   readonly emojiStore = new EmojiStore();
+  readonly stickerStore = new StickerStore();
   readonly rosterStore = new RosterStore();
   readonly memberStore = new MemberStore();
   readonly socialStore = new SocialStore();
@@ -156,6 +159,7 @@ export class ConnectionSession {
    *  (any catalog mutation broadcasts one). A 404 marks the server too old — the
    *  feature hides (picker button, settings section). */
   private readonly emojiRefresh = new CoalescingRefresher(() => this.doRefreshEmojis());
+  private readonly stickerRefresh = new CoalescingRefresher(() => this.doRefreshStickers());
 
   private readonly directory: ConnectionDirectory;
   private readonly hooks: SessionHooks;
@@ -289,6 +293,7 @@ export class ConnectionSession {
     this.socialRefresh.request();
     this.memberRefresh.request();
     this.emojiRefresh.request();
+    this.stickerRefresh.request();
     // The tracked-discussions snapshot seeds the sidebar badges and the "mine" list from the
     // very first paint (live report: without it nothing showed until the user toggled the
     // sidebar to discussions and back — the only other mine-fetch site). The .discussions
@@ -941,6 +946,41 @@ export class ConnectionSession {
     this.emojiRefresh.request();
   }
 
+  private async doRefreshStickers(): Promise<void> {
+    if (this.disposed || !this.stickerStore.getSnapshot().supported) {
+      return;
+    }
+    const packs = await this.rest.getStickerPacks();
+    if (this.disposed) {
+      return;
+    }
+    if (packs === null) {
+      // The server predates the feature (404) — hide every surface, quietly.
+      log.warn("session", "server has no sticker-pack endpoint — the feature stays hidden");
+      this.stickerStore.markUnsupported();
+      return;
+    }
+    this.stickerStore.applySnapshot(packs);
+  }
+
+  /** Public re-fetch for the settings screen after its own mutations. */
+  refreshStickers(): void {
+    this.stickerRefresh.request();
+  }
+
+  /** Sends a sticker message (the tray's click-to-send): content null, the sticker id
+   *  rides the normal message POST. An armed reply carries over; the composer's text
+   *  draft is NOT consumed. */
+  async sendMessageWithSticker(channelId: number, sticker: Sticker, replyToId?: number): Promise<void> {
+    const created = await this.rest.sendMessage(channelId, {
+      content: null,
+      stickerId: sticker.id,
+      replyToId: replyToId ?? null,
+      idempotencyKey: crypto.randomUUID(),
+    });
+    this.messageStore.applyLive(created);
+  }
+
   private async doRefreshMembers(): Promise<void> {
     if (this.disposed) {
       return;
@@ -1052,6 +1092,10 @@ export class ConnectionSession {
       // Any catalog mutation pings here (bare timestamp) — the whole catalog is
       // small, refetch beats event-merging.
       this.emojiRefresh.request();
+    });
+    this.stomp.subscribe("/topic/stickers", () => {
+      // The sticker catalog's own ping (bare timestamp) — same refetch stance.
+      this.stickerRefresh.request();
     });
     this.stomp.subscribe("/user/queue/member.kick", (raw) => {
       const event = JSON.parse(raw) as MemberKickEvent;
@@ -1228,6 +1272,7 @@ export class ConnectionSession {
     this.socialRefresh.request();
     this.memberRefresh.request();
     this.emojiRefresh.request();
+    this.stickerRefresh.request();
     void this.refetchChannels();
     // Read states BEFORE the tail heal: applySnapshot REPLACES per-channel
     // state, so a snapshot landing after the heals would erase their bumps.

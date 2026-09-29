@@ -26,6 +26,7 @@ function message(id: number): Message {
     pinned: false,
     pinnedBy: null,
     pinnedAt: null,
+    sticker: null,
   };
 }
 

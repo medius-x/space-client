@@ -33,6 +33,7 @@ function message(id: number, reply: ReplyInfo | null, channelId = 1): Message {
     pinned: false,
     pinnedBy: null,
     pinnedAt: null,
+    sticker: null,
   };
 }
 

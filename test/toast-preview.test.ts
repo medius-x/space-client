@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toastPreview, toastPreviewSegments } from "../src/domain/logic/toast-preview";
+import { toastBodyFallback, toastPreview, toastPreviewSegments } from "../src/domain/logic/toast-preview";
 
 describe("toastPreview", () => {
   it("collapses whitespace but KEEPS mention names (user decision: who was pinged stays visible)", () => {
@@ -17,6 +17,21 @@ describe("toastPreview", () => {
     expect(toastPreview(null)).toBe("");
     expect(toastPreview("")).toBe("");
     expect(toastPreview("   ")).toBe("");
+  });
+});
+
+describe("toastBodyFallback (the no-text body)", () => {
+  it("text content passes through untouched", () => {
+    expect(toastBodyFallback({ content: "hello", sticker: null })).toBe("hello");
+  });
+
+  it("a sticker-only message shows the sticker label (the server's quote format)", () => {
+    expect(toastBodyFallback({ content: null, sticker: { name: "cat", key: "k", url: null } })).toBe("[Sticker] cat");
+    expect(toastBodyFallback({ content: "   ", sticker: { name: "cat", key: "k", url: null } })).toBe("[Sticker] cat");
+  });
+
+  it("anything else falls back to the attachment marker", () => {
+    expect(toastBodyFallback({ content: null, sticker: null })).toBe("(attachment)");
   });
 });
 

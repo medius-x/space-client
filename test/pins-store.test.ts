@@ -20,6 +20,7 @@ function message(id: number, overrides: Partial<Message> = {}): Message {
     pinned: true,
     pinnedBy: "alice",
     pinnedAt: `2026-09-22T01:00:${String(10 + id).padStart(2, "0")}Z`,
+    sticker: null,
     ...overrides,
   };
 }

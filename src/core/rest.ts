@@ -23,6 +23,8 @@ import type {
   SearchMessagesResult,
   ServerMember,
   ServerProfile,
+  Sticker,
+  StickerPack,
   StorageGcRun,
   StoragePolicy,
   StorageStatus,
@@ -214,6 +216,9 @@ export class RestClient {
     attachments?: { key: string; fileName: string; thumbnailKey?: string | null; durationMillis?: number | null }[];
     replyToId?: number | null;
     idempotencyKey?: string;
+    /** The sticker catalog id to carry (phase 2); a sticker satisfies the
+     *  content-or-attachment rule on its own (sticker-only sends: content null). */
+    stickerId?: number | null;
   }): Promise<Message> {
     return this.request<Message>(`/api/channels/${channelId}/messages`, {
       method: "POST",
@@ -391,6 +396,53 @@ export class RestClient {
 
   async deleteEmoji(emojiId: number): Promise<void> {
     await this.request<unknown>(`/api/emojis/${emojiId}`, { method: "DELETE" });
+  }
+
+  /** The custom-sticker catalog (packs with nested stickers); null on 404 — an older
+   *  server has no endpoint and the feature silently hides (tray button, settings
+   *  section). */
+  async getStickerPacks(): Promise<StickerPack[] | null> {
+    try {
+      return await this.request<StickerPack[]>("/api/sticker-packs", { method: "GET" });
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  /** Creates a pack (MANAGE_EMOJIS on the server — stickers ride the emoji gate). */
+  async createStickerPack(name: string): Promise<StickerPack> {
+    return this.request<StickerPack>("/api/sticker-packs", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  /** Removes the pack AND its stickers; messages carrying them show tombstones. */
+  async deleteStickerPack(packId: number): Promise<void> {
+    await this.request<unknown>(`/api/sticker-packs/${packId}`, { method: "DELETE" });
+  }
+
+  /** Phase 1 of the sticker upload: a stickers/ slot (MANAGE_EMOJIS on the server). */
+  async requestStickerUploadSlot(fileName: string): Promise<AttachmentUploadSlot> {
+    return this.request<AttachmentUploadSlot>("/api/stickers/slot", {
+      method: "POST",
+      body: JSON.stringify({ fileName }),
+    });
+  }
+
+  /** Phase 2: the catalog row inside a pack for an uploaded key. */
+  async createSticker(request: { name: string; packId: number; fileKey: string }): Promise<Sticker> {
+    return this.request<Sticker>("/api/stickers", {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  }
+
+  async deleteSticker(stickerId: number): Promise<void> {
+    await this.request<unknown>(`/api/stickers/${stickerId}`, { method: "DELETE" });
   }
 
   /**

@@ -749,7 +749,8 @@ button.wide-add { width: 100%; }
 /* The composer PAIRS with the left overlay card: the SAME 8px insets from the
    pane's edges and the same bottom line (oak's 12px chat-pane padding is
    deliberately overridden here per user decision). */
-.composer { padding: 0 8px 8px; flex-shrink: 0; }
+/* position: relative anchors the picker's absolute overlay (see .composer-picker). */
+.composer { position: relative; padding: 0 8px 8px; flex-shrink: 0; }
 .composer-gate {
   padding: 12px 8px 8px;
   color: var(--sp-text-dim);
@@ -854,10 +855,18 @@ button.wide-add { width: 100%; }
   vertical-align: bottom;
 }
 
-/* The composer's custom-emoji popup (the mention-popup slot: a sibling above the
-   composer card — nothing clips it, no portal needed). Search on top, grid below. */
-.emoji-popup {
-  margin-bottom: 4px;
+/* The composer's unified expression picker. An ABSOLUTE overlay pinned to the
+   composer's RIGHT edge (Discord's picker overlays the message list — a flow
+   sibling carved a fixed-width hole and the list's left part vanished beside it,
+   live report). The anchor is .composer (position: relative); right: 0 lands on
+   the card's right edge (the composer's own 8px padding). One popup, Emoji |
+   Stickers tabs (the .settings-tab underline idiom), shared search, one
+   scrolling body. */
+.composer-picker {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 4px);
+  width: 372px;
   background: var(--sp-surface);
   border: 1px solid var(--sp-control);
   border-radius: 8px;
@@ -865,27 +874,51 @@ button.wide-add { width: 100%; }
   display: flex;
   flex-direction: column;
   gap: 8px;
+  max-height: 420px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  z-index: 5;
 }
-.emoji-popup-search {
+.picker-tabs { display: flex; gap: 0; flex-shrink: 0; }
+/* The tab row rides the settings-tab idiom (Server Settings → Roles): UNDERLINED,
+   never filled — transparent background, a 2px bottom border reserved on every tab
+   (no shift on select), the selected one underlined with its label brightened. */
+.picker-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent; /* reserved — the tab never shifts */
+  border-radius: 0;
+  padding: 3px 10px 6px;
+  color: var(--sp-text-muted);
+  font-size: 13px; /* the search field's size — one voice inside the popup (user request) */
+  font-weight: 700;
+}
+.picker-tab:hover { color: var(--sp-text); background: transparent; }
+.picker-tab.active { color: var(--sp-text); border-bottom-color: var(--sp-text); }
+.picker-search {
   background: var(--sp-input);
   border: none;
   border-radius: 4px;
   color: var(--sp-text);
   font-size: 13px;
   padding: 6px 8px;
+  flex-shrink: 0;
 }
-.emoji-popup-grid {
-  display: grid;
-  grid-template-columns: repeat(8, 34px);
-  gap: 4px;
-  max-height: 220px;
+/* The single scroll owner of the popup (both tabs' content lives here). */
+.picker-body {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
 }
-.emoji-popup-empty {
+.picker-empty {
   color: var(--sp-text-muted);
   font-size: 13px;
   padding: 12px 4px;
   max-width: 280px;
+}
+.emoji-tile-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 34px);
+  gap: 4px;
 }
 .emoji-tile {
   width: 34px;
@@ -947,7 +980,9 @@ button.wide-add { width: 100%; }
 .emoji-empty { color: var(--sp-text-muted); font-size: 13px; padding: 16px 0; }
 .emoji-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, 140px);
+  /* The sticker catalog's cell width (user request 2026-09-30 — 140px read as
+     overly wide next to the stickers' compact 96px cells; long :name:s ellipsize). */
+  grid-template-columns: repeat(auto-fill, 96px);
   gap: 8px;
 }
 .emoji-cell {
@@ -981,6 +1016,122 @@ button.wide-add { width: 100%; }
 }
 .emoji-cell-remove .icon { font-size: 13px; }
 .emoji-cell-remove:hover { background: var(--sp-red); color: #fff; }
+
+/* ===== Custom stickers (phase 2) — the composer tab, the chat block, the settings ===== */
+
+/* The stickers tab's sections live inside .picker-body (the popup's single scroller). */
+.sticker-pack-section { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
+.sticker-pack-title {
+  color: var(--sp-text-dim);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 2px 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.sticker-pack-count { color: var(--sp-text-dim); font-weight: 400; }
+.sticker-tile-grid { display: grid; grid-template-columns: repeat(3, 96px); gap: 4px; }
+.sticker-tile {
+  width: 96px;
+  height: 96px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.sticker-tile:hover:not(:disabled) { background: var(--sp-hover); }
+.sticker-tile:disabled { opacity: 0.5; cursor: wait; }
+.sticker-tile img { max-width: 84px; max-height: 84px; object-fit: contain; }
+.sticker-tile-fallback { font-size: 12px; color: var(--sp-text-muted); }
+
+/* The chat block: Discord's standard sticker render — a FIXED 160px height (the row's
+   estimate is exact, no decode shift), width follows the aspect inside the cap. */
+.message-sticker {
+  height: 160px;
+  width: auto;
+  max-width: 240px;
+  object-fit: contain;
+  display: block;
+  margin-top: 4px;
+  border-radius: 4px;
+}
+/* The tombstone for a dead sticker object (catalog row deleted, object swept): a dim
+   plate naming WHAT died — a bare gray box identifies nothing. */
+.message-sticker-dead {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 6px 10px;
+  border: 1px dashed var(--sp-control);
+  border-radius: 4px;
+  color: var(--sp-text-dim);
+  font-size: 12px;
+}
+.message-sticker-dead .icon { font-size: 16px; }
+.message-sticker-dead-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Server Settings → Stickers: the New-pack row, then one block per pack. */
+.sticker-pack-form { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; }
+.sticker-pack-form input {
+  background: var(--sp-input);
+  border: none;
+  border-radius: 4px;
+  color: var(--sp-text);
+  font-size: 13px;
+  padding: 6px 8px;
+  width: 200px;
+}
+.sticker-pack-block {
+  background: var(--sp-input);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sticker-pack-header { display: flex; align-items: center; gap: 10px; }
+.sticker-pack-header-name { font-weight: 700; font-size: 14px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sticker-pack-header-count { color: var(--sp-text-muted); font-size: 12px; flex: 1; }
+.sticker-pack-header button { padding: 4px 10px; font-size: 12px; }
+.sticker-grid { display: grid; grid-template-columns: repeat(auto-fill, 96px); gap: 8px; }
+.sticker-catalog-cell {
+  position: relative;
+  background: var(--sp-surface);
+  border-radius: 6px;
+  padding: 8px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.sticker-catalog-cell img { max-width: 72px; max-height: 72px; object-fit: contain; }
+.sticker-catalog-fallback { font-size: 12px; color: var(--sp-text-muted); height: 72px; }
+.sticker-catalog-name {
+  font-size: 11px;
+  color: var(--sp-text-muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sticker-catalog-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  padding: 0;
+}
+.sticker-catalog-remove .icon { font-size: 13px; }
+.sticker-catalog-remove:hover { background: var(--sp-red); color: #fff; }
+.sticker-empty { color: var(--sp-text-muted); font-size: 13px; padding: 4px 0; }
 
 /* oak's OG preview card: title + description (≤2 lines) + 72×72 thumbnail,
    click → system browser; shows nothing while loading or on failure. */
@@ -3153,6 +3304,9 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
   padding: 0 1px;
 }
 .search-hit-files { color: var(--sp-link); font-size: 12px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A sticker-only hit's body line — dim like the reply quote's preview, not link-blue
+   like the file names (it is a label, not a downloadable thing). */
+.search-hit-sticker { color: var(--sp-text-dim); font-size: 12px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .search-load-more {
   display: block;
   width: 100%;
@@ -3236,6 +3390,7 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 .roles-list:hover::-webkit-scrollbar-thumb,
 .role-tab-body:hover::-webkit-scrollbar-thumb,
 .room-view-body:hover::-webkit-scrollbar-thumb,
+.picker-body:hover::-webkit-scrollbar-thumb,
 .search-results:hover::-webkit-scrollbar-thumb,
 .discussions-list:hover::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.28);

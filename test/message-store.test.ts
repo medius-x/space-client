@@ -19,6 +19,7 @@ function message(id: number, channelId = 1, author = "alice"): Message {
     pinned: false,
     pinnedBy: null,
     pinnedAt: null,
+    sticker: null,
   };
 }
 

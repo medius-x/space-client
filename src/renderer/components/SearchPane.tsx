@@ -64,15 +64,17 @@ export function RightPane({ session }: { session: ConnectionSession }): React.JS
               }
             }}
           />
-          {query.length > 0 ? (
+          {/* Shown whenever the RESULTS PANEL is open (not whenever the box has text —
+              Ctrl+F opens the panel with an empty box, and the only way back to the
+              roster was typing something first, live report). Same action as Escape:
+              clear the box and return the roster. */}
+          {searchOpen ? (
             <button
               className="search-clear"
               title="Clear and back to the roster (Esc)"
               onClick={() => {
                 setQuery("");
-                if (appStore.getSnapshot().searchOpen) {
-                  appStore.patch({ searchOpen: false });
-                }
+                appStore.patch({ searchOpen: false });
               }}
             >
               <span className="icon mdi-close" />
@@ -330,6 +332,9 @@ function SearchResultCard({ session, message, query, showChannel, channels }: {
   const authorName = displayNameOf(users, message.authorUsername);
   const preview = flattenForSearch(message.content);
   const segments = highlightSegments(preview, query);
+  // A sticker-only hit has no text to highlight — show the same label the reply
+  // quote and the toast use, so the card never renders as an empty author-only tile.
+  const stickerLabel = message.sticker !== null ? `[Sticker] ${message.sticker.name}` : null;
   const channelName = showChannel ? channels.find((entry) => entry.id === message.channelId)?.name ?? null : null;
   return (
     <button className="search-hit" onClick={() => openChannelAtMessage(message.channelId, message.id)}>
@@ -345,6 +350,9 @@ function SearchResultCard({ session, message, query, showChannel, channels }: {
           </div>
           {segments.map((segment, segmentIndex) =>
             segment.hit ? <mark key={segmentIndex}>{segment.text}</mark> : <span key={segmentIndex}>{segment.text}</span>)}
+          {preview.length === 0 && stickerLabel !== null ? (
+            <div className="search-hit-sticker">{stickerLabel}</div>
+          ) : null}
           {message.attachments.length > 0 ? (
             <div className="search-hit-files">{message.attachments.map((attachment) => attachment.fileName).join(", ")}</div>
           ) : null}

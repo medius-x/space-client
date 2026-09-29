@@ -20,6 +20,7 @@ function message(id: number, channelId = 1, mentions: Message["mentions"] = []):
     pinned: false,
     pinnedBy: null,
     pinnedAt: null,
+    sticker: null,
   };
 }
 

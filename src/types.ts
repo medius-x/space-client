@@ -107,6 +107,9 @@ export interface Message {
   pinned: boolean;
   pinnedBy: string | null;
   pinnedAt: string | null;
+  /** The denormalized sticker copy (phase 2, appended — wire append-only); null = none.
+   *  A sticker-only message has content null. */
+  sticker: StickerRef | null;
 }
 
 /** GET /api/search/messages — one search page: the cursor-independent total hit count plus
@@ -196,6 +199,32 @@ export interface CustomEmoji {
   url: string | null;
   key: string;
   uploadedBy: number | null;
+}
+
+/** GET /api/sticker-packs sticker row (phase 2). Same URL discipline as CustomEmoji. */
+export interface Sticker {
+  id: number;
+  name: string;
+  url: string | null;
+  key: string;
+  uploadedBy: number | null;
+}
+
+/** GET /api/sticker-packs row — the whole catalog in one fetch (the tray and the
+ *  settings section render from it; one /topic/stickers ping refetches it). */
+export interface StickerPack {
+  id: number;
+  name: string;
+  stickers: Sticker[];
+}
+
+/** The sticker a message carries — a DENORMALIZED copy stamped at send time. The
+ *  catalog row may be gone (deleted): the key's object dies with the sweep and the
+ *  renderer shows a tombstone; the ref itself never changes. */
+export interface StickerRef {
+  name: string;
+  key: string;
+  url: string | null;
 }
 
 /** The public user view (avatar confirm/remove responses, GET /api/users/me). */

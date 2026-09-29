@@ -28,7 +28,7 @@ import { MAX_VOICE_REJOIN_ATTEMPTS, rejoinDelayMs, rejoinExhausted } from "../do
 import { dmDisplayName } from "../domain/logic/dm-display";
 import type { MentionIdentity } from "../domain/logic/notification-decider";
 import { messageHasEveryoneHere, messageMentionsRole, messageMentionsUser } from "../domain/logic/notification-decider";
-import { dmToastHeader, toastServerHeader } from "../domain/logic/toast-preview";
+import { dmToastHeader, toastBodyFallback, toastServerHeader } from "../domain/logic/toast-preview";
 import { paletteColor } from "../domain/logic/user-palette";
 import { displayNameOf } from "../domain/logic/display-name";
 import { SettingsStore, type ClientSettings } from "../domain/stores/SettingsStore";
@@ -127,7 +127,7 @@ export interface AppState {
   stompCountdown: number | null;
   /** Server settings screen (in-app, replaces the content area) — M7. */
   serverSettingsOpen: boolean;
-  serverSettingsSection: "overview" | "roles" | "members" | "channels" | "emojis" | "server";
+  serverSettingsSection: "overview" | "roles" | "members" | "channels" | "emojis" | "stickers" | "server";
   /** User settings modal — M7. The SCOPE splits the sections (user decision
    *  2026-09-21): "account" = General + Account (opened from the server
    *  header's dropdown — server-scoped identity), "client" = everything else
@@ -1140,7 +1140,7 @@ function makeSessionHooks(recordId: string): SessionHooks {
               title: displayNameOf(backgroundSession.rosterStore.getSnapshot().users, event.message.authorUsername),
               channelName: toastServerHeader(serverDisplayName(recordId),
                 `#${parentChannel?.name ?? event.discussion.parentChannelId} · discussion`),
-              body: event.message.content ?? "(attachment)",
+              body: toastBodyFallback(event.message),
               mention: true,
               onClick: () => {
                 void openDiscussionOnInstance(recordId, event.discussionId);
@@ -1189,7 +1189,7 @@ function makeSessionHooks(recordId: string): SessionHooks {
           && appStore.getSnapshot().activeDiscussion?.discussionId !== event.discussionId
           && mentionsIdentity(event.message, session)) {
         session.discussionsStore.setTracked(event.discussionId, true); // server auto-joined me
-        pingDiscussionEvent(recordId, session, event, event.message.content ?? "(attachment)");
+        pingDiscussionEvent(recordId, session, event, toastBodyFallback(event.message));
       }
     },
     onDiscussionLiveMessage: (message) => {
@@ -2234,6 +2234,7 @@ export function seedSyntheticMessages(count: number): void {
       pinned: false,
       pinnedBy: null,
       pinnedAt: null,
+      sticker: null,
     };
   });
   session.messageStore.applySnapshot(channelId, synthetic);

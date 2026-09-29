@@ -70,6 +70,11 @@ export interface ClientSettings {
    *  their own. Range 18 (= inline text height) .. 96, default 48 (Discord
    *  parity). */
   emojiJumboSize: number;
+  /** The composer picker's last-used tab (2026-09-30 user decision, the Discord
+   *  picker model): "last used" rather than "this session", so it survives a
+   *  restart. Written instantly on tab switches (the persistedGain category —
+   *  a quiet write-through, never surfaced in the settings window). */
+  pickerLastTab: "emoji" | "stickers";
 }
 
 export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
@@ -95,6 +100,7 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   shareScreenAudio: true,
   shareWindowAudio: true,
   emojiJumboSize: 48,
+  pickerLastTab: "emoji",
 };
 
 const KV_KEY = "client-settings";
@@ -144,6 +150,11 @@ export class SettingsStore extends Emitter {
       // A stored jumbo size may be garbage or out of range (hand-edited KV) —
       // the clamp restores the default rather than rendering a broken row.
       this.settings = { ...this.settings, emojiJumboSize: clampJumboEmojiSize(rest.emojiJumboSize) };
+      // The picker tab is a closed union — anything else (hand-edited KV, a
+      // renamed tab) falls back to Emoji.
+      if (this.settings.pickerLastTab !== "emoji" && this.settings.pickerLastTab !== "stickers") {
+        this.settings = { ...this.settings, pickerLastTab: "emoji" };
+      }
     }
     this.loaded = true;
     this.emit();

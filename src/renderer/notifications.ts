@@ -1,5 +1,5 @@
 import { decideNotification, messageHasEveryoneHere, messageMentionsRole, messageMentionsUser, type MentionIdentity } from "../domain/logic/notification-decider";
-import { toastPreviewSegments } from "../domain/logic/toast-preview";
+import { toastBodyFallback, toastPreviewSegments } from "../domain/logic/toast-preview";
 import { knockSchedule } from "../domain/logic/knock-sound";
 import { deafenCue, muteCue } from "../domain/logic/mute-cue";
 import {
@@ -205,7 +205,7 @@ class NotificationHub {
     this.showToast({
       title: authorName ?? message.authorUsername,
       channelName,
-      body: segments.length > 0 ? segments.map((segment) => segment.text).join("") : "(attachment)",
+      body: segments.length > 0 ? segments.map((segment) => segment.text).join("") : toastBodyFallback(message),
       segments: segments.length > 0 ? segments : undefined,
       onClick,
       // The blurple frame follows the MENTION, not the sound decision (oak passes

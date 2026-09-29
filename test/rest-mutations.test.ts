@@ -21,6 +21,7 @@ function message(id: number): Message {
     pinned: false,
     pinnedBy: null,
     pinnedAt: null,
+    sticker: null,
   };
 }
 
@@ -145,5 +146,63 @@ describe("RestClient custom emojis", () => {
     await client.deleteEmoji(7);
     expect(fake.requests[0]?.method).toBe("DELETE");
     expect(fake.requests[0]?.path).toBe("/api/emojis/7");
+  });
+});
+
+/** Wire contracts for the custom-sticker catalog (phase 2). */
+describe("RestClient stickers", () => {
+  it("getStickerPacks returns null on 404 — an older server hides the feature", async () => {
+    const fake = new FakeFetch(() => ({ status: 404, body: { message: "no route" } }));
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: new MemoryTokenStorage(), fetchImpl: fake.call });
+
+    expect(await client.getStickerPacks()).toBeNull();
+  });
+
+  it("pack create/delete hit the pack routes with the exact bodies", async () => {
+    const fake = new FakeFetch(() => ({ status: 204 }));
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: new MemoryTokenStorage(), fetchImpl: fake.call });
+
+    await client.createStickerPack("Cats");
+    expect(fake.requests[0]?.method).toBe("POST");
+    expect(fake.requests[0]?.path).toBe("/api/sticker-packs");
+    expect(fake.requests[0]?.body).toEqual({ name: "Cats" });
+
+    await client.deleteStickerPack(3);
+    expect(fake.requests[1]?.method).toBe("DELETE");
+    expect(fake.requests[1]?.path).toBe("/api/sticker-packs/3");
+  });
+
+  it("the two-phase upload: slot POSTs {fileName}, create POSTs {name, packId, fileKey}", async () => {
+    const fake = new FakeFetch(() => ({ status: 200, body: { id: 1, name: "cat", url: null, key: "stickers/u/cat.png", uploadedBy: 2 } }));
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: new MemoryTokenStorage(), fetchImpl: fake.call });
+
+    await client.requestStickerUploadSlot("cat.png");
+    expect(fake.requests[0]?.method).toBe("POST");
+    expect(fake.requests[0]?.path).toBe("/api/stickers/slot");
+    expect(fake.requests[0]?.body).toEqual({ fileName: "cat.png" });
+
+    await client.createSticker({ name: "cat", packId: 5, fileKey: "stickers/u/cat.png" });
+    expect(fake.requests[1]?.method).toBe("POST");
+    expect(fake.requests[1]?.path).toBe("/api/stickers");
+    expect(fake.requests[1]?.body).toEqual({ name: "cat", packId: 5, fileKey: "stickers/u/cat.png" });
+  });
+
+  it("deleteSticker DELETEs the row route", async () => {
+    const fake = new FakeFetch(() => ({ status: 204 }));
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: new MemoryTokenStorage(), fetchImpl: fake.call });
+
+    await client.deleteSticker(9);
+    expect(fake.requests[0]?.method).toBe("DELETE");
+    expect(fake.requests[0]?.path).toBe("/api/stickers/9");
+  });
+
+  it("sendMessage with a sticker posts the exact tray-send body", async () => {
+    const fake = new FakeFetch(() => ({ status: 201, body: message(31) }));
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: new MemoryTokenStorage(), fetchImpl: fake.call });
+
+    await client.sendMessage(5, { content: null, stickerId: 9, replyToId: null, idempotencyKey: "key-1" });
+    expect(fake.requests[0]?.method).toBe("POST");
+    expect(fake.requests[0]?.path).toBe("/api/channels/5/messages");
+    expect(fake.requests[0]?.body).toEqual({ content: null, stickerId: 9, replyToId: null, idempotencyKey: "key-1" });
   });
 });

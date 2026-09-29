@@ -18,6 +18,7 @@ import {
   jumboEmojiEstimateExtra,
   JUMBO_EMOJI_DEFAULT_PX,
 } from "../../domain/logic/emoji-picker";
+import { filterStickerPacks, stickerEstimateExtra, stickerForwardFileName } from "../../domain/logic/sticker-picker";
 import { displayNameOf } from "../../domain/logic/display-name";
 import { tileReplyLabel } from "../../domain/logic/discussions-view";
 import { linkPreviewFor, type LinkPreview } from "../link-preview";
@@ -25,7 +26,7 @@ import { notifications } from "../notifications";
 import { dmDisplayName } from "../../domain/logic/dm-display";
 import { memberNameColor } from "../../domain/logic/roster-grouping";
 import { paletteColor } from "../../domain/logic/user-palette";
-import type { Channel, ChannelMyPermissions, CustomEmoji, Discussion, DmChannel, ForwardInfo, Message, ReplyInfo } from "../../types";
+import type { Channel, ChannelMyPermissions, CustomEmoji, Discussion, DmChannel, ForwardInfo, Message, ReplyInfo, Sticker, StickerRef } from "../../types";
 import { REACTION_CATALOG, REACTION_GLYPH_BY_SLUG } from "../../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { Modal } from "./Modal";
@@ -66,6 +67,9 @@ function estimateRowHeight(message: Message, startsGroup: boolean, hasDiscussion
   // A potentially-jumbo row (emoji-only content) grows with the reader's size
   // setting — prepaid here so measurement does not shift rows below it.
   height += jumboEmojiEstimateExtra(message.content, jumboEmojiPx);
+  // The sticker block renders at a FIXED height, so its prepayment is exact (the
+  // media-round lesson applied to the one image whose size we control).
+  height += stickerEstimateExtra(message.sticker);
   if (message.reply !== null) {
     height += 34;
   }
@@ -528,6 +532,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
           allowEmptySend={staged.length > 0}
           onCancelReply={replyTo !== null ? () => setReplyTo(null) : null}
           onPaste={(files) => addStagedFiles(files)}
+          onSendSticker={(sticker) => session.sendMessageWithSticker(chatChannel.id, sticker, replyTo?.id)}
           onSend={(content) => {
             const files = staged.map((entry) => entry.file);
             if (files.length > 0) {
@@ -1241,6 +1246,36 @@ function InlineEmoji({ session, name, large = false }: {
 }
 
 /**
+ * The sticker block of a message — a big standalone image under the text (Discord's
+ * standard sticker render). The ref is the DENORMALIZED copy: when the catalog row is
+ * deleted and the swept object's URL dies, the negative cache turns this into a
+ * tombstone naming WHAT died (a bare gray box identifies nothing). The render height
+ * is FIXED (STICKER_RENDER_PX), so the row's estimate never shifts on decode. */
+function InlineSticker({ session, sticker }: {
+  session: ConnectionSession;
+  sticker: StickerRef;
+}): React.JSX.Element {
+  const imageUrl = useAttachmentImage(session, sticker.url !== null ? sticker : null);
+  if (imageUrl === null) {
+    return (
+      <span className="message-sticker-dead" title={sticker.name}>
+        <span className="icon mdi-sticker" />
+        <span className="message-sticker-dead-name">{sticker.name}</span>
+      </span>
+    );
+  }
+  return (
+    <img
+      className="message-sticker"
+      src={imageUrl}
+      alt={`:${sticker.name}:`}
+      title={`:${sticker.name}:`}
+      draggable={false}
+    />
+  );
+}
+
+/**
  * Memoized: the VirtualList recomputes its window on every scroll frame, which
  * re-runs renderItem for the whole visible window — with memo, rows whose props
  * are unchanged (the overwhelming case while scrolling) skip re-rendering
@@ -1464,6 +1499,7 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
             {body}
             {attachmentView}
             {previewUrl !== null ? <LinkPreviewCard url={previewUrl} /> : null}
+            {message.sticker !== null ? <InlineSticker session={session} sticker={message.sticker} /> : null}
           </ForwardCard>
         ) : (
           <>
@@ -1473,6 +1509,7 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
             {body}
             {previewUrl !== null ? <LinkPreviewCard url={previewUrl} /> : null}
             {attachmentView}
+            {message.sticker !== null ? <InlineSticker session={session} sticker={message.sticker} /> : null}
           </>
         )}
         {message.reactions.length > 0 ? (
@@ -1757,7 +1794,29 @@ function EmojiTile({ session, emoji, onPick }: {
   );
 }
 
-function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCancelReply, onPaste, onSend }: {
+/** One catalog tile in the composer's sticker tray (the EmojiTile discipline: the
+ *  image hook runs per tile, never inside the grid's map loop). A click SENDS the
+ *  sticker — hence the disabled state while a send is in flight. */
+function StickerTile({ session, sticker, disabled, onPick }: {
+  session: ConnectionSession;
+  sticker: Sticker;
+  disabled: boolean;
+  onPick(): void;
+}): React.JSX.Element {
+  const imageUrl = useAttachmentImage(
+    session,
+    sticker.url !== null ? { key: sticker.key, url: sticker.url } : null,
+  );
+  return (
+    <button className="sticker-tile" title={`:${sticker.name}:`} disabled={disabled} onClick={onPick}>
+      {imageUrl !== null
+        ? <img src={imageUrl} alt={sticker.name} draggable={false} />
+        : <span className="sticker-tile-fallback">{sticker.name.slice(0, 2)}</span>}
+    </button>
+  );
+}
+
+function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCancelReply, onPaste, onSend, onSendSticker }: {
   session: ConnectionSession;
   placeholder: string;
   attachEnabled: boolean;
@@ -1766,16 +1825,19 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
   onCancelReply: (() => void) | null;
   onPaste(files: readonly File[]): void;
   onSend: (content: string) => Promise<void>;
+  /** The tray's click-to-send: a sticker-only message, immediately (the text draft
+   *  is NOT consumed — Discord's tray behavior). */
+  onSendSticker(sticker: Sticker): Promise<void>;
 }): React.JSX.Element {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mentionQuery, setMentionQuery] = useState<{ token: string; caret: number } | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
-  const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
-  const [emojiQuery, setEmojiQuery] = useState("");
-  const emojiPickerRef = useRef<HTMLDivElement>(null);
-  const emojiButtonRef = useRef<HTMLButtonElement>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerQuery, setPickerQuery] = useState("");
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const pickerButtonRef = useRef<HTMLButtonElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const users = useStore(session.rosterStore, (state) => state.users);
@@ -1783,7 +1845,21 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
   const ownUsername = useStore(appStore, (state) => state.ownUsername);
   const ctrlEnterSends = useStore(settingsStore, (settings) => settings.ctrlEnterSends);
   const emojiState = useStore(session.emojiStore, (state) => state);
-  const emojiMatches = useMemo(() => filterEmojis(emojiState.emojis, emojiQuery), [emojiState.emojis, emojiQuery]);
+  const stickerState = useStore(session.stickerStore, (state) => state);
+  // The picker's tab is the LAST-USED one, persisted through restarts (the Discord
+  // picker model, user decision 2026-09-30): switching a tab writes through quietly,
+  // opening the picker lands on what was used last. A remembered Stickers tab with
+  // no sticker catalog (unsupported server) falls back to Emoji.
+  const storedPickerTab = useStore(settingsStore, (settings) => settings.pickerLastTab);
+  const pickerTab = storedPickerTab === "stickers" && stickerState.supported ? "stickers" : "emoji";
+  const selectPickerTab = (tab: "emoji" | "stickers"): void => {
+    settingsStore.apply({ pickerLastTab: tab }); // the persistedGain category — instant, not staged
+  };
+  const emojiMatches = useMemo(() => filterEmojis(emojiState.emojis, pickerQuery), [emojiState.emojis, pickerQuery]);
+  const stickerPackMatches = useMemo(
+    () => filterStickerPacks(stickerState.packs, pickerQuery),
+    [stickerState.packs, pickerQuery],
+  );
 
   // oak's MentionSuggester order: @everyone/@here first, then MENTIONABLE roles,
   // then users — one flat list the keyboard walks (live report: roles and the
@@ -1864,15 +1940,39 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
     });
   };
 
+  const closePicker = (): void => {
+    setPickerOpen(false);
+    setPickerQuery("");
+  };
+
   // The BUTTON rides as the popup's anchor: its own press does not count as
   // "outside", so the onClick toggle closes the picker instead of racing the
   // outside-dismiss into a reopen (live report).
-  useOutsideDismiss(emojiPickerRef, () => {
-    if (emojiPickerOpen) {
-      setEmojiPickerOpen(false);
-      setEmojiQuery("");
+  useOutsideDismiss(pickerRef, () => {
+    if (pickerOpen) {
+      closePicker();
     }
-  }, emojiButtonRef);
+  }, pickerButtonRef);
+
+  /** The stickers tab's click-to-send: fires the sticker message immediately,
+   *  closing the picker only on SUCCESS (the failed-send discipline: surfaces
+   *  that hold state survive a retry). Shares the composer's `busy` with submit —
+   *  an Enter-send and a sticker click can never interleave. */
+  const sendSticker = async (sticker: Sticker): Promise<void> => {
+    if (busy) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await onSendSticker(sticker);
+      closePicker();
+    } catch (stickerError) {
+      setError(stickerError instanceof Error ? stickerError.message : String(stickerError));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const submit = async (): Promise<void> => {
     const content = text.trim();
@@ -1887,8 +1987,7 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
       setMentionQuery(null);
       // A sent message closes the picker (user request) — but a FAILED send
       // keeps it: the draft survives, so does the picker.
-      setEmojiPickerOpen(false);
-      setEmojiQuery("");
+      closePicker();
     } catch (submitError) {
       // Keep the text — a failed send must never eat the draft.
       setError(submitError instanceof Error ? submitError.message : String(submitError));
@@ -1917,35 +2016,83 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
           ))}
         </div>
       ) : null}
-      {emojiPickerOpen && emojiState.supported ? (
-        <div ref={emojiPickerRef} className="emoji-popup">
+      {/* The unified expression picker (the Discord model, user decision 2026-09-30):
+          ONE smile button, ONE popup with Emoji | Stickers tabs on top and a shared
+          search. The tab is the last-used one, persisted through restarts. The two
+          tabs keep their click asymmetry: an emoji INSERTS ":name:" (popup stays),
+          a sticker SENDS immediately (popup closes, text draft untouched). */}
+      {pickerOpen && (emojiState.supported || stickerState.supported) ? (
+        <div ref={pickerRef} className="composer-picker">
+          <div className="picker-tabs">
+            {emojiState.supported ? (
+              <button
+                className={"picker-tab" + (pickerTab === "emoji" ? " active" : "")}
+                onClick={() => selectPickerTab("emoji")}
+              >Emoji</button>
+            ) : null}
+            {stickerState.supported ? (
+              <button
+                className={"picker-tab" + (pickerTab === "stickers" ? " active" : "")}
+                onClick={() => selectPickerTab("stickers")}
+              >Stickers</button>
+            ) : null}
+          </div>
           <input
-            className="emoji-popup-search"
+            className="picker-search"
             type="text"
-            placeholder="Search emojis"
-            value={emojiQuery}
-            onChange={(event) => setEmojiQuery(event.target.value)}
+            placeholder={pickerTab === "emoji" ? "Search emojis" : "Search stickers"}
+            value={pickerQuery}
+            onChange={(event) => setPickerQuery(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Escape") {
                 event.stopPropagation(); // the textarea's own Escape handlers stay quiet
-                setEmojiPickerOpen(false);
-                setEmojiQuery("");
+                closePicker();
               }
             }}
           />
-          {emojiMatches.length === 0 ? (
-            <div className="emoji-popup-empty">
-              {emojiState.emojis.length === 0
-                ? "No emojis yet — upload them in Server Settings."
-                : "Nothing matches."}
-            </div>
-          ) : (
-            <div className="emoji-popup-grid">
-              {emojiMatches.map((emoji) => (
-                <EmojiTile key={emoji.id} session={session} emoji={emoji} onPick={() => applyEmoji(emoji.name)} />
-              ))}
-            </div>
-          )}
+          <div className="picker-body">
+            {pickerTab === "emoji" ? (
+              emojiMatches.length === 0 ? (
+                <div className="picker-empty">
+                  {emojiState.emojis.length === 0
+                    ? "No emojis yet — upload them in Server Settings."
+                    : "Nothing matches."}
+                </div>
+              ) : (
+                <div className="emoji-tile-grid">
+                  {emojiMatches.map((emoji) => (
+                    <EmojiTile key={emoji.id} session={session} emoji={emoji} onPick={() => applyEmoji(emoji.name)} />
+                  ))}
+                </div>
+              )
+            ) : (
+              stickerPackMatches.length === 0 ? (
+                <div className="picker-empty">
+                  {stickerState.packs.length === 0 ? "No stickers yet." : "Nothing matches."}
+                </div>
+              ) : (
+                stickerPackMatches.map((pack) => (
+                  <div key={pack.id} className="sticker-pack-section">
+                    <div className="sticker-pack-title">
+                      {pack.name}
+                      <span className="sticker-pack-count">{pack.stickers.length}</span>
+                    </div>
+                    <div className="sticker-tile-grid">
+                      {pack.stickers.map((sticker) => (
+                        <StickerTile
+                          key={sticker.id}
+                          session={session}
+                          sticker={sticker}
+                          disabled={busy}
+                          onPick={() => void sendSticker(sticker)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ))
+              )
+            )}
+          </div>
         </div>
       ) : null}
       <div className="composer-card">
@@ -2031,18 +2178,19 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
           }
         }}
         />
-        {/* The emoji button sits at the card's RIGHT edge (user request) — unlike
-            the paperclip it is not ATTACH_FILES-gated: picker access needs no
-            permission, only the server supporting the catalog. */}
-        {emojiState.supported ? (
+        {/* The single smile button at the card's RIGHT edge opens the unified
+            expression picker (emojis + stickers tabs). Not ATTACH_FILES-gated:
+            picker access needs no permission, only the server supporting at
+            least one of the catalogs. */}
+        {emojiState.supported || stickerState.supported ? (
           <button
-            ref={emojiButtonRef}
+            ref={pickerButtonRef}
             className="composer-attach"
-            title="Emoji"
+            title={pickerTab === "emoji" ? "Emoji & stickers" : "Stickers & emoji"}
             onClick={() => {
-              setEmojiPickerOpen((open) => !open);
-              setEmojiQuery("");
-              setMentionQuery(null); // the two popups are mutually exclusive
+              setPickerOpen((open) => !open);
+              setPickerQuery("");
+              setMentionQuery(null); // the picker and the @-popup are mutually exclusive
             }}
           ><span className="icon mdi-emoticon" /></button>
         ) : null}
@@ -2148,6 +2296,27 @@ function ForwardDialog({ session, source, sourceChannel, onClose }: {
               width: attachment.width ?? null,
               height: attachment.height ?? null,
             });
+          }
+          // A sticker-only message would otherwise 400 ("forward must have content
+          // or an attachment") — the target server cannot serve the origin's sticker
+          // keys, so the sticker rides over as a regular image attachment (the same
+          // re-upload machinery). The copy keeps rendering as a picture there.
+          if (message.sticker !== null
+              && targetAttachments.length === 0
+              && (message.content ?? "").trim().length === 0) {
+            const freshStickerLink = await session.rest.freshAttachmentLink(message.sticker.key);
+            if (freshStickerLink !== null) {
+              const stickerBytes = new Uint8Array(await session.rest.downloadBytes(freshStickerLink));
+              const stickerFileName = stickerForwardFileName(message.sticker);
+              const stickerSlot = await forwardRequestUpload(targetRecordId, stickerFileName);
+              await forwardUploadBytes(targetRecordId, stickerSlot.uploadUrl, stickerBytes);
+              targetAttachments.push({
+                key: stickerSlot.key,
+                fileName: stickerFileName,
+                width: null,
+                height: null,
+              });
+            }
           }
           await forwardCrossInstance(targetRecordId, targetChannelId, {
             content: (message.content?.length ?? 0) > 0 ? message.content : comment,

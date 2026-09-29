@@ -17,6 +17,8 @@ import type {
   PermissionCatalogEntry,
   Role,
   ServerMember,
+  Sticker,
+  StickerPack,
   StorageStatus,
 } from "../../types";
 import {
@@ -77,7 +79,7 @@ const PERMISSION_INFO: Record<string, { label: string; description: string }> = 
   MANAGE_NICKNAMES: { label: "Manage Nicknames", description: "Change other members' names." },
   CHANGE_NICKNAME: { label: "Change Nickname", description: "Change your own username." },
   VIEW_AUDIT_LOG: { label: "View Audit Log", description: "See the server's moderation history." },
-  MANAGE_EMOJIS: { label: "Manage Emojis", description: "Upload and remove custom emoji." },
+  MANAGE_EMOJIS: { label: "Manage Emojis & Stickers", description: "Upload and remove custom emoji and stickers." },
   SEND_MESSAGES: { label: "Send Messages", description: "Type in text channels." },
   MANAGE_MESSAGES: { label: "Manage Messages", description: "Delete and edit other members' messages." },
   ATTACH_FILES: { label: "Attach Files", description: "Upload images and files." },
@@ -154,6 +156,7 @@ export function ServerSettingsPane({ session }: { session: ConnectionSession }):
     { key: "members" as const, label: "Members", enabled: can(MANAGE_MEMBERS_PERMISSION) || can(KICK_MEMBERS_PERMISSION) || can(BAN_MEMBERS_PERMISSION) },
     { key: "channels" as const, label: "Channels", enabled: can(MANAGE_CHANNELS_PERMISSION) },
     { key: "emojis" as const, label: "Emoji", enabled: can(MANAGE_EMOJIS_PERMISSION) },
+    { key: "stickers" as const, label: "Stickers", enabled: can(MANAGE_EMOJIS_PERMISSION) },
     { key: "server" as const, label: "Server", enabled: can(MANAGE_STORAGE_PERMISSION) },
   ].filter((entry) => entry.enabled);
   const active = sections.find((entry) => entry.key === section) ?? sections[0];
@@ -183,6 +186,8 @@ export function ServerSettingsPane({ session }: { session: ConnectionSession }):
           <MembersSection session={session} />
         ) : active.key === "emojis" ? (
           <ServerEmojiSection session={session} />
+        ) : active.key === "stickers" ? (
+          <ServerStickerSection session={session} />
         ) : active.key === "server" ? (
           <ServerStorageSection session={session} />
         ) : (
@@ -2027,6 +2032,259 @@ function ServerEmojiSection({ session }: { session: ConnectionSession }): React.
             session.refreshEmojis();
           }}
           onClose={() => setDeleteTarget(null)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/** One catalog cell of the Sticker section (the EmojiCatalogCell idiom, bigger preview). */
+function StickerCatalogCell({ session, sticker, onDelete }: {
+  session: ConnectionSession;
+  sticker: Sticker;
+  onDelete(sticker: Sticker): void;
+}): React.JSX.Element {
+  const imageUrl = useAttachmentImage(
+    session,
+    sticker.url !== null ? { key: sticker.key, url: sticker.url } : null,
+  );
+  return (
+    <div className="sticker-catalog-cell">
+      {imageUrl !== null
+        ? <img src={imageUrl} alt={sticker.name} draggable={false} />
+        : <span className="sticker-catalog-fallback">{sticker.name.slice(0, 2)}</span>}
+      <span className="sticker-catalog-name" title={`:${sticker.name}:`}>:{sticker.name}:</span>
+      <button className="icon-button sticker-catalog-remove" title="Delete sticker" onClick={() => onDelete(sticker)}>
+        <span className="icon mdi-close" />
+      </button>
+    </div>
+  );
+}
+
+/** The Stickers section (phase 2): a "New pack" form on top, then one block per
+ *  pack — header (name, count, Upload sticker, delete) and the sticker grid. One
+ *  upload flow lives at a time (the active pack owns it). Management rides
+ *  MANAGE_EMOJIS — one gate for the whole expressions catalog (user decision). */
+function ServerStickerSection({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const stickerState = useStore(session.stickerStore, (state) => state);
+  const [packNameDraft, setPackNameDraft] = useState("");
+  const [packBusy, setPackBusy] = useState(false);
+  const [uploadPackId, setUploadPackId] = useState<number | null>(null);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [pendingKey, setPendingKey] = useState<string | null>(null);
+  const [nameDraft, setNameDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [deleteStickerTarget, setDeleteStickerTarget] = useState<Sticker | null>(null);
+  const [deletePackTarget, setDeletePackTarget] = useState<StickerPack | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const uploadPack = stickerState.packs.find((pack) => pack.id === uploadPackId) ?? null;
+
+  const resetPending = (): void => {
+    setUploadPackId(null);
+    setPendingFile(null);
+    setPendingKey(null);
+    setNameDraft("");
+    setError(null);
+  };
+
+  const nameTakenInPack = (name: string): boolean =>
+    uploadPack !== null && uploadPack.stickers.some((sticker) => sticker.name === name);
+
+  // The client-side validation ladder BEFORE any network work (the emoji section's
+  // ladder; the dimension warn threshold is 512 — stickers render at 160px).
+  const pickFile = (file: File | null): void => {
+    if (file === null || uploadPack === null) {
+      return;
+    }
+    const lower = file.name.toLowerCase();
+    if (!lower.endsWith(".png") && !lower.endsWith(".gif") && !lower.endsWith(".webp")) {
+      setError("Pick a PNG, GIF or WebP image.");
+      return;
+    }
+    if (file.size > 1024 * 1024) {
+      setError("The file is larger than 1 MB.");
+      return;
+    }
+    void measureImageSize(file).then((size) => {
+      if (size !== null && (size.width > 512 || size.height > 512)) {
+        log.warn("settings", `sticker ${file.name} is ${size.width}x${size.height} — larger than 512px, it will render downscaled`);
+      }
+    });
+    const suggested = emojiNameFromFileName(file.name);
+    if (nameTakenInPack(suggested)) {
+      setError(`The name ":${suggested}:" is already taken in this pack — pick another.`);
+    }
+    setPendingFile(file);
+    setNameDraft(suggested);
+    setPendingKey(null);
+  };
+
+  const uploadPending = async (): Promise<void> => {
+    if (pendingFile === null || uploadPack === null) {
+      return;
+    }
+    const name = nameDraft.trim();
+    if (!/^[a-z0-9_-]{1,32}$/.test(name)) {
+      setError("The name must be 1-32 chars of a-z, 0-9, _ and -.");
+      return;
+    }
+    if (nameTakenInPack(name)) {
+      setError(`The name ":${name}:" is already taken in this pack.`);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      let key = pendingKey;
+      if (key === null) {
+        const slot = await session.rest.requestStickerUploadSlot(sanitizeSlotFileName(pendingFile.name));
+        await session.rest.uploadBytes(slot.uploadUrl, await pendingFile.arrayBuffer(), pendingFile.type || "image/png");
+        key = slot.key;
+        setPendingKey(key); // a name conflict retries ONLY the create step
+      }
+      await session.rest.createSticker({ name, packId: uploadPack.id, fileKey: key });
+      session.refreshStickers();
+      resetPending();
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : String(uploadError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const createPack = async (): Promise<void> => {
+    const name = packNameDraft.trim();
+    if (name.length === 0 || packBusy) {
+      return;
+    }
+    setPackBusy(true);
+    setError(null);
+    try {
+      await session.rest.createStickerPack(name);
+      setPackNameDraft("");
+      session.refreshStickers();
+    } catch (packError) {
+      setError(packError instanceof Error ? packError.message : String(packError));
+    } finally {
+      setPackBusy(false);
+    }
+  };
+
+  return (
+    <div className="settings-section">
+      <h2 className="section-title">Stickers</h2>
+      <div className="sticker-pack-form">
+        <input
+          type="text"
+          value={packNameDraft}
+          maxLength={32}
+          placeholder="New pack name"
+          disabled={!stickerState.supported}
+          onChange={(event) => setPackNameDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !packBusy) {
+              event.preventDefault();
+              void createPack();
+            }
+          }}
+        />
+        <button className="primary" disabled={packBusy || !stickerState.supported || packNameDraft.trim().length === 0}
+          onClick={() => void createPack()}>Create pack</button>
+        <span className="emoji-count">{stickerState.totalStickers} / 200 stickers · {stickerState.packs.length} / 20 packs</span>
+      </div>
+      <div className="settings-hint">PNG, GIF or WebP · up to 1 MB · larger than 512×512 renders downscaled</div>
+      <div className="error-line">{error ?? ""}</div>
+      {stickerState.packs.length === 0 ? (
+        <div className="sticker-empty">No sticker packs yet — create one to start uploading stickers.</div>
+      ) : (
+        stickerState.packs.map((pack) => (
+          <div key={pack.id} className="sticker-pack-block">
+            <div className="sticker-pack-header">
+              <span className="sticker-pack-header-name" title={pack.name}>{pack.name}</span>
+              <span className="sticker-pack-header-count">{pack.stickers.length} sticker{pack.stickers.length === 1 ? "" : "s"}</span>
+              <button
+                disabled={busy || !stickerState.supported}
+                onClick={() => {
+                  resetPending();
+                  setUploadPackId(pack.id);
+                  window.requestAnimationFrame(() => fileInputRef.current?.click());
+                }}
+              >Upload sticker</button>
+              <button
+                className="ghost"
+                disabled={packBusy}
+                title="Delete pack"
+                onClick={() => setDeletePackTarget(pack)}
+              ><span className="icon mdi-trash-can" /></button>
+            </div>
+            {uploadPackId === pack.id && pendingFile !== null ? (
+              <div className="emoji-upload-form">
+                <span className="emoji-upload-file" title={pendingFile.name}>{pendingFile.name}</span>
+                <div className="emoji-upload-form-row">
+                  <input
+                    type="text"
+                    value={nameDraft}
+                    maxLength={32}
+                    placeholder="name"
+                    onChange={(event) => setNameDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !busy) {
+                        event.preventDefault();
+                        void uploadPending();
+                      }
+                    }}
+                  />
+                  <button className="primary" disabled={busy} onClick={() => void uploadPending()}>Save</button>
+                  <button className="ghost" disabled={busy} onClick={resetPending}>Cancel</button>
+                </div>
+              </div>
+            ) : null}
+            {pack.stickers.length === 0 ? (
+              <div className="sticker-empty">No stickers in this pack yet.</div>
+            ) : (
+              <div className="sticker-grid">
+                {pack.stickers.map((sticker) => (
+                  <StickerCatalogCell key={sticker.id} session={session} sticker={sticker} onDelete={setDeleteStickerTarget} />
+                ))}
+              </div>
+            )}
+          </div>
+        ))
+      )}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/png,image/gif,image/webp"
+        hidden
+        onChange={(event) => {
+          pickFile(event.target.files?.[0] ?? null);
+          event.target.value = ""; // let the same file be re-picked after a fix
+        }}
+      />
+      {deleteStickerTarget !== null ? (
+        <ConfirmModal
+          title="Delete sticker"
+          note={`Delete :${deleteStickerTarget.name}:? Messages using this sticker will show a placeholder.`}
+          confirmLabel="Delete"
+          onConfirm={async () => {
+            await session.rest.deleteSticker(deleteStickerTarget.id);
+            session.refreshStickers();
+          }}
+          onClose={() => setDeleteStickerTarget(null)}
+        />
+      ) : null}
+      {deletePackTarget !== null ? (
+        <ConfirmModal
+          title="Delete sticker pack"
+          note={`Delete pack "${deletePackTarget.name}"? All ${deletePackTarget.stickers.length} sticker${deletePackTarget.stickers.length === 1 ? "" : "s"} in it are removed and messages using them will show a placeholder.`}
+          confirmLabel="Delete pack"
+          onConfirm={async () => {
+            await session.rest.deleteStickerPack(deletePackTarget.id);
+            session.refreshStickers();
+          }}
+          onClose={() => setDeletePackTarget(null)}
         />
       ) : null}
     </div>

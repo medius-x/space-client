@@ -14,6 +14,19 @@ export function toastPreview(content: string | null): string {
   return text.length > TOAST_PREVIEW_MAX_CHARS ? `${text.slice(0, TOAST_PREVIEW_MAX_CHARS)}…` : text;
 }
 
+/** The one-line body for a message with NO text: a sticker-only message shows the
+ *  server's quote label ("[Sticker] cat"), anything else falls back to the
+ *  attachment marker. Same format as the server's reply-quote preview. */
+export function toastBodyFallback(message: {
+  content: string | null;
+  sticker: { name: string; key?: string; url?: string | null } | null;
+}): string {
+  if (message.content !== null && message.content.trim() !== "") {
+    return message.content;
+  }
+  return message.sticker !== null ? `[Sticker] ${message.sticker.name}` : "(attachment)";
+}
+
 /** One preview segment: a span that pings THE RECIPIENT carries the flag so the
  *  toast can tint it soft-blurple; everything else — other people's mentions,
  *  plain @words — stays unlit (user decision: only MY nick highlights). */

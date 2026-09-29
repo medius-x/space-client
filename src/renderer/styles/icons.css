@@ -60,6 +60,7 @@
 .icon.mdi-pound::before { content: "\F0423"; }
 .icon.mdi-refresh::before { content: "\F0450"; }
 .icon.mdi-reply::before { content: "\F045A"; }
+.icon.mdi-sticker::before { content: "\F1364"; }
 .icon.mdi-trash-can::before { content: "\F0A79"; }
 .icon.mdi-triangle-wave::before { content: "\F147C"; }
 .icon.mdi-video::before { content: "\F0567"; }
