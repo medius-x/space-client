@@ -73,6 +73,19 @@ describe("RestClient message mutations", () => {
     expect(snapshot[0]?.reaction).toBe("heart");
   });
 
+  it("a custom-emoji reaction slug rides the path percent-encoded", async () => {
+    // ":cat:" must reach the wire as %3Acat%3A — colons are legal path characters,
+    // but the encoding pins the contract (the server's @PathVariable decodes it back).
+    const fake = new FakeFetch(() => ({ status: 200, body: [] }));
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: new MemoryTokenStorage(), fetchImpl: fake.call });
+
+    await client.addReaction(5, 3, ":cat:");
+    expect(fake.requests[0]?.path).toBe("/api/channels/5/messages/3/reactions/%3Acat%3A");
+
+    await client.removeReaction(5, 3, ":cat:");
+    expect(fake.requests[1]?.path).toBe("/api/channels/5/messages/3/reactions/%3Acat%3A");
+  });
+
   it("forwardMessage POSTs the two modes verbatim", async () => {
     const fake = new FakeFetch(() => ({ status: 201, body: message(9) }));
     const client = new RestClient({ baseUrl: "http://x", tokenStorage: new MemoryTokenStorage(), fetchImpl: fake.call });

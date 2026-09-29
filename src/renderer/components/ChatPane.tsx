@@ -19,6 +19,15 @@ import {
   JUMBO_EMOJI_DEFAULT_PX,
 } from "../../domain/logic/emoji-picker";
 import { filterStickerPacks, stickerEstimateExtra, stickerForwardFileName } from "../../domain/logic/sticker-picker";
+import {
+  customEmojiNameOfReactionSlug,
+  filterBuiltInReactions,
+  pushRecentExpression,
+  reactionPickerPosition,
+  resolveRecentExpressionEntries,
+  type BuiltInReaction,
+  type RecentExpressionEntry,
+} from "../../domain/logic/reaction-picker";
 import { displayNameOf } from "../../domain/logic/display-name";
 import { tileReplyLabel } from "../../domain/logic/discussions-view";
 import { linkPreviewFor, type LinkPreview } from "../link-preview";
@@ -50,6 +59,16 @@ interface StagedFile {
 const MAX_JUMP_BACKFILL = 1000;
 const HIGHLIGHT_TTL_MS = 1500;
 const QUOTE_DEPTH_MAX = 5;
+
+/** Records a used expression into the persisted MRU — the "Latest" row BOTH pickers
+ *  share (a reaction pick and a composer insert feed the same list, user request
+ *  2026-09-30). Reads the snapshot at call time, never a stale closure; the
+ *  persistedGain category — a quiet write-through, not surfaced in settings. */
+const recordRecentExpression = (slug: string): void => {
+  settingsStore.apply({
+    recentExpressions: pushRecentExpression(settingsStore.getSnapshot().recentExpressions, slug),
+  });
+};
 
 /**
  * Content-aware height estimate — the flatter the estimate, the more totalHeight
@@ -270,10 +289,18 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
   const [editing, setEditing] = useState<Message | null>(null);
   const [menu, setMenu] = useState<{ message: Message; x: number; y: number } | null>(null);
   const [picker, setPicker] = useState<{ message: Message; x: number; y: number } | null>(null);
+  const [reactionQuery, setReactionQuery] = useState("");
   const pickerRef = useRef<HTMLDivElement | null>(null);
   // Any pointer press outside the picker (or Escape) closes it — it must not
   // hang over the chat until a reaction is picked (live M7 polish report).
   useOutsideDismiss(pickerRef, () => setPicker(null));
+  // Whatever closed the picker (pick, outside press, Escape), the next open starts
+  // from an empty search — a stale filter from another message would confuse.
+  useEffect(() => {
+    if (picker === null) {
+      setReactionQuery("");
+    }
+  }, [picker]);
   const [forwardQueue, setForwardQueue] = useState<readonly Message[] | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Message | null>(null);
   const [selectionMode, setSelectionMode] = useState(false);
@@ -380,6 +407,37 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
   const chatChannel: Channel = openDiscussionEntry !== null && openDiscussionEntry.discussionId !== null
     ? { id: openDiscussionEntry.discussionId, name: "Discussion", type: "TEXT", createdAt: "", locked: false }
     : viewChannel!; // the null viewChannel dead-ends above (chat-empty) before this line
+
+  // The unified reaction picker (phase 3): the composer picker's visual language over
+  // BOTH catalogs — the 10 built-in slugs plus the server's custom emojis, one search
+  // across the two. A pick toggles the reaction immediately and closes the popup.
+  // The Latest row on top is the shared MRU of used expressions (reactions AND
+  // composer inserts — one list, both popups).
+  const emojiCatalogState = useStore(session.emojiStore, (state) => state);
+  const recentExpressions = useStore(settingsStore, (settings) => settings.recentExpressions);
+  const builtInMatches = useMemo(
+    () => filterBuiltInReactions(REACTION_CATALOG, reactionQuery),
+    [reactionQuery],
+  );
+  const customMatches = useMemo(
+    () => (emojiCatalogState.supported ? filterEmojis(emojiCatalogState.emojis, reactionQuery) : []),
+    [emojiCatalogState, reactionQuery],
+  );
+  const recentEntries = useMemo(
+    () => resolveRecentExpressionEntries(recentExpressions, emojiCatalogState.byName, reactionQuery),
+    [emojiCatalogState, recentExpressions, reactionQuery],
+  );
+  const pickReaction = (message: Message, slug: string) => {
+    const summary = message.reactions.find((candidate) => candidate.reaction === slug);
+    const selfId = session.selfUserId();
+    const mine = selfId !== null && (summary?.userIds.includes(selfId) ?? false);
+    // A failed toggle (revoked permission, network, the 20-distinct cap) must leave a
+    // trace — the silent catch made 403s look like dead buttons.
+    void session.toggleReaction(chatChannel.id, message.id, slug, mine)
+      .catch((reactionError) => log.warn("reactions", `toggle ${slug} failed: ${String(reactionError)}`));
+    recordRecentExpression(slug);
+    setPicker(null);
+  };
 
   const exitSelection = () => {
     setSelectionMode(false);
@@ -589,7 +647,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
           y={menu.y}
           items={messageMenuItems(session, menu.message, actions, {
             beginSelection: () => setSelectionMode(true),
-            openPicker: () => setPicker({ message: menu.message, x: menu.x, y: menu.y + 120 }),
+            openPicker: () => setPicker({ message: menu.message, x: menu.x, y: menu.y }),
             confirmDelete: () => setDeleteTarget(menu.message),
             isDm: dm !== null,
             canStartDiscussion: dm === null && openDiscussionEntry === null && (channelPermissions?.sendMessages ?? false),
@@ -614,35 +672,83 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
           )}
         </div>
       ) : null}
+      {/* The unified reaction picker (phase 3, user decision): the composer picker's
+          language — fixed width, one search, a single scrolling body — anchored to the
+          message (fixed coordinates from reactionPickerPosition: below the anchor,
+          flipped up near the window bottom). One click = one toggle, popup closes;
+          no Stickers tab (stickers are not reactions). */}
       {picker !== null ? (
         <div
           ref={pickerRef}
-          className="emoji-picker"
-          style={{
-            // Clamp by the picker's REAL footprint (the whole catalog in one
-            // row) — a fixed 340px left it clipped by the window's right edge.
-            left: Math.max(8, Math.min(picker.x, window.innerWidth - (REACTION_CATALOG.length * 42 + 16))),
-            top: Math.min(Math.max(8, picker.y), window.innerHeight - 56),
-          }}
+          className="reaction-picker"
+          style={reactionPickerPosition(picker.x, picker.y, window.innerWidth, window.innerHeight)}
           onClick={(event) => event.stopPropagation()}
         >
-          {REACTION_CATALOG.map((entry) => {
-            const summary = picker.message.reactions.find((candidate) => candidate.reaction === entry.slug);
-            const selfId = session.selfUserId();
-            const mine = selfId !== null && (summary?.userIds.includes(selfId) ?? false);
-            return (
-              <button key={entry.slug} className="emoji-choice"
-                onClick={() => {
-                  // A failed toggle (revoked permission, network) must leave a
-                  // trace — the silent catch made 403s look like dead buttons.
-                  void session.toggleReaction(chatChannel.id, picker.message.id, entry.slug, mine)
-                    .catch((reactionError) => log.warn("reactions", `toggle ${entry.slug} failed: ${String(reactionError)}`));
-                  setPicker(null);
-                }}>
-                {entry.glyph}
-              </button>
-            );
-          })}
+          <input
+            className="picker-search"
+            type="text"
+            placeholder="Search reactions"
+            value={reactionQuery}
+            onChange={(event) => setReactionQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.stopPropagation();
+                setPicker(null);
+              }
+            }}
+          />
+          <div className="picker-body">
+            {recentEntries.length === 0 && builtInMatches.length === 0 && customMatches.length === 0 ? (
+              <div className="picker-empty">Nothing matches.</div>
+            ) : (
+              <>
+                {recentEntries.length > 0 ? (
+                  <div className="picker-section">
+                    <div className="picker-section-title">Latest</div>
+                    <div className="expression-tile-grid">
+                      {recentEntries.map((entry) => (
+                        <RecentExpressionTile
+                          key={entry.slug}
+                          session={session}
+                          entry={entry}
+                          onPick={() => pickReaction(picker.message, entry.slug)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+                {builtInMatches.length > 0 ? (
+                  <div className="picker-section">
+                    <div className="picker-section-title">Built-in</div>
+                    <div className="expression-tile-grid">
+                      {builtInMatches.map((entry) => (
+                        <BuiltInEmojiTile
+                          key={entry.slug}
+                          entry={entry}
+                          onPick={() => pickReaction(picker.message, entry.slug)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+                {customMatches.length > 0 ? (
+                  <div className="picker-section">
+                    <div className="picker-section-title">Custom</div>
+                    <div className="emoji-tile-grid">
+                      {customMatches.map((emoji) => (
+                        <EmojiTile
+                          key={emoji.id}
+                          session={session}
+                          emoji={emoji}
+                          onPick={() => pickReaction(picker.message, `:${emoji.name}:`)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </>
+            )}
+          </div>
         </div>
       ) : null}
       {forwardQueue !== null ? (
@@ -1246,6 +1352,44 @@ function InlineEmoji({ session, name, large = false }: {
 }
 
 /**
+ * The emoji half of a reaction chip. A built-in slug renders its unicode glyph; a
+ * ":name:" token resolves through the LIVE catalog (the phase-1 model: an <img> via the
+ * attachment cache) and degrades to the literal ":name:" text when the emoji is gone —
+ * the chip itself stays clickable either way, so a dangling reaction can still be
+ * lifted off (the server's remove path deliberately skips the catalog check). Hooks
+ * run unconditionally — the built-in early return must never skip them.
+ */
+function ReactionChipLabel({ session, slug }: {
+  session: ConnectionSession;
+  slug: string;
+}): React.JSX.Element {
+  const emojiName = customEmojiNameOfReactionSlug(slug);
+  const emoji = useStore(
+    session.emojiStore,
+    (state) => (emojiName !== null ? state.byName.get(emojiName) ?? null : null),
+  );
+  const imageUrl = useAttachmentImage(
+    session,
+    emoji !== null && emoji.url !== null ? { key: emoji.key, url: emoji.url } : null,
+  );
+  if (emojiName === null) {
+    return <span>{REACTION_GLYPH_BY_SLUG[slug] ?? slug}</span>;
+  }
+  if (emoji === null || imageUrl === null) {
+    return <span>{`:${emojiName}:`}</span>;
+  }
+  return (
+    <img
+      className="reaction-chip-emoji"
+      src={imageUrl}
+      alt={`:${emojiName}:`}
+      title={`:${emojiName}:`}
+      draggable={false}
+    />
+  );
+}
+
+/**
  * The sticker block of a message — a big standalone image under the text (Discord's
  * standard sticker render). The ref is the DENORMALIZED copy: when the catalog row is
  * deleted and the swept object's URL dies, the negative cache turns this into a
@@ -1471,7 +1615,7 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
               onClick={(event) => {
                 event.stopPropagation();
                 const rect = event.currentTarget.getBoundingClientRect();
-                props.onPicker({ message, x: rect.left, y: rect.bottom + 4 });
+                props.onPicker({ message, x: rect.left, y: rect.bottom });
               }}
             >
               <span className="icon mdi-emoticon" />
@@ -1533,7 +1677,7 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
                     }
                   }}
                 >
-                  {REACTION_GLYPH_BY_SLUG[summary.reaction] ?? summary.reaction} {summary.count}
+                  <ReactionChipLabel session={session} slug={summary.reaction} /> {summary.count}
                 </button>
               );
             })}
@@ -1794,6 +1938,34 @@ function EmojiTile({ session, emoji, onPick }: {
   );
 }
 
+/** A built-in unicode emoji tile — the same square as EmojiTile but carrying a glyph
+ *  (no catalog row, no ":name:" token). Serves the Built-in sections of BOTH pickers
+ *  and the glyph half of the Latest row. */
+function BuiltInEmojiTile({ entry, onPick }: {
+  entry: BuiltInReaction;
+  onPick(): void;
+}): React.JSX.Element {
+  return (
+    <button className="emoji-tile" title={entry.slug} onClick={onPick}>
+      <span className="emoji-tile-glyph">{entry.glyph}</span>
+    </button>
+  );
+}
+
+/** One tile of the Latest row (the shared MRU): a catalog image or a built-in glyph,
+ *  per the resolved entry — dead customs are dropped by the resolver, so both
+ *  payload kinds are always renderable here. */
+function RecentExpressionTile({ session, entry, onPick }: {
+  session: ConnectionSession;
+  entry: RecentExpressionEntry;
+  onPick(): void;
+}): React.JSX.Element {
+  if (entry.emoji !== null) {
+    return <EmojiTile session={session} emoji={entry.emoji} onPick={onPick} />;
+  }
+  return <BuiltInEmojiTile entry={{ slug: entry.slug, glyph: entry.glyph ?? entry.slug }} onPick={onPick} />;
+}
+
 /** One catalog tile in the composer's sticker tray (the EmojiTile discipline: the
  *  image hook runs per tile, never inside the grid's map loop). A click SENDS the
  *  sticker — hence the disabled state while a send is in flight. */
@@ -1855,7 +2027,16 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
   const selectPickerTab = (tab: "emoji" | "stickers"): void => {
     settingsStore.apply({ pickerLastTab: tab }); // the persistedGain category — instant, not staged
   };
+  const recentExpressions = useStore(settingsStore, (settings) => settings.recentExpressions);
   const emojiMatches = useMemo(() => filterEmojis(emojiState.emojis, pickerQuery), [emojiState.emojis, pickerQuery]);
+  const builtInMatches = useMemo(
+    () => filterBuiltInReactions(REACTION_CATALOG, pickerQuery),
+    [pickerQuery],
+  );
+  const recentEntries = useMemo(
+    () => resolveRecentExpressionEntries(recentExpressions, emojiState.byName, pickerQuery),
+    [emojiState, recentExpressions, pickerQuery],
+  );
   const stickerPackMatches = useMemo(
     () => filterStickerPacks(stickerState.packs, pickerQuery),
     [stickerState.packs, pickerQuery],
@@ -1921,23 +2102,37 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
     });
   };
 
-  /** Inserts ":name:" at the caret (the applyMention mechanic: rAF refocus so a
-   *  mouse click on the grid doesn't steal the typing flow). The picker STAYS
+  /** Inserts an arbitrary string at the caret (the applyMention mechanic: rAF refocus
+   *  so a mouse click on the grid doesn't steal the typing flow). The picker STAYS
    *  open — Discord's behavior — until Escape/outside-click closes it. */
-  const applyEmoji = (name: string): void => {
+  const insertAtCaret = (insert: string): void => {
     const node = composerInputRef.current;
     const caret = node !== null ? node.selectionStart ?? text.length : text.length;
-    const replaced = `${text.slice(0, caret)}:${name}:${text.slice(caret)}`;
+    const replaced = `${text.slice(0, caret)}${insert}${text.slice(caret)}`;
     setText(replaced);
     setMentionQuery(null);
     window.requestAnimationFrame(() => {
       const field = composerInputRef.current;
       if (field !== null) {
         field.focus();
-        const nextCaret = caret + name.length + 2;
+        const nextCaret = caret + insert.length;
         field.setSelectionRange(nextCaret, nextCaret);
       }
     });
+  };
+
+  /** Inserts ":name:" — and records the use into the shared Latest MRU. */
+  const applyEmoji = (name: string): void => {
+    insertAtCaret(`:${name}:`);
+    recordRecentExpression(`:${name}:`);
+  };
+
+  /** A built-in unicode emoji inserts its GLYPH — it has no catalog row and no
+   *  ":name:" token (the reaction picker's Built-in section mirrored here, so a
+   *  text message can carry exactly what a reaction can, user request 2026-09-30). */
+  const applyBuiltInEmoji = (entry: BuiltInReaction): void => {
+    insertAtCaret(entry.glyph);
+    recordRecentExpression(entry.slug);
   };
 
   const closePicker = (): void => {
@@ -2018,18 +2213,19 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
       ) : null}
       {/* The unified expression picker (the Discord model, user decision 2026-09-30):
           ONE smile button, ONE popup with Emoji | Stickers tabs on top and a shared
-          search. The tab is the last-used one, persisted through restarts. The two
-          tabs keep their click asymmetry: an emoji INSERTS ":name:" (popup stays),
-          a sticker SENDS immediately (popup closes, text draft untouched). */}
-      {pickerOpen && (emojiState.supported || stickerState.supported) ? (
+          search. The Emoji tab ALWAYS exists — its Built-in section is pure
+          client-side — while Stickers needs the server catalog. The tab is the
+          last-used one, persisted through restarts. The two tabs keep their click
+          asymmetry: an emoji INSERTS at the caret (popup stays), a sticker SENDS
+          immediately (popup closes, text draft untouched). The Latest row on top is
+          the shared MRU of used expressions (both pickers feed it). */}
+      {pickerOpen ? (
         <div ref={pickerRef} className="composer-picker">
           <div className="picker-tabs">
-            {emojiState.supported ? (
-              <button
-                className={"picker-tab" + (pickerTab === "emoji" ? " active" : "")}
-                onClick={() => selectPickerTab("emoji")}
-              >Emoji</button>
-            ) : null}
+            <button
+              className={"picker-tab" + (pickerTab === "emoji" ? " active" : "")}
+              onClick={() => selectPickerTab("emoji")}
+            >Emoji</button>
             {stickerState.supported ? (
               <button
                 className={"picker-tab" + (pickerTab === "stickers" ? " active" : "")}
@@ -2052,18 +2248,48 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
           />
           <div className="picker-body">
             {pickerTab === "emoji" ? (
-              emojiMatches.length === 0 ? (
-                <div className="picker-empty">
-                  {emojiState.emojis.length === 0
-                    ? "No emojis yet — upload them in Server Settings."
-                    : "Nothing matches."}
-                </div>
+              recentEntries.length === 0 && builtInMatches.length === 0 && emojiMatches.length === 0 ? (
+                <div className="picker-empty">Nothing matches.</div>
               ) : (
-                <div className="emoji-tile-grid">
-                  {emojiMatches.map((emoji) => (
-                    <EmojiTile key={emoji.id} session={session} emoji={emoji} onPick={() => applyEmoji(emoji.name)} />
-                  ))}
-                </div>
+                <>
+                  {recentEntries.length > 0 ? (
+                    <div className="picker-section">
+                      <div className="picker-section-title">Latest</div>
+                      <div className="expression-tile-grid">
+                        {recentEntries.map((entry) => (
+                          <RecentExpressionTile
+                            key={entry.slug}
+                            session={session}
+                            entry={entry}
+                            onPick={() => (entry.emoji !== null
+                              ? applyEmoji(entry.emoji.name)
+                              : applyBuiltInEmoji({ slug: entry.slug, glyph: entry.glyph ?? entry.slug }))}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  {builtInMatches.length > 0 ? (
+                    <div className="picker-section">
+                      <div className="picker-section-title">Built-in</div>
+                      <div className="expression-tile-grid">
+                        {builtInMatches.map((entry) => (
+                          <BuiltInEmojiTile key={entry.slug} entry={entry} onPick={() => applyBuiltInEmoji(entry)} />
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  {emojiMatches.length > 0 ? (
+                    <div className="picker-section">
+                      <div className="picker-section-title">Custom</div>
+                      <div className="emoji-tile-grid">
+                        {emojiMatches.map((emoji) => (
+                          <EmojiTile key={emoji.id} session={session} emoji={emoji} onPick={() => applyEmoji(emoji.name)} />
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </>
               )
             ) : (
               stickerPackMatches.length === 0 ? (
@@ -2179,21 +2405,20 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
         }}
         />
         {/* The single smile button at the card's RIGHT edge opens the unified
-            expression picker (emojis + stickers tabs). Not ATTACH_FILES-gated:
-            picker access needs no permission, only the server supporting at
-            least one of the catalogs. */}
-        {emojiState.supported || stickerState.supported ? (
-          <button
-            ref={pickerButtonRef}
-            className="composer-attach"
-            title={pickerTab === "emoji" ? "Emoji & stickers" : "Stickers & emoji"}
-            onClick={() => {
-              setPickerOpen((open) => !open);
-              setPickerQuery("");
-              setMentionQuery(null); // the picker and the @-popup are mutually exclusive
-            }}
-          ><span className="icon mdi-emoticon" /></button>
-        ) : null}
+            expression picker. ALWAYS visible (user request 2026-09-30): the Emoji
+            tab's Built-in glyphs are pure client-side — a text message can carry
+            exactly what a reaction can, no server catalog needed. Not
+            ATTACH_FILES-gated: picker access needs no permission. */}
+        <button
+          ref={pickerButtonRef}
+          className="composer-attach"
+          title={pickerTab === "emoji" ? "Emoji & stickers" : "Stickers & emoji"}
+          onClick={() => {
+            setPickerOpen((open) => !open);
+            setPickerQuery("");
+            setMentionQuery(null); // the picker and the @-popup are mutually exclusive
+          }}
+        ><span className="icon mdi-emoticon" /></button>
       </div>
       {/* No hint line under the card (oak has none) — the composer's bottom
           inset matches the left overlay card's, so the two read as a pair.

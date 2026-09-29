@@ -321,15 +321,17 @@ export class RestClient {
     await this.request<unknown>(`/api/discussions/${discussionId}`, { method: "DELETE" });
   }
 
-  /** Both reaction calls return the message's full reaction snapshot (200). */
+  /** Both reaction calls return the message's full reaction snapshot (200). The slug is
+   *  encoded: a custom-emoji reaction is a ":name:" token whose colons ride as %3A (the
+   *  server's path variable decodes them back). */
   async addReaction(channelId: number, messageId: number, slug: string): Promise<ReactionSummary[]> {
-    return this.request<ReactionSummary[]>(`/api/channels/${channelId}/messages/${messageId}/reactions/${slug}`, {
+    return this.request<ReactionSummary[]>(`/api/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(slug)}`, {
       method: "PUT",
     });
   }
 
   async removeReaction(channelId: number, messageId: number, slug: string): Promise<ReactionSummary[]> {
-    return this.request<ReactionSummary[]>(`/api/channels/${channelId}/messages/${messageId}/reactions/${slug}`, {
+    return this.request<ReactionSummary[]>(`/api/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(slug)}`, {
       method: "DELETE",
     });
   }

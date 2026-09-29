@@ -2,6 +2,7 @@ import { Emitter } from "../lib/store";
 import { kv } from "../persistence/kv-client";
 import { DEFAULT_KEYBINDS, resolveKeybinds, type ActionId } from "../logic/keybinds";
 import { clampJumboEmojiSize } from "../logic/emoji-picker";
+import { sanitizeRecentExpressions } from "../logic/reaction-picker";
 import type { SavedSharePreset } from "../logic/share-quality";
 
 /**
@@ -75,6 +76,13 @@ export interface ClientSettings {
    *  restart. Written instantly on tab switches (the persistedGain category —
    *  a quiet write-through, never surfaced in the settings window). */
   pickerLastTab: "emoji" | "stickers";
+  /** The shared MRU of used expressions (2026-09-30 user request): reactions picked
+   *  AND emojis inserted in the composer, one vocabulary of slugs (a bare built-in
+   *  slug or a ":name:" token), newest first, cap 8. Feeds the "Latest" row at the
+   *  top of both popups; written instantly on use (persistedGain — never surfaced
+   *  in the settings window). Dead customs drop out at RENDER, not here — a
+   *  re-uploaded emoji revives its place. */
+  recentExpressions: string[];
 }
 
 export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
@@ -101,6 +109,7 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   shareWindowAudio: true,
   emojiJumboSize: 48,
   pickerLastTab: "emoji",
+  recentExpressions: [],
 };
 
 const KV_KEY = "client-settings";
@@ -155,6 +164,9 @@ export class SettingsStore extends Emitter {
       if (this.settings.pickerLastTab !== "emoji" && this.settings.pickerLastTab !== "stickers") {
         this.settings = { ...this.settings, pickerLastTab: "emoji" };
       }
+      // The Latest MRU is sanitized against the expression grammar (unknown slugs,
+      // junk, duplicates) — never trust hand-edited KV arrays.
+      this.settings = { ...this.settings, recentExpressions: sanitizeRecentExpressions(rest.recentExpressions) };
     }
     this.loaded = true;
     this.emit();

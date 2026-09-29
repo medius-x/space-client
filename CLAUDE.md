@@ -2578,6 +2578,74 @@ social-aggregate подписан на сторы фоновых сессий �
   сужены 140→96px — выровнены со стикерными ячейками (юзер-репорт «слишком широкие»;
   140 был произволом фазы 1, длинные `:name:` и так ellipsis'ятся). Гейты: build.
 
+- **Кастомные эмодзи в реакциях, фаза 3 из 3 (2026-09-30, код готов, смоук pending;
+  серверная половина — oak-server/CLAUDE.md; ДЕПЛОЙ: сервер первым (V8), клиент
+  следом).** Юзер-решения: **единый пикер реакций** в стиле композерного (фикс 372px,
+  поиск, секции Built-in + Custom, клик = мгновенный toggle + закрытие, БЕЗ вкладки
+  Stickers) и **кап 20 различных реакций на сообщение** (серверный 400 на 21-ю — у
+  клиента это варн-лог `[reactions] toggle … failed`). **(C1) Чистая логика** НОВЫЙ
+  `domain/logic/reaction-picker.ts`: `customEmojiNameOfReactionSlug` (анкер
+  `^:[a-z0-9_-]{1,32}:$` → имя | null; голые встроенные слаги → null, `heart` и
+  `:heart:` — разные), `filterBuiltInReactions` (substring по slug),
+  `REACTION_PICKER_WIDTH_PX=372`/`MAX_HEIGHT_PX=420`, `reactionPickerPosition` (вниз →
+  флип-вверх → вертикальный кламп, margin 8/зазор 4 — чистая, тестирована; CSS
+  max-height min(420, 100vh−16) страхует низкое окно). **(C2) rest.ts**:
+  add/removeReaction кодируют слаг `encodeURIComponent` — `:cat:` едет как `%3Acat%3A`
+  (Spring декодит; ГРАБЛЯ ТЕСТОВ: MockMvc НЕ декодирует %3A в path-variable — нет
+  контейнера, — потому wire-кодирование закреплено ЗДЕСЬ, клиентским rest-тестом, а не
+  серверным). **(C3) Чипы**: НОВЫЙ `ReactionChipLabel({session, slug})` (хуки
+  безусловны — built-in ранний return их не перескакивает; EmojiTile-дисциплина):
+  встроенный → глиф из REACTION_GLYPH_BY_SLUG (fallback — сырое имя, как было); кастом
+  → EmojiStore.byName + useAttachmentImage → `img.reaction-chip-emoji` 16px; мимо
+  каталога/мёртвый объект → текст `:name:` — чип остаётся КНОПКОЙ (dangling-снятие
+  работает: onClick тогглит по сырому слагу, сервер remove каталог не проверяет);
+  live-обновление на /topic/emojis автоматом (компонент подписан на byName). **(C4)
+  Пикер**: `.emoji-picker`-полоска УДАЛЕНА (классы .emoji-choice тоже); `.reaction-
+  picker` = fixed-попап по inline-координатам из `reactionPickerPosition` (якорится к
+  сообщению, не к композеру), структура композерная: `.picker-search` (Escape = close;
+  query сбрасывается эффектом на закрытие — любой путь) → единый скролл `.picker-body`
+  → `.picker-section` c `.picker-section-title` (sticker-pack-title-идиома): Built-in
+  (тайлы `.emoji-tile` + `span.emoji-tile-glyph` 20px) + Custom при supported (грид
+  существующего `EmojiTile` — onPick уже был с фазы 2, рефактор не понадобился);
+  `pickReaction(message, slug)` — mine из снапшота + warn-catch (403/кап не молчат) +
+  setPicker(null); пусто по query → «Nothing matches.», каталог пуст/unsupported →
+  только Built-in. Якоря: hover-кнопка теперь `y: rect.bottom`, ПКМ-пункт `y: menu.y`
+  (было +120, откалиброванное под старую 48px-полоску) — зазор живёт в ОДНОМ месте,
+  в reactionPickerPosition. **(C5) CSS**: +`.reaction-picker`/`.picker-section`/
+  `.picker-section-title`/`.emoji-tile-glyph`/`.reaction-chip-emoji`;
+  −`.emoji-picker`/`.emoji-choice`; icons.css НЕ менялся (новых mdi-глифов нет).
+  Тесты: НОВЫЙ `test/reaction-picker.test.ts` (11: дискриминатор×4 — вкл. `::cat::` и
+  32-симв границу / filter×3 / позиция×4 — флип/клампы вкл. окно 400px) +
+  rest-mutations += `%3Acat%3A`-путь PUT+DELETE. Гейты: клиент **461/461** + typecheck
+  + build; сервер 365/365. Смоук-сценарий в плане (goofy-leaping-sutton.md).
+  **Смоук-полиш 1 (2026-09-30, смоук фазы 3 пройден, 3 юзер-запроса):** (1)
+  **Асимметрия закрыта: built-in эмодзи в пикере композера** — вкладка Emoji ALWAYS
+  (её Built-in-секция чисто клиентская, каталого-независимая), кнопка-смайл видна
+  ВСЕГДА; секция Built-in (10 глифов, клик = вставка ГЛИФА на каретку — у встроенных
+  нет `:name:`-токена; `insertAtCaret` — обобщение applyEmoji) зеркалит попап реакций.
+  (2) **Latest — общий MRU использованных выражений**: `ClientSettings.
+  recentExpressions: string[]` (слаг-словарь: голый built-in ИЛИ `:name:`, MRU-first,
+  кап 8, санация в load — `sanitizeRecentExpressions`); пишется ТИХО на каждом
+  использовании (`recordRecentExpression` — модульный хелпер, снапшот на момент
+  вызова; persistedGain-категория); питают ОДИН список оба попапа: клики реакций
+  (pickReaction) И вставки эмодзи в композере (кастом + built-in). Рендер: секция
+  «Latest» ВВЕРХУ обоих попапов (`.expression-tile-grid`), мёртвые кастомы роняются
+  на РЕНДЕРЕ (`resolveRecentExpressionEntries` по живому byName — ре-аплоад
+  воскрешает место), query фильтрует Latest как и остальные секции. (3) **Ряд
+  встроенных больше не «обрезан»**: грабля — `.emoji-tile-grid` фикс 8×34 переносил
+  10-й тайл на вторую строку (8+2); НОВАЯ `.expression-tile-grid` = 10 флюид-колонок
+  (`repeat(10, minmax(0,1fr))`, тайл width:100%/height:32) — дефолтный набор читается
+  ОДНОЙ строкой при любой фактической внутренней ширине попапа; использует её и
+  Latest (смешанный ряд глифы+картинки). Компоненты: `BuiltInEmojiTile` (глиф-тайл) +
+  `RecentExpressionTile` (переключатель вида) — переиспользованы обоими попапами;
+  пустое состояние пикера реакций/вкладки Emoji учитывает все три секции. Тесты:
+  reaction-picker += pushRecentExpression/sanitizeRecentExpressions/
+  resolveRecentExpressionEntries (8 новых). Гейты: **469/469** + typecheck + build
+  (клиент-only, сервер не тронут). **Backlog (юзер-запрос 2026-09-30, отдельный
+  раунд): экспорт/импорт паков выражений** — выгрузка эмодзи/стикеров пачками (zip с
+  манифестом?) и загрузка пачкой, чтобы владельцы серверов обменивались паками;
+  вероятная серверная половина (байты/лимиты) + клиентская UI в Server Settings.
+
 - Гейт после каждой фазы: `npm test` + `npm run typecheck` зелёные.
 - Новые файлы сразу `git add`. Коммиты только по явной команде; subject на английском.
 - Никаких single-letter имён (кроме i/j цикла и T/E/K/V генериков); комментарии в коде

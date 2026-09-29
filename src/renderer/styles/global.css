@@ -920,6 +920,12 @@ button.wide-add { width: 100%; }
   grid-template-columns: repeat(8, 34px);
   gap: 4px;
 }
+/* A tile row that MIXES built-in glyphs with catalog images — the Built-in section
+   and the shared Latest row. TEN fluid columns: the default set of 10 built-ins
+   reads as ONE clean line whatever the picker's exact inner width (the fixed 8×34
+   catalog grid wrapped it into 8+2 and the row looked cut off, live report). */
+.expression-tile-grid { display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 4px; }
+.expression-tile-grid .emoji-tile { width: 100%; height: 32px; }
 .emoji-tile {
   width: 34px;
   height: 34px;
@@ -1225,24 +1231,38 @@ button.wide-add { width: 100%; }
 .reaction-chip.mine { background: rgba(88, 101, 242, 0.30); color: var(--sp-mention-text); }
 .reaction-chip.mine:hover { background: rgba(88, 101, 242, 0.45); }
 
-.emoji-picker {
+/* The unified REACTION picker (phase 3): the composer picker's visual language — fixed
+   width, one search, a single scrolling .picker-body with Built-in + Custom sections —
+   but position: FIXED (it anchors to a message, not the composer card). The coordinates
+   come inline from reactionPickerPosition: below the anchor, flipped up near the
+   window's bottom edge. No Stickers tab — stickers are not reactions. */
+.reaction-picker {
   position: fixed;
   z-index: 55;
-  background: #2b2d31;
+  width: 372px;
+  max-height: min(420px, calc(100vh - 16px));
+  background: var(--sp-surface);
   border: 1px solid var(--sp-control);
   border-radius: 8px;
-  padding: 6px;
+  padding: 8px;
   display: flex;
-  gap: 2px;
+  flex-direction: column;
+  gap: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
 }
-.emoji-choice {
-  background: transparent;
-  font-size: 20px;
-  padding: 4px 6px;
-  border-radius: 4px;
+/* A titled section inside .picker-body (the sticker-pack-section idiom). */
+.picker-section { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
+.picker-section-title {
+  color: var(--sp-text-dim);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 2px 0;
 }
-.emoji-choice:hover { background: var(--sp-selected); }
+/* A built-in reaction tile: the 34px .emoji-tile square carrying a unicode glyph
+   instead of an image. */
+.emoji-tile-glyph { font-size: 20px; line-height: 1; }
+/* A custom-emoji chip's image — sized to the glyph line it replaces. */
+.reaction-chip-emoji { width: 16px; height: 16px; object-fit: contain; }
 
 /* oak's edit hint (applyEditHint): the keys line under the inline editor. */
 .inline-editor-hint {
