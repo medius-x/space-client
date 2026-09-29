@@ -8,6 +8,15 @@ import {
 } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import { connectionDirectory } from "../runtime";
+import { formatExportReport, formatImportReport, planPackImport, type ImportDecision } from "../../domain/logic/expression-pack";
+import {
+  catalogSnapshotOf,
+  exportExpressionPack,
+  importPackArchive,
+  readPackArchive,
+  type ExportScope,
+  type ParsedPackArchive,
+} from "../expression-exchange";
 import type {
   Channel,
   ChannelOverride,
@@ -1890,6 +1899,301 @@ function EmojiCatalogCell({ session, emoji, onDelete }: {
   );
 }
 
+/** Shared Export/Import state of the two expression sections: the busy flag
+ *  (disables the section's own upload/create buttons), a muted progress line
+ *  ("Exporting 12 / 45…"), and the green final report. Terminal failures land
+ *  in the section's own error line through {@code onError}. Import goes
+ *  through the PREVIEW modal: pick → readPackArchive → previewArchive state →
+ *  the modal's Confirm feeds the user-filtered archive back here. No cancel
+ *  once confirmed: the run is bounded by the catalog caps and survives the
+ *  pane closing. */
+function useExpressionExchange(
+  session: ConnectionSession,
+  onError: (message: string) => void,
+): {
+  exchangeBusy: boolean;
+  exchangeStatus: string | null;
+  exchangeReport: string | null;
+  previewArchive: ParsedPackArchive | null;
+  runExport: (scope: ExportScope) => Promise<void>;
+  openImportPreview: (file: File | null) => Promise<void>;
+  confirmImport: (filtered: ParsedPackArchive) => Promise<void>;
+  closePreview: () => void;
+} {
+  const serverName = connectionDirectory.get(session.recordId)?.cachedServerName ?? "";
+  const [exchangeBusy, setExchangeBusy] = useState(false);
+  const [exchangeStatus, setExchangeStatus] = useState<string | null>(null);
+  const [exchangeReport, setExchangeReport] = useState<string | null>(null);
+  const [previewArchive, setPreviewArchive] = useState<ParsedPackArchive | null>(null);
+
+  const progressLine = (label: string, done: number, total: number): string =>
+    total > 0 ? `${label} ${done} / ${total}…` : `${label}…`;
+
+  const runExport = async (scope: ExportScope): Promise<void> => {
+    if (exchangeBusy) {
+      return;
+    }
+    setExchangeBusy(true);
+    setExchangeStatus("Exporting…");
+    setExchangeReport(null);
+    onError(""); // clear a stale error the run supersedes
+    const result = await exportExpressionPack(session, scope, serverName, (progress) =>
+      setExchangeStatus(progressLine("Exporting", progress.done, progress.total)),
+    );
+    setExchangeBusy(false);
+    if (result.status === "failed") {
+      setExchangeStatus(null);
+      onError(result.error ?? "Export failed.");
+      return;
+    }
+    if (result.status === "canceled") {
+      setExchangeStatus("Export canceled.");
+      return;
+    }
+    setExchangeStatus(null);
+    setExchangeReport(
+      formatExportReport({
+        emojis: result.emojis,
+        stickers: result.stickers,
+        packs: result.packs,
+        unavailable: result.unavailable,
+        fileName: result.fileName,
+      }),
+    );
+  };
+
+  const openImportPreview = async (file: File | null): Promise<void> => {
+    if (file === null || exchangeBusy) {
+      return;
+    }
+    setExchangeReport(null);
+    onError("");
+    const read = await readPackArchive(file);
+    if (!read.ok) {
+      onError(read.error);
+      return;
+    }
+    setPreviewArchive(read.archive);
+  };
+
+  const confirmImport = async (filtered: ParsedPackArchive): Promise<void> => {
+    if (exchangeBusy) {
+      return;
+    }
+    setPreviewArchive(null);
+    setExchangeBusy(true);
+    setExchangeStatus("Importing…");
+    const result = await importPackArchive(session, filtered, (progress) =>
+      setExchangeStatus(progressLine("Importing", progress.done, progress.total)),
+    );
+    setExchangeBusy(false);
+    setExchangeStatus(null);
+    setExchangeReport(formatImportReport(result.counts, result.packsCreated));
+  };
+
+  const closePreview = (): void => {
+    setPreviewArchive(null);
+  };
+
+  return { exchangeBusy, exchangeStatus, exchangeReport, previewArchive, runExport, openImportPreview, confirmImport, closePreview };
+}
+
+/** One tile row of the import preview (the catalog-cell look, state-driven):
+ *  selected = blurple tint+border (it WILL land), off = the user deselected
+ *  it (a click brings it back), blocked = the planner refused it (dim, reason
+ *  under the name, clicks ignored). */
+interface ImportPreviewItem {
+  key: string;
+  name: string;
+  file: string;
+  /** The planner would import it — only these tiles are clickable. */
+  planned: boolean;
+  /** Human-readable skip reason for blocked tiles. */
+  reason: string | null;
+}
+
+function previewItemKey(kind: "emoji" | "sticker", packName: string, name: string): string {
+  return `${kind}:${packName}:${name}`;
+}
+
+function skipReasonOf(decision: ImportDecision): string | null {
+  if (decision.kind === "skip-name-exists") {
+    return "name exists";
+  }
+  if (decision.kind === "skip-limit") {
+    return "limit reached";
+  }
+  if (decision.kind === "skip-invalid") {
+    return decision.reason;
+  }
+  return null;
+}
+
+/** The import preview modal: the planner's verdict per item on the CURRENT
+ *  catalogs, blurple-highlighted tiles for what will land, a click excludes
+ *  or re-includes an item, Confirm/Cancel under the grid. The filtered
+ *  manifest (empty packs dropped — no empty-pack litter) goes back through
+ *  onConfirm. Planner decisions are a PREVIEW: names taken between the
+ *  preview and the confirm surface as runtime conflicts in the report. */
+function ImportPreviewModal({ session, archive, onConfirm, onClose }: {
+  session: ConnectionSession;
+  archive: ParsedPackArchive;
+  onConfirm: (filtered: ParsedPackArchive) => void;
+  onClose: () => void;
+}): React.JSX.Element {
+  const plan = useMemo(
+    () => planPackImport(archive.manifest, archive.files, catalogSnapshotOf(session)),
+    [archive, session],
+  );
+
+  const emojiItems = useMemo<ImportPreviewItem[]>(
+    () =>
+      plan.emojiDecisions.map((decision, decisionIndex) => ({
+        key: previewItemKey("emoji", "", decision.name),
+        name: decision.name,
+        file: archive.manifest.emojis[decisionIndex]?.file ?? "",
+        planned: decision.kind === "import",
+        reason: skipReasonOf(decision),
+      })),
+    [plan, archive],
+  );
+  const packSections = useMemo(
+    () =>
+      archive.manifest.packs.map((manifestPack) => {
+        const trimmedName = manifestPack.name.trim();
+        const packPlan = plan.packPlans.find((candidate) => candidate.manifestPack.name === trimmedName) ?? null;
+        const packSkip = plan.skippedPacks.find((candidate) => candidate.name.trim() === trimmedName) ?? null;
+        const items: ImportPreviewItem[] = manifestPack.stickers.map((stickerEntry) => {
+          // decision lookup by name — same-named manifest packs merged into one
+          // plan share it, a duplicated name in the second chunk shows the first
+          // chunk's verdict (cosmetic; the runtime reports the duplicate).
+          const decision = packPlan?.decisions.find((candidate) => candidate.name === stickerEntry.name) ?? null;
+          const packBlockedReason =
+            packSkip !== null ? (packSkip.reason === "pack-limit" ? "pack limit reached" : "invalid pack name") : null;
+          return {
+            key: previewItemKey("sticker", trimmedName, stickerEntry.name),
+            name: stickerEntry.name,
+            file: stickerEntry.file,
+            planned: decision !== null && decision.kind === "import" && packBlockedReason === null,
+            reason: packBlockedReason ?? (decision !== null ? skipReasonOf(decision) : "duplicate name in the pack"),
+          };
+        });
+        return { name: manifestPack.name, items };
+      }),
+    [plan, archive],
+  );
+
+  const allItems = useMemo(() => [...emojiItems, ...packSections.flatMap((section) => section.items)], [emojiItems, packSections]);
+  const [selectedKeys, setSelectedKeys] = useState<ReadonlySet<string>>(() => new Set(allItems.filter((item) => item.planned).map((item) => item.key)));
+  useEffect(() => {
+    setSelectedKeys(new Set(allItems.filter((item) => item.planned).map((item) => item.key)));
+  }, [allItems]);
+
+  // Thumbnails come straight from the archive bytes (blob URLs, no network);
+  // revoked wholesale when the archive leaves the modal.
+  const thumbnails = useMemo(() => {
+    const urls = new Map<string, string>();
+    for (const [path, bytes] of archive.files) {
+      urls.set(path, URL.createObjectURL(new Blob([bytes.slice()])));
+    }
+    return urls;
+  }, [archive]);
+  useEffect(() => {
+    return () => {
+      for (const url of thumbnails.values()) {
+        URL.revokeObjectURL(url);
+      }
+    };
+  }, [thumbnails]);
+
+  const toggleItem = (item: ImportPreviewItem): void => {
+    if (!item.planned) {
+      return;
+    }
+    setSelectedKeys((previous) => {
+      const next = new Set(previous);
+      if (next.has(item.key)) {
+        next.delete(item.key);
+      } else {
+        next.add(item.key);
+      }
+      return next;
+    });
+  };
+
+  const confirm = (): void => {
+    onConfirm({
+      manifest: {
+        ...archive.manifest,
+        emojis: archive.manifest.emojis.filter((emojiEntry) => selectedKeys.has(previewItemKey("emoji", "", emojiEntry.name))),
+        packs: archive.manifest.packs
+          .map((manifestPack) => ({
+            ...manifestPack,
+            stickers: manifestPack.stickers.filter((stickerEntry) =>
+              selectedKeys.has(previewItemKey("sticker", manifestPack.name.trim(), stickerEntry.name)),
+            ),
+          }))
+          .filter((manifestPack) => manifestPack.stickers.length > 0),
+      },
+      files: archive.files,
+    });
+  };
+
+  const renderCell = (item: ImportPreviewItem): React.JSX.Element => {
+    const isSelected = selectedKeys.has(item.key);
+    const cellState = !item.planned ? "blocked" : isSelected ? "selected" : "off";
+    const thumbnailUrl = thumbnails.get(item.file);
+    return (
+      <button
+        key={item.key}
+        className={`import-preview-cell ${cellState}`}
+        disabled={!item.planned}
+        onClick={() => toggleItem(item)}
+        title={item.reason ?? item.name}
+      >
+        {thumbnailUrl !== undefined ? <img src={thumbnailUrl} alt={item.name} /> : <span className="import-preview-thumb" />}
+        <span className="import-preview-name">{item.name}</span>
+        {item.reason !== null ? <span className="import-preview-reason">{item.reason}</span> : null}
+      </button>
+    );
+  };
+
+  const plannedCount = allItems.filter((item) => item.planned).length;
+  return (
+    <div className="modal-overlay">
+      <div className="modal-card wide">
+        <div className="modal-titlebar">
+          <span className="modal-title">Import expressions</span>
+          <button className="modal-close" onClick={onClose}><span className="icon mdi-close" /></button>
+        </div>
+        <div className="modal-note">
+          From &quot;{archive.manifest.serverName}&quot; — highlighted tiles will be imported, click one to exclude it.
+        </div>
+        <div className="import-preview-body">
+          {emojiItems.length > 0 ? (
+            <div className="import-preview-section">
+              <span className="import-preview-title">Emojis</span>
+              <div className="import-preview-grid">{emojiItems.map(renderCell)}</div>
+            </div>
+          ) : null}
+          {packSections.map((section) => (
+            <div key={section.name} className="import-preview-section">
+              <span className="import-preview-title">{section.name}</span>
+              <div className="import-preview-grid">{section.items.map(renderCell)}</div>
+            </div>
+          ))}
+          {allItems.length === 0 ? <div className="modal-note">The archive contains no emojis or stickers.</div> : null}
+        </div>
+        <div className="modal-note">{selectedKeys.size} of {allItems.length} items will be imported ({plannedCount} available).</div>
+        <div className="modal-actions">
+          <button className="ghost" onClick={onClose}>Cancel</button>
+          <button className="primary" disabled={selectedKeys.size === 0} onClick={confirm}>Import {selectedKeys.size}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ServerEmojiSection({ session }: { session: ConnectionSession }): React.JSX.Element {
   const emojiState = useStore(session.emojiStore, (state) => state);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
@@ -1899,6 +2203,9 @@ function ServerEmojiSection({ session }: { session: ConnectionSession }): React.
   const [error, setError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<CustomEmoji | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const zipInputRef = useRef<HTMLInputElement>(null);
+  const { exchangeBusy, exchangeStatus, exchangeReport, previewArchive, runExport, openImportPreview, confirmImport, closePreview } =
+    useExpressionExchange(session, setError);
 
   const resetPending = (): void => {
     setPendingFile(null);
@@ -1984,12 +2291,32 @@ function ServerEmojiSection({ session }: { session: ConnectionSession }): React.
             event.target.value = ""; // let the same file be re-picked after a fix
           }}
         />
-        <button className="primary" disabled={busy || !emojiState.supported} onClick={() => fileInputRef.current?.click()}>
+        <input
+          ref={zipInputRef}
+          type="file"
+          accept=".zip,application/zip"
+          hidden
+          onChange={(event) => {
+            void openImportPreview(event.target.files?.[0] ?? null);
+            event.target.value = "";
+          }}
+        />
+        <button className="primary" disabled={busy || exchangeBusy || !emojiState.supported} onClick={() => fileInputRef.current?.click()}>
           Upload emoji
         </button>
+        <button
+          disabled={busy || exchangeBusy || !emojiState.supported || emojiState.emojis.length === 0}
+          onClick={() => void runExport({ kind: "emojis" })}
+        >Export all</button>
+        <button
+          disabled={busy || exchangeBusy || !emojiState.supported}
+          onClick={() => zipInputRef.current?.click()}
+        >Import</button>
         <span className="emoji-count">{emojiState.emojis.length} / 200</span>
       </div>
       <div className="settings-hint">PNG, GIF or WebP · up to 1 MB · larger than 256×256 renders downscaled</div>
+      <div className="exchange-status">{exchangeStatus ?? ""}</div>
+      {exchangeReport !== null ? <div className="exchange-report">{exchangeReport}</div> : null}
       {pendingFile !== null ? (
         <div className="emoji-upload-form">
           <span className="emoji-upload-file" title={pendingFile.name}>{pendingFile.name}</span>
@@ -2032,6 +2359,14 @@ function ServerEmojiSection({ session }: { session: ConnectionSession }): React.
             session.refreshEmojis();
           }}
           onClose={() => setDeleteTarget(null)}
+        />
+      ) : null}
+      {previewArchive !== null ? (
+        <ImportPreviewModal
+          session={session}
+          archive={previewArchive}
+          onConfirm={(filtered) => void confirmImport(filtered)}
+          onClose={closePreview}
         />
       ) : null}
     </div>
@@ -2078,6 +2413,9 @@ function ServerStickerSection({ session }: { session: ConnectionSession }): Reac
   const [deleteStickerTarget, setDeleteStickerTarget] = useState<Sticker | null>(null);
   const [deletePackTarget, setDeletePackTarget] = useState<StickerPack | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const zipInputRef = useRef<HTMLInputElement>(null);
+  const { exchangeBusy, exchangeStatus, exchangeReport, previewArchive, runExport, openImportPreview, confirmImport, closePreview } =
+    useExpressionExchange(session, setError);
 
   const uploadPack = stickerState.packs.find((pack) => pack.id === uploadPackId) ?? null;
 
@@ -2190,11 +2528,31 @@ function ServerStickerSection({ session }: { session: ConnectionSession }): Reac
             }
           }}
         />
-        <button className="primary" disabled={packBusy || !stickerState.supported || packNameDraft.trim().length === 0}
+        <button className="primary" disabled={packBusy || exchangeBusy || !stickerState.supported || packNameDraft.trim().length === 0}
           onClick={() => void createPack()}>Create pack</button>
+        <button
+          disabled={packBusy || exchangeBusy || !stickerState.supported || stickerState.packs.length === 0}
+          onClick={() => void runExport({ kind: "stickers" })}
+        >Export all</button>
+        <button
+          disabled={packBusy || exchangeBusy || !stickerState.supported}
+          onClick={() => zipInputRef.current?.click()}
+        >Import</button>
         <span className="emoji-count">{stickerState.totalStickers} / 200 stickers · {stickerState.packs.length} / 20 packs</span>
       </div>
+      <input
+        ref={zipInputRef}
+        type="file"
+        accept=".zip,application/zip"
+        hidden
+        onChange={(event) => {
+          void openImportPreview(event.target.files?.[0] ?? null);
+          event.target.value = "";
+        }}
+      />
       <div className="settings-hint">PNG, GIF or WebP · up to 1 MB · larger than 512×512 renders downscaled</div>
+      <div className="exchange-status">{exchangeStatus ?? ""}</div>
+      {exchangeReport !== null ? <div className="exchange-report">{exchangeReport}</div> : null}
       <div className="error-line">{error ?? ""}</div>
       {stickerState.packs.length === 0 ? (
         <div className="sticker-empty">No sticker packs yet — create one to start uploading stickers.</div>
@@ -2205,13 +2563,17 @@ function ServerStickerSection({ session }: { session: ConnectionSession }): Reac
               <span className="sticker-pack-header-name" title={pack.name}>{pack.name}</span>
               <span className="sticker-pack-header-count">{pack.stickers.length} sticker{pack.stickers.length === 1 ? "" : "s"}</span>
               <button
-                disabled={busy || !stickerState.supported}
+                disabled={busy || exchangeBusy || !stickerState.supported}
                 onClick={() => {
                   resetPending();
                   setUploadPackId(pack.id);
                   window.requestAnimationFrame(() => fileInputRef.current?.click());
                 }}
               >Upload sticker</button>
+              <button
+                disabled={exchangeBusy || busy || !stickerState.supported || pack.stickers.length === 0}
+                onClick={() => void runExport({ kind: "pack", pack })}
+              >Export</button>
               <button
                 className="ghost"
                 disabled={packBusy}
@@ -2285,6 +2647,14 @@ function ServerStickerSection({ session }: { session: ConnectionSession }): Reac
             session.refreshStickers();
           }}
           onClose={() => setDeletePackTarget(null)}
+        />
+      ) : null}
+      {previewArchive !== null ? (
+        <ImportPreviewModal
+          session={session}
+          archive={previewArchive}
+          onConfirm={(filtered) => void confirmImport(filtered)}
+          onClose={closePreview}
         />
       ) : null}
     </div>

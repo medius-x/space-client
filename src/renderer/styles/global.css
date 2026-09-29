@@ -984,6 +984,65 @@ button.wide-add { width: 100%; }
   white-space: nowrap;
 }
 .emoji-empty { color: var(--sp-text-muted); font-size: 13px; padding: 16px 0; }
+/* Expression-pack exchange: the muted progress line ("Exporting 12 / 45…",
+   error-line shape without the red) and the green final report. Export/Import
+   buttons are PLAIN default buttons — same size as Upload emoji / Create pack;
+   only the ghost variant ever read as plain text (the keybind-reset lesson). */
+.exchange-status { font-size: 12px; color: var(--sp-text-dim); margin: 6px 0 0; min-height: 16px; }
+.exchange-report { color: var(--sp-green); font-size: 13px; min-height: 18px; }
+
+/* The import preview modal: sections over a scrolling tile grid. A selected
+   tile wears the blurple tint+border (it WILL land), a user-deselected one
+   dims, a planner-blocked one dims with its reason and ignores clicks. */
+.import-preview-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.import-preview-section { display: flex; flex-direction: column; gap: 4px; }
+.import-preview-title {
+  color: var(--sp-text-dim);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 2px 0;
+}
+.import-preview-grid { display: grid; grid-template-columns: repeat(auto-fill, 96px); gap: 8px; }
+.import-preview-cell {
+  background: var(--sp-input);
+  border: 2px solid transparent;
+  border-radius: 6px;
+  padding: 8px 6px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+  min-width: 0;
+}
+.import-preview-cell.selected { border-color: var(--sp-accent); background: rgba(88, 101, 242, 0.15); }
+.import-preview-cell.off { opacity: 0.45; }
+.import-preview-cell.blocked { opacity: 0.45; cursor: default; }
+.import-preview-cell img { width: 32px; height: 32px; object-fit: contain; }
+.import-preview-thumb { width: 32px; height: 32px; }
+.import-preview-name {
+  font-size: 11px;
+  color: var(--sp-text-muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.import-preview-reason {
+  font-size: 10px;
+  color: var(--sp-text-dim);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .emoji-grid {
   display: grid;
   /* The sticker catalog's cell width (user request 2026-09-30 — 140px read as
@@ -3412,7 +3471,8 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 .room-view-body:hover::-webkit-scrollbar-thumb,
 .picker-body:hover::-webkit-scrollbar-thumb,
 .search-results:hover::-webkit-scrollbar-thumb,
-.discussions-list:hover::-webkit-scrollbar-thumb {
+.discussions-list:hover::-webkit-scrollbar-thumb,
+.import-preview-body:hover::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.28);
   background-clip: padding-box;
 }
