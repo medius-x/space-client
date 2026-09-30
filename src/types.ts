@@ -176,6 +176,27 @@ export interface ServerProfile {
 }
 
 // ---------------------------------------------------------------------------
+// Invite links (the Invites settings section + the Register tab)
+
+/** One ACTIVE invite link of the Invites settings list (GET/POST /api/invites). The full
+ *  secret never rides the DTO — only an 8-char preview; the copyable artifact is the
+ *  assembled link (origin from the advertised connection info, secret in the hash). */
+export interface InviteLink {
+  id: number;
+  secretPreview: string;
+  createdBy: string;
+  createdAt: string;
+  expiresAt: string;
+  link: string;
+}
+
+/** The Invites section in one fetch: the TTL setting plus the active links. */
+export interface InvitesStatus {
+  ttlMinutes: number;
+  invites: InviteLink[];
+}
+
+// ---------------------------------------------------------------------------
 // M3: attachments and avatars (upload slots, fresh links, public user view)
 // ---------------------------------------------------------------------------
 

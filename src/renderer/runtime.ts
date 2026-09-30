@@ -127,7 +127,7 @@ export interface AppState {
   stompCountdown: number | null;
   /** Server settings screen (in-app, replaces the content area) — M7. */
   serverSettingsOpen: boolean;
-  serverSettingsSection: "overview" | "roles" | "members" | "channels" | "emojis" | "stickers" | "server";
+  serverSettingsSection: "overview" | "roles" | "members" | "invites" | "channels" | "emojis" | "stickers" | "server";
   /** User settings modal — M7. The SCOPE splits the sections (user decision
    *  2026-09-21): "account" = General + Account (opened from the server
    *  header's dropdown — server-scoped identity), "client" = everything else
@@ -1417,7 +1417,15 @@ export async function bootstrapApp(): Promise<void> {
   startBackgroundSessions();
 }
 
-export async function startSession(baseUrl: string, mode: "login" | "register", username: string, password: string): Promise<void> {
+/** Optional extras of the register path: a nickname distinct from the login and the
+ *  single-use secret parsed out of an invite link (undefined = the bare bootstrap
+ *  registration of a fresh server's first member). */
+export interface RegisterSessionOptions {
+  nickname?: string;
+  inviteSecret?: string;
+}
+
+export async function startSession(baseUrl: string, mode: "login" | "register", username: string, password: string, options?: RegisterSessionOptions): Promise<void> {
   const normalized = normalizeHostUrl(baseUrl);
   appStore.patch({ loginBusy: true, loginError: null });
   try {
@@ -1428,7 +1436,7 @@ export async function startSession(baseUrl: string, mode: "login" | "register", 
     if (mode === "login") {
       await loginClient.login(username, password);
     } else {
-      await loginClient.register(username, password);
+      await loginClient.register(username, password, options);
     }
     const tokens = bootstrapStorage.load();
     if (!tokens) {
@@ -1480,15 +1488,25 @@ export async function switchConnection(recordId: string): Promise<void> {
 }
 
 export async function removeConnection(recordId: string): Promise<void> {
-  if (activeSession?.recordId === recordId) {
-    // Removing the ACTIVE server leaves an empty main window (the rail with its
-    // "+" stays) — no login modal: the user deliberately dropped the server.
+  const wasActive = activeSession?.recordId === recordId;
+  if (wasActive) {
     await teardownSession();
   } else {
     disposeBackgroundSession(recordId);
   }
   socialDirectory.drop(recordId);
   await connectionDirectory.remove(recordId);
+  if (wasActive) {
+    // Removing the ACTIVE server must not strand the window on the "No server
+    // connected" screen while other saved servers remain (user report): switch onto
+    // the most recently used survivor. switchConnection promotes a live background
+    // session instantly; a dead token family opens the re-login modal prefilled.
+    const survivor = connectionDirectory.getSnapshot()[0];
+    if (survivor !== undefined) {
+      await switchConnection(survivor.id);
+    }
+    // No survivor left — the empty screen with the rail's "+" is the honest state.
+  }
 }
 
 /** The ↻ in the user bar (oak's onRetryReconnect): attempt immediately. */

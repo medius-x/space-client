@@ -2595,6 +2595,31 @@ button.wide-add { width: 100%; }
   padding: 8px 16px;
   border-bottom: 1px solid var(--sp-surface);
 }
+
+/* The Invites section rows: secret preview, creator, expiry label, actions right. */
+.invite-secret { font-family: monospace; color: var(--sp-text-muted); }
+.invite-meta { font-size: 12px; color: var(--sp-text-muted); }
+.invite-actions { margin-left: auto; display: flex; gap: 6px; }
+/* The TTL row's flex line (label / field / "min" / Save, vertically centered) is the
+   user-approved arrangement — the ONLY addition is the human rendering hanging off the
+   input ABSOLUTELY (a relative wrapper around the field alone): flush under the field,
+   outside the row's flow, so nothing in the line can shift. The input keeps its FIXED
+   width for the longest rendering ("364 d 23 h 59 min"). */
+.invite-ttl-row { margin: 12px 0 18px; } /* bottom reserve for the absolute rendering */
+.invite-ttl-label { flex-shrink: 0; }
+.invite-ttl-input-row { display: flex; align-items: center; gap: 8px; }
+.invite-ttl-input-wrap { position: relative; display: inline-flex; flex-shrink: 0; }
+.invite-ttl-input-wrap input { width: 128px; }
+.invite-ttl-unit { font-size: 12px; color: var(--sp-text-muted); }
+.invite-ttl-human {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--sp-text-muted);
+  white-space: nowrap;
+}
 .list-row:hover { background: var(--sp-hover); }
 /* The per-role remove button in Server Settings → Members: pushed to the row's
    right edge, sized to the row's text (not the global 8px 14px button padding). */
@@ -2676,6 +2701,9 @@ button.wide-add { width: 100%; }
 }
 .settings-tab:hover { color: var(--sp-text); background: transparent; }
 .settings-tab.active { color: var(--sp-text); border-bottom-color: var(--sp-text); }
+
+/* The add-server dialog rides the same underline-tab idiom for its three modes. */
+.login-tabs { margin-bottom: 8px; }
 
 /* Settings cover the WHOLE window below the caption bar. Mounted from App as
    a direct child of #app (not inside app-frame) so no intermediate box can

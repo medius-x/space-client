@@ -23,6 +23,7 @@ import type {
   ChannelType,
   ChannelUserOverride,
   CustomEmoji,
+  InviteLink,
   PermissionCatalogEntry,
   Role,
   ServerMember,
@@ -61,6 +62,7 @@ import { useAttachmentImage } from "../hooks/useAttachmentImage";
 import { measureImageSize } from "../../media/image-size";
 import { sanitizeSlotFileName } from "../../domain/logic/ascii-name";
 import { emojiNameFromFileName } from "../../domain/logic/emoji-picker";
+import { formatExpiresIn, formatTtlWords } from "../../domain/logic/invite-link";
 import { moveRoleIdTowards } from "../../domain/logic/role-drag";
 import { Modal } from "./Modal";
 import { Avatar } from "./Avatar";
@@ -163,6 +165,7 @@ export function ServerSettingsPane({ session }: { session: ConnectionSession }):
     { key: "overview" as const, label: "Overview", enabled: can(MANAGE_SERVER_PERMISSION) },
     { key: "roles" as const, label: "Roles", enabled: can(MANAGE_ROLES_PERMISSION) },
     { key: "members" as const, label: "Members", enabled: can(MANAGE_MEMBERS_PERMISSION) || can(KICK_MEMBERS_PERMISSION) || can(BAN_MEMBERS_PERMISSION) },
+    { key: "invites" as const, label: "Invites", enabled: can(MANAGE_MEMBERS_PERMISSION) },
     { key: "channels" as const, label: "Channels", enabled: can(MANAGE_CHANNELS_PERMISSION) },
     { key: "emojis" as const, label: "Emoji", enabled: can(MANAGE_EMOJIS_PERMISSION) },
     { key: "stickers" as const, label: "Stickers", enabled: can(MANAGE_EMOJIS_PERMISSION) },
@@ -193,6 +196,8 @@ export function ServerSettingsPane({ session }: { session: ConnectionSession }):
           <RolesSection session={session} />
         ) : active.key === "members" ? (
           <MembersSection session={session} />
+        ) : active.key === "invites" ? (
+          <InvitesSection session={session} />
         ) : active.key === "emojis" ? (
           <ServerEmojiSection session={session} />
         ) : active.key === "stickers" ? (
@@ -1264,6 +1269,192 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
 }
 
 // ---------------------------------------------------------------------------
+// Invites (registration links, MANAGE_MEMBERS)
+// ---------------------------------------------------------------------------
+
+/** The Invites section: the TTL setting (authored in MINUTES with a live human-word
+ *  rendering beside the field; retroactive on the server — saving may kill or extend
+ *  existing links) and the ACTIVE links list. Used/expired/revoked links are gone from
+ *  the list (server's choice); Copy copies the assembled link, not the bare secret.
+ *  Data lives in the session's InvitesStore — a /topic/invites ping (a mint, an expiry,
+ *  a TTL change, or a REGISTRATION claiming a link) refreshes it, so a spent link drops
+ *  out of an open screen without a reopen. */
+function InvitesSection({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const invitesState = useStore(session.invitesStore, (state) => state);
+  const [ttlDraft, setTtlDraft] = useState("");
+  /** True once the user typed in the TTL field — loaded values stop overwriting the
+   *  draft (an empty mid-edit field must not snap back to the stored number). */
+  const ttlTouchedRef = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [expireAllOpen, setExpireAllOpen] = useState(false);
+  /** The invite whose link was just copied — the Copy glyph flips to a check briefly. */
+  const [copiedId, setCopiedId] = useState<number | null>(null);
+  /** Ticks every 15 s so the "expires in …" labels stay honest — they render from
+   *  Date.now() and nothing else re-renders the section, so a label could sit frozen at
+   *  "1m" forever while the link is long dead (only a Copy click happened to refresh
+   *  it — user report). */
+  const [, setExpiryTick] = useState(0);
+  useEffect(() => {
+    const timer = window.setInterval(() => setExpiryTick((tick) => tick + 1), 15_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  // The mount fetch (and every later ping) lands through the store.
+  useEffect(() => {
+    session.refreshInvites();
+  }, [session]);
+
+  useEffect(() => {
+    if (!ttlTouchedRef.current) {
+      setTtlDraft(String(invitesState.ttlMinutes));
+    }
+  }, [invitesState.ttlMinutes]);
+
+  const ttlNumber = Number(ttlDraft);
+  const ttlValid = Number.isInteger(ttlNumber) && ttlNumber >= 1 && ttlNumber <= 525_600;
+  // An INVALID draft keeps Save disabled — dirty only counts when the draft is valid.
+  const ttlDirty = invitesState.loaded && ttlValid && ttlNumber !== invitesState.ttlMinutes;
+
+  const saveTtl = async (): Promise<void> => {
+    if (busy || !ttlValid) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      // Retroactive: the server reschedules every ACTIVE link to createdAt + the new TTL.
+      await session.rest.updateInviteSettings(ttlNumber);
+      ttlTouchedRef.current = false; // the store's echo is the authority again
+      setSaved(true);
+      session.refreshInvites();
+    } catch (saveError: unknown) {
+      setError(saveError instanceof Error ? saveError.message : String(saveError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const createInvite = async (): Promise<void> => {
+    if (busy) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await session.rest.createInvite();
+      session.refreshInvites();
+    } catch (createError: unknown) {
+      setError(createError instanceof Error ? createError.message : String(createError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const expireOne = async (inviteId: number): Promise<void> => {
+    try {
+      await session.rest.revokeInvite(inviteId);
+    } catch (revokeError: unknown) {
+      setError(revokeError instanceof Error ? revokeError.message : String(revokeError));
+    }
+    session.refreshInvites();
+  };
+
+  const copyLink = (invite: InviteLink): void => {
+    void navigator.clipboard.writeText(invite.link).catch(() => undefined);
+    setCopiedId(invite.id);
+    window.setTimeout(() => {
+      setCopiedId((previous) => previous === invite.id ? null : previous);
+    }, 1500);
+  };
+
+  return (
+    <div>
+      <div className="roles-list-header overview-heading"><span>Invites</span></div>
+      <div className="settings-hint">
+        An invite link registers exactly ONE new member and stops working after its TTL.
+        Registration on this server is invite-only.
+      </div>
+      <div className="invite-ttl-row">
+        <div className="invite-ttl-input-row">
+          <span className="invite-ttl-label">Invite links expire after</span>
+          {/* Only the INPUT is wrapped: the human rendering hangs off it absolutely
+              (top: 100%), flush under the field, completely outside the row's flow —
+              the label/"min"/Save arrangement cannot shift. */}
+          <span className="invite-ttl-input-wrap">
+            <input
+              type="number"
+              min={1}
+              max={525_600}
+              value={ttlDraft}
+              onChange={(event) => {
+                ttlTouchedRef.current = true;
+                setTtlDraft(event.target.value);
+                setSaved(false);
+              }}
+            />
+            <span className="invite-ttl-human">{ttlValid ? formatTtlWords(ttlNumber) : ""}</span>
+          </span>
+          <span className="invite-ttl-unit">min</span>
+          <SaveButton label="Save changes" saved={saved} dirty={ttlDirty} busy={busy} onClick={() => void saveTtl()} />
+        </div>
+      </div>
+      <div className="settings-hint">Changing the TTL reschedules every active link (lowering it may expire some immediately).</div>
+      <div className="modal-actions left">
+        <button className="primary" disabled={busy} onClick={() => void createInvite()}>Create invite</button>
+        <button className="ghost" disabled={busy || invitesState.invites.length === 0} onClick={() => setExpireAllOpen(true)}>
+          Expire all
+        </button>
+      </div>
+      {error !== null ? <div className="error-line">{error}</div> : null}
+      {!invitesState.loaded ? (
+        <div className="settings-empty">Loading invites…</div>
+      ) : invitesState.invites.length === 0 ? (
+        <div className="settings-empty">No active invites. Create one to let a new member register.</div>
+      ) : (
+        invitesState.invites.map((invite) => {
+          const expiresIn = formatExpiresIn(invite.expiresAt, Date.now());
+          return (
+          <div key={invite.id} className="list-row invite-row">
+            <span className="invite-secret" title={invite.link}>{invite.secretPreview}</span>
+            <span className="invite-meta">created by {invite.createdBy}</span>
+            {/* "expired" stands alone — no "expires in" prefix on a dead link. */}
+            <span className="invite-meta">{expiresIn === "expired" ? "expired" : `expires in ${expiresIn}`}</span>
+            <span className="invite-actions">
+              <button
+                className="ghost tiny"
+                title="Copy link"
+                onClick={() => copyLink(invite)}
+              ><span className={"icon " + (copiedId === invite.id ? "mdi-check" : "mdi-content-copy")} /></button>
+              <button
+                className="ghost tiny"
+                title="Expire this invite"
+                disabled={busy}
+                onClick={() => void expireOne(invite.id)}
+              ><span className="icon mdi-close" /></button>
+            </span>
+          </div>
+          );
+        })
+      )}
+      {expireAllOpen ? (
+        <ConfirmModal
+          title="Expire all invites"
+          note="Every active invite link will stop working immediately. New members will need a fresh link."
+          confirmLabel="Expire all"
+          onConfirm={async () => {
+            await session.rest.expireAllInvites();
+            session.refreshInvites();
+          }}
+          onClose={() => setExpireAllOpen(false)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Channels (tri-state overrides + Access)
 // ---------------------------------------------------------------------------
 
@@ -2279,7 +2470,7 @@ function ServerEmojiSection({ session }: { session: ConnectionSession }): React.
 
   return (
     <div className="settings-section">
-      <h2 className="section-title">Emoji</h2>
+      <div className="roles-list-header overview-heading"><span>Emoji</span></div>
       <div className="emoji-upload-row">
         <input
           ref={fileInputRef}
@@ -2512,7 +2703,7 @@ function ServerStickerSection({ session }: { session: ConnectionSession }): Reac
 
   return (
     <div className="settings-section">
-      <h2 className="section-title">Stickers</h2>
+      <div className="roles-list-header overview-heading"><span>Stickers</span></div>
       <div className="sticker-pack-form">
         <input
           type="text"

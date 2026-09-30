@@ -219,3 +219,57 @@ describe("RestClient stickers", () => {
     expect(fake.requests[0]?.body).toEqual({ content: null, stickerId: 9, replyToId: null, idempotencyKey: "key-1" });
   });
 });
+
+describe("RestClient invites", () => {
+  /** A fetch fake whose register answers 201-with-user and login answers a token pair —
+   *  client.register() logs straight in (the spike UX), so both calls are expected. */
+  function registerFake(): FakeFetch {
+    return new FakeFetch((request) => request.path === "/api/auth/login"
+      ? { status: 200, body: { token: "t", refreshToken: "r", tokenType: "Bearer", expiresIn: 100 } }
+      : { status: 201, body: { id: 7, username: "u", createdAt: "2026-09-30T00:00:00Z", avatarKey: null, avatarUrl: null, displayName: "u" } });
+  }
+
+  it("register without options keeps the legacy two-field body", async () => {
+    const fake = registerFake();
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: new MemoryTokenStorage(), fetchImpl: fake.call });
+
+    await client.register("alice", "supersecret");
+    expect(fake.requests[0]?.path).toBe("/api/auth/register");
+    expect(fake.requests[0]?.body).toEqual({ username: "alice", password: "supersecret" });
+  });
+
+  it("register with an invite carries the nickname and the secret, then logs in", async () => {
+    const fake = registerFake();
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: new MemoryTokenStorage(), fetchImpl: fake.call });
+
+    await client.register("alice", "supersecret", { nickname: "Alice", inviteSecret: "sec-ret" });
+    expect(fake.requests[0]?.body).toEqual({ username: "alice", password: "supersecret", nickname: "Alice", inviteSecret: "sec-ret" });
+    expect(fake.requests[1]?.path).toBe("/api/auth/login");
+  });
+
+  it("the invites section: status GET, mint POST, revoke DELETE, expire-all POST, TTL PUT", async () => {
+    const fake = new FakeFetch(() => ({ status: 200, body: { ttlHours: 24, invites: [] } }));
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: new MemoryTokenStorage(), fetchImpl: fake.call });
+
+    await client.getInvites();
+    expect(fake.requests[0]?.method).toBe("GET");
+    expect(fake.requests[0]?.path).toBe("/api/invites");
+
+    await client.createInvite();
+    expect(fake.requests[1]?.method).toBe("POST");
+    expect(fake.requests[1]?.path).toBe("/api/invites");
+
+    await client.revokeInvite(4);
+    expect(fake.requests[2]?.method).toBe("DELETE");
+    expect(fake.requests[2]?.path).toBe("/api/invites/4");
+
+    await client.expireAllInvites();
+    expect(fake.requests[3]?.method).toBe("POST");
+    expect(fake.requests[3]?.path).toBe("/api/invites/expire-all");
+
+    await client.updateInviteSettings(525600);
+    expect(fake.requests[4]?.method).toBe("PUT");
+    expect(fake.requests[4]?.path).toBe("/api/server/invite-settings");
+    expect(fake.requests[4]?.body).toEqual({ ttlMinutes: 525600 });
+  });
+});

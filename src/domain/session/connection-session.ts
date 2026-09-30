@@ -1,5 +1,5 @@
 import { log } from "../../logging";
-import { RestClient } from "../../core/rest";
+import { ApiError, RestClient } from "../../core/rest";
 import { StompClient } from "../../core/stomp";
 import type {
   CallIceCandidate,
@@ -10,6 +10,7 @@ import type {
   DmChannel,
   DmChannelEvent,
   IncomingCallSignal,
+  InvitesStatus,
   MemberKickEvent,
   Message,
   PresenceEvent,
@@ -32,6 +33,7 @@ import { PinnedStore } from "../stores/PinnedStore";
 import { DiscussionsStore } from "../stores/DiscussionsStore";
 import { EmojiStore } from "../stores/EmojiStore";
 import { StickerStore } from "../stores/StickerStore";
+import { InvitesStore } from "../stores/InvitesStore";
 import { ReadStateStore } from "../stores/ReadStateStore";
 import { RosterStore } from "../stores/RosterStore";
 import { SocialStore } from "../stores/SocialStore";
@@ -135,6 +137,7 @@ export class ConnectionSession {
   readonly discussionsStore = new DiscussionsStore();
   readonly emojiStore = new EmojiStore();
   readonly stickerStore = new StickerStore();
+  readonly invitesStore = new InvitesStore();
   readonly rosterStore = new RosterStore();
   readonly memberStore = new MemberStore();
   readonly socialStore = new SocialStore();
@@ -160,6 +163,9 @@ export class ConnectionSession {
    *  feature hides (picker button, settings section). */
   private readonly emojiRefresh = new CoalescingRefresher(() => this.doRefreshEmojis());
   private readonly stickerRefresh = new CoalescingRefresher(() => this.doRefreshStickers());
+  /** The invite list: NOT fetched on start (admins-only read; the section pulls its
+   *  first snapshot), only refetched on /topic/invites pings and on demand. */
+  private readonly invitesRefresh = new CoalescingRefresher(() => this.doRefreshInvites());
 
   private readonly directory: ConnectionDirectory;
   private readonly hooks: SessionHooks;
@@ -968,6 +974,34 @@ export class ConnectionSession {
     this.stickerRefresh.request();
   }
 
+  private async doRefreshInvites(): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
+    let status: InvitesStatus;
+    try {
+      status = await this.rest.getInvites();
+    } catch (error: unknown) {
+      // The /topic/invites ping reaches EVERY session, but only MANAGE_MEMBERS
+      // holders may read the list — a 403 here is expected noise for plebeians,
+      // not a log-worthy failure.
+      if (error instanceof ApiError && error.status === 403) {
+        return;
+      }
+      log.warn("session", `invites snapshot failed: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    if (this.disposed) {
+      return;
+    }
+    this.invitesStore.applySnapshot(status.ttlMinutes, status.invites);
+  }
+
+  /** Public re-fetch for the settings section (its mount and own mutations). */
+  refreshInvites(): void {
+    this.invitesRefresh.request();
+  }
+
   /** Sends a sticker message (the tray's click-to-send): content null, the sticker id
    *  rides the normal message POST. An armed reply carries over; the composer's text
    *  draft is NOT consumed. */
@@ -1096,6 +1130,13 @@ export class ConnectionSession {
     this.stomp.subscribe("/topic/stickers", () => {
       // The sticker catalog's own ping (bare timestamp) — same refetch stance.
       this.stickerRefresh.request();
+    });
+    this.stomp.subscribe("/topic/invites", () => {
+      // Any invite mutation (mint, expire, TTL change — and a REGISTRATION claiming
+      // a link, which is why the subscription lives here rather than in the section:
+      // a spent link drops out of an OPEN settings screen live). The refetch quietly
+      // no-ops for sessions without MANAGE_MEMBERS (403 in doRefreshInvites).
+      this.invitesRefresh.request();
     });
     this.stomp.subscribe("/user/queue/member.kick", (raw) => {
       const event = JSON.parse(raw) as MemberKickEvent;
@@ -1273,6 +1314,7 @@ export class ConnectionSession {
     this.memberRefresh.request();
     this.emojiRefresh.request();
     this.stickerRefresh.request();
+    this.invitesRefresh.request();
     void this.refetchChannels();
     // Read states BEFORE the tail heal: applySnapshot REPLACES per-channel
     // state, so a snapshot landing after the heals would erase their bumps.

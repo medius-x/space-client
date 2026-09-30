@@ -2708,6 +2708,93 @@ social-aggregate подписан на сторы фоновых сессий �
   с существующим именем (merge); предпросмотр с исключением части плиток; битый zip
   (error-line); dead-link при экспорте (unavailable в отчёте).
 
+- **Инвайт-регистрация: диалог Add a server с 3 вкладками + секция Invites (2026-09-30,
+  код готов, смоук pending; ДЕПЛОЙ ПАРНЫЙ с oak-server — сервер первым (V9 + гейт
+  register: на непустом инстансе старый клиент без inviteSecret получает 403), клиент
+  следом; серверная половина — oak-server/CLAUDE.md).** Юзер-решения: регистрация на
+  имеющемся сервере — ТОЛЬКО по пригласительной ссылке (`http://host:port/#invite=
+  <secret>`, сервер собирает из advertised connectionHost/Port с fallback на Host);
+  пустая ссылка в форме = bootstrap-регистрация ПЕРВОГО юзера свежего сервера
+  (OWNER — живёт до client provisioning, вкладка Create = заглушка `.not-implemented`,
+  provisioning в backlog вместе с созданием овнера одной командой и TLS-схемой ссылок);
+  TTL ретроактивен; список только активных. **(Чистая логика)** НОВЫЙ
+  `domain/logic/invite-link.ts`: `parseInviteLink` (lenient-парсер вставленной руками
+  ссылки: секрет из hash `#invite=` canonical / `?invite=` tolerated, до `&`;
+  автопрефикс `http://` при отсутствии схемы (иначе URL читает «host:» как протокол);
+  origin из `url.origin` — сам нормализует trailing slash и IPv6-скобки; пустой
+  секрет/мусор → null), `buildInviteLink` (зеркало InviteController.buildLink,
+  round-trip-тест), `formatExpiresIn(expiresAt, now)` («45m»/«3h 12m»/«2d 5h»/
+  «expired»; now-параметр — тестируемость). **(rest/types)** `register(username,
+  password, options?: {nickname?, inviteSecret?})` — поля в тело ТОЛЬКО когда заданы
+  (голая bootstrap-регистрация сохраняет legacy 2-поле wire); `getInvites`/
+  `createInvite`/`revokeInvite`/`expireAllInvites`/`updateInviteSettings`; типы
+  `InviteLink` (несёт secretPreview — полный секрет на провод не ездит, Copy копирует
+  собранный link) + `InvitesStatus{ttlHours, invites}` одним GET. **(runtime)**
+  `startSession` += 5-й параметр `RegisterSessionOptions` → проброс в register
+  (дедуп записи/openSession не тронуты). **(LoginModal)** 3 вкладки underline-идиомой
+  (`.settings-tabs.login-tabs` — юзер просил «как в Server Settings → Roles»):
+  Create (текстовая заглушка; юзер-решение ×2: овнер нового сервера будет создаваться
+  АВТОМАТИЧЕСКИ при создании сервера из клиента — отдельной регистрации первого юзера
+  в форме НЕТ), Log in (прежняя форма), Register — Invite link (**ОБЯЗАТЕЛЬНО**, первым
+  полем) + Nickname (опц., «Same as username if empty») + Username + Password;
+  **адреса-поля НЕТ ВООБЩЕ — адрес = origin ссылки** (под валидной ссылкой dim-строка
+  «Server: <origin>»; пустая/невалидная ссылка → локальная ошибка в error-line:
+  «Paste an invite link to register.» / «That invite link does not look valid.»;
+  appStore.loginError); Enter в пароле = Register; hint «Ask a member with the
+  "Manage Members" permission for an invite link.». Серверный bootstrap-гейт
+  (count()==0 → OWNER без секрета) ОСТАЁТСЯ API-контрактом для будущего provisioning —
+  клиент его больше не использует. **(ServerSettingsPane → Invites)**
+  секция после Members, гейт MANAGE_MEMBERS (юзер: «ссылки раздаёт тот, кто может
+  добавлять членов»); TTL-строка (number 1..720 + «hours» + SaveButton; invalid-черновик
+  держит Save disabled — dirty только при валидном; после Save refresh — TTL
+  ретроактивен, выжившие ссылки могут смениться/умереть) + Create invite (primary) +
+  Expire all (ConfirmModal); список `.list-row.invite-row`: secretPreview (mono, title=
+  полная ссылка), «by {createdBy}», «expires in {formatExpiresIn}», справа Copy
+  (`navigator.clipboard.writeText(link).catch(() => undefined)` — ChatPane-идиома;
+  фидбек mdi-content-copy→mdi-check на 1.5 с по copiedId) и Expire (ghost, mdi-close);
+  пусто-состояние «No active invites…»; каждая мутация → единый refresh() (стора НЕТ —
+  локальный стейт, поверхность одного админа; /topic/invites-пинг сервера — задел на
+  будущее live). Иконки уже были (npm run icons НЕ нужен). Тесты: НОВЫЙ
+  `test/invite-link.test.ts` (16: hash/query/автопрефикс/IPv6/&-обрезка/пустой-секрет/
+  не-ссылка/whitespace/build-symmetry/expiresIn-лестница) + rest-mutations += 3
+  (register-тела legacy/с-инвайтом; все 5 invite-маршрутов с точными телами; registerFake
+  ветвится по path — register 201 → авто-login 200). Гейты: **516/516** + typecheck +
+  build. Смоук: owner создаёт инвайт → Copy; второй клиент → «+» → Register → вставка
+  ссылки (адрес сам заполнился) → ник/логин/пароль → вход; повтор ссылки → 403
+  «already used»; Expire одной/всех; TTL 2 → Save → «expires in 2h»; register без
+  ссылки на непустом сервере → 403 с текстом.
+
+  **Раунд 2 (смоук-репорты юзера, 2026-10-01; ДЕПЛОЙ ПАРНЫЙ с oak-server — сервер
+  первым: V10 + ttlMinutes-wire + afterCommit-пинги).** (1) **Использованная ссылка
+  исчезает из списка LIVE** (репорт «нужно перезаходить в Server settings»): НОВЫЙ
+  `InvitesStore` per-session (снапшот {loaded, ttlMinutes, invites} — wire-ответ
+  дословно, идентичность тривиальна) + подписка `/topic/invites` в ConnectionSession
+  (ping = рефреш; рефетч НЕ на старте — чтение админское, секция тянет первый снапшот
+  сама; 403 плебеев в doRefreshInvites глотается ТИХО — пинг доходит всем) +
+  resyncAfterReconnect + публичный refreshInvites(); сервер пингует AFTER COMMIT
+  (в т.ч. AuthService после claim) — иначе рефетч опережал коммит и строка «used»
+  оставалась до следующего события. (2) **TTL задаётся в МИНУТАХ** (юзер-решение):
+  поле number 1..525600, СПРАВА живой перевод `formatTtlWords` («5 mo 2 d 3 h 4 min»,
+  только ненулевые сегменты, месяц = плоские 30 дней — год-кап 525600 рендерится
+  «12 mo 5 d»; чистая функция в invite-link.ts + тесты); **Save changes — ОТДЕЛЬНОЙ
+  строкой под полем** (юзер-репорт; раньше в одной строке с input); черновик поля
+  не перезатирается входящими снапшотами, пока юзер редактирует (ttlTouchedRef).
+  (3) **Удаление АКТИВНОГО сервера свитчит на выжившего** (репорт «No server
+  connected, хотя есть другой сервер»): removeConnection после teardown+remove зовёт
+  switchConnection(самая свежая запись) — живая фоновая сессия промоутится мгновенно,
+  мёртвая семья → логин-модал с префиллом; записей нет → empty-экран честен. Тесты:
+  invite-link += formatTtlWords (7); rest-mutations ttlMinutes. Гейты: **520/520** +
+  typecheck + build. **Раунд 3 (юзер-решения, 2026-10-01; ДЕПЛОЙ ПАРНЫЙ — сервер
+  первым: V11 + DELETE-claim):** (1) **форматы без месяцев**: formatTtlWords =
+  d/h/min только (кап 525600 = «365 d», плоский год); formatExpiresIn = дни+часы
+  («2d 5h»), цельные часы без минут («3h»), и только в ПОСЛЕДНИЙ час — минуты
+  («45m»). (2) **TTL-строка перестроена** (юзер-макет): [label][КОЛОНКА: input +
+  «min» + Save changes справа в строке / перевод словами ровно ПОД полем]; input
+  фикс-ширины 128px — под ним влезает самый длинный перевод («364 d 23 h 59 min»),
+  набор цифр ничего не сдвигает. (3) Сервер: claim стал DELETE (потраченной строки
+  больше не существует — повтор ссылки читается как «not valid»), истёкшие/
+  отозванные сносит InvitesCleanup по расписанию PT6H (см. oak-server/CLAUDE.md).
+
 - Гейт после каждой фазы: `npm test` + `npm run typecheck` зелёные.
 - Новые файлы сразу `git add`. Коммиты только по явной команде; subject на английском.
 - Никаких single-letter имён (кроме i/j цикла и T/E/K/V генериков); комментарии в коде

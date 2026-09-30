@@ -13,6 +13,8 @@ import type {
   Discussion,
   DmChannel,
   ForwardMessageRequest,
+  InviteLink,
+  InvitesStatus,
   Message,
   MyPermissions,
   PermissionCatalogEntry,
@@ -112,10 +114,23 @@ export class RestClient {
     log.info("rest", `logged in (token expires in ${auth.expiresIn}s)`);
   }
 
-  async register(username: string, password: string): Promise<void> {
+  /** Optional extras of the invite registration: a nickname distinct from the login
+   *  and the single-use secret from an invite link. Fields ride the body only when
+   *  set — a bare login-register keeps the legacy two-field wire. */
+  async register(username: string, password: string, options?: {
+    nickname?: string;
+    inviteSecret?: string;
+  }): Promise<void> {
+    const body: Record<string, string> = { username, password };
+    if (options?.nickname !== undefined) {
+      body.nickname = options.nickname;
+    }
+    if (options?.inviteSecret !== undefined) {
+      body.inviteSecret = options.inviteSecret;
+    }
     await this.request<unknown>("/api/auth/register", {
       method: "POST",
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify(body),
       authenticated: false,
     });
     // register returns no tokens — log straight in (spike UX)
@@ -582,6 +597,37 @@ export class RestClient {
   /** Fires one GC pass NOW; the run itself is background — poll getStorageStatus(). */
   async triggerStorageGc(): Promise<StorageGcRun> {
     return this.request<StorageGcRun>("/api/server/storage/run", { method: "POST" });
+  }
+
+  // --- Invite links (the Invites settings section, MANAGE_MEMBERS on the server) ---
+
+  /** The section in one fetch: the TTL setting plus the ACTIVE links. */
+  async getInvites(): Promise<InvitesStatus> {
+    return this.request<InvitesStatus>("/api/invites", { method: "GET" });
+  }
+
+  /** Mints one invite link; the response carries the assembled copyable link. */
+  async createInvite(): Promise<InviteLink> {
+    return this.request<InviteLink>("/api/invites", { method: "POST" });
+  }
+
+  /** "Expire": revokes one link (idempotent for an already inactive one). */
+  async revokeInvite(inviteId: number): Promise<void> {
+    await this.request<void>(`/api/invites/${inviteId}`, { method: "DELETE" });
+  }
+
+  /** "Expire all": revokes every active link in one shot. */
+  async expireAllInvites(): Promise<void> {
+    await this.request<void>("/api/invites/expire-all", { method: "POST" });
+  }
+
+  /** Changes the TTL (minutes, 1..525600 = one year); the server retroactively
+   *  reschedules every ACTIVE link. */
+  async updateInviteSettings(ttlMinutes: number): Promise<void> {
+    await this.request<void>("/api/server/invite-settings", {
+      method: "PUT",
+      body: JSON.stringify({ ttlMinutes }),
+    });
   }
 
   async createChannel(request: { name: string; type?: ChannelType | null }): Promise<Channel> {

@@ -2,61 +2,147 @@ import { useState } from "react";
 import { useStore } from "../hooks/useStore";
 import { appStore, closeLoginForm, startSession } from "../runtime";
 import { DEFAULT_REST_BASE_URL } from "../../config";
+import { parseInviteLink } from "../../domain/logic/invite-link";
 import { Modal } from "./Modal";
 
 /**
- * The login form as a MODAL over the always-present main window (oak's Add
- * Server dialog): opened by the rail "+", an expired session or a kick. ✕
- * just closes it — the window itself never becomes a login screen.
+ * The add-server dialog as a MODAL over the always-present main window (oak's Add
+ * Server dialog): opened by the rail "+", an expired session or a kick. Three tabs
+ * (the Server Settings → Roles underline idiom): Create (a provisioning placeholder
+ * until that feature lands — a new server's OWNER account will be created by it
+ * automatically), Log in (the classic address/username/password form) and Register —
+ * invite-link registration on an existing server ONLY: the link is required and its
+ * origin is the address (no separate address field).
  */
 export function LoginModal(): React.JSX.Element {
   const error = useStore(appStore, (state) => state.loginError);
   const busy = useStore(appStore, (state) => state.loginBusy);
   const prefill = useStore(appStore, (state) => state.loginPrefill);
+  const [tab, setTab] = useState<"create" | "login" | "register">("login");
   const [serverUrl, setServerUrl] = useState(prefill?.url ?? DEFAULT_REST_BASE_URL);
   const [username, setUsername] = useState(prefill?.username ?? "");
   const [password, setPassword] = useState("");
+  const [nickname, setNickname] = useState("");
+  const [inviteLink, setInviteLink] = useState("");
 
-  const submit = (mode: "login" | "register") => {
-    void startSession(serverUrl.trim().replace(/\/+$/, ""), mode, username.trim(), password);
+  const submitLogin = () => {
+    void startSession(serverUrl.trim().replace(/\/+$/, ""), "login", username.trim(), password);
+  };
+
+  // Register: the link is REQUIRED — its origin IS the server address, its hash carries
+  // the single-use secret. There is no first-member bootstrap here: the OWNER account of
+  // a new server will be created automatically by the (future) provisioning flow.
+  const parsedInviteLink = parseInviteLink(inviteLink);
+
+  const submitRegister = () => {
+    if (parsedInviteLink === null) {
+      appStore.patch({
+        loginError: inviteLink.trim().length === 0
+          ? "Paste an invite link to register."
+          : "That invite link does not look valid.",
+      });
+      return;
+    }
+    void startSession(parsedInviteLink.origin, "register", username.trim(), password, {
+      nickname: nickname.trim().length > 0 ? nickname.trim() : undefined,
+      inviteSecret: parsedInviteLink.secret,
+    });
   };
 
   return (
     <Modal title="Add a server" onClose={closeLoginForm}>
-      <label className="settings-field">
-        <span>Server address</span>
-        <input type="url" value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} placeholder="http://localhost:8080" autoFocus />
-      </label>
-      <label className="settings-field">
-        <span>Username</span>
-        <input type="text" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="Username" autoComplete="username" />
-      </label>
-      <label className="settings-field">
-        <span>Password</span>
-        <input
-          type="password"
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              submit("login");
-            }
-          }}
-          placeholder="Password (8+ chars)"
-          autoComplete="current-password"
-        />
-      </label>
-      <div className="error-line">{error ?? ""}</div>
-      <div className="modal-actions">
-        <button className="ghost" disabled={busy} onClick={closeLoginForm}>Cancel</button>
-        <button className="primary" disabled={busy} onClick={() => submit("login")}>
-          {busy ? "Connecting…" : "Log in"}
-        </button>
+      <div className="settings-tabs login-tabs">
+        <button className={"settings-tab" + (tab === "create" ? " active" : "")} onClick={() => setTab("create")}>Create</button>
+        <button className={"settings-tab" + (tab === "login" ? " active" : "")} onClick={() => setTab("login")}>Log in</button>
+        <button className={"settings-tab" + (tab === "register" ? " active" : "")} onClick={() => setTab("register")}>Register</button>
       </div>
-      <div className="settings-hint">No account on that server yet? Register with the same form.</div>
-      <div className="modal-actions">
-        <button className="ghost" disabled={busy} onClick={() => submit("register")}>Register</button>
-      </div>
+      {tab === "create" ? (
+        <>
+          <div className="settings-hint">
+            Server provisioning is coming soon.
+            <em className="not-implemented"> (not implemented yet)</em>
+          </div>
+          <div className="settings-hint">
+            Setting up a new server from the client will also create its owner account
+            automatically — no registration needed.
+          </div>
+        </>
+      ) : tab === "login" ? (
+        <>
+          <label className="settings-field">
+            <span>Server address</span>
+            <input type="url" value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} placeholder="http://localhost:8080" autoFocus />
+          </label>
+          <label className="settings-field">
+            <span>Username</span>
+            <input type="text" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="Username" autoComplete="username" />
+          </label>
+          <label className="settings-field">
+            <span>Password</span>
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  submitLogin();
+                }
+              }}
+              placeholder="Password (8+ chars)"
+              autoComplete="current-password"
+            />
+          </label>
+          <div className="error-line">{error ?? ""}</div>
+          <div className="modal-actions">
+            <button className="ghost" disabled={busy} onClick={closeLoginForm}>Cancel</button>
+            <button className="primary" disabled={busy} onClick={submitLogin}>
+              {busy ? "Connecting…" : "Log in"}
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <label className="settings-field">
+            <span>Invite link</span>
+            <input type="text" value={inviteLink} onChange={(event) => setInviteLink(event.target.value)} placeholder="http://host:8080/#invite=…" autoFocus />
+          </label>
+          {parsedInviteLink !== null ? (
+            // The address rides the link — confirm where the registration goes, no separate field.
+            <div className="settings-hint">Server: {parsedInviteLink.origin}</div>
+          ) : null}
+          <label className="settings-field">
+            <span>Nickname</span>
+            <input type="text" value={nickname} maxLength={32} onChange={(event) => setNickname(event.target.value)} placeholder="Same as username if empty" />
+          </label>
+          <label className="settings-field">
+            <span>Username</span>
+            <input type="text" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="Username" autoComplete="username" />
+          </label>
+          <label className="settings-field">
+            <span>Password</span>
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  submitRegister();
+                }
+              }}
+              placeholder="Password (8+ chars)"
+              autoComplete="new-password"
+            />
+          </label>
+          <div className="settings-hint">Ask a member with the "Manage Members" permission for an invite link.</div>
+          <div className="error-line">{error ?? ""}</div>
+          <div className="modal-actions">
+            <button className="ghost" disabled={busy} onClick={closeLoginForm}>Cancel</button>
+            <button className="primary" disabled={busy} onClick={submitRegister}>
+              {busy ? "Connecting…" : "Register"}
+            </button>
+          </div>
+        </>
+      )}
     </Modal>
   );
 }
