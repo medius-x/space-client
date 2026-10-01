@@ -11,7 +11,9 @@ import {
   singleTileBox,
 } from "../../domain/logic/attachment-layout";
 import { learnedDims, rememberDims } from "../media-dims";
+import { humanByteSize } from "../../domain/logic/file-size";
 import type { Attachment, Message } from "../../types";
+import { log } from "../../logging";
 import { Lightbox } from "./Lightbox";
 import { VideoModal } from "./VideoModal";
 
@@ -19,10 +21,6 @@ function formatClock(totalSeconds: number): string {
   const seconds = Math.max(0, Math.floor(totalSeconds));
   const minutes = Math.floor(seconds / 60);
   return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
-}
-
-async function openExternal(url: string): Promise<void> {
-  await window.spaceMedia?.openExternal(url);
 }
 
 /** The edit-mode image removal (oak's attachmentRemovalActive): each image tile
@@ -113,9 +111,7 @@ export function AttachmentView({ session, message, onForwardBegin, removal }: {
         <AudioCardView key={attachment.key} session={session} attachment={attachment} />
       ))}
       {plainFiles.map((attachment) => (
-        <button key={attachment.key} className="file-chip" onClick={() => void openExternal(attachment.url)}>
-          <span className="icon mdi-attachment" /> {attachment.fileName}
-        </button>
+        <FileCardView key={attachment.key} session={session} attachment={attachment} />
       ))}
       {video !== null ? <VideoModal session={session} attachment={video} onClose={() => setVideo(null)} /> : null}
       {lightbox !== null ? (
@@ -314,6 +310,57 @@ function AudioCardView({ session, attachment }: {
         <div className="audio-time">
           {knownDuration ? `${formatClock(position)} / ${formatClock(duration)}` : `${formatClock(position)} / --:--`}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** A plain (non-media) file: the audio-card geometry with a DOWNLOAD button
+ *  instead of play — the click saves through the OS dialog (the lightbox's
+ *  fresh-link → bytes → saveFile recipe), never the system browser (user
+ *  decision: downloading stays in the client). The name row carries the file
+ *  name with its extension and the sender-measured size (absent on rows from
+ *  before the wire field). */
+function FileCardView({ session, attachment }: {
+  session: ConnectionSession;
+  attachment: Attachment;
+}): React.JSX.Element {
+  const [busy, setBusy] = useState(false);
+
+  const download = async (): Promise<void> => {
+    if (busy) {
+      return;
+    }
+    setBusy(true);
+    try {
+      // The card's URL may have aged out (presigned GETs live an hour) — always
+      // mint a fresh one, like the lightbox's Download.
+      const fresh = await session.rest.freshAttachmentLink(attachment.key);
+      if (fresh !== null) {
+        const bytes = new Uint8Array(await session.rest.downloadBytes(fresh));
+        await window.spaceMedia?.saveFile(attachment.fileName, bytes);
+      }
+    } catch (downloadError) {
+      // The toast-less surface: the failure must outlive the click in space.log.
+      log.warn("attachments", `file card download failed (${attachment.fileName}): ${downloadError instanceof Error ? downloadError.message : String(downloadError)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="file-card">
+      <button
+        className="file-download"
+        disabled={busy}
+        title="Download file"
+        onClick={() => void download()}
+      >
+        <span className={"icon " + (busy ? "mdi-refresh" : "mdi-download")} />
+      </button>
+      <div className="file-card-body">
+        <div className="file-name" title={attachment.fileName}>{attachment.fileName}</div>
+        <div className="file-size">{attachment.sizeBytes !== null ? humanByteSize(attachment.sizeBytes) : ""}</div>
       </div>
     </div>
   );

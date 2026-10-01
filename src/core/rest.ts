@@ -228,7 +228,7 @@ export class RestClient {
    *  of duplicating it. */
   async sendMessage(channelId: number, request: {
     content: string | null;
-    attachments?: { key: string; fileName: string; thumbnailKey?: string | null; durationMillis?: number | null }[];
+    attachments?: { key: string; fileName: string; thumbnailKey?: string | null; durationMillis?: number | null; sizeBytes?: number | null }[];
     replyToId?: number | null;
     idempotencyKey?: string;
     /** The sticker catalog id to carry (phase 2); a sticker satisfies the
@@ -249,7 +249,7 @@ export class RestClient {
    *  attached keys. Content may be blank while an attachment remains. */
   async editMessage(channelId: number, messageId: number, request: {
     content: string;
-    attachments?: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null }[] | null;
+    attachments?: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null; sizeBytes?: number | null }[] | null;
   }): Promise<Message> {
     return this.request<Message>(`/api/channels/${channelId}/messages/${messageId}`, {
       method: "PATCH",
@@ -290,7 +290,7 @@ export class RestClient {
    *  the existing thread (200 — the message is never lost to a 409). A bare messageId still
    *  creates an empty discussion (kept for the API surface; the client never sends it). */
   async createDiscussion(channelId: number, messageId: number, content?: string | null,
-    attachments?: readonly { key: string; fileName: string; thumbnailKey?: string | null; durationMillis?: number | null }[] | null,
+    attachments?: readonly { key: string; fileName: string; thumbnailKey?: string | null; durationMillis?: number | null; sizeBytes?: number | null }[] | null,
     idempotencyKey?: string): Promise<Discussion> {
     return this.request<Discussion>(`/api/channels/${channelId}/discussions`, {
       method: "POST",
@@ -630,10 +630,23 @@ export class RestClient {
     });
   }
 
-  async createChannel(request: { name: string; type?: ChannelType | null }): Promise<Channel> {
+  /** type may be "CATEGORY" (the sidebar section); parentId then must be null —
+   *  for TEXT/VOICE it optionally names the grouping category. */
+  async createChannel(request: { name: string; type?: ChannelType | null; parentId?: number | null }): Promise<Channel> {
     return this.request<Channel>("/api/channels", {
       method: "POST",
       body: JSON.stringify(request),
+    });
+  }
+
+  /** The full-sidebar reorder (the drag-drop persist): every non-DM channel and
+   *  category once, in the intended order, each with its (possibly new) parent.
+   *  The server renumbers positions densely by list index and answers 204; the
+   *  channels-changed ping triggers the refetch. */
+  async reorderChannels(entries: readonly { id: number; parentId: number | null }[]): Promise<void> {
+    await this.request<unknown>("/api/channels/order", {
+      method: "PUT",
+      body: JSON.stringify({ entries }),
     });
   }
 

@@ -17,7 +17,9 @@ function sameChannel(left: Channel, right: Channel): boolean {
     && left.name === right.name
     && left.type === right.type
     && left.createdAt === right.createdAt
-    && left.locked === right.locked;
+    && left.locked === right.locked
+    && left.parentId === right.parentId
+    && left.position === right.position;
 }
 
 export class ChannelStore extends Emitter {
@@ -29,7 +31,8 @@ export class ChannelStore extends Emitter {
     return this.channels.find((channel) => channel.id === channelId) ?? null;
   }
 
-  /** Diff-preserving replace: the incoming order (server sorts id asc) wins. */
+  /** Diff-preserving replace: the incoming order (the server's manual sidebar
+   *  order — (position, id)) wins. */
   applySnapshot(incoming: readonly Channel[]): void {
     const byId = new Map(this.channels.map((channel) => [channel.id, channel]));
     const merged = incoming.map((channel) => {
@@ -42,12 +45,16 @@ export class ChannelStore extends Emitter {
     }
   }
 
-  /** Returns true when actually inserted (false = duplicate id). */
+  /** Returns true when actually inserted (false = duplicate id). Inserts keeping
+   *  the (position, id) order — a creation appends at the server's max+1, so the
+   *  insert index is normally the end. */
   applyCreated(channel: Channel): boolean {
     if (this.channels.some((existing) => existing.id === channel.id)) {
       return false;
     }
-    const insertIndex = this.channels.findIndex((existing) => existing.id > channel.id);
+    const insertIndex = this.channels.findIndex((existing) =>
+      existing.position > channel.position
+      || (existing.position === channel.position && existing.id > channel.id));
     this.channels = insertIndex === -1
       ? [...this.channels, channel]
       : [...this.channels.slice(0, insertIndex), channel, ...this.channels.slice(insertIndex)];

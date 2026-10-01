@@ -82,6 +82,10 @@ contextBridge.exposeInMainWorld("spaceToast", {
   callAction(action: "accept" | "decline"): void {
     ipcRenderer.send("space-toast:callAction", action);
   },
+  /** A voice-invite card's Join/Dismiss — main relays to the MAIN window renderer. */
+  voiceInviteAction(action: "join" | "dismiss", id: number): void {
+    ipcRenderer.send("space-toast:voiceInviteAction", action, id);
+  },
   /** True while the cursor is over actual content — the window accepts clicks. */
   hover(interactive: boolean): void {
     ipcRenderer.send("space-toast:hover", interactive);
@@ -117,6 +121,14 @@ contextBridge.exposeInMainWorld("spaceToast", {
     ipcRenderer.on("toast:callAction", (_event, action: unknown) => {
       if (action === "accept" || action === "decline") {
         callback(action);
+      }
+    });
+  },
+  onVoiceInviteAction(callback: (action: "join" | "dismiss", id: number) => void): void {
+    ipcRenderer.removeAllListeners("toast:voiceInviteAction");
+    ipcRenderer.on("toast:voiceInviteAction", (_event, action: unknown, id: unknown) => {
+      if ((action === "join" || action === "dismiss") && typeof id === "number") {
+        callback(action, id);
       }
     });
   },

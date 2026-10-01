@@ -12,7 +12,7 @@ import {
   ringbackCycleSeconds,
 } from "../domain/logic/call-sounds";
 import type { Message } from "../types";
-import type { ToastCallCardPayload } from "./bridges";
+import type { ToastCallCardPayload, ToastVoiceInviteCardPayload } from "./bridges";
 
 /**
  * Notification hub: in-app toast stack (bottom-right of the window), OS
@@ -83,6 +83,8 @@ class NotificationHub {
   /** The incoming-call card's Accept/Decline handler (the runtime answers the
    *  call machine — the toast window only knows the button that was pressed). */
   private callActionHandler: ((action: "accept" | "decline") => void) | null = null;
+  /** The voice-invite card's Join/Dismiss handler (same shape as the call one). */
+  private voiceInviteActionHandler: ((action: "join" | "dismiss", id: number) => void) | null = null;
 
   constructor() {
     // The toast window reports card clicks by id — run the stored callback.
@@ -95,6 +97,10 @@ class NotificationHub {
     window.spaceToast?.onCallAction((action) => {
       window.focus(); // answering a call brings the app forward too
       this.callActionHandler?.(action);
+    });
+    window.spaceToast?.onVoiceInviteAction((action, id) => {
+      window.focus(); // joining a room brings the app forward too
+      this.voiceInviteActionHandler?.(action, id);
     });
   }
 
@@ -265,6 +271,24 @@ class NotificationHub {
   /** The runtime's Accept/Decline answer point for the call card. */
   setCallActionHandler(handler: (action: "accept" | "decline") => void): void {
     this.callActionHandler = handler;
+  }
+
+  /** The voice-channel invitation card: stacks WITH the message toasts (it
+   *  suppresses nothing) and TTLs out on its own — the runtime hands the id in
+   *  and answers the Join/Dismiss through {@link setVoiceInviteActionHandler}. */
+  showVoiceInviteCard(card: ToastVoiceInviteCardPayload): void {
+    window.spaceToast?.show({ kind: "voice-invite", card });
+  }
+
+  /** Tears one invite card down before its TTL (a Join was pressed, or the
+   *  room died) — the toast window drops it by id. */
+  dismissVoiceInviteCard(cardId: number): void {
+    window.spaceToast?.show({ kind: "voice-invite-end", id: cardId });
+  }
+
+  /** The runtime's Join/Dismiss answer point for voice-invite cards. */
+  setVoiceInviteActionHandler(handler: (action: "join" | "dismiss", id: number) => void): void {
+    this.voiceInviteActionHandler = handler;
   }
 
   /** The voice-room knock (oak's tuned "tuk … tuk"): bare sines, 3 ms attack,

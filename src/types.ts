@@ -7,7 +7,7 @@ export interface AuthTokens {
   expiresAt: number;
 }
 
-export type ChannelType = "TEXT" | "VOICE" | "DM" | "GROUP_DM";
+export type ChannelType = "TEXT" | "VOICE" | "DM" | "GROUP_DM" | "CATEGORY";
 
 export interface Channel {
   id: number;
@@ -15,6 +15,12 @@ export interface Channel {
   type: ChannelType;
   createdAt: string;
   locked: boolean;
+  /** The CATEGORY channel this TEXT/VOICE channel groups under (Discord's
+   *  category); null = top level. Categories themselves never carry one.
+   *  Wire append-only — rows from before the field may deserialize without it. */
+  parentId: number | null;
+  /** The manual sidebar order; (position, id) is the sort key. */
+  position: number;
 }
 
 export interface UserSummary {
@@ -47,6 +53,10 @@ export interface Attachment {
    *  arrive). Server passthrough, wire append-only. */
   width: number | null;
   height: number | null;
+  /** The object's byte size, known only to the SENDER (File.size at upload —
+   *  the server never terminates the bytes). Shown by the plain-file card; null
+   *  on rows from before the field. Same trust model as width/height. */
+  sizeBytes: number | null;
 }
 
 /** M2 surface — carried verbatim so the wire type never needs re-touching. */
@@ -365,7 +375,7 @@ export const REACTION_GLYPH_BY_SLUG: Readonly<Record<string, string>> = Object.f
 export interface ForwardMessageRequest {
   sourceMessageId: number | null;
   content: string | null;
-  attachments?: { key: string; fileName: string; thumbnailKey?: string | null; durationMillis?: number | null; width?: number | null; height?: number | null }[] | null;
+  attachments?: { key: string; fileName: string; thumbnailKey?: string | null; durationMillis?: number | null; width?: number | null; height?: number | null; sizeBytes?: number | null }[] | null;
   originServer?: string | null;
   originChannel?: string | null;
   originAuthorId?: number | null;
@@ -389,6 +399,17 @@ export interface VoiceMemberEvent {
   username: string;
   channelId: number;
   status: VoiceMemberStatus;
+}
+
+/** /user/queue/voice.invite — a live "join me in this room" card (the sidebar's
+ *  hover invite). The server stamps `from` (the sender's LOGIN) and resolves
+ *  `channelName` itself — the receiver's store may not hold the room. No
+ *  persistence: an offline receiver never sees it. */
+export interface IncomingVoiceInvite {
+  channelId: number;
+  channelName: string;
+  from: string;
+  to: string;
 }
 
 export interface PresenceEvent {

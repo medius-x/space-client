@@ -57,6 +57,7 @@ import type {
   Channel,
   FeedInfo,
   IncomingCallSignal,
+  IncomingVoiceInvite,
   Message,
   RemoteTrackKind,
   RoomInfo,
@@ -1121,6 +1122,24 @@ function makeSessionHooks(recordId: string): SessionHooks {
         appStore.patch({ activeDmId: null }); // back to the Friends pane
       }
     },
+    onVoiceInvite: (invite) => {
+      // Both the ACTIVE and a BACKGROUND session surface the same card (the
+      // record tag rides the map entry — Join knows where to switch); a light
+      // bell under the sound switch (this is a nudge, not a call chime).
+      log.info("voice-invite", `incoming from ${invite.from} to #${invite.channelName} (record ${recordId})`);
+      // The onCallSignal lesson: the ACTIVE session is NOT in sessionMap (the
+      // promote path deletes it — it lives in activeSession); a map-only lookup
+      // silently dropped every invite of the on-screen record (live report).
+      const inviteSession = isActive() ? activeSession : sessionMap.get(recordId) ?? null;
+      if (inviteSession === null) {
+        log.warn("voice-invite", `no session for record ${recordId} — card dropped`);
+        return;
+      }
+      showVoiceInviteCard(inviteSession, invite);
+      if (settingsStore.getSnapshot().soundEnabled) {
+        notifications.playBell();
+      }
+    },
     onDiscussionEvent: (event) => {
       if (!isActive()) {
         // Background instance: only the MENTION path matters there (the thread pinged me);
@@ -1696,6 +1715,16 @@ function disposeBackgroundSession(recordId: string): void {
   if (backgroundRing !== null && backgroundRing.recordId === recordId) {
     clearBackgroundRing();
   }
+  // The record's live voice-invite cards die with it too (Join would lead nowhere).
+  for (const [cardId, entry] of voiceInvites) {
+    if (entry.recordId === recordId) {
+      voiceInvites.delete(cardId);
+      notifications.dismissVoiceInviteCard(cardId);
+    }
+  }
+  if (pendingVoiceJoin !== null && pendingVoiceJoin.recordId === recordId) {
+    pendingVoiceJoin = null;
+  }
   void loadBackgroundSocial(connectionDirectory, activeSession?.recordId ?? "");
 }
 
@@ -2012,6 +2041,16 @@ function consumePendingOpen(session: ConnectionSession): void {
     const row = session.discussionsStore.byId(pendingDiscussion.discussionId);
     if (row !== undefined) {
       openDiscussion(row);
+      return;
+    }
+  }
+  // A background voice invite the user JOINED: the promoted instance joins the
+  // room. A failed gate (the room vanished/locked for this viewer) falls through
+  // to the ordinary restore — the card is already gone either way.
+  if (pendingVoiceJoin !== null && pendingVoiceJoin.recordId === session.recordId) {
+    const pending = pendingVoiceJoin;
+    pendingVoiceJoin = null;
+    if (joinInviteChannel(session, pending.channelId)) {
       return;
     }
   }
@@ -3436,6 +3475,15 @@ function clearBackgroundRing(): void {
   notifications.dismissCallCard();
 }
 
+/** Live voice-invite cards: the toast window's card id → where Join leads. The
+ *  entry dies with the button press or a sweep past the card's TTL (the toast
+ *  window TTLs the CARD on its own; this keeps the map from leaking). */
+const voiceInvites = new Map<number, { recordId: string; channelId: number }>();
+let nextVoiceInviteCardId = 1;
+/** Set when the user JOINED an invite of a BACKGROUND instance — consumed by
+ *  openSession (consumePendingOpen) once that instance is promoted. */
+let pendingVoiceJoin: { recordId: string; channelId: number } | null = null;
+
 /** Wiring point for the room view's imperative peer-video element (call mode). */
 export const callView = {
   attachPeerVideo(_track: MediaStreamTrack): void {
@@ -3892,6 +3940,97 @@ export function callCardAction(action: "accept" | "decline"): void {
 
 // The toast window's call-card buttons land here (relayed by main).
 notifications.setCallActionHandler((action) => callCardAction(action));
+
+/** The voice-invite card (the showIncomingCallCard pattern): paints the palette
+ *  initial at once, then chases the roster avatar into a data URL — guarded by
+ *  the card still being live (a late decode must not resurrect a joined card). */
+function showVoiceInviteCard(inviteSession: ConnectionSession, invite: IncomingVoiceInvite): void {
+  const cardId = nextVoiceInviteCardId;
+  nextVoiceInviteCardId += 1;
+  voiceInvites.set(cardId, { recordId: inviteSession.recordId, channelId: invite.channelId });
+  // The map entry outlives the card only briefly — sweep it after the TTL window.
+  window.setTimeout(() => voiceInvites.delete(cardId), 70_000);
+
+  const users = inviteSession.rosterStore.getSnapshot().users;
+  // The rename model: the card shows the NICKNAME; the wire's `from` login never renders.
+  const inviterName = displayNameOf(users, invite.from);
+  const serverName = serverDisplayName(inviteSession.recordId);
+  const user = users.find((entry) => entry.username === invite.from) ?? null;
+  const paint = (avatarUrl: string | null): void => {
+    log.info("voice-invite", `painting card id=${cardId} (avatar: ${avatarUrl === null ? "initial" : "dataUrl"})`);
+    notifications.showVoiceInviteCard({
+      id: cardId,
+      inviterName,
+      channelName: invite.channelName,
+      serverName,
+      avatarUrl,
+      avatarColor: paletteColor(invite.from),
+      dismissSeconds: 60,
+    });
+  };
+  paint(null);
+  const avatarKey = user?.avatarKey ?? null;
+  const avatarUrl = user?.avatarUrl ?? null;
+  if (avatarKey === null || avatarUrl === null) {
+    return;
+  }
+  void (async () => {
+    try {
+      const objectUrl = await inviteSession.attachmentCache.loadImage({ key: avatarKey, url: avatarUrl });
+      if (objectUrl === null) {
+        return;
+      }
+      const blob = await fetch(objectUrl).then((response) => response.blob());
+      const dataUrl = await new Promise<string | null>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(blob);
+      });
+      if (dataUrl !== null && voiceInvites.get(cardId) !== undefined) {
+        paint(dataUrl);
+      }
+    } catch (error) {
+      log.warn("voice-invite", `card avatar failed: ${errorMessage(error)}`);
+    }
+  })();
+}
+
+/** Joins the invited room on the given session. Returns false when the gate
+ *  failed (no such VOICE channel for this viewer / locked) — the caller falls
+ *  through to its ordinary flow. */
+function joinInviteChannel(session: ConnectionSession, channelId: number): boolean {
+  const channel = session.channelStore.get(channelId);
+  if (channel === null || channel.type !== "VOICE" || channel.locked) {
+    log.info("voice-invite", `join skipped: channel ${channelId} not joinable for this viewer`);
+    return false;
+  }
+  joinVoiceGuarded(channel); // asks about ending a live call first (the conflict modal)
+  return true;
+}
+
+/** The invite card's Join/Dismiss semantics: the ACTIVE record joins in place;
+ *  a BACKGROUND record switches the instance first (consumePendingOpen joins). */
+export function voiceInviteCardAction(action: "join" | "dismiss", cardId: number): void {
+  const entry = voiceInvites.get(cardId);
+  if (entry === undefined) {
+    return;
+  }
+  voiceInvites.delete(cardId);
+  notifications.dismissVoiceInviteCard(cardId);
+  if (action !== "join") {
+    return;
+  }
+  if (activeSession !== null && activeSession.recordId === entry.recordId) {
+    joinInviteChannel(activeSession, entry.channelId);
+    return;
+  }
+  pendingVoiceJoin = entry;
+  void switchConnection(entry.recordId);
+}
+
+// The toast window's voice-invite buttons land here (relayed by main).
+notifications.setVoiceInviteActionHandler((action, cardId) => voiceInviteCardAction(action, cardId));
 
 export function hangUpCall(): void {
   const state = appStore.getSnapshot();

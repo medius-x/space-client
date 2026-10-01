@@ -747,6 +747,10 @@ function ensureToastWindow(): BrowserWindow | null {
   toast.setAlwaysOnTop(true, "screen-saver");
   toast.setIgnoreMouseEvents(true, { forward: true }); // transparent areas click through
   toast.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  toast.webContents.on("render-process-gone", (_event, details) => {
+    appendLog(`[main] TOAST renderer gone: reason=${details.reason} exitCode=${details.exitCode}`);
+  });
+  toast.on("unresponsive", () => appendLog("[main] TOAST window UNRESPONSIVE"));
   toast.on("closed", () => {
     toastWindow = null;
   });
@@ -758,11 +762,16 @@ function ensureToastWindow(): BrowserWindow | null {
 }
 
 ipcMain.on("space-toast:show", (_event, payload: unknown) => {
+  const payloadKind = typeof payload === "object" && payload !== null && "kind" in payload
+    ? String((payload as { kind: unknown }).kind)
+    : String(payload);
   const toast = ensureToastWindow();
   if (!toast) {
+    appendLog(`[main] toast show kind=${payloadKind} DROPPED — no main window`);
     return;
   }
   if (!toastWindowReady) {
+    appendLog(`[main] toast show kind=${payloadKind} buffered (toast window loading)`);
     pendingToastPayloads.push(payload);
     return; // shown once the page is ready — showing an unloaded window paints nothing
   }
@@ -827,6 +836,13 @@ ipcMain.on("space-toast:callAction", (_event, action: unknown) => {
   }
 });
 
+// A voice-invite card's Join/Dismiss — the same main-window relay by card id.
+ipcMain.on("space-toast:voiceInviteAction", (_event, action: unknown, id: unknown) => {
+  if ((action === "join" || action === "dismiss") && typeof id === "number") {
+    mainWindowRef?.webContents.send("toast:voiceInviteAction", action, id);
+  }
+});
+
 async function createWindow(): Promise<void> {
   const mainWindow = new BrowserWindow({
     width: 1080,
@@ -874,6 +890,14 @@ async function createWindow(): Promise<void> {
   // The caption's maximize glyph flips on restore (oak's ▢↔❐).
   mainWindow.on("maximize", () => mainWindow.webContents.send("space-window:maximized", true));
   mainWindow.on("unmaximize", () => mainWindow.webContents.send("space-window:maximized", false));
+  // Liveness watch (2026-10-01, the voice-invite chase): a receiver logged the
+  // incoming invite and then went fully silent — without these hooks a dead or
+  // frozen renderer/main leaves NOTHING in space.log to tell which one died.
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    appendLog(`[main] MAIN renderer gone: reason=${details.reason} exitCode=${details.exitCode}`);
+  });
+  mainWindow.on("unresponsive", () => appendLog("[main] MAIN window UNRESPONSIVE (event loop blocked?)"));
+  mainWindow.on("responsive", () => appendLog("[main] MAIN window responsive again"));
   // The auxiliary windows die with the main one — otherwise the app lingers
   // with an invisible toast overlay / a pop-out viewer.
   mainWindow.on("closed", () => {
@@ -993,6 +1017,15 @@ app.whenReady().then(() => {
       void createWindow();
     }
   });
+});
+
+// Main-process liveness (the voice-invite chase): a swallowed exception here
+// starves EVERY renderer's logging (all lines travel through appendLog).
+process.on("uncaughtException", (error) => {
+  appendLog(`[main] UNCAUGHT ${error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error)}`);
+});
+process.on("unhandledRejection", (reason) => {
+  appendLog(`[main] UNHANDLED REJECTION ${reason instanceof Error ? `${reason.message}\n${reason.stack ?? ""}` : String(reason)}`);
 });
 
 app.on("window-all-closed", () => {

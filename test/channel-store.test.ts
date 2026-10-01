@@ -3,11 +3,12 @@ import { ChannelStore } from "../src/domain/stores/ChannelStore";
 import type { Channel } from "../src/types";
 
 function channel(id: number, name = `c${id}`, overrides: Partial<Channel> = {}): Channel {
-  return { id, name, type: "TEXT", createdAt: "2026-01-01T00:00:00Z", locked: false, ...overrides };
+  // position defaults to the id — the creation order (the server's pre-category order).
+  return { id, name, type: "TEXT", createdAt: "2026-01-01T00:00:00Z", locked: false, parentId: null, position: id, ...overrides };
 }
 
 describe("ChannelStore", () => {
-  it("applyCreated inserts sorted by id and dedups the broadcast echo", () => {
+  it("applyCreated inserts sorted by (position, id) and dedups the broadcast echo", () => {
     const store = new ChannelStore();
     expect(store.applyCreated(channel(2, "two", { type: "VOICE" }))).toBe(true);
     expect(store.applyCreated(channel(1, "one"))).toBe(true);
@@ -16,6 +17,31 @@ describe("ChannelStore", () => {
     const snapshot = store.getSnapshot();
     expect(snapshot.map((entry) => entry.id)).toEqual([1, 2]);
     expect(snapshot[0]?.name).toBe("one"); // the first write wins, the echo is dropped
+  });
+
+  it("applyCreated inserts mid-list for an explicit position (a dragged-in neighbor)", () => {
+    const store = new ChannelStore();
+    store.applyCreated(channel(1, "a"));
+    store.applyCreated(channel(3, "c"));
+    // a channel the server placed between the two (position 2, id 9 — id breaks no ties here)
+    store.applyCreated(channel(9, "b", { position: 2 }));
+    expect(store.getSnapshot().map((entry) => entry.name)).toEqual(["a", "b", "c"]);
+  });
+
+  it("sameChannel is sensitive to parentId and position — a reorder refetch emits", () => {
+    const store = new ChannelStore();
+    store.applySnapshot([channel(1, "a"), channel(2, "b")]);
+    const listener = vi.fn();
+    store.subscribe(listener);
+
+    // The server sends its OWN (position, id) order — the reordered pair.
+    store.applySnapshot([channel(2, "b", { position: 0 }), channel(1, "a", { position: 1 })]);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(store.getSnapshot().map((entry) => entry.id)).toEqual([2, 1]);
+
+    store.applySnapshot([channel(2, "b", { position: 0 }), channel(1, "a", { position: 1, parentId: 7 })]);
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(store.getSnapshot()[1]?.parentId).toBe(7);
   });
 
   it("applyDeleted removes and reports honestly", () => {

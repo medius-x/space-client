@@ -19,6 +19,7 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
   const memberRoster = useStore(session.memberStore, (state) => state);
   const myPermissions = useStore(session.permissionStore, (state) => state.my);
   const ownUsername = useStore(appStore, (state) => state.ownUsername);
+  const activeVoiceChannelId = useStore(appStore, (state) => state.activeVoiceChannelId);
   const [memberMenu, setMemberMenu] = useState<{ member: ServerMember; x: number; y: number } | null>(null);
   const [kickTarget, setKickTarget] = useState<ServerMember | null>(null);
   const [banTarget, setBanTarget] = useState<ServerMember | null>(null);
@@ -49,6 +50,12 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
   const memberMenuItems: ContextMenuItem[] = memberMenu === null ? [] : [
     ...(roster.presence.has(memberMenu.member.username)
       ? [{ label: "Call", action: () => callUser(memberMenu.member.username) }]
+      : []),
+    // The roster twin of the voice channel's hover button: sitting in a room,
+    // right-click a member → invite them THERE (the same live card; an offline
+    // target is not offered the entry for the same reason Call hides itself).
+    ...(roster.presence.has(memberMenu.member.username) && activeVoiceChannelId !== null
+      ? [{ label: "Voice invite", action: () => session.sendVoiceInvite(activeVoiceChannelId, memberMenu.member.username) }]
       : []),
     // oak's member card: a separator rule between the personal action and the
     // moderation block (showMemberMenu).

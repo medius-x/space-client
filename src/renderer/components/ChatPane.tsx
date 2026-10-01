@@ -127,7 +127,7 @@ function estimateRowHeight(message: Message, startsGroup: boolean, hasDiscussion
     } else if (isAudioFile(attachment.fileName)) {
       attachmentEstimate += 56;
     } else {
-      attachmentEstimate += 40; // the file chip
+      attachmentEstimate += 56; // the plain-file card (the audio-card height)
     }
   }
   if (imageTiles > 0) {
@@ -217,6 +217,9 @@ function dmViewChannel(dm: DmChannel, selfUsername: string): Channel {
     type: dm.type,
     createdAt: "",
     locked: false,
+    // DMs never group under a category — neutral sidebar fields.
+    parentId: null,
+    position: 0,
   };
 }
 
@@ -405,7 +408,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
   // discussion channel (id is all the send/reaction paths need; permissions resolve through
   // the parent server-side, so the parent's composer bits apply as-is).
   const chatChannel: Channel = openDiscussionEntry !== null && openDiscussionEntry.discussionId !== null
-    ? { id: openDiscussionEntry.discussionId, name: "Discussion", type: "TEXT", createdAt: "", locked: false }
+    ? { id: openDiscussionEntry.discussionId, name: "Discussion", type: "TEXT", createdAt: "", locked: false, parentId: null, position: 0 }
     : viewChannel!; // the null viewChannel dead-ends above (chat-empty) before this line
 
   // The unified reaction picker (phase 3): the composer picker's visual language over
@@ -2502,8 +2505,8 @@ function ForwardDialog({ session, source, sourceChannel, onClose }: {
           // Cross-instance attachments are re-uploaded: mint a slot on the TARGET
           // instance, pull the bytes from the source's (possibly re-minted) link.
           // The re-uploaded bytes are identical — the source's measured intrinsic
-          // dimensions stay valid and ride along.
-          const targetAttachments: { key: string; fileName: string; width: number | null; height: number | null }[] = [];
+          // dimensions and byte size stay valid and ride along.
+          const targetAttachments: { key: string; fileName: string; width: number | null; height: number | null; sizeBytes: number | null }[] = [];
           for (const attachment of message.attachments) {
             if (attachment.key === null) {
               continue;
@@ -2520,6 +2523,7 @@ function ForwardDialog({ session, source, sourceChannel, onClose }: {
               fileName: attachment.fileName,
               width: attachment.width ?? null,
               height: attachment.height ?? null,
+              sizeBytes: bytes.byteLength,
             });
           }
           // A sticker-only message would otherwise 400 ("forward must have content
@@ -2540,6 +2544,7 @@ function ForwardDialog({ session, source, sourceChannel, onClose }: {
                 fileName: stickerFileName,
                 width: null,
                 height: null,
+                sizeBytes: stickerBytes.byteLength,
               });
             }
           }

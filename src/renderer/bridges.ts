@@ -145,6 +145,24 @@ export interface ToastCallCardPayload {
   status: "Incoming call" | "Connecting…";
 }
 
+/** The VOICE-INVITE card (Discord's "invite to voice channel"): who invites,
+ *  into which room of which server. Unlike the call card it stacks with the
+ *  message toasts and TTLs out on its own (~60 s) — a room invite is a nudge,
+ *  not an event that outranks anything. */
+export interface ToastVoiceInviteCardPayload {
+  /** The main window's id — Join/Dismiss route back by it. */
+  id: number;
+  /** The inviter's NICKNAME (the rename model). */
+  inviterName: string;
+  /** The channel's display name, resolved by the SENDER's server (the
+   *  receiver's store may not hold the room at all). */
+  channelName: string;
+  serverName: string;
+  avatarUrl: string | null;
+  avatarColor: string;
+  dismissSeconds: number;
+}
+
 /** Everything the MAIN window can push into the toast window. The call card
  *  outranks message toasts: while it is up, the stack drops its cards and
  *  refuses new ones (user decision — a ringing call is the louder event). */
@@ -152,7 +170,9 @@ export type ToastShowPayload =
   | { kind: "message"; card: ToastCardPayload }
   | { kind: "call"; card: ToastCallCardPayload }
   | { kind: "call-status"; status: ToastCallCardPayload["status"] }
-  | { kind: "call-end" };
+  | { kind: "call-end" }
+  | { kind: "voice-invite"; card: ToastVoiceInviteCardPayload }
+  | { kind: "voice-invite-end"; id: number };
 
 export interface ToastBridge {
   /** MAIN window → the toast window: show a card / drive the call card. */
@@ -161,6 +181,8 @@ export interface ToastBridge {
   clicked(id: number): void;
   /** TOAST window → main: the call card's Accept/Decline was pressed. */
   callAction(action: "accept" | "decline"): void;
+  /** TOAST window → main: a voice-invite card's Join/Dismiss was pressed. */
+  voiceInviteAction(action: "join" | "dismiss", id: number): void;
   /** TOAST window → main: the cursor is (not) over actual content. */
   hover(interactive: boolean): void;
   /** TOAST window → main: the stack's rendered height (window resize). */
@@ -175,6 +197,8 @@ export interface ToastBridge {
   onClicked(callback: (id: number) => void): void;
   /** The main window's call-action sink (Accept/Decline run in the runtime). */
   onCallAction(callback: (action: "accept" | "decline") => void): void;
+  /** The main window's voice-invite sink (Join/Dismiss run in the runtime). */
+  onVoiceInviteAction(callback: (action: "join" | "dismiss", id: number) => void): void;
 }
 
 /** Per-action outcome of a global-chord registration: "taken" = the OS chord is

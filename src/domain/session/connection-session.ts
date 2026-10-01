@@ -10,6 +10,7 @@ import type {
   DmChannel,
   DmChannelEvent,
   IncomingCallSignal,
+  IncomingVoiceInvite,
   InvitesStatus,
   MemberKickEvent,
   Message,
@@ -74,6 +75,9 @@ export interface SessionHooks {
   onVoiceKicked(byUsername: string): void;
   /** A relayed 1:1 call signal (RING/ACCEPT/OFFER/ICE/…) — the runtime owns the call machine. */
   onCallSignal(signal: IncomingCallSignal): void;
+  /** /user/queue/voice.invite — someone invited this user into a voice channel
+   *  (the sidebar hover button). The runtime shows the toast-window card. */
+  onVoiceInvite?(invite: IncomingVoiceInvite): void;
   /** A DM vanished (closed everywhere or left by me) — the runtime re-homes the open chat. */
   onDmClosed(channelId: number): void;
   /** A discussion lifecycle event on a parent channel's .discussions topic — the runtime
@@ -443,14 +447,14 @@ export class ConnectionSession {
    * never blocks the send.
    */
   async sendMessageWithFiles(channelId: number, files: readonly File[], content: string | null, replyToId?: number): Promise<void> {
-    const refs: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null; width: number | null; height: number | null }[] = [];
+    const refs: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null; width: number | null; height: number | null; sizeBytes: number | null }[] = [];
     for (const file of files) {
       // The slot name feeds only the object KEY (the server 400s on non-ASCII);
       // the ORIGINAL name stays on the message as the display fileName.
       const slot = await this.rest.requestAttachmentUpload(sanitizeSlotFileName(file.name));
       await this.rest.uploadBytes(slot.uploadUrl, await file.arrayBuffer(), file.type || "application/octet-stream");
-      const reference: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null; width: number | null; height: number | null }
-        = { key: slot.key, fileName: file.name, thumbnailKey: null, durationMillis: null, width: null, height: null };
+      const reference: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null; width: number | null; height: number | null; sizeBytes: number | null }
+        = { key: slot.key, fileName: file.name, thumbnailKey: null, durationMillis: null, width: null, height: null, sizeBytes: file.size };
       if (isVideoFile(file.name)) {
         const preview = await generateVideoPreview(file);
         if (preview !== null) {
@@ -486,7 +490,7 @@ export class ConnectionSession {
    *  text edit (the server leaves the list untouched); a list = replace with
    *  exactly these (validated as a subset server-side — oak's edit flow). */
   async editMessage(channelId: number, messageId: number, content: string,
-    remainingAttachments?: readonly { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null }[]): Promise<void> {
+    remainingAttachments?: readonly { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null; sizeBytes?: number | null }[]): Promise<void> {
     const edited = await this.rest.editMessage(channelId, messageId, remainingAttachments === undefined
       ? { content }
       : {
@@ -496,6 +500,7 @@ export class ConnectionSession {
           fileName: reference.fileName,
           thumbnailKey: reference.thumbnailKey,
           durationMillis: reference.durationMillis,
+          sizeBytes: reference.sizeBytes ?? null,
         })),
       });
     this.messageStore.applyEdited(edited);
@@ -571,12 +576,12 @@ export class ConnectionSession {
    *  thread server-side (the message is never lost — no 409 path exists for the client). */
   async startDiscussionWithMessage(parentChannelId: number, originMessageId: number,
     files: readonly File[], content: string | null): Promise<Discussion> {
-    const refs: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null; width: number | null; height: number | null }[] = [];
+    const refs: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null; width: number | null; height: number | null; sizeBytes: number | null }[] = [];
     for (const file of files) {
       const slot = await this.rest.requestAttachmentUpload(sanitizeSlotFileName(file.name));
       await this.rest.uploadBytes(slot.uploadUrl, await file.arrayBuffer(), file.type || "application/octet-stream");
-      const reference: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null; width: number | null; height: number | null }
-        = { key: slot.key, fileName: file.name, thumbnailKey: null, durationMillis: null, width: null, height: null };
+      const reference: { key: string; fileName: string; thumbnailKey: string | null; durationMillis: number | null; width: number | null; height: number | null; sizeBytes: number | null }
+        = { key: slot.key, fileName: file.name, thumbnailKey: null, durationMillis: null, width: null, height: null, sizeBytes: file.size };
       if (isVideoFile(file.name)) {
         const preview = await generateVideoPreview(file);
         if (preview !== null) {
@@ -705,12 +710,21 @@ export class ConnectionSession {
     return this.rosterStore.getSnapshot().users.find((user) => user.username === username)?.id ?? null;
   }
 
-  async createChannel(request: { name: string; type: "TEXT" | "VOICE" }): Promise<Channel> {
+  /** Creates a TEXT/VOICE channel (optionally grouped under a category) or a
+   *  CATEGORY itself. Categories land in the store like any channel (the sidebar
+   *  renders them) but never subscribe to channel topics. */
+  async createChannel(request: { name: string; type: "TEXT" | "VOICE" | "CATEGORY"; parentId?: number | null }): Promise<Channel> {
     const channel = await this.rest.createChannel(request);
-    if (this.channelStore.applyCreated(channel)) {
+    if (this.channelStore.applyCreated(channel) && channel.type !== "CATEGORY") {
       this.syncChannelSubscriptions(); // subscribe the new channel's topics now
     }
     return channel;
+  }
+
+  /** The drag-drop persist: no local mutation — the server pings channels.changed
+   *  after the commit and the refetch lands the new order through applySnapshot. */
+  async reorderChannels(entries: readonly { id: number; parentId: number | null }[]): Promise<void> {
+    await this.rest.reorderChannels(entries);
   }
 
   async renameChannel(channelId: number, name: string): Promise<Channel> {
@@ -764,6 +778,13 @@ export class ConnectionSession {
   /** Send one call signal to a peer (the server stamps `from` and relays). */
   sendCallSignal(signal: { type: CallSignalType; to: string; sdp: string | null; candidate: CallIceCandidate | null }): void {
     this.stomp.send("/app/call.signal", signal);
+  }
+
+  /** One voice-room invitation (the sidebar's hover button): the server stamps
+   *  the sender and resolves the channel name — only channelId/to travel. */
+  sendVoiceInvite(channelId: number, to: string): void {
+    log.info("voice-invite", `sending an invite to ${to} for channel #${channelId}`);
+    this.stomp.send("/app/voice.invite", { channelId, channelName: null, from: null, to });
   }
 
   // ---------------------------------------------------------------------------
@@ -1076,6 +1097,9 @@ export class ConnectionSession {
     });
     this.stomp.subscribe("/user/queue/call.signal", (raw) => {
       this.hooks.onCallSignal(JSON.parse(raw) as IncomingCallSignal);
+    });
+    this.stomp.subscribe("/user/queue/voice.invite", (raw) => {
+      this.hooks.onVoiceInvite?.(JSON.parse(raw) as IncomingVoiceInvite);
     });
     // Social layer: every event is a REFRESH trigger (oak reacts to relationship
     // pushes with a plain refetch — no per-type branching). CLOSED is additionally

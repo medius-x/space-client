@@ -122,7 +122,7 @@ describe("pinned-view", () => {
     expect(trimmed.endsWith("…")).toBe(true);
     expect(pinSnippet(message(1, {
       content: null,
-      attachments: [{ fileName: "photo.png", url: "http://x", key: "att/a", thumbnailKey: null, thumbnailUrl: null, durationMillis: null, width: null, height: null }],
+      attachments: [{ fileName: "photo.png", url: "http://x", key: "att/a", thumbnailKey: null, thumbnailUrl: null, durationMillis: null, width: null, height: null, sizeBytes: null }],
     }))).toBe("photo.png");
   });
 });

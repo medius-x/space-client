@@ -10,6 +10,7 @@ import {
   zoomAt,
   type ViewerTransform,
 } from "../../domain/logic/image-viewer-transform";
+import { humanByteSize } from "../../domain/logic/file-size";
 
 /**
  * Full-image viewer (oak's AttachmentViewer): wheel zoom TOWARD THE CURSOR,
@@ -25,20 +26,6 @@ import {
  * ancestor (tanstack virtual rows translate) — without the portal it is
  * stuck to the row instead of covering the window (live report).
  */
-function humanByteSize(bytes: number): string {
-  if (bytes < 1024) {
-    return `${bytes} B`;
-  }
-  const units = ["KB", "MB", "GB"];
-  let value = bytes;
-  let unitIndex = -1;
-  do {
-    value /= 1024;
-    unitIndex += 1;
-  } while (value >= 1024 && unitIndex < units.length - 1);
-  return `${value.toFixed(1)} ${units[unitIndex]}`;
-}
-
 export function Lightbox({ session, images, startIndex, onForwardBegin, onClose }: {
   session: ConnectionSession;
   images: readonly Attachment[];

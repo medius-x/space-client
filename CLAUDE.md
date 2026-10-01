@@ -2795,6 +2795,60 @@ social-aggregate подписан на сторы фоновых сессий �
   больше не существует — повтор ссылки читается как «not valid»), истёкшие/
   отозванные сносит InvitesCleanup по расписанию PT6H (см. oak-server/CLAUDE.md).
 
+- **Тройной раунд (2026-10-01, код готов, смоук pending; ДЕПЛОЙ ПАРНЫЙ с oak-server —
+  сервер первым (V12 + sizeBytes-wire + /voice.invite), клиент следом).** Порядок A→B→C.
+  **(A) Плитка не-медиа файла:**Attachment += `sizeBytes` (wire-append-only; размер знает
+  только отправитель — File.size, модель доверия width/height; легаси-строки = null →
+  плитка без размера). Отправка кладёт sizeBytes для ВСЕХ файлов (оба upload-сайта
+  sendMessageWithFiles/startDiscussionWithMessage + кросс-инстанс форвард bytes.byteLength
+  + edit-путь несёт размер дальше). НОВЫЙ `FileCardView` (AudioCardView-калька):
+  круглая blurple `.file-download` (mdi-download, busy = mdi-refresh спин) →
+  fresh-link → downloadBytes → saveFile (OS-диалог, лайтбокс-рецепт; openExternal
+  УДАЛЁН из плитки — скачивание только через клиент, юзер-требование), `.file-name`
+  + `.file-size` (humanByteSize — ВЫНЕСЕНА из Lightbox в `domain/logic/file-size.ts`).
+  estimateRowHeight чип 40 → 56. `.file-chip` удалён.
+  **(B) Категории каналов + drag (Discord-парити; юзер выбрал сразу drag, меню переноса
+  нет):** Channel += `parentId`/`position`; ChannelType += "CATEGORY". Чистые
+  `domain/logic/channel-groups.ts` (groupChannelsByCategory: uncatText → uncatVoice →
+  categories; ВНУТРИ категории text сверху/voice снизу — юзер-решение; ребёнок СКРЫТОЙ
+  категории падает в uncategorized, не исчезает; flattenGroupsForPersist — детерминированный
+  обход для PUT) и `channel-drag.ts` (applyChannelDrop: subject channel|category + DropTarget
+  {list, categoryId, beforeId|null}; нормализация типа — text над voice-строкой → append в
+  text-лист того же блока; дроп канала НА заголовок категории = ВНУТРЬ (Discord); no-op →
+  null — ссылки-идентичность). ChannelStore.applyCreated — вставка по (position,id) вместо
+  id; sameChannel += parentId/position. Sidebar: CategoryBlock (collapse-шеврон rotate,
+  локальный Set без персиста, «+» создаёт канал В категории, ПКМ rename/delete, пустая
+  категория видна ТОЛЬКО менеджеру), CreateChannelModal: третий kind CATEGORY
+  (mdi-folder-outline) + select категории для TEXT/VOICE; POINTER-drag (роли-механика:
+  порог 4px, ghost-абсолют ЧЕРЕЗ ПОРТАЛ fixed — скроллящийся сайдбар клипает absolute
+  (rail-bubble-урок), drop-gap строка, ESC-отмена, body.channel-dragging); drag-handle
+  voice-блока — ТОЛЬКО name-row (участники не участвуют; data-drag-list/data-drag-channel-id
+  на ВНЕШНЕМ .voice-channel); хит-тест по контейнеру сайдбара, ниже-середины → before
+  следующей строки ТОГО ЖЕ списка; collapsed-категория: дроп ниже заголовка = append внутрь
+  (через «categories»-нормализацию). Оптимистичный preview (persist PUT /api/channels/order
+  полным списком {id,parentId}; catch → откат+лог; catch-up «стор догнал» по flatten-
+  равенству).
+  **(C) Hover-кнопка приглашения в голос (Discord invite-to-voice; только ОНЛАЙН-друзья —
+  живая карточка без persist, офлайн не доходит):** кнопка `.voice-invite-button`
+  (mdi-account-plus) в name-row voice-канала (opacity 0→hover, stopPropagation, скрыта на
+  locked) → `VoiceInvitePickerModal` (FRIEND ∩ presence — чистая onlineFriendCandidates в
+  `domain/logic/voice-invite.ts`; отправка ПО ОДНОМУ `session.sendVoiceInvite(channelId,
+  username)` → /app/voice.invite; сервер штампует from и резолвит channelName — стора
+  получателя может не быть). Приём: подписка /user/queue/voice.invite → hooks.onVoiceInvite
+  (ОБЕ записи — активная и фоновая) → `showVoiceInviteCard` (showIncomingCallCard-паттерн:
+  палитра-инициал → аватар dataUrl с гейтом живости; лёгкий bell под soundEnabled) →
+  `{kind:"voice-invite", card}` в тост-окно: СТЕКИТСЯ с message-тостами (не глушит ничего),
+  TTL 60с + pause-on-hover, Join (blurple mdi-location-enter) / Dismiss (mdi-close) → IPC
+  `toast:voiceInviteAction` (ручное пробрасывание в 4 местах: bridges/preload/main/
+  ToastStackScreen — известная грабля). Join: активная запись → channelStore-гейты (VOICE,
+  !locked) → joinVoiceGuarded; фоновая → pendingVoiceJoin + switchConnection → ветка в
+  consumePendingOpen; dispose фоновой сессии чистит её карточки и Map. Гейты: сервер
+  **392/392**, клиент **547/547** + typecheck + build; icons.css 54 глифа (+folder-outline,
+  account-plus, location-enter). Смоук: A — .zip в канал → плитка имя+размер → скачать
+  через диалог; B — категория → drag каналов/категорий, второй клиент live, delete непустой
+  400; C — два клиента: hover → пикер → карточка → Join (активная и фоновая записи),
+  Dismiss, TTL, офлайн — тишина.
+
 - Гейт после каждой фазы: `npm test` + `npm run typecheck` зелёные.
 - Новые файлы сразу `git add`. Коммиты только по явной команде; subject на английском.
 - Никаких single-letter имён (кроме i/j цикла и T/E/K/V генериков); комментарии в коде
