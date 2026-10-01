@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { useStore } from "./hooks/useStore";
-import { appStore, closeServerSettings, connectionDirectory, sessionBinding, toggleUserSettings } from "./runtime";
+import { appStore, closeOwnershipTransfer, closeServerSettings, connectionDirectory, sessionBinding, toggleUserSettings } from "./runtime";
 import type { ConnectionSession } from "../domain/session/connection-session";
 import { CaptionBar } from "./components/CaptionBar";
 import { LoginModal } from "./components/LoginModal";
 import { MainScreen } from "./components/MainScreen";
 import { ServerMenu } from "./components/ServerMenu";
+import { TransferOwnershipModal } from "./components/TransferOwnershipModal";
 import { ServerRail } from "./components/ServerRail";
 import { ServerSettingsPane } from "./components/ServerSettingsPane";
 import { UserSettingsModal } from "./components/UserSettingsModal";
@@ -16,6 +17,8 @@ export function App(): React.JSX.Element {
   const loginFormOpen = useStore(appStore, (state) => state.loginFormOpen);
   const serverSettingsOpen = useStore(appStore, (state) => state.serverSettingsOpen);
   const userSettingsOpen = useStore(appStore, (state) => state.userSettingsOpen);
+  const ownershipModalOpen = useStore(appStore, (state) => state.ownershipModalOpen);
+  const ownershipPreselect = useStore(appStore, (state) => state.ownershipPreselect);
   // The user-settings overlay must NOT unmount through a session restart (the
   // username rename quietly reopens the session while Settings is open — oak
   // keeps the window): during the gap the binding drops to null, and the
@@ -51,6 +54,12 @@ export function App(): React.JSX.Element {
               right-click): mounted here so the rail path works with no live
               session too (Re-login/Delete need none). */}
           <ServerMenu />
+          {/* The owner's ownership-transfer confirmation (Server Settings → Members →
+              the member's Transfer ownership button). Mounted against the PREVIOUS
+              session through the restart gap, like the settings overlays. */}
+          {ownershipModalOpen && settingsSession !== null ? (
+            <TransferOwnershipModal session={settingsSession} preselectedUserId={ownershipPreselect} onClose={closeOwnershipTransfer} />
+          ) : null}
         </div>
         {/* Settings overlays are DIRECT children of #app: they cover the whole
             window below the caption, nothing in between can constrain them.

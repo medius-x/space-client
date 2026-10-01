@@ -14,6 +14,8 @@ import type {
   InvitesStatus,
   MemberKickEvent,
   Message,
+  OwnershipEvent,
+  PendingOwnershipTransfer,
   PresenceEvent,
   ReactionEvent,
   Relationship,
@@ -35,6 +37,7 @@ import { DiscussionsStore } from "../stores/DiscussionsStore";
 import { EmojiStore } from "../stores/EmojiStore";
 import { StickerStore } from "../stores/StickerStore";
 import { InvitesStore } from "../stores/InvitesStore";
+import { OwnershipStore } from "../stores/OwnershipStore";
 import { ReadStateStore } from "../stores/ReadStateStore";
 import { RosterStore } from "../stores/RosterStore";
 import { SocialStore } from "../stores/SocialStore";
@@ -73,6 +76,9 @@ export interface SessionHooks {
   onVoiceMemberEvent?(event: VoiceMemberEvent): void;
   /** /user/queue/voice.control type=KICKED — the runtime tears the voice session down. */
   onVoiceKicked(byUsername: string): void;
+  /** /user/queue/voice.control type=MOVED (the AFK sweep) — the runtime re-joins
+   *  into the given channel (the membership already moved server-side). */
+  onVoiceMoved?(channelId: number): void;
   /** A relayed 1:1 call signal (RING/ACCEPT/OFFER/ICE/…) — the runtime owns the call machine. */
   onCallSignal(signal: IncomingCallSignal): void;
   /** /user/queue/voice.invite — someone invited this user into a voice channel
@@ -89,6 +95,10 @@ export interface SessionHooks {
   onDiscussionLiveMessage?(message: Message): void;
   /** /user/queue/member.kick — the SERVER removed me: the runtime tears the session down. */
   onMemberKicked(event: MemberKickEvent): void;
+  /** /user/queue/ownership — the ownership-transfer lifecycle changed (offered to me,
+   *  accepted, declined, cancelled). The runtime toasts on a received accept; the
+   *  pending banner rides the OwnershipStore refetch either way. */
+  onOwnershipEvent?(event: OwnershipEvent): void;
 }
 
 export interface ConnectionSessionOptions {
@@ -142,6 +152,8 @@ export class ConnectionSession {
   readonly emojiStore = new EmojiStore();
   readonly stickerStore = new StickerStore();
   readonly invitesStore = new InvitesStore();
+  /** The live ownership-transfer offer (GET /api/ownership/pending + /user/queue/ownership). */
+  readonly ownershipStore = new OwnershipStore();
   readonly rosterStore = new RosterStore();
   readonly memberStore = new MemberStore();
   readonly socialStore = new SocialStore();
@@ -170,6 +182,9 @@ export class ConnectionSession {
   /** The invite list: NOT fetched on start (admins-only read; the section pulls its
    *  first snapshot), only refetched on /topic/invites pings and on demand. */
   private readonly invitesRefresh = new CoalescingRefresher(() => this.doRefreshInvites());
+  /** The ownership-transfer offer: fetched on start (a pending offer must survive the
+   *  recipient being offline) and refetched on every /user/queue/ownership push. */
+  private readonly ownershipRefresh = new CoalescingRefresher(() => this.doRefreshOwnership());
 
   private readonly directory: ConnectionDirectory;
   private readonly hooks: SessionHooks;
@@ -304,6 +319,9 @@ export class ConnectionSession {
     this.memberRefresh.request();
     this.emojiRefresh.request();
     this.stickerRefresh.request();
+    // A pending ownership offer must surface even though the recipient was OFFLINE
+    // when it was made — the start-time snapshot is the whole point of the REST model.
+    this.ownershipRefresh.request();
     // The tracked-discussions snapshot seeds the sidebar badges and the "mine" list from the
     // very first paint (live report: without it nothing showed until the user toggled the
     // sidebar to discussions and back — the only other mine-fetch site). The .discussions
@@ -875,8 +893,8 @@ export class ConnectionSession {
     this.hooks.onDmClosed(channelId);
   }
 
-  async kickMember(userId: number): Promise<void> {
-    await this.rest.kickMember(userId);
+  async removeMember(userId: number): Promise<void> {
+    await this.rest.removeMember(userId);
   }
 
   async banMember(userId: number): Promise<void> {
@@ -1023,6 +1041,44 @@ export class ConnectionSession {
     this.invitesRefresh.request();
   }
 
+  private async doRefreshOwnership(): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
+    let snapshot: PendingOwnershipTransfer;
+    try {
+      snapshot = await this.rest.getPendingOwnershipTransfer();
+    } catch (error: unknown) {
+      log.warn("session", `ownership snapshot failed: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    if (this.disposed) {
+      return;
+    }
+    this.ownershipStore.applySnapshot(snapshot.pending);
+  }
+
+  /** The transfer actions (offer/accept/decline/cancel) — every caller refetches after. */
+  async offerOwnershipTransfer(toUserId: number): Promise<void> {
+    await this.rest.offerOwnershipTransfer(toUserId);
+    this.ownershipRefresh.request();
+  }
+
+  async acceptOwnershipTransfer(transferId: number): Promise<void> {
+    await this.rest.acceptOwnershipTransfer(transferId);
+    this.ownershipRefresh.request();
+  }
+
+  async declineOwnershipTransfer(transferId: number): Promise<void> {
+    await this.rest.declineOwnershipTransfer(transferId);
+    this.ownershipRefresh.request();
+  }
+
+  async cancelOwnershipTransfer(transferId: number): Promise<void> {
+    await this.rest.cancelOwnershipTransfer(transferId);
+    this.ownershipRefresh.request();
+  }
+
   /** Sends a sticker message (the tray's click-to-send): content null, the sticker id
    *  rides the normal message POST. An armed reply carries over; the composer's text
    *  draft is NOT consumed. */
@@ -1068,8 +1124,17 @@ export class ConnectionSession {
       // A rename also repaints the social snapshots (friends/DM rows) — no
       // relationship event follows a rename, so the snapshot would go stale.
       const user = JSON.parse(raw) as UserSummary;
+      const previous = this.rosterStore.getSnapshot().users.find((entry) => entry.id === user.id) ?? null;
       this.rosterStore.updateUser(user);
       this.socialStore.applyUserRename(user.username, user.displayName ?? user.username);
+      // A LOGIN change (the removal tombstone): already-loaded messages still carry
+      // the old authorUsername, which no longer matches any roster row — repoint them
+      // to the new login so the author keeps rendering through the live roster.
+      if (previous !== null && previous.username !== user.username) {
+        this.socialStore.applyUserRename(previous.username, user.displayName ?? user.username);
+        this.messageStore.renameAuthor(user.id, user.username);
+        log.info("session", `user ${previous.username} renamed to ${user.username} — repointed loaded messages`);
+      }
     });
     this.stomp.subscribe("/topic/voice", (raw) => {
       const event = JSON.parse(raw) as VoiceMemberEvent;
@@ -1092,7 +1157,12 @@ export class ConnectionSession {
       const event = JSON.parse(raw) as VoiceControlEvent;
       if (event.type === "KICKED") {
         log.warn("voice", `kicked from channel #${event.channelId} by ${event.byUsername}`);
-        this.hooks.onVoiceKicked(event.byUsername);
+        this.hooks.onVoiceKicked(event.byUsername ?? "server");
+      } else if (event.type === "MOVED") {
+        // The AFK sweep: the tracker already re-pointed this member's membership —
+        // the runtime re-joins into the new channel (a fresh /room, fresh media).
+        log.info("voice", `moved to channel #${event.channelId} (afk sweep)`);
+        this.hooks.onVoiceMoved?.(event.channelId);
       }
     });
     this.stomp.subscribe("/user/queue/call.signal", (raw) => {
@@ -1100,6 +1170,12 @@ export class ConnectionSession {
     });
     this.stomp.subscribe("/user/queue/voice.invite", (raw) => {
       this.hooks.onVoiceInvite?.(JSON.parse(raw) as IncomingVoiceInvite);
+    });
+    // Ownership-transfer lifecycle: the runtime toasts on a received accept; the
+    // pending banner itself rides the refetch (the reaction to EVERY type is the same).
+    this.stomp.subscribe("/user/queue/ownership", (raw) => {
+      this.hooks.onOwnershipEvent?.(JSON.parse(raw) as OwnershipEvent);
+      this.ownershipRefresh.request();
     });
     // Social layer: every event is a REFRESH trigger (oak reacts to relationship
     // pushes with a plain refetch — no per-type branching). CLOSED is additionally
@@ -1339,6 +1415,7 @@ export class ConnectionSession {
     this.emojiRefresh.request();
     this.stickerRefresh.request();
     this.invitesRefresh.request();
+    this.ownershipRefresh.request();
     void this.refetchChannels();
     // Read states BEFORE the tail heal: applySnapshot REPLACES per-channel
     // state, so a snapshot landing after the heals would erase their bumps.

@@ -31,6 +31,8 @@ import { messageHasEveryoneHere, messageMentionsRole, messageMentionsUser } from
 import { dmToastHeader, toastBodyFallback, toastServerHeader } from "../domain/logic/toast-preview";
 import { paletteColor } from "../domain/logic/user-palette";
 import { displayNameOf } from "../domain/logic/display-name";
+import { isAfkActive } from "../domain/logic/afk-activity";
+import { memberKickReasonText, memberKickTitle } from "../domain/logic/moderation-reason";
 import { SettingsStore, type ClientSettings } from "../domain/stores/SettingsStore";
 import {
   acceleratorFromKeyboardEvent,
@@ -166,6 +168,12 @@ export interface AppState {
    *  ROW — session-bound entries appear only for the ACTIVE record. Rendered by
    *  ServerMenu.tsx. */
   serverMenu: { recordId: string; x: number; y: number } | null;
+  /** The owner's "Transfer ownership" flow (Server Settings → Members → the member's
+   *  Transfer ownership button, owner-only). Rendered by TransferOwnershipModal.tsx
+   *  against the ACTIVE session; ownershipPreselect carries the picked member's id
+   *  (null = open at the picker step). */
+  ownershipModalOpen: boolean;
+  ownershipPreselect: number | null;
 }
 
 class AppStore extends Emitter {
@@ -221,6 +229,8 @@ class AppStore extends Emitter {
     sidebarDiscussions: false,
     pendingOpenDiscussion: null,
     serverMenu: null,
+    ownershipModalOpen: false,
+    ownershipPreselect: null,
   };
 
   getSnapshot = (): AppState => this.state;
@@ -1079,6 +1089,24 @@ function makeSessionHooks(recordId: string): SessionHooks {
       void leaveVoice();
       notifications.showToast({ title: "Voice", channelName: byUsername, body: "You were kicked from the voice channel." });
     },
+    onVoiceMoved: (channelId) => {
+      // The AFK sweep (only the active session is ever in voice). The membership
+      // already moved server-side; a rejoin ladder targeting the OLD room must die,
+      // and the new channel is re-joined through the ordinary join path (its own
+      // cancelVoiceRejoin + fresh /room). Unavailable/locked → out of voice.
+      if (!isActive()) {
+        return;
+      }
+      cancelVoiceRejoin();
+      const session = activeSession;
+      const channel = session !== null ? session.channelStore.get(channelId) : null;
+      if (channel === null || channel.type !== "VOICE" || channel.locked) {
+        void leaveVoice();
+        return;
+      }
+      notifications.showToast({ title: "Voice", channelName: channel.name, body: `You were moved to #${channel.name}` });
+      void joinVoice(channel);
+    },
     onCallSignal: (signal) => {
       if (isActive()) {
         handleCallSignal(signal);
@@ -1254,17 +1282,17 @@ function makeSessionHooks(recordId: string): SessionHooks {
       );
     },
     onMemberKicked: (event) => {
-      const reason = event.banned
-        ? `You were banned by ${event.by}. A moderator must unban you before reconnecting.`
-        : `You were removed from the server by ${event.by}. Click the server again to reconnect.`;
+      const reason = memberKickReasonText(event);
+      const title = memberKickTitle(event);
       if (!isActive()) {
-        log.warn("app", `${event.banned ? "banned" : "kicked"} on a background server (record ${recordId}) — dropping the session`);
+        log.warn("app", `${event.removed ? "removed" : event.banned ? "banned" : "kicked"} on a background server (record ${recordId}) — dropping the session`);
         disposeBackgroundSession(recordId);
-        notifications.showToast({ title: event.banned ? "Banned" : "Removed from server", channelName: event.by, body: reason });
+        notifications.showToast({ title, channelName: event.by, body: reason });
         return;
       }
-      // Tokens survive a kick (only a BAN kills them at the REST layer) — dropping
-      // to the login modal keeps the record one click away, oak's ErrorDialog parity.
+      // A REMOVAL/BAN kills the tokens at the REST layer; a plain disconnect keeps
+      // them — dropping to the login modal covers both (the removed/banned branch
+      // just answers 401/403 instead of reconnecting), oak's ErrorDialog parity.
       const record = connectionDirectory.get(recordId);
       void teardownSession().finally(() => {
         appStore.patch({
@@ -1273,8 +1301,18 @@ function makeSessionHooks(recordId: string): SessionHooks {
           loginPrefill: record !== null ? { url: record.hostUrl, username: record.username } : null,
           userSettingsOpen: false,
         });
-        notifications.showToast({ title: event.banned ? "Banned" : "Removed from server", channelName: event.by, body: reason });
+        notifications.showToast({ title, channelName: event.by, body: reason });
       });
+    },
+    onOwnershipEvent: (event) => {
+      log.info("ownership", `transfer ${event.transfer.id} ${event.type} (from=${event.transfer.fromUsername} to=${event.transfer.toUsername})`);
+      // The banner/permissions flip rides the pending refetch; the one thing worth
+      // celebrating out loud is BECOMING the owner (this record's login = the wire's
+      // `to` — the hooks factory has no session, the record carries the username).
+      if (event.type === "ACCEPTED"
+        && event.transfer.toUsername === connectionDirectory.get(recordId)?.username) {
+        notifications.showToast({ title: "Server", channelName: "", body: "You are now the owner of this server." });
+      }
     },
   };
 }
@@ -1573,6 +1611,16 @@ export function closeServerMenu(): void {
   appStore.patch({ serverMenu: null });
 }
 
+/** The owner's "Transfer ownership" flow (Members section button → the modal). The
+ *  preselect jumps the modal straight to the confirm step for that member. */
+export function openOwnershipTransfer(preselectedUserId?: number): void {
+  appStore.patch({ ownershipModalOpen: true, ownershipPreselect: preselectedUserId ?? null });
+}
+
+export function closeOwnershipTransfer(): void {
+  appStore.patch({ ownershipModalOpen: false, ownershipPreselect: null });
+}
+
 /** ✕ / Esc on the login modal. */
 export function closeLoginForm(): void {
   appStore.patch({ loginFormOpen: false, loginError: null });
@@ -1765,6 +1813,8 @@ export async function teardownSession(): Promise<void> {
     activeDiscussion: null,
     sidebarDiscussions: false,
     serverMenu: null,
+    ownershipModalOpen: false,
+    ownershipPreselect: null,
     // pendingOpenDm/pendingOpenChannel/pendingOpenDiscussion deliberately survive too — a
     // switch that lands on the login modal should still open the clicked chat once the
     // user re-logs in.
@@ -2437,6 +2487,39 @@ function cancelVoiceRejoin(): void {
   }
 }
 
+/** The AFK heartbeat interval: while the ACTIVE session is in a voice room, report
+ *  activity every 30 s (speaking, or system-wide input idle under the grace). */
+let afkReportTimer: number | null = null;
+
+function startAfkReporting(): void {
+  if (afkReportTimer !== null) {
+    return; // already running (a rejoin into another room keeps the one timer)
+  }
+  afkReportTimer = window.setInterval(() => {
+    void reportAfkActivity();
+  }, 30_000);
+}
+
+function stopAfkReporting(): void {
+  if (afkReportTimer !== null) {
+    window.clearInterval(afkReportTimer);
+    afkReportTimer = null;
+  }
+}
+
+async function reportAfkActivity(): Promise<void> {
+  const session = activeSession;
+  if (session === null || appStore.getSnapshot().activeVoiceChannelId === null) {
+    return;
+  }
+  // A missing bridge (old preload) degrades to speaking-only — never a false "active".
+  const idleSeconds = window.spaceIdle ? await window.spaceIdle.getSystemIdleTime() : Number.POSITIVE_INFINITY;
+  const speaking = roomAudio.speakingSnapshot().has(appStore.getSnapshot().ownUsername ?? "");
+  if (isAfkActive(idleSeconds, speaking)) {
+    session.stomp.send("/app/voice.activity", {});
+  }
+}
+
 export async function joinVoice(channel: Channel): Promise<void> {
   const session = activeSession;
   if (!session) {
@@ -2450,13 +2533,20 @@ export async function joinVoice(channel: Channel): Promise<void> {
   // muted member's badge VANISH for the joining viewer (live report
   // 2026-09-17). The server additionally re-seeds the whole channel's state
   // on every join, so even a fresh client learns everyone's current marks.
-  session.voiceControlStore.clearUser(session.username());
-  voiceCompliance.micMuted = false;
-  voiceCompliance.shareAudioMuted = false;
-  voiceCompliance.deafened = false;
+  // EXCEPTION — the AFK room: the sweep's mod-mute state push races this reset
+  // (it arrives right around the MOVED-driven re-join), so entering the AFK
+  // channel must NOT drop the incoming moderator mute.
+  const enteringAfkRoom = channel.afk === true;
+  if (!enteringAfkRoom) {
+    session.voiceControlStore.clearUser(session.username());
+    voiceCompliance.micMuted = false;
+    voiceCompliance.shareAudioMuted = false;
+    voiceCompliance.deafened = false;
+  }
   roomAudio.setDeafened(false);
   appStore.patch({ activeVoiceChannelId: channel.id, voiceState: "connecting", stateDetail: null, participants: [], viewingFeedId: null, viewingUsername: null });
   session.stomp.send("/app/voice.join", { channelId: channel.id });
+  startAfkReporting();
 
   try {
     await connectVoiceRoom(channel);
@@ -2781,6 +2871,7 @@ function watchNoiseSettings(): void {
 }
 
 export async function teardownVoice(): Promise<void> {
+  stopAfkReporting();
   voiceView.dropShareVideo();
   feedVideoTracks.clear();
   feedShareAudioTracks.clear();

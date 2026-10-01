@@ -48,7 +48,7 @@ describe("RestClient message mutations", () => {
     expect(fake.requests[0]?.path).toBe("/api/channels/5/messages/3");
   });
 
-  it("void endpoints tolerate Spring's 200-with-empty-body (kick/ban/unban)", async () => {
+  it("void endpoints tolerate Spring's 200-with-empty-body (remove/ban/unban)", async () => {
     // A void controller method answers 200 with NO body — not 204. response.json()
     // used to throw "Unexpected end of JSON input" after the action had already
     // landed (live report on banMember).
@@ -58,6 +58,15 @@ describe("RestClient message mutations", () => {
     await client.banMember(7);
     expect(fake.requests[0]?.method).toBe("POST");
     expect(fake.requests[0]?.path).toBe("/api/members/7/ban");
+  });
+
+  it("removeMember POSTs the permanent-removal route", async () => {
+    const fake = new FakeFetch(() => ({ status: 200 }));
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: new MemoryTokenStorage(), fetchImpl: fake.call });
+
+    await client.removeMember(7);
+    expect(fake.requests[0]?.method).toBe("POST");
+    expect(fake.requests[0]?.path).toBe("/api/members/7/remove");
   });
 
   it("reactions PUT/DELETE the slug route and return the snapshot", async () => {
@@ -271,5 +280,49 @@ describe("RestClient invites", () => {
     expect(fake.requests[4]?.method).toBe("PUT");
     expect(fake.requests[4]?.path).toBe("/api/server/invite-settings");
     expect(fake.requests[4]?.body).toEqual({ ttlMinutes: 525600 });
+  });
+});
+
+describe("RestClient ownership transfer", () => {
+  it("pending GET, offer POST body, accept/decline/cancel routes", async () => {
+    const fake = new FakeFetch(() => ({ status: 200, body: { pending: null } }));
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: new MemoryTokenStorage(), fetchImpl: fake.call });
+
+    await client.getPendingOwnershipTransfer();
+    expect(fake.requests[0]?.method).toBe("GET");
+    expect(fake.requests[0]?.path).toBe("/api/ownership/pending");
+
+    await client.offerOwnershipTransfer(7);
+    expect(fake.requests[1]?.method).toBe("POST");
+    expect(fake.requests[1]?.path).toBe("/api/ownership/offer");
+    expect(fake.requests[1]?.body).toEqual({ toUserId: 7 });
+
+    await client.acceptOwnershipTransfer(5);
+    expect(fake.requests[2]?.method).toBe("POST");
+    expect(fake.requests[2]?.path).toBe("/api/ownership/5/accept");
+
+    await client.declineOwnershipTransfer(5);
+    expect(fake.requests[3]?.method).toBe("POST");
+    expect(fake.requests[3]?.path).toBe("/api/ownership/5/decline");
+
+    await client.cancelOwnershipTransfer(5);
+    expect(fake.requests[4]?.method).toBe("POST");
+    expect(fake.requests[4]?.path).toBe("/api/ownership/5/cancel");
+  });
+});
+
+describe("RestClient AFK settings", () => {
+  it("reads and writes the sweep settings", async () => {
+    const fake = new FakeFetch(() => ({ status: 200, body: { afkChannelId: 3, afkTimeoutMinutes: 15 } }));
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: new MemoryTokenStorage(), fetchImpl: fake.call });
+
+    await client.getAfkSettings();
+    expect(fake.requests[0]?.method).toBe("GET");
+    expect(fake.requests[0]?.path).toBe("/api/server/afk");
+
+    await client.updateAfkSettings(null, 15);
+    expect(fake.requests[1]?.method).toBe("PUT");
+    expect(fake.requests[1]?.path).toBe("/api/server/afk");
+    expect(fake.requests[1]?.body).toEqual({ afkChannelId: null, afkTimeoutMinutes: 15 });
   });
 });

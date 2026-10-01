@@ -679,6 +679,8 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 /* No dark backdrop — the dialog dims its own content (the crop's unselected
    image area) instead of the whole window (live report). */
 .modal-overlay.bare { background: transparent; }
+/* Opened FROM Server Settings (z-100): the transfer dialog rides above the pane. */
+.modal-overlay.elevated { z-index: 110; }
 .modal-card {
   background: var(--sp-surface);
   border: 1px solid var(--sp-input);
@@ -2640,6 +2642,34 @@ button.wide-add { width: 100%; }
 /* The invite picker's member search (above the list). */
 .invite-picker-search { margin-bottom: 8px; }
 
+/* The recipient's PERSISTENT ownership-offer banner (under the server header, the
+   voice-bar card idiom): visible the whole time an incoming offer is pending. */
+.ownership-banner {
+  background: var(--sp-pane);
+  border-radius: 8px;
+  margin: 8px 0;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ownership-banner-text {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--sp-text);
+  font-size: 12px;
+}
+.ownership-banner-text .icon { font-size: 16px; color: var(--sp-yellow); flex-shrink: 0; }
+.ownership-banner-actions { display: flex; gap: 8px; }
+.ownership-banner-actions button { padding: 4px 10px; font-size: 12px; }
+.ownership-banner .error-line { min-height: 14px; font-size: 11px; }
+/* The confirming warning in the transfer modal (amber — the staged-change voice). */
+.ownership-warning { color: var(--sp-yellow); }
+
+/* The Channels settings' idle panel — the AFK sweep controls. */
+.afk-settings { display: flex; flex-direction: column; gap: 4px; }
+
 /* ===== Social layer (M6): home rail, DM list, friends pane, hoisted roster ===== */
 
 .dm-row {
@@ -3276,6 +3306,25 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
   font-size: 10px;
   font-weight: 700;
   border: 1px solid var(--sp-red);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+/* The removal-audit twin (Members → Removed): grey, not red — the account is gone,
+   there is nothing left to undo or warn about. */
+.removed-badge {
+  color: var(--sp-text-dim);
+  font-size: 10px;
+  font-weight: 700;
+  border: 1px solid var(--sp-text-dim);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+/* The AFK room in Server Settings → Channels (amber — the staged-change voice). */
+.afk-badge {
+  color: var(--sp-yellow);
+  font-size: 10px;
+  font-weight: 700;
+  border: 1px solid var(--sp-yellow);
   border-radius: 4px;
   padding: 0 4px;
 }

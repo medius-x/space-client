@@ -21,7 +21,7 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
   const ownUsername = useStore(appStore, (state) => state.ownUsername);
   const activeVoiceChannelId = useStore(appStore, (state) => state.activeVoiceChannelId);
   const [memberMenu, setMemberMenu] = useState<{ member: ServerMember; x: number; y: number } | null>(null);
-  const [kickTarget, setKickTarget] = useState<ServerMember | null>(null);
+  const [removeTarget, setRemoveTarget] = useState<ServerMember | null>(null);
   const [banTarget, setBanTarget] = useState<ServerMember | null>(null);
 
   const rosterGroups = useMemo(
@@ -65,8 +65,8 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
     ...moderationMenuItems.map((entry) => ({
       ...entry,
       action: () => {
-        if (entry.kind === "kick") {
-          setKickTarget(memberMenu.member);
+        if (entry.kind === "remove") {
+          setRemoveTarget(memberMenu.member);
         } else {
           setBanTarget(memberMenu.member);
         }
@@ -116,13 +116,13 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
       {memberMenu !== null ? (
         <ContextMenu x={memberMenu.x} y={memberMenu.y} items={memberMenuItems} onClose={() => setMemberMenu(null)} />
       ) : null}
-      {kickTarget !== null ? (
+      {removeTarget !== null ? (
         <ModerationModal
-          verb="Kick"
+          verb="Remove"
           session={session}
-          member={kickTarget}
-          text={`Kick "${kickTarget.nickname}"? They will be disconnected from the server.`}
-          onClose={() => setKickTarget(null)}
+          member={removeTarget}
+          text={`Remove "${removeTarget.nickname}" from the server? They will be permanently removed and will not be able to rejoin.`}
+          onClose={() => setRemoveTarget(null)}
         />
       ) : null}
       {banTarget !== null ? (
@@ -160,8 +160,8 @@ function MemberRow({ session, member, online, isSelf, nameColor, onMenu }: {
   );
 }
 
-/** Kick/Ban menu entries — gated by the permission bit AND the hierarchy hint. */
-function moderationEntries(target: ServerMember | null, selfHierarchy: HierarchyView, permissions: readonly string[], roles: readonly Role[]): { kind: "kick" | "ban"; label: string }[] {
+/** Remove/Ban menu entries — gated by the permission bit AND the hierarchy hint. */
+function moderationEntries(target: ServerMember | null, selfHierarchy: HierarchyView, permissions: readonly string[], roles: readonly Role[]): { kind: "remove" | "ban"; label: string }[] {
   if (target === null) {
     return [];
   }
@@ -169,9 +169,9 @@ function moderationEntries(target: ServerMember | null, selfHierarchy: Hierarchy
   if (!canActOn(selfHierarchy, targetView)) {
     return [];
   }
-  const items: { kind: "kick" | "ban"; label: string }[] = [];
+  const items: { kind: "remove" | "ban"; label: string }[] = [];
   if (permissions.includes(KICK_MEMBERS_PERMISSION)) {
-    items.push({ kind: "kick", label: "Kick" });
+    items.push({ kind: "remove", label: "Remove from server" });
   }
   if (permissions.includes(BAN_MEMBERS_PERMISSION)) {
     items.push({ kind: "ban", label: "Ban" });
@@ -180,7 +180,7 @@ function moderationEntries(target: ServerMember | null, selfHierarchy: Hierarchy
 }
 
 function ModerationModal({ verb, session, member, text, onClose }: {
-  verb: "Kick" | "Ban";
+  verb: "Remove" | "Ban";
   session: ConnectionSession;
   member: ServerMember;
   text: string;
@@ -196,8 +196,8 @@ function ModerationModal({ verb, session, member, text, onClose }: {
     setBusy(true);
     setError(null);
     try {
-      if (verb === "Kick") {
-        await session.kickMember(member.userId);
+      if (verb === "Remove") {
+        await session.removeMember(member.userId);
       } else {
         await session.banMember(member.userId);
       }

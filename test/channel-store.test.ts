@@ -44,6 +44,24 @@ describe("ChannelStore", () => {
     expect(store.getSnapshot()[1]?.parentId).toBe(7);
   });
 
+  it("sameChannel is sensitive to the AFK flag — a designation refetch emits (the badge)", () => {
+    // Live report: after designating the AFK channel the settings list showed no badge —
+    // the refetch's afk=true was considered "unchanged" and the old row reference kept.
+    const store = new ChannelStore();
+    store.applySnapshot([channel(1, "lobby")]);
+    const listener = vi.fn();
+    store.subscribe(listener);
+
+    store.applySnapshot([channel(1, "lobby", { afk: true })]);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(store.getSnapshot()[0]?.afk).toBe(true);
+
+    // and back off — removing the designation must emit too
+    store.applySnapshot([channel(1, "lobby")]);
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(store.getSnapshot()[0]?.afk).toBeUndefined();
+  });
+
   it("applyDeleted removes and reports honestly", () => {
     const store = new ChannelStore();
     store.applyCreated(channel(1));

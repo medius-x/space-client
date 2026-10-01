@@ -1,6 +1,6 @@
 import { isSystemAudioAvailable, startSystemAudio, stopSystemAudio } from "./system-audio";
 import { getClientSize, isWindowConfirmedDead, watchSourceLiveness } from "./window-liveness";
-import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, globalShortcut, ipcMain, nativeTheme, net, protocol, screen, session, shell } from "electron";
+import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, globalShortcut, ipcMain, nativeTheme, net, powerMonitor, protocol, screen, session, shell } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -582,6 +582,13 @@ ipcMain.handle("space-capture:watchSource", (_event, sourceId: unknown) => {
     mainWindowRef?.webContents.send("space-capture:sourceDead", deadSourceId);
   });
 });
+
+// ---------------------------------------------------------------------------
+// System-idle time (the AFK sweep's client-side activity source): powerMonitor
+// counts seconds since the last OS-WIDE user input — any app's mouse/keyboard
+// keeps the member out of AFK, exactly the Discord "idle" semantics.
+// ---------------------------------------------------------------------------
+ipcMain.handle("space-idle:time", () => powerMonitor.getSystemIdleTime());
 
 // ---------------------------------------------------------------------------
 // Native system-audio capture (#485): WASAPI process-loopback, desktop minus

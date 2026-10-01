@@ -177,6 +177,14 @@ contextBridge.exposeInMainWorld("spaceCapture", {
   },
 });
 
+/** System-idle bridge (the AFK sweep's activity source): seconds since the last
+ *  OS-WIDE user input, straight from Electron's powerMonitor. */
+contextBridge.exposeInMainWorld("spaceIdle", {
+  getSystemIdleTime(): Promise<number> {
+    return ipcRenderer.invoke("space-idle:time");
+  },
+});
+
 /** Native system-audio bridge (#485): WASAPI process-loopback. Without a
  *  source id the capture is the desktop minus OUR process (screen shares);
  *  a WINDOW source id switches it to that application's own audio. Frames

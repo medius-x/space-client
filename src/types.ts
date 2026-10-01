@@ -21,6 +21,9 @@ export interface Channel {
   parentId: number | null;
   /** The manual sidebar order; (position, id) is the sort key. */
   position: number;
+  /** THE server's AFK channel (the idle-sweep target; one per server, a server-wide
+   *  flag — not per-viewer). Absent = false (rows from before the field). */
+  afk?: boolean;
 }
 
 export interface UserSummary {
@@ -462,11 +465,19 @@ export interface VoiceControlState {
   modDeafened: boolean;
 }
 
-/** /user/queue/voice.control push targeted at the acted-on member (type=KICKED). */
+/** /user/queue/voice.control push targeted at the acted-on member: type=KICKED (a
+ *  moderator/enforcer eviction — tear the voice down) or type=MOVED (the AFK sweep —
+ *  rejoin into `channelId`); the sweep's push carries a null byUsername. */
 export interface VoiceControlEvent {
-  type: "KICKED";
+  type: "KICKED" | "MOVED";
   channelId: number;
-  byUsername: string;
+  byUsername: string | null;
+}
+
+/** GET/PUT /api/server/afk — the AFK sweep settings (channel null = feature off). */
+export interface AfkSettings {
+  afkChannelId: number | null;
+  afkTimeoutMinutes: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -582,7 +593,7 @@ export interface DmChannelEvent {
   participants: UserSummary[];
 }
 
-/** GET /api/members row (banned members only appear in GET /api/members/bans). */
+/** GET /api/members row (removed members only appear in GET /api/members/bans). */
 export interface ServerMember {
   userId: number;
   username: string;
@@ -592,6 +603,9 @@ export interface ServerMember {
   banned: boolean;
   /** The display name (rename model): render this, never `username`. */
   nickname: string;
+  /** Permanent removal ("Remove from server") — true only on /api/members/bans rows;
+   *  there is no undo, so the client renders such rows without actions. */
+  removed?: boolean;
 }
 
 /** GET /api/roles row — position DESC (highest first), color is ARGB int, nullable. */
@@ -608,7 +622,7 @@ export interface Role {
 
 /** /topic/members broadcast — contentless refetch ping (oak reacts with a refetch). */
 export interface MemberEvent {
-  type: "rolesChanged" | "kicked" | "banned";
+  type: "rolesChanged" | "kicked" | "banned" | "removed";
   userId: number;
 }
 
@@ -616,6 +630,37 @@ export interface MemberEvent {
 export interface MemberKickEvent {
   by: string;
   banned: boolean;
+  /** Permanent removal — no reconnect hint; the account can never rejoin. */
+  removed?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Server-ownership transfer
+// ---------------------------------------------------------------------------
+
+/** GET /api/ownership/pending row — the single live PENDING offer (party-scoped). */
+export interface OwnershipTransfer {
+  id: number;
+  fromUserId: number;
+  fromUsername: string;
+  fromDisplayName: string;
+  toUserId: number;
+  toUsername: string;
+  toDisplayName: string;
+  status: "PENDING" | "ACCEPTED" | "DECLINED" | "CANCELLED";
+  /** ISO-8601 UTC string. */
+  createdAt: string;
+}
+
+/** GET /api/ownership/pending response — always JSON, `pending` null for a non-party. */
+export interface PendingOwnershipTransfer {
+  pending: OwnershipTransfer | null;
+}
+
+/** /user/queue/ownership push (both parties) — the reaction is the same refetch. */
+export interface OwnershipEvent {
+  type: "OFFERED" | "ACCEPTED" | "DECLINED" | "CANCELLED";
+  transfer: OwnershipTransfer;
 }
 
 // ---------------------------------------------------------------------------

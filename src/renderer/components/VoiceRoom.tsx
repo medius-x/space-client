@@ -44,6 +44,7 @@ import type { FeedInfo } from "../../types";
 import { canActOn, memberNameColor, topPosition, type HierarchyView } from "../../domain/logic/roster-grouping";
 import { feedHasLiveVideo, feedHasShareAudio } from "../../core/classifier";
 import { displayNameOf } from "../../domain/logic/display-name";
+import { log } from "../../logging";
 import type { NoiseEngineKind } from "../../media/noise-suppression";
 import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
 import { SharePickerModal } from "./SharePickerModal";
@@ -200,11 +201,29 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
   const peerScreenOn = useStore(appStore, (state) => state.peerScreenOn);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [nsMenu, setNsMenu] = useState<{ x: number; y: number } | null>(null);
+  // The AFK room forbids outgoing video (Discord semantics) — the share/camera
+  // button hides there entirely (nothing is ever live to stop in it).
+  const channelAfk = useStore(session.channelStore, (allChannels) =>
+    activeChannelId !== null && allChannels.some((channel) => channel.id === activeChannelId && channel.afk === true));
 
   // The bar owns the CALLER's ring (user decision) and the accepted call — but
   // NOT the callee's ring: oak's RINGING states own no surface, the callee's
   // ring lives in the toast-window card alone.
   const inCall = callState === "ringing-out" || callState === "connecting" || callState === "in-call";
+  // A LIVE share dies when the room BECOMES an AFK room under its feet (the designation
+  // refetch flips the flag on every client). The server has no per-stream video mute
+  // in the gateway wiring (moderateAudio cuts audio m-lines only), so this stop is
+  // cooperative — the same trust model as the voice toggles.
+  useEffect(() => {
+    if (!inCall && channelAfk && (sharing || cameraOn)) {
+      if (cameraOn) {
+        void toggleCamera(); // the toggle IS the camera's stop
+      } else {
+        void stopShare();
+      }
+      log.info("voice", "AFK room — outgoing screen share stopped");
+    }
+  }, [inCall, channelAfk, sharing, cameraOn]);
   if (activeChannelId === null && !inCall) {
     return null; // no voice session and no call — the card shrinks to the user bar alone
   }
@@ -385,22 +404,25 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
         </button>
         {/* oak has NO separate camera button on the panel — the camera is a
             SOURCE inside the share picker. This one button is the single
-            outgoing-video toggle: stop whatever is live, or open the picker. */}
-        <button
-          className={"voice-toggle icon-button share" + (sharing || cameraOn ? " on" : "")}
-          title={sharing || cameraOn ? "Stop screen share" : "Share screen"}
-          onClick={() => {
-            if (cameraOn) {
-              void toggleCamera(); // the toggle IS the camera's stop
-            } else if (sharing) {
-              void stopShare();
-            } else {
-              setPickerOpen(true);
-            }
-          }}
-        >
-          <span className="icon mdi-cast-connected" />
-        </button>
+            outgoing-video toggle: stop whatever is live, or open the picker.
+            Hidden in the AFK room (no outgoing video there, Discord semantics). */}
+        {!channelAfk ? (
+          <button
+            className={"voice-toggle icon-button share" + (sharing || cameraOn ? " on" : "")}
+            title={sharing || cameraOn ? "Stop screen share" : "Share screen"}
+            onClick={() => {
+              if (cameraOn) {
+                void toggleCamera(); // the toggle IS the camera's stop
+              } else if (sharing) {
+                void stopShare();
+              } else {
+                setPickerOpen(true);
+              }
+            }}
+          >
+            <span className="icon mdi-cast-connected" />
+          </button>
+        ) : null}
         <button className="voice-toggle icon-button leave" title="Disconnect" onClick={() => void leaveVoice()}>
           <span className="icon mdi-phone-hangup" />
         </button>

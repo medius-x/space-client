@@ -65,6 +65,31 @@ export class MessageStore extends Emitter {
   }
 
   /**
+   * A member's LOGIN changed (the removal tombstone — the live author FK now resolves
+   * under a new username). Already-loaded messages still carry the OLD authorUsername,
+   * which no longer matches any roster row (the renderer would fall back to the bare
+   * old login). Repoints every loaded message of that author by the stable authorId,
+   * so the author renders through the live roster under the new name. A no-op when no
+   * loaded message belongs to the member.
+   */
+  renameAuthor(userId: number, nextUsername: string): void {
+    let changed = false;
+    for (const [channelId, list] of this.lists) {
+      const next = list.map((message) =>
+        message.authorId === userId && message.authorUsername !== nextUsername
+          ? { ...message, authorUsername: nextUsername }
+          : message);
+      if (next !== list) {
+        this.lists.set(channelId, next);
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.emit();
+    }
+  }
+
+  /**
    * A live message (STOMP push or the sender's own REST echo — both carry the same
    * id, the sender just gets them first). Dropped for channels whose history has
    * not been loaded yet: opening the channel refetches a page that includes them.

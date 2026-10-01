@@ -17,7 +17,10 @@ import type {
   InvitesStatus,
   Message,
   MyPermissions,
+  OwnershipTransfer,
+  PendingOwnershipTransfer,
   PermissionCatalogEntry,
+  AfkSettings,
   ReactionSummary,
   Relationship,
   Role,
@@ -766,8 +769,10 @@ export class RestClient {
     return this.request<Role[]>("/api/roles", { method: "GET" });
   }
 
-  async kickMember(userId: number): Promise<void> {
-    await this.request<unknown>(`/api/members/${userId}/kick`, { method: "POST" });
+  /** "Remove from server" — permanent (the reworked kick): the account is anonymized
+   *  server-side and can never rejoin. */
+  async removeMember(userId: number): Promise<void> {
+    await this.request<unknown>(`/api/members/${userId}/remove`, { method: "POST" });
   }
 
   /** FULL replacement of the member's explicit role set (PUT). */
@@ -885,6 +890,45 @@ export class RestClient {
 
   async getBannedMembers(): Promise<ServerMember[]> {
     return this.request<ServerMember[]>("/api/members/bans", { method: "GET" });
+  }
+
+  // --- Server-ownership transfer -------------------------------------------
+
+  /** The live PENDING offer as seen by this member ({pending: null} for a non-party). */
+  async getPendingOwnershipTransfer(): Promise<PendingOwnershipTransfer> {
+    return this.request<PendingOwnershipTransfer>("/api/ownership/pending", { method: "GET" });
+  }
+
+  // --- The AFK sweep settings (Channels settings section) -------------------
+
+  async getAfkSettings(): Promise<AfkSettings> {
+    return this.request<AfkSettings>("/api/server/afk", { method: "GET" });
+  }
+
+  async updateAfkSettings(afkChannelId: number | null, afkTimeoutMinutes: number): Promise<AfkSettings> {
+    return this.request<AfkSettings>("/api/server/afk", {
+      method: "PUT",
+      body: JSON.stringify({ afkChannelId, afkTimeoutMinutes }),
+    });
+  }
+
+  async offerOwnershipTransfer(toUserId: number): Promise<OwnershipTransfer> {
+    return this.request<OwnershipTransfer>("/api/ownership/offer", {
+      method: "POST",
+      body: JSON.stringify({ toUserId }),
+    });
+  }
+
+  async acceptOwnershipTransfer(transferId: number): Promise<OwnershipTransfer> {
+    return this.request<OwnershipTransfer>(`/api/ownership/${transferId}/accept`, { method: "POST" });
+  }
+
+  async declineOwnershipTransfer(transferId: number): Promise<void> {
+    await this.request<unknown>(`/api/ownership/${transferId}/decline`, { method: "POST" });
+  }
+
+  async cancelOwnershipTransfer(transferId: number): Promise<void> {
+    await this.request<unknown>(`/api/ownership/${transferId}/cancel`, { method: "POST" });
   }
 
   async renameServer(name: string): Promise<ServerProfile> {

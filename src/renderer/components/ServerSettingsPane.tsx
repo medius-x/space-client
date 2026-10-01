@@ -4,6 +4,7 @@ import { log } from "../../logging";
 import {
   appStore,
   closeServerSettings,
+  openOwnershipTransfer,
   setServerSettingsSection,
 } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
@@ -64,7 +65,9 @@ import { sanitizeSlotFileName } from "../../domain/logic/ascii-name";
 import { emojiNameFromFileName } from "../../domain/logic/emoji-picker";
 import { formatExpiresIn, formatTtlWords } from "../../domain/logic/invite-link";
 import { moveRoleIdTowards } from "../../domain/logic/role-drag";
+import { isOutgoingPending } from "../../domain/logic/ownership-transfer";
 import { Modal } from "./Modal";
+import { AFK_TIMEOUT_PRESETS, CreateChannelModal } from "./CreateChannelModal";
 import { Avatar } from "./Avatar";
 import { AvatarEditor, serverAvatarApi } from "./ProfileModal";
 import { ChannelGlyph } from "./ChannelGlyph";
@@ -85,7 +88,7 @@ const PERMISSION_INFO: Record<string, { label: string; description: string }> = 
   MANAGE_ROLES: { label: "Manage Roles", description: "Create, edit, delete and reorder roles." },
   MANAGE_CHANNELS: { label: "Manage Channels", description: "Create, rename, delete channels and edit overrides." },
   MANAGE_MEMBERS: { label: "Manage Members", description: "Assign roles to members." },
-  KICK_MEMBERS: { label: "Kick Members", description: "Disconnect members from the server." },
+  KICK_MEMBERS: { label: "Kick Members", description: "Remove members from the server. Removal is permanent." },
   BAN_MEMBERS: { label: "Ban Members", description: "Ban members from logging in, and unban." },
   MANAGE_NICKNAMES: { label: "Manage Nicknames", description: "Change other members' names." },
   CHANGE_NICKNAME: { label: "Change Nickname", description: "Change your own username." },
@@ -1020,13 +1023,40 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
   const members = useStore(session.memberStore, (state) => state.members);
   const roles = useStore(session.memberStore, (state) => state.roles);
   const permissions = useStore(session.permissionStore, (state) => state.my?.permissions ?? []);
+  // The transfer entry is OWNER-ONLY and invisible (not disabled) to everyone else —
+  // a non-owner seeing a dead button would only wonder (user decision).
+  const selfIsOwner = useStore(session.permissionStore, (state) => state.my?.owner ?? false);
+  // The live outgoing offer (if any): its recipient's row swaps the button to the
+  // cancel flow (user decision — the recipient is the "pending" state, not a fresh offer).
+  const pendingTransfer = useStore(session.ownershipStore, (state) => state.pending);
+  const selfUserId = session.selfUserId();
+  const outgoingTransfer = pendingTransfer !== null && selfUserId !== null
+    && isOutgoingPending(pendingTransfer, selfUserId) ? pendingTransfer : null;
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [kickTarget, setKickTarget] = useState<ServerMember | null>(null);
+  const [removeTarget, setRemoveTarget] = useState<ServerMember | null>(null);
   const [banTarget, setBanTarget] = useState<ServerMember | null>(null);
   // The rename form state (the nickname is the ONE display name).
   const [renameDraft, setRenameDraft] = useState<string | null>(null);
   const [renameBusy, setRenameBusy] = useState(false);
   const [renameStatus, setRenameStatus] = useState<string | null>(null);
+  /** The removal audit — removed members never appear in /api/members, they ride
+   *  /api/members/bans with removed=true. Refetched whenever the member snapshot
+   *  changes (the "removed" push rides the same /topic/members refetch). */
+  const [removedMembers, setRemovedMembers] = useState<ServerMember[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    session.rest.getBannedMembers()
+      .then((banned) => {
+        if (!cancelled) {
+          setRemovedMembers(banned.filter((member) => member.removed === true));
+        }
+      })
+      .catch(() => undefined); // a transient failure keeps the previous audit list
+    return () => {
+      cancelled = true;
+    };
+  }, [session.rest, members]);
 
   const canKick = permissions.includes(KICK_MEMBERS_PERMISSION);
   const canBan = permissions.includes(BAN_MEMBERS_PERMISSION);
@@ -1135,6 +1165,19 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
             {member.banned ? <span className="banned-badge">BANNED</span> : null}
           </div>
         ))}
+        {/* The removal audit — permanent rows, no actions (there is no un-remove). */}
+        {removedMembers.length > 0 ? (
+          <>
+            <div className="roles-list-header"><span>Removed — {removedMembers.length}</span></div>
+            {removedMembers.map((member) => (
+              <div key={member.userId} className="roles-row" title="Cannot rejoin the server">
+                <Avatar session={session} username={member.username} size={20} />
+                <span className="member-name">{member.nickname}</span>
+                <span className="removed-badge">REMOVED</span>
+              </div>
+            ))}
+          </>
+        ) : null}
       </div>
       <div className="role-editor">
         {active === null ? (
@@ -1156,9 +1199,9 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
               ) : (
                 <>
                   {canKick ? (
-                    /* oak shows Kick/Ban DISABLED for the owner (not hidden) — the
-                       owner is immune, the buttons just never fire. */
-                    <button className="danger" disabled={active.owner} onClick={() => setKickTarget(active)}>Kick</button>
+                    /* oak shows the moderation buttons DISABLED for the owner (not
+                       hidden) — the owner is immune, the buttons just never fire. */
+                    <button className="danger" disabled={active.owner} onClick={() => setRemoveTarget(active)}>Remove from server</button>
                   ) : null}
                   {canBan ? (
                     <button className="danger" disabled={active.owner} onClick={() => setBanTarget(active)}>Ban</button>
@@ -1176,6 +1219,22 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
                     setRenameDraft(null);
                     setRenameStatus(null);
                   }}>Cancel rename</button>
+                )
+              ) : null}
+              {/* The owner may hand the crown to any plain member right from the row —
+                  the modal opens at the confirm step for this member (user decision:
+                  the entry point lives HERE, not in the server menu). Hidden for a
+                  banned member (the server refuses the offer) and for the owner row.
+                  The LIVE offer's recipient swaps the button to the cancel flow. */}
+              {selfIsOwner && !active.banned && !active.owner ? (
+                outgoingTransfer !== null && outgoingTransfer.toUserId === active.userId ? (
+                  <button className="danger" onClick={() => openOwnershipTransfer(active.userId)}>
+                    Cancel ownership transfer
+                  </button>
+                ) : (
+                  <button className="primary" onClick={() => openOwnershipTransfer(active.userId)}>
+                    Transfer ownership
+                  </button>
                 )
               ) : null}
             </div>
@@ -1242,15 +1301,15 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
           </div>
         )}
       </div>
-      {kickTarget !== null ? (
+      {removeTarget !== null ? (
         <ConfirmModal
-          title="Kick member"
-          note={`Kick "${kickTarget.nickname}"? They will be disconnected from the server.`}
-          confirmLabel="Kick"
+          title="Remove member"
+          note={`Remove "${removeTarget.nickname}" from the server? They will be permanently removed and will not be able to rejoin.`}
+          confirmLabel="Remove"
           onConfirm={async () => {
-            await session.kickMember(kickTarget.userId);
+            await session.removeMember(removeTarget.userId);
           }}
-          onClose={() => setKickTarget(null)}
+          onClose={() => setRemoveTarget(null)}
         />
       ) : null}
       {banTarget !== null ? (
@@ -1462,18 +1521,26 @@ function ChannelsSection({ session }: { session: ConnectionSession }): React.JSX
   const channels = useStore(session.channelStore, (channels) => channels);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Channel | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
   const list = channels.filter((channel) => channel.type === "TEXT" || channel.type === "VOICE");
+  const categories = channels.filter((channel) => channel.type === "CATEGORY");
   const selected = list.find((channel) => channel.id === selectedId) ?? null;
 
   return (
     <div className="roles-layout">
       <div className="roles-list">
-        <div className="roles-list-header"><span>Channels — {list.length}</span></div>
+        <div className="roles-list-header">
+          <span>Channels — {list.length}</span>
+          {/* The Roles idiom: the header "+" creates a channel through the SAME dialog
+              the sidebar's channel panel uses (user request). */}
+          <button className="section-add" title="Create channel" onClick={() => setCreateOpen(true)}>+</button>
+        </div>
         {list.map((channel) => (
           <div key={channel.id} className={"roles-row" + (channel.id === selected?.id ? " active" : "")}
             onClick={() => setSelectedId(channel.id)}>
             <ChannelGlyph voice={channel.type === "VOICE"} locked={channel.locked} />
             <span className="role-name">{channel.name}</span>
+            {channel.afk === true ? <span className="afk-badge">AFK</span> : null}
             {/* oak's ChannelListCell carries the trash right in the row — deleting
                 from the settings window does not require hunting the sidebar. */}
             <button className="ghost tiny" title="Delete channel" onClick={(event) => {
@@ -1490,6 +1557,14 @@ function ChannelsSection({ session }: { session: ConnectionSession }): React.JSX
           <ChannelEditor session={session} channel={selected} />
         )}
       </div>
+      {createOpen ? (
+        <CreateChannelModal
+          session={session}
+          request={{ kind: "TEXT", parentId: null, inCategory: false }}
+          categories={categories}
+          onClose={() => setCreateOpen(false)}
+        />
+      ) : null}
       {deleteTarget !== null ? (
         <ConfirmModal
           title="Delete channel"
@@ -1511,7 +1586,7 @@ function ChannelsSection({ session }: { session: ConnectionSession }): React.JSX
 }
 
 function ChannelEditor({ session, channel }: { session: ConnectionSession; channel: Channel }): React.JSX.Element {
-  const [tab, setTab] = useState<"permissions" | "access">("permissions");
+  const [tab, setTab] = useState<"permissions" | "access" | "afk">("permissions");
   // The channel name edits INLINE via the hover pencil, like the role name.
   // There is no Appearance tab here, so Enter commits straight away (the tab
   // Save buttons own the overrides, not the name) — Escape rolls back.
@@ -1584,6 +1659,10 @@ function ChannelEditor({ session, channel }: { session: ConnectionSession; chann
       <div className="settings-tabs">
         <button className={"settings-tab" + (tab === "permissions" ? " active" : "")} onClick={() => setTab("permissions")}>Permissions</button>
         <button className={"settings-tab" + (tab === "access" ? " active" : "")} onClick={() => setTab("access")}>Access</button>
+        {/* The AFK designation is a VOICE-channel concern (the idle-sweep target). */}
+        {channel.type === "VOICE" ? (
+          <button className={"settings-tab" + (tab === "afk" ? " active" : "")} onClick={() => setTab("afk")}>AFK</button>
+        ) : null}
       </div>
       {/* key=channel.id — same remount contract as the role editor: local edit
           state must never survive a channel switch. The wrapper owns the tab's
@@ -1591,10 +1670,126 @@ function ChannelEditor({ session, channel }: { session: ConnectionSession; chann
       <div className="role-tab-body">
         {tab === "permissions" ? (
           <ChannelPermissionsTab key={channel.id} session={session} channel={channel} />
-        ) : (
+        ) : tab === "access" ? (
           <ChannelAccessTab key={channel.id} session={session} channel={channel} />
+        ) : (
+          <ChannelAfkTab key={channel.id} session={session} channel={channel} />
         )}
       </div>
+    </div>
+  );
+}
+
+/** The VOICE channel's AFK tab: designate THIS room as the server's AFK channel (at
+ *  most one exists — another channel's designation is shown read-only here) and edit
+ *  the idle timeout. Staged draft (the ServerStorageSection idiom). */
+function ChannelAfkTab({ session, channel }: {
+  session: ConnectionSession;
+  channel: Channel;
+}): React.JSX.Element {
+  const channels = useStore(session.channelStore, (allChannels) => allChannels);
+  const [loaded, setLoaded] = useState(false);
+  const [isAfkDraft, setIsAfkDraft] = useState(false);
+  const [timeoutDraft, setTimeoutDraft] = useState(30);
+  const [initialIsAfk, setInitialIsAfk] = useState(false);
+  const [initialTimeout, setInitialTimeout] = useState(30);
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    session.rest.getAfkSettings()
+      .then((settings) => {
+        if (cancelled) {
+          return;
+        }
+        const timeout = settings.afkTimeoutMinutes ?? 30;
+        const isAfk = settings.afkChannelId === channel.id;
+        setInitialIsAfk(isAfk);
+        setInitialTimeout(timeout);
+        setIsAfkDraft(isAfk);
+        setTimeoutDraft(timeout);
+        setLoaded(true);
+      })
+      .catch((loadError: unknown) => {
+        if (!cancelled) {
+          setError(loadError instanceof Error ? loadError.message : String(loadError));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session.rest, channel.id]);
+
+  // Another channel already holds the designation — this tab is read-only for it
+  // (user decision: an AFK channel may only be set where none exists yet).
+  const afkHolder = channels.find((entry) => entry.afk === true && entry.id !== channel.id) ?? null;
+
+  const dirty = loaded && (isAfkDraft !== initialIsAfk || timeoutDraft !== initialTimeout);
+  const save = async (): Promise<void> => {
+    if (busy || !dirty) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const stored = await session.rest.updateAfkSettings(isAfkDraft ? channel.id : null, timeoutDraft);
+      const timeout = stored.afkTimeoutMinutes ?? timeoutDraft;
+      setInitialIsAfk(stored.afkChannelId === channel.id);
+      setInitialTimeout(timeout);
+      setIsAfkDraft(stored.afkChannelId === channel.id);
+      setTimeoutDraft(timeout);
+      setSaved(true);
+      window.setTimeout(() => setSaved(false), 1500);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : String(saveError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (afkHolder !== null && !initialIsAfk) {
+    return (
+      <div>
+        <div className="overview-heading">AFK channel</div>
+        <div className="settings-hint">
+          {`"${afkHolder.name}" is already this server's AFK channel — remove the designation there first.`}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="afk-settings">
+      <div className="overview-heading">AFK channel</div>
+      <div className="settings-hint">
+        Idle voice members are moved here automatically. Members in this channel are
+        server-muted and cannot share their screen.
+      </div>
+      <div className="settings-check">
+        <input
+          type="checkbox"
+          id="afk-designation"
+          checked={isAfkDraft}
+          onChange={(event) => setIsAfkDraft(event.target.checked)}
+        />
+        <label htmlFor="afk-designation">This channel is the AFK channel</label>
+      </div>
+      {isAfkDraft ? (
+        <label className="settings-field">
+          <span>AFK timeout</span>
+          <select value={timeoutDraft} onChange={(event) => setTimeoutDraft(Number(event.target.value))}>
+            {AFK_TIMEOUT_PRESETS.map((preset) => (
+              <option key={preset.minutes} value={preset.minutes}>{preset.label}</option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      <div className="settings-apply">
+        <SaveButton label="Save changes" saved={saved} dirty={dirty} busy={busy} onClick={() => void save()} />
+      </div>
+      <div className="error-line">{error ?? ""}</div>
     </div>
   );
 }

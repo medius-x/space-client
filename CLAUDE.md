@@ -2849,6 +2849,122 @@ social-aggregate подписан на сторы фоновых сессий �
   400; C — два клиента: hover → пикер → карточка → Join (активная и фоновая записи),
   Dismiss, TTL, офлайн — тишина.
 
+- **Тройной раунд 2: удаление участника + передача овнера + AFK-канал (2026-10-01, код
+  готов, смоук pending; ДЕПЛОЙ ПАРНЫЙ с oak-server — сервер первым; серверная половина —
+  oak-server/CLAUDE.md).** **(A) Kick → «Remove from server» (навсегда):** `MemberKickEvent`
+  += `removed?`, `ServerMember` += `removed?` (true только в строках /bans), MemberEvent
+  += "removed". `rest.removeMember` → POST /api/members/{id}/remove (kickMember удалён).
+  НОВЫЙ чистый `domain/logic/moderation-reason.ts`: memberKickTitle/memberKickReasonText —
+  3 ветки (removed — БЕЗ подсказки реконнекта / banned / disconnect); `onMemberKicked`
+  использует обе. UI: MembersPane пункт «Remove from server» + ModerationModal «Remove»
+  («…permanently removed and will not be able to rejoin»); MembersSection кнопка +
+  ConfirmModal + PERMISSION_DESCRIPTIONS.KICK_MEMBERS «Removal is permanent» + блок
+  **«Removed»** внизу списка (getBannedMembers filtered removed===true, рефеч по
+  members-снапшоту, REMOVED-бейдж, без действий; `.removed-badge` серый близнец
+  banned-бейджа). Сообщения НЕ тронУТЫ: автор удалённого рендерится вечно через
+  /api/users (tombstone «Deleted-User-N» — сервер анонимизирует, ник освобождается,
+  подмены авторства нет по построению). **(B) Передача овнерства:** типы
+  OwnershipTransfer/PendingOwnershipTransfer/OwnershipEvent; rest 5 методов; НОВЫЙ
+  `OwnershipStore` ({loaded, pending}, InvitesStore-идиома) + `ownershipRefresh`
+  (CoalescingRefresher) с фетчем в start() (заявка переживает офлайн получателя) и
+  resyncAfterReconnect; подписка /user/queue/ownership → hooks.onOwnershipEvent +
+  рефреш; session.offerOwnershipTransfer/accept/decline/cancel (каждый сам рефечит).
+  runtime: AppState += ownershipModalOpen + ownershipPreselect (+open/closeOwnershipTransfer,
+  сброс в teardown); хук onOwnershipEvent — тост «You are now the owner» на ACCEPTED мне
+  (username берётся из connectionDirectory — hooks-фабрика не имеет session, грабля
+  фоновых звонков); короны/правила flip едут на members-рефече (MemberEvent
+  rolesChanged — оба участника). UI (юзер-решение смоук-раунда: точка входа —
+  Server Settings → Members, НЕ ServerMenu): кнопка «Transfer ownership» в строке
+  Member actions — видна ТОЛЬКО овнеру (НЕ disabled, а НЕ ВИДНА остальным), скрыта на
+  banned/owner-строке; открывает НОВЫЙ `TransferOwnershipModal` с preselect (модал
+  стартует сразу в confirm-стадии выбранного; без preselect — пикер transferCandidates,
+  чистая logic/ownership-transfer.ts: кроме self и banned, сорт по нику; confirm «You
+  will lose the owner role. Only the new owner can transfer it back»; исходящая
+  PENDING → карточка «Pending transfer to X» + Cancel); Modal += `elevated`-проп
+  (z-110, поверх settings-overlay). Баннер `OwnershipBanner` в Sidebar ПОД
+  server-header (persistent, только при pending.toUserId === selfUserId; 👑 + «X
+  offers you ownership of this server» + Accept/Decline; `.ownership-banner`
+  voice-bar-идиома, `.ownership-warning` amber).
+  **Смоук-фикс 1 (живой репорт «ник удалённого в чате остался старым»): ростер
+  обновляется по id корректно, но ЗАГРУЖЕННЫЕ сообщения несли СТАРЫЙ authorUsername →
+  рендер через displayNameOf падал в fallback и показывал старый логин.** Лекарь:
+  обработчик /topic/users при СМЕНЕ username (tombstone) зовёт
+  `MessageStore.renameAuthor(userId, nextUsername)` (патчит authorUsername по
+  стабильному authorId во всех loaded-каналах, один emit) + socialStore.applyUserRename
+  по СТАРОМУ ключу тоже. **Смоук-фикс 2: серверная OWNERSHIP_QUEUE потеряла ложный
+  /user-префикс — см. oak-server/CLAUDE.md.**
+  **(C) AFK-канал:** `VoiceControlEvent.type` → "KICKED"|"MOVED", `byUsername:
+  string | null`; `AfkSettings` + rest get/updateAfkSettings. Electron: powerMonitor в
+  import main + `ipcMain.handle("space-idle:time")` + preload `spaceIdle`-бридж +
+  `IdleBridge` в bridges.ts. НОВЫЙ чистый `domain/logic/afk-activity.ts`:
+  `isAfkActive(idleSeconds, speaking) = speaking || idle < 60` (активность = системный
+  ввод ВСЕГО компьютера ИЛИ говорение — юзер-критерий «активно пользуется ПК»).
+  runtime: `startAfkReporting/stopAfkReporting` — интервал 30с, выход без
+  activeSession/activeVoiceChannelId; `idleSeconds = spaceIdle ?
+  getSystemIdleTime() : +Infinity` (нет моста → speaking-only, НИКОГДА ложный
+  «активен»); `speaking = roomAudio.speakingSnapshot().has(ownUsername)`; активен →
+  `/app/voice.activity`. Старт в joinVoice после voice.join-сенда, стоп в
+  teardownVoice (покрывает все выходы). Приём: connection-session ветка MOVED →
+  `hooks.onVoiceMoved(channelId)`; runtime-хук (onVoiceKicked-паттерн): isActive-гейт,
+  cancelVoiceRejoin (лестница могла целить СТАРУЮ комнату), гейты канала (VOICE/!locked
+  → joinVoice — его внутренний cancel+свежий /room; иначе leaveVoice), тост «You were
+  moved to #имя»; поздний session-lost видит уже НОВЫЙ канал — самолечение.
+  **Раунд-2 переделка AFK-UI (юзер-решения, 2026-10-02; Discord-факты проверены
+  поиском: AFK-канал МОЖЕТ жить в категории, server-mute не снимается юзером, стрим
+  запрещён):** настройка AFK = свойство КАНАЛА, а не глобальный селектор. `Channel` +=
+  `afk?` (8-е wire-поле ChannelResponse, пинг channels.changed после PUT). НОВЫЙ
+  `CreateChannelModal.tsx` (ВЫНЕСЕН из Sidebar — переиспользуется Server Settings →
+  Channels): для kind VOICE тоггл «AFK channel — idle members are moved here» →
+  появляется select таймаута (AFK_TIMEOUT_PRESETS 5m..7d); submit = create + при
+  тоггле `updateAfkSettings(channel.id, timeout)` (провал PUT оставляет канал живым,
+  ошибка inline). Server Settings → Channels: заголовок получил «+» (Roles-идиома
+  section-add → тот же CreateChannelModal); строка VOICE-канала с `afk` несёт бейдж
+  **AFK** (amber, `.afk-badge` — Members-бейдж-идиома); в ChannelEditor ТРЕТЬЯ вкладка
+  **AFK** (только VOICE): тоггл «This channel is the AFK channel» + таймаут + Save
+  (снятие = PUT null); если AFK уже назначен ДРУГОЙ канал — вкладка read-only с его
+  именем (юзер-правило «настраивать только если такого ещё нет»). СТАРЫЙ
+  AfkSettingsBlock (idle-панель с глобальным селектором) УДАЛЁН — «Select a channel»
+  вернулся. Супресс: сервер шлёт mod-mute в AFK (см. oak-server) — клиентский рендер
+  красной марки сам; кнопка Share/Camera (единая voice-toggle share) в VoiceBar
+  СКРЫТА в AFK-канале (`channelAfk`-подписка на channelStore).
+  Тесты: moderation-reason (3), ownership-transfer (3), ownership-store (3),
+  afk-activity (3), rest-mutations += remove/ownership×5/afk×2. Гейты: сервер **428/428**,
+  клиент **567/567** + typecheck + build; иконки не менялись (👑 — юникод-глиф).
+  **Смоук-фиксы раунда 3 (2026-10-02, три юзер-репорта):** (1) **бейдж AFK не появлялся**
+  — `ChannelStore.sameChannel` не сравнивал `afk` → applySnapshot считал рефеч
+  «неизменным» и держал старую ссылку строки (та же грабля, что однажды стирала бейдж
+  мьюта); лекарь — сравнение afk + регрессионный тест (designate/snapshot→emit).
+  (2) **AFK-мьют не действовал** — сервер шлёт мьют-стейт ДО MOVED-пуша, а клиент на
+  MOVED запускает joinVoice, чей clearUser/compliance-reset ЗАТИРАЛ только что
+  пришедший мод-мьют; лекарь с двух сторон: сервер гонит applyOnEnter ПОСЛЕ MOVED
+  (TCP-порядок одного сокета), клиент в joinVoice при заходе в afk-канал НЕ чистит
+  свои метки и НЕ сбрасывает mic-комплаенс (enteringAfkRoom-гейт). (3) **овнер не
+  смещался после accept** — сервер пушил MemberEvent/OwnershipEvent ВНУТРИ tx →
+  рефеч читал докоммитное (invites-грабля); ВСЕ пуши OwnershipTransferService переведены
+  в pushAfterCommit (см. oak-server/CLAUDE.md). — **клиент 568/568, сервер 428/428**.
+  **Смоук-фиксы раунда 4 (2026-10-02):** (1) **каскад отмены/передачи овнерства**
+  (юзер-решение): TransferOwnershipModal переведён на стейдж-машину
+  (`cancel {thenTransferTo} | confirm {targetUserId} | picker`): повторное открытие на
+  ПОЛУЧАТЕЛЕ живой заявки = подтверждение отмены; на ДРУГОМ = «Cancel & continue» —
+  отмена, ЗАТЕМ confirm-диалог передачи новому (два диалога последовательно, модал не
+  закрывается между ними); в MembersSection строка получателя живой заявки меняет кнопку
+  на danger «Cancel ownership transfer» (isOutgoingPending по ownershipStore).
+  (2) **застрявший AFK-мьют после снятия designation** — мод-метки живут в трекере
+  пер-канально и ре-сиидятся при каждом заходе; снятие designation ничего не чистило
+  (сервер): AfkController.update при уходе designation со старого канала зовёт
+  `tracker.clearModeratorMutes(old)` (НОВЫЙ метод трекера: снять mod-mute КАЖДОМУ
+  меченому, включая несидящих — иначе ре-сиид воскрешал мьют вечно) + moderateAudio
+  unmute сидящим (см. oak-server/CLAUDE.md). — **клиент 568/568, сервер 430/430**.
+  **Смоук-фикс раунда 5 (2026-10-02): ЖИВОЙ шаринг не гас при ретро-назначении AFK**
+  (юзер шарил, комнату назначили AFK — мьют пришёл, шаринг остался): в VoiceBar
+  useEffect [inCall, channelAfk, sharing, cameraOn] — при флаге afk живого канала
+  камера/шаринг немедленно останавливаются (stopShare/toggleCamera). КООПЕРАТИВНО:
+  серверного видео-мьюта в Janus-обвязке нет (moderateAudio режет только аудио
+  m-line; полный kick — единственный форс, осознанно не используем) — та же модель
+  доверия, что у селф-тумблеров. Плюс сервер: ретро-мьют сидящих при landing-
+  designation (AfkController → applyOnEnter по каждому сидящему; см.
+  oak-server/CLAUDE.md). — **клиент 568/568, сервер 431/431**.
+
 - Гейт после каждой фазы: `npm test` + `npm run typecheck` зелёные.
 - Новые файлы сразу `git add`. Коммиты только по явной команде; subject на английском.
 - Никаких single-letter имён (кроме i/j цикла и T/E/K/V генериков); комментарии в коде

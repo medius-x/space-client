@@ -19,7 +19,8 @@ function sameChannel(left: Channel, right: Channel): boolean {
     && left.createdAt === right.createdAt
     && left.locked === right.locked
     && left.parentId === right.parentId
-    && left.position === right.position;
+    && left.position === right.position
+    && left.afk === right.afk;
 }
 
 export class ChannelStore extends Emitter {

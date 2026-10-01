@@ -213,6 +213,12 @@ export interface HotkeyBridge {
   onHotkey(callback: (actionId: string) => void): void;
 }
 
+/** System-idle bridge (the AFK sweep's activity source): seconds since the last
+ *  OS-wide user input, from Electron's powerMonitor in main. */
+export interface IdleBridge {
+  getSystemIdleTime(): Promise<number>;
+}
+
 declare global {
   interface Window {
     spaceCapture?: CaptureBridge;
@@ -220,5 +226,6 @@ declare global {
     spaceSysAudio?: SysAudioBridge;
     spaceToast?: ToastBridge;
     spaceHotkey?: HotkeyBridge;
+    spaceIdle?: IdleBridge;
   }
 }

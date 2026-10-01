@@ -24,11 +24,13 @@ import {
 } from "../../domain/logic/channel-groups";
 import { applyChannelDrop, type DragSubject, type DropList } from "../../domain/logic/channel-drag";
 import { filterVoiceInviteCandidates, onlineVoiceInviteCandidates } from "../../domain/logic/voice-invite";
+import { notifications } from "../notifications";
 import { log } from "../../logging";
 import type { Channel } from "../../types";
 import { MANAGE_CHANNELS_PERMISSION } from "../../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { Modal } from "./Modal";
+import { CreateChannelModal } from "./CreateChannelModal";
 import { Avatar } from "./Avatar";
 import { ChannelGlyph } from "./ChannelGlyph";
 import { VoiceMarks, VoiceMemberCard } from "./VoiceRoom";
@@ -518,6 +520,11 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
             </span>
             <span className="icon mdi-chevron-down sidebar-server-chevron" />
           </div>
+          {/* The recipient's PERSISTENT ownership notification: rendered while THIS
+              member holds an incoming pending offer (fetched at session start — it
+              survives the recipient being offline — and refreshed on every
+              /user/queue/ownership push). */}
+          <OwnershipBanner session={session} />
           {sidebarDiscussions ? (
             <>
               <div className="sidebar-section-title" ref={sectionTitleRef}>
@@ -613,6 +620,55 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
         <VoiceInvitePickerModal session={session} channel={inviteTarget} onClose={() => setInviteTarget(null)} />
       ) : null}
     </aside>
+  );
+}
+
+/**
+ * The recipient's incoming ownership-offer banner (under the server header): the
+ * persistent accept/decline notification. Accept makes this member the owner
+ * (crowns and permission masks flip via the members refetch); decline returns
+ * the offer to the sender.
+ */
+function OwnershipBanner({ session }: { session: ConnectionSession }): React.JSX.Element | null {
+  const pending = useStore(session.ownershipStore, (state) => state.pending);
+  const selfUserId = session.selfUserId();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (pending === null || selfUserId === null || pending.toUserId !== selfUserId) {
+    return null;
+  }
+
+  const decide = async (accept: boolean): Promise<void> => {
+    if (busy) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      if (accept) {
+        await session.acceptOwnershipTransfer(pending.id);
+        notifications.showToast({ title: "Server", channelName: "", body: "You are now the owner of this server." });
+      } else {
+        await session.declineOwnershipTransfer(pending.id);
+      }
+    } catch (decideError) {
+      setError(decideError instanceof Error ? decideError.message : String(decideError));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="ownership-banner">
+      <div className="ownership-banner-text">
+        <span className="icon mdi-crown" />
+        <span>{`"${pending.fromDisplayName}" offers you ownership of this server`}</span>
+      </div>
+      <div className="error-line">{error ?? ""}</div>
+      <div className="ownership-banner-actions">
+        <button className="primary" disabled={busy} onClick={() => void decide(true)}>Accept</button>
+        <button className="ghost" disabled={busy} onClick={() => void decide(false)}>Decline</button>
+      </div>
+    </div>
   );
 }
 
@@ -745,91 +801,6 @@ function DiscussionsList({ session, channels, discussions }: {
         </div>
       )}
     </>
-  );
-}
-
-function CreateChannelModal({ session, request, categories, onClose }: {
-  session: ConnectionSession;
-  request: { kind: "TEXT" | "VOICE" | "CATEGORY"; parentId: number | null; inCategory: boolean };
-  categories: readonly Channel[];
-  onClose: () => void;
-}): React.JSX.Element {
-  const [name, setName] = useState("");
-  const [kind, setKind] = useState<"TEXT" | "VOICE" | "CATEGORY">(request.kind);
-  // The parent select: the pre-selected category (from the header "+") or None.
-  const [parentId, setParentId] = useState<number | null>(
-    request.kind === "TEXT" || request.kind === "VOICE" ? request.parentId : null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const submit = async (): Promise<void> => {
-    const trimmed = name.trim();
-    if (!trimmed || busy) {
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      const channel = await session.createChannel(
-        kind === "CATEGORY"
-          ? { name: trimmed, type: "CATEGORY" }
-          : { name: trimmed, type: kind, parentId });
-      onClose();
-      // oak opens the fresh channel right away: text → the chat, voice → a join.
-      // A category stays closed — there is nothing to open.
-      if (channel.type === "VOICE") {
-        joinVoiceGuarded(channel);
-      } else if (channel.type === "TEXT") {
-        setActiveChannel(channel.id);
-      }
-    } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : String(submitError));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Modal title={kind === "CATEGORY" ? "Create category" : "Create channel"} onClose={onClose}>
-      <div className="modal-row">
-        <label className={"kind-choice" + (kind === "TEXT" ? " chosen" : "")} onClick={() => setKind("TEXT")}><span className="icon mdi-pound" /> text</label>
-        <label className={"kind-choice" + (kind === "VOICE" ? " chosen" : "")} onClick={() => setKind("VOICE")}><span className="icon mdi-volume-high" /> voice</label>
-        {/* Nested categories do not exist — the category's own "+" offers only
-            channels (user decision). */}
-        {!request.inCategory ? (
-          <label className={"kind-choice" + (kind === "CATEGORY" ? " chosen" : "")} onClick={() => setKind("CATEGORY")}><span className="icon mdi-folder-outline" /> category</label>
-        ) : null}
-      </div>
-      {kind !== "CATEGORY" ? (
-        <label className="settings-field">
-          <span>Category</span>
-          <select value={parentId === null ? "" : parentId} onChange={(event) =>
-            setParentId(event.target.value === "" ? null : Number(event.target.value))}>
-            <option value="">— no category —</option>
-            {categories.map((category) => (
-              <option key={category.id} value={category.id}>{category.name}</option>
-            ))}
-          </select>
-        </label>
-      ) : null}
-      <input
-        autoFocus
-        type="text"
-        value={name}
-        onChange={(event) => setName(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            void submit();
-          }
-        }}
-        placeholder={kind === "TEXT" ? "new-channel" : kind === "VOICE" ? "General Voice" : "New Category"}
-      />
-      <div className="error-line">{error ?? ""}</div>
-      <div className="modal-actions">
-        <button className="ghost" onClick={onClose}>Cancel</button>
-        <button className="primary" disabled={busy || name.trim().length === 0} onClick={() => void submit()}>Create</button>
-      </div>
-    </Modal>
   );
 }
 
