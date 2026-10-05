@@ -187,6 +187,60 @@ describe("SfuSession", () => {
     expect(sink.ended).toEqual([{ username: "bob", kind: "voice" }]);
   });
 
+  it("re-delivers the returning publisher's voice WITHOUT ontrack (recycled m-line)", async () => {
+    // Live bug 2026-10-05: a banned-then-unbanned member re-joined and was inaudible to
+    // everyone sitting in the room — Janus recycled the subscriber m-line, Chromium
+    // returned the SAME receiver track without firing ontrack, and the listener's voice
+    // chain (detached when the old feed died) was never re-attached.
+    const { janus, sends } = makeJanus();
+    const sink = makeCallbacks();
+    const session = new SfuSession({
+      room: { janusUrl: "http://x", roomId: 5, token: null, pin: null },
+      username: "alice",
+      janus,
+      publisherHandleId: 42,
+      mediaSource: mediaSourceWithMic(),
+      peerConnectionImpl: FakePeerConnection as unknown as typeof RTCPeerConnection,
+      callbacks: sink.callbacks,
+    });
+    await session.start();
+
+    // Bob joins (feed 9), his voice flows through the regular ontrack path on slot 3.
+    session.handleEvent({
+      kind: "event",
+      publishers: [{ feedId: 9, display: "bob", streams: [{ type: "audio", mid: "0", mindex: 0 }] }],
+    });
+    await vi.waitFor(() => expect(sends.some((entry) => entry.body.request === "join" && entry.body.ptype === "subscriber")).toBe(true));
+    const subscriber = FakePeerConnection.instances[1]!;
+    const recycledTrack = fakeTrack("audio-bob");
+    subscriber.seedRemoteTransceiver("3", recycledTrack);
+    session.handleEvent({ kind: "attached", streams: [{ slotMid: "3", feedId: 9, streamMid: "0" }] });
+    subscriber.driveOnTrackOn(subscriber.transceivers[subscriber.transceivers.length - 1]!, recycledTrack);
+    expect(sink.tracks).toEqual([{ username: "bob", kind: "voice" }]);
+
+    // Bob leaves (ban), then RETURNS with a NEW feed id on the SAME recycled slot.
+    session.handleEvent({ kind: "event", unpublished: 9 });
+    expect(sink.ended).toEqual([{ username: "bob", kind: "voice" }]);
+    session.handleEvent({
+      kind: "event",
+      publishers: [{ feedId: 10, display: "bob", streams: [{ type: "audio", mid: "0", mindex: 0 }] }],
+    });
+    await vi.waitFor(() => expect(sends.some((entry) => entry.body.request === "subscribe")).toBe(true));
+    // NO ontrack fires for the recycled m-line — only the gateway's offer arrives.
+    session.handleEvent({ kind: "attached", streams: [{ slotMid: "3", feedId: 10, streamMid: "0" }] });
+    await session.handleSubscriberOffer({ type: "offer", sdp: "v=0\nm=audio 3\n" });
+
+    // The passive bind re-attached the SAME track object to the fresh feed's voice chain.
+    expect(sink.tracks).toEqual([
+      { username: "bob", kind: "voice" },
+      { username: "bob", kind: "voice" },
+    ]);
+
+    // A repeated SRD of the same feed does NOT double-deliver (feedId:trackId dedup).
+    await session.handleSubscriberOffer({ type: "offer", sdp: "v=0\nm=audio 3\n" });
+    expect(sink.tracks).toHaveLength(2);
+  });
+
   it("subscriber ICE failure surfaces as SubscriberTransportError (no silent death)", async () => {
     const { janus, sends } = makeJanus();
     const sink = makeCallbacks();

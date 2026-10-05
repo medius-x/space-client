@@ -3081,6 +3081,24 @@ social-aggregate подписан на сторы фоновых сессий �
   [sfu]-логе зрителя при просмотре `subscriptions +1` (только share-audio, было
   +2), попап показывает видео, звук шара в колонках, diag-«subs» растёт на 1.
 
+- **Смоук-фикс аудита: вернувшийся паблишер неслышим (2026-10-05, живой репорт «разбаненого
+  не слышно, он слышит; лечится перезаходом слушающего»).** Корень по логам: у слушающего
+  при возврате пира `feed → subscriptions +1 → answer sent` БЕЗ единой `remote track on
+  slot` строки — класс «Janus рециклит m-line подписчика → ontrack повторно НЕ стреляет»,
+  ранее закрытый только для share-видео. Ban-эвикт аудита сделал сценарий «ушёл насильно →
+  вернулся» тривиальным: фид умер → голос-цепь RoomAudio детачнулась → разбаненный
+  вернулся с НОВЫМ feed id на ТОМ ЖЕ слоте m-line → Chromium отдал тот же объект трека
+  БЕЗ ontrack → переаттача не было. Фикс в `SfuSession` (peer-call-прецедент
+  bindPassiveReceiverSlots): НОВЫЙ `deliverRemoteTrack` — единый путь доставки для ontrack
+  И пассивного бинда с дедупом `feedId:trackId` (новый фид ре-доставляет рецикл-трек;
+  ренего того же фида не дублирует); `bindPassiveReceiverSlots()` — свип транссиверов
+  после КАЖДОГО setRemoteDescription и после КАЖДОГО attached/updated (маппинг может
+  опаздывать за оффером на poll) — доставляет `receiver.track` резолвимых слотов;
+  `removeFeed` чистит deliveredTrackKeys по feedId-префиксу, close — целиком. Лог
+  `passive bind on slot N` — маркер срабатывания. Тест `recycled m-line re-delivers
+  without ontrack` (+seedRemoteTransceiver-драйвер в FakePeerConnection; рецикл-трек
+  доставляется пассивно, повторный SRD не дублирует). Гейты 575/575 + typecheck.
+
 - Гейт после каждой фазы: `npm test` + `npm run typecheck` зелёные.
 - Новые файлы сразу `git add`. Коммиты только по явной команде; subject на английском.
 - Никаких single-letter имён (кроме i/j цикла и T/E/K/V генериков); комментарии в коде

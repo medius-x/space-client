@@ -175,6 +175,21 @@ export class FakePeerConnection {
     this.ontrack?.(event);
   }
 
+  /** Emulates a transceiver that a PREVIOUS remote offer created (a recycled m-line:
+   *  it exists before any new offer, carrying the same receiver track Chromium keeps).
+   *  The passive-binding path reads it through getTransceivers() — no ontrack involved. */
+  seedRemoteTransceiver(mid: string, track: unknown): FakeTransceiver {
+    const transceiver: FakeTransceiver = {
+      mid,
+      kind: "audio",
+      direction: "recvonly",
+      sender: { track: null, replaceTrack: async () => undefined },
+      receiver: { track },
+    };
+    this.transceivers.push(transceiver);
+    return transceiver;
+  }
+
   /** Emit an ICE candidate through onicecandidate (the trickle path). */
   driveIceCandidate(candidate: string): void {
     const event = {

@@ -211,6 +211,12 @@ export class SfuSession {
   /** FIFO of video stream-mids awaiting a track (slot mids go stale after reuse). */
   private readonly pendingVideoSubscriptions: { feedId: number; mid: string }[] = [];
   private readonly viewedFeedIds = new Set<number>();
+  /** Recycle dedup: Janus reuses subscriber m-lines, so a returning publisher's feed gets
+   *  the SAME receiver-track object back without ontrack ever firing again. Delivery is
+   *  keyed feedId:trackId — a NEW feed id re-delivers its recycled track (the listener's
+   *  chain was torn down with the dead feed and must re-attach), while a renegotiation of
+   *  the same feed does not double-deliver. */
+  private readonly deliveredTrackKeys = new Set<string>();
   private lastSubscriberOfferSdp: string | null = null;
 
   constructor(options: SfuSessionOptions) {
@@ -528,6 +534,9 @@ export class SfuSession {
         for (const stream of event.streams) {
           this.translator.onAttached(stream.slotMid, stream.feedId, stream.streamMid);
         }
+        // The attached mapping can trail the offer that already hit the subscriber PC —
+        // re-bind now that slots resolve (the passive sweep is deduped, so this is free).
+        this.bindPassiveReceiverSlots();
         break;
       case "error":
         if (isRoomVanished(event)) {
@@ -561,6 +570,7 @@ export class SfuSession {
         log.info("sdp", `WIRE offer fmtp (janus→us): ${fmtpSummary(current.sdp)}`);
         const subscriber = this.subscriberPc ?? this.createSubscriber();
         await subscriber.setRemoteDescription({ type: "offer", sdp: current.sdp });
+        this.bindPassiveReceiverSlots();
         const answer = await subscriber.createAnswer();
         const mungedSdp = mungeStereoIntoAnswerIfOfferHasIt(answer.sdp ?? "", current.sdp);
         await subscriber.setLocalDescription({ type: "answer", sdp: mungedSdp });
@@ -603,6 +613,7 @@ export class SfuSession {
     }
     this.feeds.clear();
     this.translator.clear();
+    this.deliveredTrackKeys.clear();
     try {
       this.publisherPc?.close();
     } catch {
@@ -663,6 +674,13 @@ export class SfuSession {
     for (const key of [...this.subscribedKeys]) {
       if (key.startsWith(`${feedId}:`)) {
         this.subscribedKeys.delete(key);
+      }
+    }
+    // Forget the dead feed's deliveries: the publisher's NEXT feed id must re-deliver its
+    // (recycled) track — the dedup key includes the feed id exactly for this.
+    for (const deliveredKey of [...this.deliveredTrackKeys]) {
+      if (deliveredKey.startsWith(`${feedId}:`)) {
+        this.deliveredTrackKeys.delete(deliveredKey);
       }
     }
   }
@@ -819,29 +837,78 @@ export class SfuSession {
       log.warn("sfu", `track for unknown feed ${feedId}`);
       return;
     }
+    this.deliverRemoteTrack(slotMid, resolved, feed, event.track);
+  }
+
+  /** Single delivery path for ontrack AND the passive recycle bind: classification plus
+   *  the feedId:trackId dedup. Returns whether the track was handed to the callbacks. */
+  private deliverRemoteTrack(slotMid: string, resolved: { feedId: number; streamMid: string },
+                             feed: FeedInfo, track: MediaStreamTrack): boolean {
+    const dedupKey = `${resolved.feedId}:${track.id}`;
+    if (this.deliveredTrackKeys.has(dedupKey)) {
+      return false;
+    }
     const classification = classifyFeed(feed);
     const streamMid = resolved.streamMid;
-    const track = event.track;
     if (classification.voiceMid === streamMid) {
-      this.callbacks.onRemoteTrack(feedId, feed.display, "voice", track);
-      return;
+      this.deliveredTrackKeys.add(dedupKey);
+      this.callbacks.onRemoteTrack(resolved.feedId, feed.display, "voice", track);
+      return true;
     }
     if (classification.shareAudioMids.includes(streamMid)) {
-      this.callbacks.onRemoteTrack(feedId, feed.display, "share", track);
-      return;
+      this.deliveredTrackKeys.add(dedupKey);
+      this.callbacks.onRemoteTrack(resolved.feedId, feed.display, "share", track);
+      return true;
     }
     if (classification.videoMids.includes(streamMid)) {
-      this.callbacks.onRemoteTrack(feedId, feed.display, "video", track);
-      return;
+      this.deliveredTrackKeys.add(dedupKey);
+      this.callbacks.onRemoteTrack(resolved.feedId, feed.display, "video", track);
+      return true;
     }
     // Stale slot mid reuse: bind the video track to the OLDEST pending video sub.
-    const pendingIndex = this.pendingVideoSubscriptions.findIndex((entry) => entry.feedId === feedId);
+    const pendingIndex = this.pendingVideoSubscriptions.findIndex((entry) => entry.feedId === resolved.feedId);
     if (pendingIndex !== -1) {
       this.pendingVideoSubscriptions.splice(pendingIndex, 1);
-      this.callbacks.onRemoteTrack(feedId, feed.display, "video", track);
+      this.deliveredTrackKeys.add(dedupKey);
+      this.callbacks.onRemoteTrack(resolved.feedId, feed.display, "video", track);
+      return true;
+    }
+    log.warn("sfu", `unclassified track on slot ${slotMid} (stream ${streamMid}, feed ${resolved.feedId})`);
+    return false;
+  }
+
+  /** The returning-publisher countermeasure (the voice twin of the share-video recycle
+   *  fix): Janus reuses subscriber m-lines, so when a publisher leaves and comes back
+   *  (ban/unban, plain rejoin) Chromium hands the listener the SAME receiver-track object
+   *  WITHOUT firing ontrack again — the voice chain detached with the dead feed and
+   *  nothing re-attached it (live 2026-10-05: an unbanned member was inaudible to
+   *  everyone in the room until a listener re-joined). Sweeps the transceivers and
+   *  delivers receiver.track for any resolvable slot the dedup has not seen — the
+   *  peer-call bindPassiveReceiverSlots precedent. Runs after every SRD and every
+   *  attached/updated mapping (the mapping can trail the offer by a poll). */
+  private bindPassiveReceiverSlots(): void {
+    const subscriber = this.subscriberPc;
+    if (!subscriber || this.closed) {
       return;
     }
-    log.warn("sfu", `unclassified track on slot ${slotMid} (stream ${streamMid}, feed ${feedId})`);
+    for (const transceiver of subscriber.getTransceivers()) {
+      const slotMid = transceiver.mid;
+      const track = transceiver.receiver?.track;
+      if (slotMid == null || !track) {
+        continue;
+      }
+      const resolved = this.translator.resolve(slotMid);
+      if (!resolved) {
+        continue;
+      }
+      const feed = this.feeds.get(resolved.feedId);
+      if (!feed) {
+        continue;
+      }
+      if (this.deliverRemoteTrack(slotMid, resolved, feed, track)) {
+        log.info("sfu", `passive bind on slot ${slotMid} (stream ${resolved.streamMid}, feed ${resolved.feedId}) — ontrack never fired for the recycled m-line`);
+      }
+    }
   }
 
   /** Explicit, serialized publisher offers (busy-guard; latest-wins re-run). */
