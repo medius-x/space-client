@@ -1,8 +1,10 @@
 import { isSystemAudioAvailable, startSystemAudio, stopSystemAudio } from "./system-audio";
 import { getClientSize, isWindowConfirmedDead, watchSourceLiveness } from "./window-liveness";
-import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, globalShortcut, ipcMain, nativeTheme, net, powerMonitor, protocol, screen, session, shell } from "electron";
+import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, globalShortcut, ipcMain, nativeTheme, net, powerMonitor, protocol, safeStorage, screen, session, shell } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { lookup } from "node:dns/promises";
+import { isBlockedAddress, PREVIEW_REDIRECT_LIMIT, previewUrlFromString } from "../src/domain/logic/net-guard";
 
 /**
  * Space spike — Electron main process.
@@ -157,9 +159,53 @@ function kvPath(key: string): string {
   return path.join(app.getPath("userData"), `${safe}.json`);
 }
 
+// M7 (security round 7): connection records carry live refresh tokens, and their
+// KV files sat as PLAINTEXT JSON in userData. Records are now encrypted WHOLE via
+// safeStorage (OS keychain) with an "enc:v1:" marker; a pre-M7 plaintext file
+// still reads (migration happens on the next write of that key). When safeStorage
+// is unavailable the values persist as before — logged once, not per write.
+const KV_ENCRYPTED_PREFIX = "enc:v1:";
+const KV_ENCRYPTED_KEYS = /^connection:/;
+let warnedPlaintextKv = false;
+
+function kvEncode(key: string, json: string): string {
+  if (!KV_ENCRYPTED_KEYS.test(key)) {
+    return json;
+  }
+  if (!safeStorage.isEncryptionAvailable()) {
+    if (!warnedPlaintextKv) {
+      warnedPlaintextKv = true;
+      appendLog("[kv] safeStorage unavailable — connection records stay plaintext (M7 boundary)");
+    }
+    return json;
+  }
+  return KV_ENCRYPTED_PREFIX + safeStorage.encryptString(json).toString("base64");
+}
+
 function kvRead(key: string): unknown {
+  let raw: string;
   try {
-    const raw = fs.readFileSync(kvPath(key), "utf8");
+    raw = fs.readFileSync(kvPath(key), "utf8");
+  } catch {
+    return null;
+  }
+  if (raw.startsWith(KV_ENCRYPTED_PREFIX)) {
+    // Ciphertext without a keychain (moved profile, locked keychain) reads as
+    // absent — the record shows up as needs-re-login, which is the honest state.
+    if (!safeStorage.isEncryptionAvailable()) {
+      return null;
+    }
+    try {
+      const decrypted = safeStorage.decryptString(
+        Buffer.from(raw.slice(KV_ENCRYPTED_PREFIX.length), "base64"),
+      );
+      return JSON.parse(decrypted) as unknown;
+    } catch (error) {
+      appendLog(`[kv] decrypt ${key} failed: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  }
+  try {
     return JSON.parse(raw) as unknown;
   } catch {
     return null;
@@ -177,7 +223,7 @@ async function kvMutate(key: string, apply: (current: unknown) => unknown): Prom
   const job = previous.then(() => {
     const next = apply(kvRead(key));
     try {
-      fs.writeFileSync(kvPath(key), JSON.stringify(next ?? null, null, 2));
+      fs.writeFileSync(kvPath(key), kvEncode(key, JSON.stringify(next ?? null, null, 2)));
     } catch (error) {
       appendLog(`[kv] write ${key} failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -359,24 +405,73 @@ ipcMain.handle("space-hotkey:sync", (_event, entries: unknown): Record<string, "
 // OG link-preview fetching (oak's LinkPreviewService counterpart). The renderer's
 // own fetch is CORS-bound; the MAIN process net stack is not, so page HTML and
 // preview images travel through this channel. Hard limits: http(s) only, a byte
-// cap per kind, an abort timeout. Redirects resolve — the FINAL url comes back
-// (relative og:image resolution needs it).
+// cap per kind, an abort timeout.
+//
+// M5 (security round 7) — the SSRF gate: without an address check this channel is
+// a free proxy into the machine's own network (localhost services, router panels,
+// cloud metadata). Every hostname — the initial URL's and EACH redirect's — is
+// DNS-resolved first and refused when ANY resolved address is blocked
+// (private/loopback/link-local, v4+v6; see src/domain/logic/net-guard.ts).
+// Redirects are followed MANUALLY precisely so each Location is re-checked — an
+// auto-following fetch re-resolves blind and pivots straight into 169.254.169.254.
+// A blocked target is a silent null — no preview, no error surfaced. Known
+// residual: the DNS answer is checked, then net.fetch resolves again
+// independently — a rebinding attacker can serve a public IP to the check and a
+// private one to the fetch; pinning the connection to the checked IP breaks TLS
+// SNI, so the residual is documented, not patched.
 const NET_FETCH_TIMEOUT_MS = 8000;
 const NET_TEXT_CAP_BYTES = 512 * 1024;
 const NET_IMAGE_CAP_BYTES = 2 * 1024 * 1024;
+
+/** M5: resolves the hostname and refuses when any answer is blocked (or the name
+ *  does not resolve at all — the gate fails closed). */
+async function isPreviewHostBlocked(hostname: string): Promise<boolean> {
+  try {
+    const answers = await lookup(hostname, { all: true, verbatim: true });
+    return answers.length === 0 || answers.some((answer) => isBlockedAddress(answer.address));
+  } catch {
+    return true;
+  }
+}
+
 ipcMain.handle("space-net:fetch", async (_event, url: unknown, kind: unknown) => {
-  if (typeof url !== "string" || !/^https?:\/\//.test(url) || (kind !== "text" && kind !== "image")) {
+  if (typeof url !== "string" || (kind !== "text" && kind !== "image")) {
     return null;
   }
   try {
-    const response = await net.fetch(url, { signal: AbortSignal.timeout(NET_FETCH_TIMEOUT_MS) });
+    let current = previewUrlFromString(url);
+    if (current === null || await isPreviewHostBlocked(current.hostname)) {
+      return null;
+    }
+    let response: Response;
+    for (let hop = 0; ; hop++) {
+      response = await net.fetch(current.toString(), {
+        redirect: "manual",
+        signal: AbortSignal.timeout(NET_FETCH_TIMEOUT_MS),
+      });
+      const redirecting = [301, 302, 303, 307, 308].includes(response.status)
+        && response.headers.get("location") !== null;
+      if (!redirecting) {
+        break;
+      }
+      if (hop >= PREVIEW_REDIRECT_LIMIT) {
+        return null; // a redirect chain past the limit is a loop — no preview
+      }
+      const next = previewUrlFromString(new URL(response.headers.get("location")!, current).toString());
+      if (next === null || await isPreviewHostBlocked(next.hostname)) {
+        return null; // a redirect into blocked space is the classic SSRF pivot
+      }
+      current = next;
+    }
     if (!response.ok) {
       return null;
     }
     const cap = kind === "text" ? NET_TEXT_CAP_BYTES : NET_IMAGE_CAP_BYTES;
     const buffer = new Uint8Array(await response.arrayBuffer());
     return {
-      finalUrl: response.url || url,
+      // manual redirects leave response.url at the last hop — the tracked URL is
+      // the truth (relative og:image resolution needs the final one).
+      finalUrl: current.toString(),
       contentType: response.headers.get("content-type") ?? "",
       // Over-cap responses are truncated, not fatal — the OG parser only needs <head>.
       data: buffer.slice(0, cap),

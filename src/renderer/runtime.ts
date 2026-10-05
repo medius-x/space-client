@@ -1497,6 +1497,14 @@ export async function startSession(baseUrl: string, mode: "login" | "register", 
       const previous = existing.refreshToken !== ""
         ? { token: existing.token, refreshToken: existing.refreshToken, expiresAt: existing.expiresAt }
         : null;
+      if (previous !== null) {
+        // M7: the replaced family's refresh dies server-side too — best-effort on
+        // purpose, a dead/unreachable old token must not fail the fresh login (the
+        // server's logout is idempotent, the token also dies at its own expiry).
+        void loginClient.logout(previous.refreshToken).catch((error: unknown) => {
+          log.warn("rest", `old-session logout after re-login failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }
       await connectionDirectory.applyTokens(existing.id, tokens, previous);
       recordId = existing.id;
     } else {
@@ -1535,12 +1543,23 @@ export async function switchConnection(recordId: string): Promise<void> {
 
 export async function removeConnection(recordId: string): Promise<void> {
   const wasActive = activeSession?.recordId === recordId;
+  const record = connectionDirectory.get(recordId);
   if (wasActive) {
     await teardownSession();
   } else {
     disposeBackgroundSession(recordId);
   }
   socialDirectory.drop(recordId);
+  if (record !== null && record.refreshToken !== "") {
+    // M7: revoke the record's refresh server-side before forgetting it — best-effort
+    // (an unreachable server must not block a local delete; the token dies at its
+    // own expiry anyway). A throwaway client: the record's session is already torn
+    // down and logout carries its credential in the body, not the header.
+    const disposalClient = new RestClient({ baseUrl: record.hostUrl, tokenStorage: new MemoryTokenStorage() });
+    void disposalClient.logout(record.refreshToken).catch((error: unknown) => {
+      log.warn("rest", `logout on record delete failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
   await connectionDirectory.remove(recordId);
   if (wasActive) {
     // Removing the ACTIVE server must not strand the window on the "No server

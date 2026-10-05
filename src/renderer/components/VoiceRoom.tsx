@@ -858,8 +858,14 @@ export function VoiceMemberCard({ session, username, hasShare, moderation = true
         </button>
       ) : null}
       {canDeafen ? (
-        <button className="member-card-action" onClick={() => { onClose(); serverDeafenUser(username); }}>
-          {marks?.modDeafened ? "Undeafen" : "Server deafen"}
+        // Security round 7: the forced deafen is a full exit (the gateway cannot
+        // force "stop hearing") — the label says what the click really does.
+        <button
+          className="member-card-action"
+          title="Deafens the member and disconnects them from the room; they can rejoin deafened"
+          onClick={() => { onClose(); serverDeafenUser(username); }}
+        >
+          {marks?.modDeafened ? "Undeafen" : "Deafen / kick"}
         </button>
       ) : null}
       {canKick ? (

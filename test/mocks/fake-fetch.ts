@@ -44,7 +44,10 @@ export class FakeFetch {
     };
     this.requests.push(request);
     const answer = await this.handler(request);
-    return new Response(answer.body === undefined ? null : JSON.stringify(answer.body), {
+    // 204/205/304 are null-body statuses — the fetch Response constructor
+    // rejects a body on them (the real server logout answers a bare 204).
+    const nullBody = answer.status === 204 || answer.status === 205 || answer.status === 304;
+    return new Response(nullBody || answer.body === undefined ? null : JSON.stringify(answer.body), {
       status: answer.status,
       headers: { "Content-Type": "application/json" },
     });

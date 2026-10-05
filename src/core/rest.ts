@@ -117,6 +117,36 @@ export class RestClient {
     log.info("rest", `logged in (token expires in ${auth.expiresIn}s)`);
   }
 
+  /**
+   * M7 (security round 7): revokes the PRESENTED refresh token server-side — the
+   * abandoned token does not outlive its owner in the server's token table. Used
+   * when a record's token family is REPLACED (re-login) or the record is deleted.
+   * The server answers an idempotent 204; a failure here is best-effort-ignored
+   * by the callers (the token still dies at its own expiry).
+   */
+  async logout(refreshToken: string): Promise<void> {
+    await this.request<unknown>("/api/auth/logout", {
+      method: "POST",
+      body: JSON.stringify({ refreshToken }),
+      authenticated: false,
+    });
+    log.info("rest", "logged out (presented refresh revoked)");
+  }
+
+  /**
+   * M7: revokes EVERY refresh token of the authenticated user — all families, all
+   * devices (the endpoint counterpart of the server's logout-all; needs a valid
+   * access token). Not wired to any UI action yet: hooking it to record deletion
+   * would kill the user's OTHER machines on a purely local forget.
+   */
+  async logoutAll(): Promise<void> {
+    await this.request<unknown>("/api/auth/logout-all", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    log.info("rest", "logged out everywhere (all token families revoked)");
+  }
+
   /** Optional extras of the invite registration: a nickname distinct from the login
    *  and the single-use secret from an invite link. Fields ride the body only when
    *  set — a bare login-register keeps the legacy two-field wire. */
@@ -964,11 +994,8 @@ export class RestClient {
     log.info("rest", "password changed — token family rotated");
   }
 
-  logout(): void {
-    this.tokenStorage.clear();
-  }
-
   // ---------------------------------------------------------------------------
+
 
   private async saveTokens(auth: AuthResponse, previous: AuthTokens | null): Promise<void> {
     await this.tokenStorage.save({

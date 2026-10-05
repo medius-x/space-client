@@ -115,6 +115,32 @@ describe("RestClient", () => {
     expect(fake.requests.map((request) => request.path)).toEqual(["/api/auth/register", "/api/auth/login"]);
   });
 
+  it("logout POSTs the refresh token in the body, with no Bearer needed (M7)", async () => {
+    const fake = new FakeFetch(() => ({ status: 204, body: null }));
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: new MemoryTokenStorage(), fetchImpl: fake.call });
+
+    await client.logout("refresh-to-kill");
+
+    expect(fake.requests[0]?.method).toBe("POST");
+    expect(fake.requests[0]?.path).toBe("/api/auth/logout");
+    expect(fake.requests[0]?.body).toEqual({ refreshToken: "refresh-to-kill" });
+    // The credential rides the body — the call works on a session already torn down.
+    expect(fake.requests[0]?.authorization).toBeNull();
+  });
+
+  it("logoutAll POSTs authenticated (the endpoint revokes by principal, M7)", async () => {
+    const fake = new FakeFetch(() => ({ status: 204, body: null }));
+    const storage = new MemoryTokenStorage();
+    storage.save({ token: "live-access", refreshToken: "r", expiresAt: 0 });
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: storage, fetchImpl: fake.call });
+
+    await client.logoutAll();
+
+    expect(fake.requests[0]?.method).toBe("POST");
+    expect(fake.requests[0]?.path).toBe("/api/auth/logout-all");
+    expect(fake.requests[0]?.authorization).toBe("Bearer live-access");
+  });
+
   // -------------------------------------------------------------------------
   // Network-resilience ladder: idempotent calls retry on NO-response failures;
   // server answers and plain POSTs never repeat.

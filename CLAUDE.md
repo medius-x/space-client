@@ -3138,14 +3138,48 @@ social-aggregate подписан на сторы фоновых сессий �
   `NOT_IMPLEMENTED` редактора прав (у обоих enforcement этого раунда; описания в
   PERMISSION_INFO уже были). — 578/578 + typecheck; клиент-only.
 
-- **План безопасности раунд 7 фаза B (клиент; утверждён 2026-10-05; серверная фаза A —
+- **Безопасность раунд 7 фаза B (клиент; 2026-10-05, код готов, смоук pending; серверная фаза A —
   oak-server/CLAUDE.md).** (1) M5 SSRF-гейт `space-net:fetch` в main: DNS-резолв + блок
   private/loopback/link-local (IPv4+IPv6) ДО запроса, редиректы manual с перепроверкой
   каждого Location, блок → тихий no-preview; чистая `isBlockedAddress` + тесты.
   (2) M7 — KV-значения записей `connection:*` шифруются `safeStorage` целиком (маркер
   `enc:v1:`, plaintext-миграция на лету при первом сохранении, шифрование недоступно →
-  как есть + WARN); вызовы POST /api/auth/logout(-all) при re-login-замене записи и
-  Delete server record.
+  Delete server record. — **Реализовано (2026-10-05):** (1) **M5 SSRF-гейт** — НОВАЯ
+  чистая `src/domain/logic/net-guard.ts`: `isBlockedAddress` (v4: 0/8, 10/8,
+  100.64/10 CGNAT, 127/8, 169.254/16, 172.16/12, 192.168/16, 224+/4; v6: ::, ::1,
+  fc00::/7, fe80::/10, ff00::/8, v4-mapped ::ffff:a.b.c.d и deprecated-compatible
+  ::a.b.c.d → v4-правила; скобки и zone-id стрипаются, НЕпарсящееся блокируется —
+  fail closed) + `previewUrlFromString` (только http/https) + `PREVIEW_REDIRECT_LIMIT`=4;
+  тесты `test/net-guard.test.ts` (7). `electron/main.ts space-net:fetch` переписан:
+  hostname DNS-резолвится (`node:dns/promises lookup all`) ДО запроса, блок при ЛЮБОМ
+  заблокированном ответе (и при нерезолве); редиректы `redirect:"manual"` — каждый
+  Location резолвится относительно текущего URL и перепроверяется (редирект в
+  169.254.169.254 — классический SSRF-пивот — отсечён); finalUrl отслеживается руками
+  (manual не обновляет response.url); блок/цепочка-за-лимитом → тихий null (no-preview).
+  ЗАДОКУМЕНТИРОВАННЫЙ резидуал: DNS-ребайндинг TOCTOU (проверка резолвит, fetch
+  резолвит повторно независимо; пиннить соединение к проверенному IP ломает TLS SNI).
+  (2) **M7-клиент** — KV-слой main: ключи `^connection:` пишутся ШИФРОВАННЫМИ целиком
+  (`safeStorage.encryptString`, маркер `enc:v1:` + base64); чтение понимает оба
+  формата (plaintext-файл до-M7 читается как прежде — миграция при первом следующем
+  письме ключа); safeStorage недоступен → пишется как есть + ОДИН WARN на процесс;
+  шифротекст без кейчина (переехавший профиль) читается как ОТСУТСТВУЮЩИЙ
+  (needs-re-login — честное состояние). `RestClient` += `logout(refreshToken)`
+  (credential в теле, Bearer не нужен — работает на уже разобранной сессии) и
+  `logoutAll()` (по Bearer; НЕ подвешен к UI сознательно: вешать его на удаление
+  записи = убивать сессии на ДРУГИХ машинах пользователя при локальном «забыть
+  сервер»). Вызовы: re-login-замена записи (`startSession`, existing-ветка — старый
+  refresh ревокается best-effort ПОСЛЕ нового логина, сбой не валит вход) и
+  `removeConnection` (ревок refresh удаляемой записи через throwaway-клиент ДО
+  remove; недоступный сервер не блокирует локальное удаление). Мёртвый
+  `RestClient.logout(): void` (локальный clear без вызовов) удалён за дубликацией
+  имени. Тесты: `test/rest.test.ts` += 2 (logout-тело без Bearer; logoutAll с Bearer);
+  `test/mocks/fake-fetch.ts` честен к null-body-статусам (204/205/304 — конструктор
+  Response запрещает тело). — **587/587 + typecheck** (было 578). Смоук pending.
+  **Смоук-фикс (2026-10-05, юзер-вопрос «почему кикаем при deafen?»):** решение —
+  kick ОСТАЁТСЯ (форс-закрытие дыры подслушивания; Discord его принимает, мы нет),
+  но пункт карточки голосового участника переименован «Server deafen» → «Deafen / kick»
+  + title-подсказка «Deafens the member and disconnects them from the room; they can
+  rejoin deafened» — клик больше не сюрприз. Клиент-only, 587/587 + typecheck.
 
 - Гейт после каждой фазы: `npm test` + `npm run typecheck` зелёные.
 - Новые файлы сразу `git add`. Коммиты только по явной команде; subject на английском.
