@@ -322,22 +322,6 @@ body.channel-dragging * { cursor: grabbing !important; }
   gap: 6px;
 }
 .tile-slot-watch:hover { background: var(--sp-hover); color: var(--sp-text); }
-/* oak's tile action buttons (open-in-new / eye-off) live in the NAME ROW —
-   22×22 grey #4e5058 squares right of the mute marks, not floating on the slot. */
-.tile-action {
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border-radius: 4px;
-  background: var(--sp-control);
-  color: #fff;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-.tile-action:hover { background: var(--sp-hover); color: var(--sp-text); }
-.tile-action .icon { font-size: 11px; }
 .tile-foot { display: flex; align-items: center; gap: 8px; min-height: 22px; }
 .tile-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -3724,11 +3708,35 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 0 2px 24px;
+  /* The right inset matches .channel-row's 8px so the trailing watch glyph sits
+     on ONE vertical line with the name row's invite button. */
+  padding: 2px 8px 2px 24px;
   color: var(--sp-text-muted);
   font-size: 13px;
 }
 .voice-member-row .member-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The speaking RING (the tile-frame idiom, asymmetric: lights in 160 ms, fades
+   over 450 ms). A box-shadow follows the wrap's round shape without shifting
+   the row's layout the way a border would. */
+.voice-member-row .avatar-wrap { border-radius: 50%; transition: box-shadow 450ms ease-out; }
+.voice-member-row.speaking .avatar-wrap { box-shadow: 0 0 0 2px var(--sp-green); transition-duration: 160ms; }
+/* The live-share watch glyph on a voice member row (Discord's stream icon):
+   visible the whole time the share is live — green reads as "live stream". */
+.voice-watch-button {
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--sp-green);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.voice-watch-button:hover { background: var(--sp-hover); color: var(--sp-text); }
 
 /* oak's 30×30 icon voice toggles. */
 .icon-button { width: 30px; height: 30px; padding: 0; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; }

@@ -8,23 +8,18 @@ import {
   getCallLocalVideoTrack,
   getCallPeerVideoTrack,
   getCameraTrack,
-  getVoiceRoomInfo,
   getVoiceShareTrack,
   hangUpCall,
   kickVoiceUser,
   leaveVoice,
-  openSharePopout,
   persistedGain,
   volumeChanges,
-  popoutClosed,
   resolveCallConflict,
   roomAudio,
   serverDeafenUser,
   serverMuteUser,
   setShareVolume,
   setVoiceVolume,
-  setViewingFeed,
-  getFeedVideoTrack,
   settingsStore,
   shareTarget,
   stopCallShare,
@@ -36,13 +31,13 @@ import {
   toggleRoomView,
   toggleSelfDeafen,
   toggleSelfMute,
-  voiceView,
+  watchShareInWindow,
 } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { VoiceMemberMarks } from "../../domain/stores/VoiceControlStore";
 import type { FeedInfo } from "../../types";
 import { canActOn, memberNameColor, topPosition, type HierarchyView } from "../../domain/logic/roster-grouping";
-import { feedHasLiveVideo, feedHasShareAudio } from "../../core/classifier";
+import { feedHasLiveVideo } from "../../core/classifier";
 import { displayNameOf } from "../../domain/logic/display-name";
 import { log } from "../../logging";
 import type { NoiseEngineKind } from "../../media/noise-suppression";
@@ -50,7 +45,6 @@ import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
 import { SharePickerModal } from "./SharePickerModal";
 import { Avatar } from "./Avatar";
 import { Modal } from "./Modal";
-import type { PopoutTarget } from "../bridges";
 
 function formatCallSeconds(total: number): string {
   const minutes = Math.floor(total / 60);
@@ -462,9 +456,6 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
   const participants = useStore(appStore, (state) => state.participants);
   const cameraOn = useStore(appStore, (state) => state.cameraOn);
   const sharing = useStore(appStore, (state) => state.sharing);
-  const popoutActive = useStore(appStore, (state) => state.popoutActive);
-  const viewingFeedId = useStore(appStore, (state) => state.viewingFeedId);
-  const viewingUsername = useStore(appStore, (state) => state.viewingUsername);
   const activeChannelId = useStore(appStore, (state) => state.activeVoiceChannelId);
   const callState = useStore(appStore, (state) => state.callState);
   const callPeer = useStore(appStore, (state) => state.callPeer);
@@ -487,7 +478,6 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const callSelfVideoRef = useRef<HTMLVideoElement | null>(null);
   const callPeerVideoRef = useRef<HTMLVideoElement | null>(null);
-  const shareVideoRefs = useRef(new Map<string, HTMLVideoElement>());
   const [speakingUsers, setSpeakingUsers] = useState<ReadonlySet<string>>(new Set());
   const [memberMenu, setMemberMenu] = useState<{ username: string; x: number; y: number } | null>(null);
   /** True once the peer's video track actually landed in the <video> element —
@@ -496,43 +486,6 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
 
   const callMode = callState === "connecting" || callState === "in-call";
   const callPeerMedia = peerScreenOn || peerCameraOn;
-
-  // Wire the runtime's imperative view hooks. The watched share binds INTO THE
-  // OWNER'S TILE (oak's ParticipantTile) — there is no separate share panel.
-  useEffect(() => {
-    voiceView.attachShareVideo = (username: string, track: MediaStreamTrack) => {
-      const element = shareVideoRefs.current.get(username);
-      if (element) {
-        element.srcObject = new MediaStream([track]);
-        void element.play().catch(() => undefined);
-      }
-    };
-    voiceView.dropShareVideo = () => {
-      for (const element of shareVideoRefs.current.values()) {
-        element.srcObject = null;
-      }
-    };
-    return () => {
-      voiceView.attachShareVideo = () => undefined;
-      voiceView.dropShareVideo = () => undefined;
-    };
-  }, []);
-
-  // A re-watch must re-bind the RETAINED video track: Janus recycles the
-  // subscriber m-line for a publisher's next share — the same receiver.track
-  // mutes and unmutes, ontrack never re-fires, so the fresh view mount is the
-  // only re-bind moment (a genuinely fresh track overrides it on delivery).
-  useEffect(() => {
-    if (viewingFeedId === null) {
-      return;
-    }
-    const retained = getFeedVideoTrack(viewingFeedId);
-    const element = retained !== null ? shareVideoRefs.current.get(retained.username) : null;
-    if (element !== null && element !== undefined && retained !== null) {
-      element.srcObject = new MediaStream([retained.track]);
-      void element.play().catch(() => undefined);
-    }
-  }, [viewingFeedId, participants]);
 
   // The call's peer-video hook (the runtime routes the remote track here) —
   // mounted only in call mode; the track may have arrived before this render.
@@ -581,17 +534,6 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
     };
   }, []);
 
-  // The pop-out's "closed" signal — stop pumping frames. The target fingerprint
-  // RESETS here: re-opening the pop-out on the SAME feed must re-push the
-  // (unchanged) target, or the new window sits on "Waiting for the video…"
-  // forever — main also drops its stored target on close (live report 2026-09-25).
-  useEffect(() => {
-    window.spaceWindow?.onClosed(() => {
-      popoutClosed();
-      popoutTargetFingerprintRef.current = null;
-    });
-  }, []);
-
   // Own tile preview (VOICE ROOM): the live LOCAL track — the camera OR the shared screen.
   useEffect(() => {
     const element = localVideoRef.current;
@@ -629,54 +571,8 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
     }
   }, [callMode, callPeerMedia]);
 
-  // Pop-out target sync: the pop-out window runs its OWN videoroom subscription
-  // (the old 12.5 fps JPEG relay is gone). This effect only keeps its TARGET in
-  // step with what the main window watches — identical consecutive targets are
-  // skipped so an unrelated roster update never resubscribes the window.
-  const popoutTargetFingerprintRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!popoutActive) {
-      return;
-    }
-    let target: PopoutTarget | null = null;
-    if (viewingFeedId !== null) {
-      const room = getVoiceRoomInfo();
-      const feed = participants.find((entry) => entry.feedId === viewingFeedId);
-      const videoMid = feed?.streams.find((stream) => stream.type === "video" && stream.disabled !== true)?.mid;
-      if (room !== null && videoMid !== undefined && feed !== undefined) {
-        // feed.display IS the publisher's username (we join with display =
-        // username) — the pop-out's volume slider remote-controls the main
-        // window's share playout, persisted per username. The value is a
-        // RETARGET-TIME snapshot; volume pushes from the pop-out travel their
-        // own IPC channel and never restart this effect (not a dependency).
-        target = {
-          janusUrl: room.janusUrl,
-          roomId: room.roomId,
-          token: room.token,
-          pin: room.pin,
-          feedId: viewingFeedId,
-          videoMid,
-          shareUsername: feed.display,
-          shareAudio: feedHasShareAudio(feed),
-          shareVolume: persistedGain("share", feed.display),
-        };
-      }
-    }
-    const fingerprint = target === null ? "null" : JSON.stringify(target);
-    if (fingerprint === popoutTargetFingerprintRef.current) {
-      return;
-    }
-    popoutTargetFingerprintRef.current = fingerprint;
-    window.spaceWindow?.retargetPopout(target);
-  }, [popoutActive, viewingFeedId, participants]);
-
-  const setShareVideoRef = (username: string) => (element: HTMLVideoElement | null) => {
-    if (element) {
-      shareVideoRefs.current.set(username, element);
-    } else {
-      shareVideoRefs.current.delete(username);
-    }
-  };
+  // Watching a share opens the POP-OUT WINDOW directly (runtime's
+  // watchShareInWindow) — there is no in-app watch surface anymore.
 
   const nameColor = (username: string): string | null => {
     const member = members.find((entry) => entry.username === username);
@@ -684,14 +580,13 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
   };
 
   // oak's ParticipantTile: the CENTER is a fixed 260×146 screen slot — the
-  // owner's avatar in idle, the live preview while watching (pop-out + stop
-  // buttons, the plate reads "Sharing screen…" until the first frame covers
-  // it), a Watch plate for an announced share, the LOCAL track for own camera/
-  // share ("Your screen"/"Your camera"). The name (top-role color) + marks sit
-  // BELOW; volumes live in the right-click card.
+  // owner's avatar in idle, a Watch plate for an announced share (the WATCH
+  // opens the pop-out window directly — no tiny slot preview, user request
+  // 2026-10-05), the LOCAL track for own camera/share ("Your screen"/"Your
+  // camera"). The name (top-role color) + marks sit BELOW; volumes live in the
+  // right-click card.
   const renderTile = (username: string, isSelf: boolean, feed: FeedInfo | null) => {
     const hasVideo = feed !== null && feedHasLiveVideo(feed);
-    const watched = feed !== null && feed.feedId === viewingFeedId;
     const ownMedia = isSelf && (cameraOn || sharing);
     return (
       <div
@@ -704,14 +599,7 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
           setMemberMenu({ username, x: event.clientX, y: event.clientY });
         }}
       >
-        <div
-          className="tile-screen-slot"
-          onDoubleClick={() => {
-            if (watched || ownMedia) {
-              void openSharePopout();
-            }
-          }}
-        >
+        <div className="tile-screen-slot">
           {isSelf && ownMedia ? (
             <>
               <div className="tile-slot-plate">{sharing ? "Your screen" : "Your camera"}</div>
@@ -720,16 +608,9 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
           ) : isSelf ? (
             <Avatar session={session} username={username} size={100} />
           ) : hasVideo ? (
-            watched ? (
-              <>
-                <div className="tile-slot-plate"><span className="icon mdi-monitor" /> Sharing screen…</div>
-                <video ref={setShareVideoRef(username)} autoPlay playsInline />
-              </>
-            ) : (
-              <button className="tile-slot-watch" onClick={() => setViewingFeed(feed!.feedId)}>
-                <span className="icon mdi-monitor" /> Watch screen
-              </button>
-            )
+            <button className="tile-slot-watch" onClick={() => void watchShareInWindow(feed!.feedId)}>
+              <span className="icon mdi-monitor" /> Watch screen
+            </button>
           ) : (
             <Avatar session={session} username={username} size={100} />
           )}
@@ -737,18 +618,6 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
         <div className="tile-foot">
           <span className="tile-name" style={{ color: nameColor(username) ?? undefined }}>{nameOf(username)}{isSelf ? " (you)" : ""}</span>
           <VoiceMarks marks={marksByMember.get(username)} />
-          {/* oak puts the pop-out / stop-watching buttons in the NAME ROW (right
-              of the mute marks, 22×22 grey) — not floating over the preview. */}
-          {watched ? (
-            <>
-              <button className="tile-action" title="Open in window" onClick={() => void openSharePopout()}>
-                <span className="icon mdi-open-in-new" />
-              </button>
-              <button className="tile-action" title="Stop watching" onClick={() => setViewingFeed(feed!.feedId)}>
-                <span className="icon mdi-eye-off" />
-              </button>
-            </>
-          ) : null}
         </div>
       </div>
     );

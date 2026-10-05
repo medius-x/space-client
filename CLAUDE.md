@@ -3012,6 +3012,56 @@ social-aggregate подписан на сторы фоновых сессий �
   немедленные per-member PUT на другом эндпоинте). Старые per-tab Save-строки
   удалены.
 
+- **Голосовой UI-раунд 3 (2026-10-05; ФИНАЛ после 3 итераций юзер-репортов;
+  КЛИЕНТ-ONLY).** Три юзер-запроса. **(1) Speaking-кольцо в Channel panel:**
+  голосовые строки сайдбара получили тот же зелёный индикатор, что рамка тайла —
+  Sidebar держит speaking-полл (150 мс снапшот `roomAudio.speakingSnapshot()`,
+  идентити-стабильный сет — идиома RoomView), класс `.voice-member-row.speaking`
+  красит КОЛЬЦО вокруг аватара (`box-shadow 0 0 0 2px --sp-green` на
+  `.avatar-wrap` c border-radius:50% — не сдвигает лэйаут, асимметричный фейд
+  160/450 мс как у тайла). **(2) Просмотр шара = ОТДЕЛЬНОЕ ОКНО отовсюду:**
+  ЛЮБОЙ вход просмотра (тайл «Watch screen» в room view И глаз в Channel panel)
+  открывает попап-окно НАПРЯМУЮ — промежуточная ShareViewModal (big-modal
+  поверхность первой итерации) УДАЛЕНА по юзер-вердикту; в приложении больше НЕТ
+  in-app поверхности просмотра, `voiceView`-хуки (attachShareVideo/dropShareVideo)
+  и `getFeedVideoTrack`-экспорт вычищены (feedVideoTracks остался для телеметрии
+  share-stats). `watchShareInWindow(feedId)` в runtime: buildPopoutTarget
+  (room-info + живой video-mid; null → WARN `[popout] cannot build target…` и
+  тихий выход) → setViewingFeed (БЕЗ тоггл-ловушки: повторный клик по уже
+  просматриваемому фиду не гасит просмотр) → `retargetPopout(target)` СИНХРОННО
+  ДО `openPopout` (main хранит цель, инволк `popoutParams` попапа забирает её на
+  монтировании — НИКАКИХ React-эффектов в цепочке) → оптимистичный popoutActive;
+  провал openPopout откатывает. ЗАКРЫТИЕ ОКНА = КОНЕЦ ПРОСМОТРА (`popoutClosed`
+  → тоггл-офф — звук шара живёт в главном окне и не должен играть в пустоту);
+  конец просмотра/смерть шара = `dropPopoutWatchTarget()` (retargetPopout(null))
+  из runtime в setViewingFeed(null)-ветке и pruneDeadView. Тайл шарящего всегда
+  показывает «Watch screen» (watched-рендер в слоте и tile-action-кнопки
+  вырезаны); СВОЙ превью-тайл «Your screen» не тронут. `onClosed → popoutClosed`
+  в bootstrap (`installPopoutClosedListener`) — раньше в эффекте RoomView,
+  закрытие room view раньше попапа оставляло `popoutActive: true` навсегда.
+  Попап ДЕДАПЛИТ идентичные target по JSON-фингерпринту; main логирует
+  `[main] popout target stored (feed N, mid M)` / cleared.
+  **(3) Кнопка просмотра на плашке участника:** `voice-member-row` участника с
+  живым шаром (гейт: канал = МОЙ активный голосовой — подписка требует своей
+  SFU-сессии) несёт зелёную кнопку `.voice-watch-button` (padding-right:8px у
+  строки — на одной линии с кнопкой приглашения) с глифом **mdi-monitor-eye**
+  (экран с глазом; альтернатива mdi-monitor-arrow-down-variant отвергнута —
+  читается как «скачать»); клик = stopPropagation + watchShareInWindow.
+  Мёртвый CSS `.tile-action`/`.modal-card.huge`/`.share-view-*` удалён; icons.css
+  55 глифов (+monitor-eye, −eye-off). Гейты: **574/574** + typecheck + build.
+  **ГРАБЛЯ СТРИКТМОДА (корень итераций 2-3, вскрыт ПО ЛОГАМ space.log; таймстемпы
+  в логе UTC, локаль UTC+4):** дроп таргета попапа жил в React unmount-эффекте
+  ShareViewModal; прямой путь открывал окно в ТОМ ЖЕ коммите, где модалка
+  монтировалась с popoutActive=true → StrictMode-даблмаунт прогнал
+  «mount-эффект: store → cleanup: retargetPopout(NULL) → повтор: SKIP по
+  фингерпринту» — цель умирала через 27 мс после пуша, ДО монтирования попапа
+  (в логе: `stored → stored → cleared`, у попапа ноль [popout]-строк); путь
+  модалки выживал, т.к. его store случался на ПОЗДНЕМ флипе popoutActive, после
+  даблмаунт-танца. УРОК: unmount-эффект, ОТМАТЫВАЮЩИЙ состояние, которое
+  фингерпринт-защищённый sibling-эффект повторно не применит = StrictMode-мина;
+  такие дропы живут в runtime на ЯВНЫХ путях (setViewingFeed/pruneDeadView),
+  не в lifecycle React.
+
 - Гейт после каждой фазы: `npm test` + `npm run typecheck` зелёные.
 - Новые файлы сразу `git add`. Коммиты только по явной команде; subject на английском.
 - Никаких single-letter имён (кроме i/j цикла и T/E/K/V генериков); комментарии в коде
@@ -3021,6 +3071,15 @@ social-aggregate подписан на сторы фоновых сессий �
 
 ## Грабли, уже пойманные здесь
 
+- **StrictMode-мина в unmount-эффектax (2026-10-05, live):** главный маршрут
+  рендерится под `<StrictMode>` — в dev каждый mount-эффект прогоняется дважды
+  (эффект → ВСЕ cleanup'и → эффект). Unmount-cleanup, откатывающий состояние,
+  которое sibling-эффект с фингерпринт-защитой повторно НЕ применит (после
+  cleanup'а фингерпринт уже совпадает → SKIP), молча убивает это состояние.
+  Прецедент: попап шара вечно ждал видео — target хранился, unmount-дроп
+  модалки чистил его через 27 мс, повторный прогон скипался. Правило: дропы
+  внешнего состояния (IPC/retarget) живут в RUNTIME на явных путях вызова,
+  не в React-lifecycle; диагностика таких гонок — по space.log (таймстемпы UTC!).
 - **updateRole шлёт `name` ТОЛЬКО при реальном изменении** (иначе `null` = не
   трогать, partial-PATCH). Сервер валидирует имя роли `[\p{L}\p{N}_-]{1,32}` —
   буквы ЛЮБОГО алфавита (юзер-решение 2026-09-11: запрет кириллицы снят; раньше

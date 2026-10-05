@@ -7,10 +7,12 @@ import {
   joinVoiceGuarded,
   openDiscussion,
   openServerMenu,
+  roomAudio,
   setActiveChannel,
   setSidebarDiscussions,
   settingsStore,
   toggleRoomView,
+  watchShareInWindow,
 } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import { memberNameColor } from "../../domain/logic/roster-grouping";
@@ -99,6 +101,24 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
   const [collapsedIds, setCollapsedIds] = useState<ReadonlySet<number>>(new Set());
   // The voice room whose invite picker is open (the name row's hover button).
   const [inviteTarget, setInviteTarget] = useState<Channel | null>(null);
+
+  // The speaking poll (the room view's idiom, oak's pollSpeakingLevels): every
+  // 150 ms repaint the SNAPSHOT of who is speaking — the sidebar avatars get
+  // the same green ring the room tiles have. Identity-stable on no change, so
+  // an idle room never re-renders the column.
+  const [speakingUsers, setSpeakingUsers] = useState<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setSpeakingUsers((previous) => {
+        const next = roomAudio.speakingSnapshot();
+        if (next.size === previous.size && [...next].every((username) => previous.has(username))) {
+          return previous;
+        }
+        return next;
+      });
+    }, 150);
+    return () => window.clearInterval(timer);
+  }, []);
 
   // --- Drag-reorder (the RolesSection pointer mechanics) ---------------------
   /** The drag in flight; the dragged row renders as the drop gap. */
@@ -421,10 +441,15 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
           // oak: the voice-row nick is the top colored role, like the roster.
           const member = members.find((entry) => entry.username === username);
           const nickColor = member !== undefined ? memberNameColor(member, roles) : null;
+          // The live-share watch glyph: only on rows of MY room (a subscription
+          // needs this client's own SFU session in that room).
+          const shareFeed = channel.id === activeVoiceChannelId
+            ? participants.find((feed) => feed.display === username && feedHasLiveVideo(feed)) ?? null
+            : null;
           return (
             <div
               key={username}
-              className="voice-member-row"
+              className={"voice-member-row" + (speakingUsers.has(username) ? " speaking" : "")}
               onContextMenu={(event) => {
                 // The member card and the CHANNEL menu are separate zones in
                 // oak (distinct consumers) — stop the bubble so a right-click
@@ -446,6 +471,21 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
                 {displayNameOf(roster.users, username)}{username === ownUsername ? " (you)" : ""}
               </span>
               <VoiceMarks marks={voiceMarks.get(username)} />
+              {shareFeed !== null ? (
+                <button
+                  className="voice-watch-button"
+                  title="Watch screen share"
+                  onClick={(event) => {
+                    // Must not join the room (the block's click target). The
+                    // window opens DIRECTLY (user request 2026-10-05) — the
+                    // share audio still plays through this window's playout.
+                    event.stopPropagation();
+                    void watchShareInWindow(shareFeed.feedId);
+                  }}
+                >
+                  <span className="icon mdi-monitor-eye" />
+                </button>
+              ) : null}
             </div>
           );
         })}

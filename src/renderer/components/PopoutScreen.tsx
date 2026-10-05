@@ -106,23 +106,30 @@ export function PopoutScreen(): React.JSX.Element {
   };
 
   useEffect(() => {
-    void window.spaceWindow?.popoutParams().then((target) => {
+    // Identical consecutive targets are DROPPED: the direct sidebar path pushes
+    // the target before this window opens, and the main window's sync effect
+    // then re-sends the very same one — a restart would renegotiate for nothing.
+    const lastTargetFingerprintRef = { current: null as string | null };
+    const handleTarget = (target: unknown): void => {
       if (isPopoutTarget(target)) {
+        const fingerprint = JSON.stringify(target);
+        if (fingerprint === lastTargetFingerprintRef.current) {
+          return;
+        }
+        lastTargetFingerprintRef.current = fingerprint;
         startViewer(target);
+      } else {
+        lastTargetFingerprintRef.current = null;
+        stopViewer();
       }
-    });
+    };
+    void window.spaceWindow?.popoutParams().then(handleTarget);
     void window.spaceWindow?.popoutVoiceState().then((state) => {
       if (isPopoutVoiceState(state)) {
         setVoiceState(state);
       }
     });
-    window.spaceWindow?.onRetarget((target) => {
-      if (isPopoutTarget(target)) {
-        startViewer(target);
-      } else {
-        stopViewer();
-      }
-    });
+    window.spaceWindow?.onRetarget(handleTarget);
     window.spaceWindow?.onPopoutVoiceState((state) => {
       if (isPopoutVoiceState(state)) {
         setVoiceState(state);

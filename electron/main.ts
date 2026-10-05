@@ -694,6 +694,11 @@ ipcMain.handle("space-window:popout", () => {
 
 ipcMain.on("space-window:retargetPopout", (_event, target: unknown) => {
   popoutTarget = target !== null && typeof target === "object" ? target as Record<string, unknown> : null;
+  // The direct sidebar path stores the target BEFORE the window exists — this
+  // line pins the layer when a pop-out ever sits waiting again (live report).
+  appendLog(`[main] popout target ${popoutTarget !== null
+    ? `stored (feed ${String(popoutTarget.feedId)}, mid ${String(popoutTarget.videoMid)})`
+    : "cleared"}`);
   if (popoutWindow && !popoutWindow.isDestroyed()) {
     popoutWindow.webContents.send("popout:retarget", target);
   }

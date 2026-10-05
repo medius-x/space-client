@@ -30,9 +30,9 @@
 .icon.mdi-cog::before { content: "\F0493"; }
 .icon.mdi-comment-text-outline::before { content: "\F0189"; }
 .icon.mdi-content-copy::before { content: "\F018F"; }
+.icon.mdi-crown::before { content: "\F01A5"; }
 .icon.mdi-download::before { content: "\F01DA"; }
 .icon.mdi-emoticon::before { content: "\F0C68"; }
-.icon.mdi-eye-off::before { content: "\F0209"; }
 .icon.mdi-eye-off-outline::before { content: "\F06D1"; }
 .icon.mdi-eye-plus-outline::before { content: "\F086C"; }
 .icon.mdi-file-video-outline::before { content: "\F0E2C"; }
@@ -50,6 +50,7 @@
 .icon.mdi-microphone::before { content: "\F036C"; }
 .icon.mdi-microphone-off::before { content: "\F036D"; }
 .icon.mdi-monitor::before { content: "\F0379"; }
+.icon.mdi-monitor-eye::before { content: "\F13B4"; }
 .icon.mdi-open-in-new::before { content: "\F03CC"; }
 .icon.mdi-paperclip::before { content: "\F03E2"; }
 .icon.mdi-pause::before { content: "\F03E4"; }

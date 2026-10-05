@@ -5,7 +5,7 @@ import { ApiError, RestClient } from "../core/rest";
 import { JanusClient } from "../core/janus";
 import { SfuSession, RoomVanishedError, SubscriberTransportError, PublisherTransportError, type MediaSource, type VideoRtpCounters } from "../core/sfu";
 import { PeerCallSession, type PeerCallOptions, type PeerTrackKind } from "../core/peer-call";
-import { feedHasLiveVideo } from "../core/classifier";
+import { feedHasLiveVideo, feedHasShareAudio } from "../core/classifier";
 import { extractAudioFmtpLines } from "../core/sdp";
 import { rmsToDbfs, stereoVerdict } from "../core/audio-math";
 import { RoomAudio } from "../media/RoomAudio";
@@ -343,16 +343,6 @@ function applyComplianceToLiveSession(): void {
   sfuSession?.setShareAudioEnabled(!voiceCompliance.shareAudioMuted);
   roomAudio.setDeafened(voiceCompliance.deafened);
 }
-
-/** Wiring point for the imperative voice view (tiles) — set by VoiceRoom. */
-export const voiceView = {
-  attachShareVideo(username: string, track: MediaStreamTrack): void {
-    void username; void track;
-  },
-  dropShareVideo(): void {
-    // replaced by VoiceRoom at mount
-  },
-};
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -1441,6 +1431,7 @@ export async function bootstrapApp(): Promise<void> {
   watchDeviceSettings(); // device picks re-resolve (hashes die across restarts)
   installHotkeys(); // global OS chords + the window keydown (local binds)
   installSourceDeadListener(); // the window-share liveness watchdog reports here
+  installPopoutClosedListener(); // the share pop-out's own close lands here
   installPopoutVolumeListener(); // the share pop-out's volume slider lands here
   installPopoutVoiceActionListener(); // the pop-out's mirrored voice-panel buttons land here
   installAppClosingListener(); // the forestalled window close leaves voice/call cleanly
@@ -2874,7 +2865,6 @@ function watchNoiseSettings(): void {
 
 export async function teardownVoice(): Promise<void> {
   stopAfkReporting();
-  voiceView.dropShareVideo();
   feedVideoTracks.clear();
   feedShareAudioTracks.clear();
   releaseNativeShareAudio();
@@ -2926,20 +2916,12 @@ export async function leaveVoice(): Promise<void> {
   }
 }
 
-/** The latest delivered remote share tracks per feed (the call's
- *  callPeerVideoTrack pattern). Janus RECYCLES the subscriber m-line for a
- *  publisher's next share — the same receiver.track object simply mutes and
- *  unmutes, ontrack never re-fires, so a re-watch must re-bind the RETAINED
- *  track (a genuinely fresh track, when one arrives, overrides it). */
+/** The latest delivered remote share tracks per feed. The VIDEO map feeds the
+ *  share-stats telemetry (the "share in" line resolves the watched track id);
+ *  the AUDIO map lets a re-watch re-attach the RETAINED share track — Janus
+ *  recycles the subscriber m-line, ontrack never re-fires for the same track. */
 const feedVideoTracks = new Map<number, { username: string; track: MediaStreamTrack }>();
 const feedShareAudioTracks = new Map<number, { username: string; track: MediaStreamTrack }>();
-
-export function getFeedVideoTrack(feedId: number | null): { username: string; track: MediaStreamTrack } | null {
-  if (feedId === null) {
-    return null;
-  }
-  return feedVideoTracks.get(feedId) ?? null;
-}
 
 function handleRemoteTrack(feedId: number, username: string, kind: RemoteTrackKind, track: MediaStreamTrack): void {
   if (kind === "voice") {
@@ -2954,13 +2936,11 @@ function handleRemoteTrack(feedId: number, username: string, kind: RemoteTrackKi
   feedVideoTracks.set(feedId, { username, track });
   if (appStore.getSnapshot().viewingFeedId === feedId) {
     appStore.patch({ viewingUsername: username });
-    voiceView.attachShareVideo(username, track);
   }
 }
 
 function handleRemoteTrackEnded(feedId: number, _username: string, kind: RemoteTrackKind): void {
   if (kind === "video") {
-    voiceView.dropShareVideo();
     appStore.patch({ viewingUsername: null });
     return;
   }
@@ -2995,13 +2975,13 @@ function pruneDeadView(feeds: FeedInfo[]): void {
   }
   const feed = feeds.find((entry) => entry.feedId === viewed);
   if (feed === undefined || !feedHasLiveVideo(feed)) {
-    voiceView.dropShareVideo();
     appStore.patch({ viewingFeedId: null, viewingUsername: null });
     // The SFU's viewed set must die with the view: a stale entry keeps the
     // feed's video+share audio in wantedStreams, and the publisher's NEXT
     // share then auto-subscribes — audio playing with nobody pressing Watch
     // (live 2026-09-21: subscriptions +2 the instant a second share landed).
     sfuSession?.setViewingFeed(null);
+    dropPopoutWatchTarget();
   }
 }
 
@@ -3063,6 +3043,13 @@ function installPopoutVolumeListener(): void {
   window.spaceWindow?.onPopoutVolume((username, volume) => {
     setShareVolume(username, volume);
   });
+}
+
+/** The pop-out window's "closed" signal, installed ONCE at boot (it used to
+ *  live in the room view's effect — closing the room view before the pop-out
+ *  left popoutActive stuck true forever). */
+function installPopoutClosedListener(): void {
+  window.spaceWindow?.onClosed(() => popoutClosed());
 }
 
 /** Push the voice-panel mirror (mute/deafen glyphs + NS engine) into the
@@ -3515,15 +3502,78 @@ export function resumeGlobalHotkeys(): void {
 // Share pop-out window
 // ---------------------------------------------------------------------------
 
-export async function openSharePopout(): Promise<void> {
+/** The watch that fed the pop-out is over — its target must die with it (the
+ *  window holds its OWN Janus subscription and would keep playing, video-only,
+ *  after the main window's audio playout died with the unsubscribe).
+ *  Runtime-side on purpose: this used to live in a React unmount effect and
+ *  was StrictMode-hostile — dev's double mount ran store → cleanup-CLEAR →
+ *  skip, killing the target 27 ms after it was pushed (live report 2026-10-05:
+ *  the direct-path window sat on "Waiting for the video…" forever). */
+function dropPopoutWatchTarget(): void {
+  window.spaceWindow?.retargetPopout(null);
+}
+
+/** The pop-out window's subscription target for a watched feed (video-only):
+ *  the room's connection info + the feed's live video mid. Null (with a log)
+ *  when the feed or the room info is not resolvable. */
+export function buildPopoutTarget(feedId: number): import("./bridges").PopoutTarget | null {
+  const room = getVoiceRoomInfo();
+  const feed = appStore.getSnapshot().participants.find((entry) => entry.feedId === feedId);
+  const videoMid = feed?.streams.find((stream) => stream.type === "video" && stream.disabled !== true)?.mid;
+  if (room === null || feed === undefined || videoMid === undefined) {
+    log.warn("popout", `cannot build target for feed ${feedId} (room=${room !== null}, feed=${feed !== undefined}, mid=${videoMid ?? "none"})`);
+    return null;
+  }
+  // feed.display IS the publisher's username — the pop-out's volume slider
+  // remote-controls the main window's share playout, persisted per username.
+  return {
+    janusUrl: room.janusUrl,
+    roomId: room.roomId,
+    token: room.token,
+    pin: room.pin,
+    feedId,
+    videoMid,
+    shareUsername: feed.display,
+    shareAudio: feedHasShareAudio(feed),
+    shareVolume: persistedGain("share", feed.display),
+  };
+}
+
+/** Watch a live share in the pop-out window — THE viewing surface (user
+ *  requests 2026-10-05: every Watch entry opens the detached window directly).
+ *  The main window still owns the subscription — the share audio plays here,
+ *  the window renders the video. Closing the window ends the watch
+ *  (popoutClosed). */
+export async function watchShareInWindow(feedId: number): Promise<void> {
+  // The target is built and pushed SYNCHRONOUSLY, BEFORE the window opens:
+  // main stores it and the pop-out's mount-time popoutParams() invoke serves
+  // it — no React effect races the window spin-up (the StrictMode lesson).
+  const target = buildPopoutTarget(feedId);
+  if (target === null) {
+    return; // nothing to hand to a window — the warn log says why
+  }
+  // No toggle trap: clicking the glyph of the ALREADY watched feed must focus
+  // the existing window, not flip the watch off.
+  if (appStore.getSnapshot().viewingFeedId !== feedId) {
+    setViewingFeed(feedId);
+  }
+  window.spaceWindow?.retargetPopout(target);
+  appStore.patch({ popoutActive: true });
   const opened = (await window.spaceWindow?.openPopout()) ?? false;
-  if (opened) {
-    appStore.patch({ popoutActive: true });
+  if (!opened) {
+    appStore.patch({ popoutActive: false });
   }
 }
 
 export function popoutClosed(): void {
   appStore.patch({ popoutActive: false });
+  // The pop-out IS the viewing surface: closing the window ends the watch that
+  // fed it (the watch's audio playout lives in THIS window and must not keep
+  // playing over nothing).
+  const watched = appStore.getSnapshot().viewingFeedId;
+  if (watched !== null) {
+    setViewingFeed(watched); // toggle-off
+  }
 }
 
 /** The live voice room's connection info — the pop-out viewer opens its own
@@ -4466,12 +4516,12 @@ export function setViewingFeed(feedId: number | null): void {
   appStore.patch({ viewingFeedId: next, viewingUsername: null });
   sfuSession?.setViewingFeed(next);
   if (next === null) {
-    voiceView.dropShareVideo();
+    dropPopoutWatchTarget();
     return;
   }
   // A recycled m-line never re-fires ontrack: re-attach the retained share
-  // audio immediately (the video re-bind rides the view flip in VoiceRoom).
-  // With a genuinely fresh track the later delivery simply rebuilds the chain.
+  // audio immediately (the video lives in the pop-out window's own
+  // subscription; a genuinely fresh track delivery rebuilds the chain anyway).
   const retainedAudio = feedShareAudioTracks.get(next);
   if (retainedAudio) {
     roomAudio.attachShareTrack(next, retainedAudio.username, retainedAudio.track, persistedGain("share", retainedAudio.username));
