@@ -119,7 +119,6 @@ export interface AppState {
   callConflict: { kind: "start-call" | "accept-call" | "join-voice"; peer: string | null; voiceChannelId: number | null } | null;
   testToneChannel: "left" | "right" | null;
   viewingFeedId: number | null;
-  viewingUsername: string | null;
   /** The voice ROOM VIEW occupies the chat area (oak: swap-in by clicking the voice bar). */
   roomViewOpen: boolean;
   diagOpen: boolean;
@@ -210,7 +209,6 @@ class AppStore extends Emitter {
     callConflict: null,
     testToneChannel: null,
     viewingFeedId: null,
-    viewingUsername: null,
     roomViewOpen: false,
     diagOpen: false,
     stompState: "off",
@@ -1797,7 +1795,6 @@ export async function teardownSession(): Promise<void> {
     cameraOn: false,
     popoutActive: false,
     viewingFeedId: null,
-    viewingUsername: null,
     serverSettingsOpen: false,
     searchOpen: false,
     activeAround: null,
@@ -2537,7 +2534,7 @@ export async function joinVoice(channel: Channel): Promise<void> {
     voiceCompliance.deafened = false;
   }
   roomAudio.setDeafened(false);
-  appStore.patch({ activeVoiceChannelId: channel.id, voiceState: "connecting", stateDetail: null, participants: [], viewingFeedId: null, viewingUsername: null });
+  appStore.patch({ activeVoiceChannelId: channel.id, voiceState: "connecting", stateDetail: null, participants: [], viewingFeedId: null });
   session.stomp.send("/app/voice.join", { channelId: channel.id });
   startAfkReporting();
 
@@ -2737,7 +2734,7 @@ async function detachVoiceAfterLoss(reason: string): Promise<void> {
     activeSession?.stomp.send("/app/voice.leave", { channelId });
   }
   resetVoiceCompliance();
-  appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", stateDetail: null, participants: [], viewingFeedId: null, viewingUsername: null, roomViewOpen: false });
+  appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", stateDetail: null, participants: [], viewingFeedId: null, roomViewOpen: false });
   if (hadSession && settingsStore.getSnapshot().soundEnabled) { // the app sound switch (ding + knocks)
     notifications.playKnock("leave");
     notifications.showToast({ title: "Voice", channelName: "Connection lost", body: `You were disconnected from the room — ${reason}.` });
@@ -2865,7 +2862,6 @@ function watchNoiseSettings(): void {
 
 export async function teardownVoice(): Promise<void> {
   stopAfkReporting();
-  feedVideoTracks.clear();
   feedShareAudioTracks.clear();
   releaseNativeShareAudio();
   watchShareSource(null);
@@ -2910,17 +2906,16 @@ export async function leaveVoice(): Promise<void> {
     activeSession?.stomp.send("/app/voice.leave", { channelId });
   }
   resetVoiceCompliance();
-  appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", stateDetail: null, participants: [], viewingFeedId: null, viewingUsername: null, roomViewOpen: false });
+  appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", stateDetail: null, participants: [], viewingFeedId: null, roomViewOpen: false });
   if (hadSession && settingsStore.getSnapshot().soundEnabled) { // the app sound switch (ding + knocks)
     notifications.playKnock("leave");
   }
 }
 
-/** The latest delivered remote share tracks per feed. The VIDEO map feeds the
- *  share-stats telemetry (the "share in" line resolves the watched track id);
- *  the AUDIO map lets a re-watch re-attach the RETAINED share track — Janus
- *  recycles the subscriber m-line, ontrack never re-fires for the same track. */
-const feedVideoTracks = new Map<number, { username: string; track: MediaStreamTrack }>();
+/** The latest delivered remote SHARE AUDIO tracks per feed — a re-watch
+ *  re-attaches the RETAINED track: Janus recycles the subscriber m-line,
+ *  ontrack never re-fires for the same track object. (Share VIDEO never
+ *  arrives here — the pop-out window owns the video subscription.) */
 const feedShareAudioTracks = new Map<number, { username: string; track: MediaStreamTrack }>();
 
 function handleRemoteTrack(feedId: number, username: string, kind: RemoteTrackKind, track: MediaStreamTrack): void {
@@ -2933,16 +2928,14 @@ function handleRemoteTrack(feedId: number, username: string, kind: RemoteTrackKi
     roomAudio.attachShareTrack(feedId, username, track, persistedGain("share", username));
     return;
   }
-  feedVideoTracks.set(feedId, { username, track });
-  if (appStore.getSnapshot().viewingFeedId === feedId) {
-    appStore.patch({ viewingUsername: username });
-  }
+  // Video: wantedStreams no longer subscribes it (the pop-out owns video) —
+  // an inbound video track here means that discipline regressed.
+  log.warn("sfu", `unexpected inbound video track from ${username} — the pop-out window owns video`);
 }
 
 function handleRemoteTrackEnded(feedId: number, _username: string, kind: RemoteTrackKind): void {
   if (kind === "video") {
-    appStore.patch({ viewingUsername: null });
-    return;
+    return; // never subscribed in the main window (the pop-out owns video)
   }
   if (kind === "share") {
     // Only the share chain — the peer's voice playout must survive a share stop.
@@ -2952,18 +2945,10 @@ function handleRemoteTrackEnded(feedId: number, _username: string, kind: RemoteT
   roomAudio.detachFeed(feedId);
 }
 
-/** A stopped share disables its streams but the remote video track only goes
- *  MUTED (never "ended"), so the <video> element would hold the last frame
- *  forever. Every feed refresh drops the view when the watched feed's video
- *  is gone (share stopped) or the feed itself left. Retained tracks of feeds
- *  that LEFT are dropped; a merely-disabled video keeps its retention — the
- *  recycled m-line will reuse exactly that track object. */
+/** A stopped share disables its streams in the feed ANNOUNCEMENT — every feed
+ *  refresh drops the view when the watched feed's video is gone (share stopped)
+ *  or the feed itself left. */
 function pruneDeadView(feeds: FeedInfo[]): void {
-  for (const feedId of feedVideoTracks.keys()) {
-    if (!feeds.some((entry) => entry.feedId === feedId)) {
-      feedVideoTracks.delete(feedId);
-    }
-  }
   for (const feedId of feedShareAudioTracks.keys()) {
     if (!feeds.some((entry) => entry.feedId === feedId)) {
       feedShareAudioTracks.delete(feedId);
@@ -2975,11 +2960,11 @@ function pruneDeadView(feeds: FeedInfo[]): void {
   }
   const feed = feeds.find((entry) => entry.feedId === viewed);
   if (feed === undefined || !feedHasLiveVideo(feed)) {
-    appStore.patch({ viewingFeedId: null, viewingUsername: null });
+    appStore.patch({ viewingFeedId: null });
     // The SFU's viewed set must die with the view: a stale entry keeps the
-    // feed's video+share audio in wantedStreams, and the publisher's NEXT
-    // share then auto-subscribes — audio playing with nobody pressing Watch
-    // (live 2026-09-21: subscriptions +2 the instant a second share landed).
+    // feed's share audio in wantedStreams, and the publisher's NEXT share then
+    // auto-subscribes — audio playing with nobody pressing Watch (live
+    // 2026-09-21: subscriptions +2 the instant a second share landed).
     sfuSession?.setViewingFeed(null);
     dropPopoutWatchTarget();
   }
@@ -4513,7 +4498,7 @@ export const volumeChanges = new VolumeChangesStore();
 
 export function setViewingFeed(feedId: number | null): void {
   const next = appStore.getSnapshot().viewingFeedId === feedId ? null : feedId;
-  appStore.patch({ viewingFeedId: next, viewingUsername: null });
+  appStore.patch({ viewingFeedId: next });
   sfuSession?.setViewingFeed(next);
   if (next === null) {
     dropPopoutWatchTarget();
@@ -4559,42 +4544,26 @@ let lastLoggedVerdict: string | null = null;
 let shareStatsTimer: ReturnType<typeof setInterval> | null = null;
 let shareStatsTicks = 0;
 let lastOutCounters: VideoRtpCounters | null = null;
-let lastInCounters: VideoRtpCounters | null = null;
-const shareStatsCache = { out: "—", in: "—" };
+const shareStatsCache = { out: "—" };
 
-function shareStatsLine(kind: "out" | "in", current: VideoRtpCounters | null, previous: VideoRtpCounters | null): string {
+/** The publisher-side share line (input fps vs ENCODED fps — enc ≪ in = the
+ *  encoder cannot keep up). The old viewer-side "share in" line is GONE: the
+ *  main window no longer subscribes the watched share's video (2026-10-05,
+ *  the pop-out owns it), so there is no inbound track to read stats from. */
+function shareStatsLine(current: VideoRtpCounters | null, previous: VideoRtpCounters | null): string {
   if (current === null) {
     return "—";
   }
   const dimensions = current.width !== null && current.height !== null ? `${current.width}×${current.height}` : "?";
-  if (kind === "out") {
-    const parts = [dimensions, `in ${current.framesPerSecond ?? "?"} fps`];
-    if (previous !== null) {
-      const seconds = Math.max(0.001, (current.timestamp - previous.timestamp) / 1000);
-      if (current.frames >= previous.frames) {
-        parts.push(`enc ${((current.frames - previous.frames) / seconds).toFixed(0)} fps`);
-      }
-      if (current.bytes >= previous.bytes) {
-        parts.push(`${(((current.bytes - previous.bytes) * 8 / seconds) / 1_000_000).toFixed(1)} Mbps`);
-      }
-    }
-    return parts.join(" · ");
-  }
-  const parts = [dimensions, `dec ${current.framesPerSecond?.toFixed(0) ?? "?"} fps`];
+  const parts = [dimensions, `in ${current.framesPerSecond ?? "?"} fps`];
   if (previous !== null) {
     const seconds = Math.max(0.001, (current.timestamp - previous.timestamp) / 1000);
+    if (current.frames >= previous.frames) {
+      parts.push(`enc ${((current.frames - previous.frames) / seconds).toFixed(0)} fps`);
+    }
     if (current.bytes >= previous.bytes) {
       parts.push(`${(((current.bytes - previous.bytes) * 8 / seconds) / 1_000_000).toFixed(1)} Mbps`);
     }
-  }
-  if (current.framesDropped !== null) {
-    parts.push(`drop ${current.framesDropped}`);
-  }
-  if (current.packetsLost !== null) {
-    parts.push(`loss ${current.packetsLost}`);
-  }
-  if (current.jitterMs !== null) {
-    parts.push(`jit ${Math.round(current.jitterMs)} ms`);
   }
   return parts.join(" · ");
 }
@@ -4606,25 +4575,12 @@ async function pollShareStats(): Promise<void> {
   } catch {
     outCounters = null;
   }
-  shareStatsCache.out = shareStatsLine("out", outCounters, lastOutCounters);
+  shareStatsCache.out = shareStatsLine(outCounters, lastOutCounters);
   lastOutCounters = outCounters;
 
-  const viewingFeedId = appStore.getSnapshot().viewingFeedId;
-  const viewedTrackId = viewingFeedId !== null ? feedVideoTracks.get(viewingFeedId)?.track.id ?? null : null;
-  let inCounters: VideoRtpCounters | null = null;
-  if (viewedTrackId !== null) {
-    try {
-      inCounters = sfuSession !== null ? await sfuSession.getInboundVideoCounters(viewedTrackId) : null;
-    } catch {
-      inCounters = null;
-    }
-  }
-  shareStatsCache.in = shareStatsLine("in", inCounters, lastInCounters);
-  lastInCounters = inCounters;
-
   shareStatsTicks += 1;
-  if (shareStatsTicks % 10 === 0 && (outCounters !== null || inCounters !== null)) {
-    log.info("share-stats", `out: ${shareStatsCache.out} | in: ${shareStatsCache.in}`);
+  if (shareStatsTicks % 10 === 0 && outCounters !== null) {
+    log.info("share-stats", `out: ${shareStatsCache.out}`);
   }
 }
 
@@ -4645,9 +4601,7 @@ export function buildDiagModel(): DiagModel {
     ? extractAudioFmtpLines(wireSdp).map((line) => `m${line.mindex}: ${line.fmtp ?? "—"}`).join(" | ")
     : null;
 
-  const probeTarget = state.viewingUsername
-    ?? state.participants.find((feed) => state.viewingFeedId === feed.feedId)?.display
-    ?? null;
+  const probeTarget = state.participants.find((feed) => state.viewingFeedId === feed.feedId)?.display ?? null;
   const reading = probeTarget ? roomAudio.stereoProbe(probeTarget) : null;
   const verdict = reading ? stereoVerdict(reading) : null;
   if (verdict !== null && verdict !== lastLoggedVerdict) {
@@ -4677,7 +4631,6 @@ export function buildDiagModel(): DiagModel {
       { key: "sub conn", value: sfuSession?.getSubscriberConnectionState() ?? "—" },
       { key: "subs", value: String(sfuSession?.getSubscribedCount() ?? 0) },
       { key: "share out", value: shareStatsCache.out },
-      { key: "share in", value: shareStatsCache.in },
       { key: "inbound", value: inboundAudioLine },
       { key: "sent fmtp", value: sentLine ?? "—" },
       { key: "wire fmtp", value: wireLine ?? "—" },

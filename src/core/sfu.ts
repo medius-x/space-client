@@ -1011,36 +1011,6 @@ export class SfuSession {
     }
   }
 
-  /** Share-video IN counters (viewer side) for one receiving track: decoded
-   *  fps, dropped frames, loss, jitter. Null when the track receives nothing
-   *  (not subscribed yet / video muted upstream). */
-  async getInboundVideoCounters(trackId: string): Promise<VideoRtpCounters | null> {
-    if (!this.subscriberPc) {
-      return null;
-    }
-    try {
-      const report = await this.subscriberPc.getStats();
-      const pair = videoEntriesForTrack(report, "inbound-rtp", trackId);
-      if (pair === null) {
-        return null;
-      }
-      const jitterSeconds = numberOrNull(pair.rtp.jitter);
-      return {
-        timestamp: numberOrNull(pair.rtp.timestamp) ?? 0,
-        bytes: numberOrNull(pair.rtp.bytesReceived) ?? 0,
-        frames: numberOrNull(pair.rtp.framesDecoded) ?? 0,
-        framesPerSecond: numberOrNull(pair.track.framesPerSecond),
-        width: numberOrNull(pair.track.frameWidth),
-        height: numberOrNull(pair.track.frameHeight),
-        framesDropped: numberOrNull(pair.track.framesDropped),
-        packetsLost: numberOrNull(pair.rtp.packetsLost),
-        jitterMs: jitterSeconds !== null ? jitterSeconds * 1000 : null,
-      };
-    } catch {
-      return null;
-    }
-  }
-
   getSubscribedCount(): number {
     return this.subscribedKeys.size;
   }

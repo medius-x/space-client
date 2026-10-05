@@ -44,12 +44,11 @@ describe("classifyFeed", () => {
 });
 
 describe("wantedStreams", () => {
-  it("voice always; video+share only for viewed feeds", () => {
+  it("voice always; the viewed feed adds SHARE AUDIO only — video lives in the pop-out", () => {
     const feeds = [sharingFeed()];
     expect(wantedStreams(feeds, new Set())).toEqual([{ feed: 42, mid: "0" }]);
     expect(wantedStreams(feeds, new Set([42]))).toEqual([
       { feed: 42, mid: "0" },
-      { feed: 42, mid: "1" },
       { feed: 42, mid: "2" },
     ]);
   });

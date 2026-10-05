@@ -57,9 +57,12 @@ export interface StreamRef {
 }
 
 /**
- * Which streams we want on the wire: everyone's VOICE always; video + its paired share
- * audio only for feeds we are actively viewing (bandwidth discipline — mirrors the Java
- * client: the share is heard only while watched).
+ * Which streams we want on the wire: everyone's VOICE always; the WATCHED
+ * feed's share AUDIO only — the main window is the audio playout surface.
+ * The share VIDEO never rides this subscription: the pop-out window runs its
+ * own viewer session for it, so the video bytes cross the line exactly once
+ * (2026-10-05 — before, the main window pulled a full video copy nothing
+ * rendered: double bandwidth and a wasted decode).
  */
 export function wantedStreams(feeds: FeedInfo[], viewedFeedIds: ReadonlySet<number>): StreamRef[] {
   const wanted: StreamRef[] = [];
@@ -70,9 +73,6 @@ export function wantedStreams(feeds: FeedInfo[], viewedFeedIds: ReadonlySet<numb
     }
     if (!viewedFeedIds.has(feed.feedId)) {
       continue;
-    }
-    for (const videoMid of classification.videoMids) {
-      wanted.push({ feed: feed.feedId, mid: videoMid });
     }
     for (const shareMid of classification.shareAudioMids) {
       wanted.push({ feed: feed.feedId, mid: shareMid });
