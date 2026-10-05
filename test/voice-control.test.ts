@@ -14,6 +14,7 @@ function push(overrides: Partial<VoiceControlState>): VoiceControlState {
     selfDeafened: false,
     modMuted: false,
     modDeafened: false,
+    permMuted: false,
     ...overrides,
   };
 }
@@ -27,7 +28,16 @@ describe("VoiceControlStore", () => {
       selfDeafened: false,
       modMuted: true,
       modDeafened: false,
+      permMuted: false,
     });
+  });
+
+  it("carries the SPEAK-permission flag verbatim (security round 6)", () => {
+    const store = new VoiceControlStore();
+    store.applyState(push({ permMuted: true, muted: true }));
+    const marks = store.marksFor("alice");
+    expect(marks.permMuted).toBe(true);
+    expect(marks.modMuted).toBe(false); // the UI paints it red, but the tooltip differs
   });
 
   it("the self-toggle reads only the self flag while the union is derivable", () => {
@@ -69,6 +79,7 @@ describe("VoiceControlStore", () => {
       selfDeafened: false,
       modMuted: false,
       modDeafened: false,
+      permMuted: false,
     });
   });
 });

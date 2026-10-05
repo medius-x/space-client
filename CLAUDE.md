@@ -3099,6 +3099,54 @@ social-aggregate подписан на сторы фоновых сессий �
   without ontrack` (+seedRemoteTransceiver-драйвер в FakePeerConnection; рецикл-трек
   доставляется пассивно, повторный SRD не дублирует). Гейты 575/575 + typecheck.
 
+- **Безопасность раунд 6 (2026-10-05, код готов, смоук pending; ДЕПЛОЙ ПАРНЫЙ — сервер
+  первым: два wire-расширения `VoiceControlState` += 9-е `permMuted` и
+  `ChannelMyPermissions` += 3-е `stream`; серверная половина — oak-server/CLAUDE.md,
+  вкл. ensureEveryoneStream-ремонт @everyone при рестарте).** **SPEAK:** types +
+  `VoiceControlStore.marks` += `permMuted` (verbatim-origin); комплаенс мик = union —
+  НЕ тронут (state.muted уже несёт perm серверным union'ом, share-аудио по-прежнему
+  только modMuted — STREAM-домен); `VoiceMarks` чужих строк: muteTone по
+  `modMuted || permMuted` (красный), title при perm — «Not allowed to speak in this
+  channel»; СВОЯ мик-кнопка VoiceBar: `selfMuted` += permMuted + `disabled={permMuted}`
+  + тот же title; `describeMuteState`-сторож («still muted») различает perm-тишину
+  («not allowed to speak»). **STREAM:** `PermissionStore.applyChannel`-дедуп += stream
+  (иначе live-флип права не эмитил — та же грабля, что AFK-бейдж в sameChannel);
+  `joinVoice` дотягивает `ensureChannelPermissions(channel.id)` (голосовой канал часто
+  не открывался как чат — биты не кешировались бы); VoiceBar `canStream`-подписка
+  (`state.channels.get(id)?.stream ?? true` — неехавший бит читается разрешающим:
+  прятать кнопку на гонке фетча хуже, сервер остаётся авторитетом); share/camera-кнопка
+  скрыта при `!canStream` (и в AFK), НО живёт пока `sharing || cameraOn` (остановить
+  оставить); расширение AFK-стоп-эффекта: потеря STREAM live останавливает живой шар
+  (кооперативно — серверного видеомьюта нет, лог «STREAM right lost — outgoing screen
+  share stopped»). ChatPane DM-загушка += `stream: true` (DM-вид никогда не гейтит
+  шар — звонковый путь отдельный). Тесты: voice-control (+perm-флаг), permission-store
+  (литералы += stream; НОВЫЙ stream-only-flip эмитит), rest-chat wire-мок += stream. —
+  **577/577 + typecheck**. Смоук pending. **Смоук-фикс 1 (2026-10-05, живой репорт «не
+  могу снять Deny — Save неактивна, пока не запретишь что-то ещё»):** dirty-чек вкладки
+  Permissions стоял на ОДНОСТОРОННЕМ subset-тесте (`permissionMapsEqual` внутри
+  ServerSettingsPane — union сравнивался то с левым, то с правым множеством) — ловил
+  только ДОБАВЛЕНИЕ права, снятие единственного Deny читалось «нет изменений». Функция
+  вынесена в `channel-access.ts` (чистая) с честным двусторонним равенством
+  (union == оба размера) + регрессионный тест «fires on a REMOVED bit as much as on an
+  added one»; направление аргументов больше не влияет. — **578/578 + typecheck**;
+  клиент-only, рестарт клиента. **Смоук-фикс 2 (2026-10-05, живые репорты):** (а) в
+  AFK-канале своя мик-кнопка оставалась КЛИКАБЕЛЬНОЙ и играла sweep-звук при
+  безрезультатном клике — теперь `micLocked = permMuted || channelAfk` (disabled +
+  title «Muted in the AFK channel» / «Not allowed to speak in this channel»), а
+  `toggleSelfMute` зеркалит гейт для ХОТКЕЯ (Ctrl+Shift+M): ранний тихий return в
+  permMuted/AFK — ни кадра, ни звука о непереходе; (б) SPEAK и STREAM покинули
+  `NOT_IMPLEMENTED` редактора прав (у обоих enforcement этого раунда; описания в
+  PERMISSION_INFO уже были). — 578/578 + typecheck; клиент-only.
+
+- **План безопасности раунд 7 фаза B (клиент; утверждён 2026-10-05; серверная фаза A —
+  oak-server/CLAUDE.md).** (1) M5 SSRF-гейт `space-net:fetch` в main: DNS-резолв + блок
+  private/loopback/link-local (IPv4+IPv6) ДО запроса, редиректы manual с перепроверкой
+  каждого Location, блок → тихий no-preview; чистая `isBlockedAddress` + тесты.
+  (2) M7 — KV-значения записей `connection:*` шифруются `safeStorage` целиком (маркер
+  `enc:v1:`, plaintext-миграция на лету при первом сохранении, шифрование недоступно →
+  как есть + WARN); вызовы POST /api/auth/logout(-all) при re-login-замене записи и
+  Delete server record.
+
 - Гейт после каждой фазы: `npm test` + `npm run typecheck` зелёные.
 - Новые файлы сразу `git add`. Коммиты только по явной команде; subject на английском.
 - Никаких single-letter имён (кроме i/j цикла и T/E/K/V генериков); комментарии в коде

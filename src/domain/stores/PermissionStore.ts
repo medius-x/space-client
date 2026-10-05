@@ -42,7 +42,8 @@ export class PermissionStore extends Emitter {
 
   applyChannel(channelId: number, permissions: ChannelMyPermissions): void {
     const existing = this.state.channels.get(channelId);
-    if (existing !== undefined && existing.sendMessages === permissions.sendMessages && existing.attachFiles === permissions.attachFiles) {
+    if (existing !== undefined && existing.sendMessages === permissions.sendMessages
+        && existing.attachFiles === permissions.attachFiles && existing.stream === permissions.stream) {
       return;
     }
     const channels = new Map(this.state.channels);

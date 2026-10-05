@@ -418,7 +418,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
   }, [dm, members, session]);
   const dmBlock = dm !== null ? dmSendBlockReason(myDmRestricted, dmPeerRestricted, dm.type === "GROUP_DM") : null;
   const permissions: ChannelMyPermissions | null = dm !== null
-    ? { sendMessages: dmBlock === null, attachFiles: dmBlock === null }
+    ? { sendMessages: dmBlock === null, attachFiles: dmBlock === null, stream: true }
     : channelPermissions;
   const chatTitlePrefix = dm !== null && dm.type === "DM" ? "@" : "#";
   // The chat-surface binding while a discussion is open: a Channel-shaped adapter over the

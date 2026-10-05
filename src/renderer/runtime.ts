@@ -2535,6 +2535,9 @@ export async function joinVoice(channel: Channel): Promise<void> {
   }
   roomAudio.setDeafened(false);
   appStore.patch({ activeVoiceChannelId: channel.id, voiceState: "connecting", stateDetail: null, participants: [], viewingFeedId: null });
+  // The share/camera gate reads the per-channel STREAM bit — a voice channel is
+  // often never OPENED as a chat tab, so its bits would never be cached otherwise.
+  void session.ensureChannelPermissions(channel.id);
   session.stomp.send("/app/voice.join", { channelId: channel.id });
   startAfkReporting();
 
@@ -2607,12 +2610,13 @@ async function connectVoiceRoom(channel: Channel): Promise<void> {
           // feed is a real fault worth alarming about.
           describeMuteState: (username) => {
             const marks = activeSession?.voiceControlStore.marksFor(username);
-            if (!marks || (!marks.selfMuted && !marks.modMuted && !marks.selfDeafened && !marks.modDeafened)) {
+            if (!marks || (!marks.selfMuted && !marks.modMuted && !marks.permMuted && !marks.selfDeafened && !marks.modDeafened)) {
               return null;
             }
             const reasons = [
               marks.selfMuted ? "self-muted" : null,
               marks.modMuted ? "server-muted" : null,
+              marks.permMuted ? "not allowed to speak" : null,
               marks.selfDeafened ? "self-deafened" : null,
               marks.modDeafened ? "server-deafened" : null,
             ].filter((reason) => reason !== null);
@@ -3263,6 +3267,13 @@ export function toggleSelfMute(): void {
   const session = activeSession;
   const channelId = appStore.getSnapshot().activeVoiceChannelId;
   if (!session || channelId === null) {
+    return;
+  }
+  // The locked-mute rooms mirror the disabled button for the HOTKEY path: in the AFK
+  // room (channel-wide moderator mark) or under the SPEAK permission mute, our unmute
+  // changes nothing the room can hear — no frame, and no cue for a non-transition.
+  if (session.voiceControlStore.marksFor(session.username()).permMuted
+      || session.channelStore.get(channelId)?.afk === true) {
     return;
   }
   const marks = session.voiceControlStore.marksFor(session.username());

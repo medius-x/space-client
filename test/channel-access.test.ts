@@ -8,6 +8,7 @@ import {
   lockedModeSet,
   modeSetFor,
   overrideMaps,
+  permissionMapsEqual,
   triStateOf,
 } from "../src/domain/logic/channel-access";
 import type { ChannelOverride, ChannelUserOverride, PermissionCatalogEntry } from "../src/types";
@@ -43,6 +44,27 @@ describe("tri-state editing", () => {
     ];
     expect(channelEditablePermissions(catalog).map((entry) => entry.name))
       .toEqual(["MANAGE_CHANNELS", "SEND_MESSAGES", "CONNECT"]);
+  });
+
+  it("permissionMapsEqual fires on a REMOVED bit as much as on an added one (Save dirty)", () => {
+    // Live bug 2026-10-05: the one-sided subset test lit Save only for additions —
+    // turning the ONLY Deny back to Inherit left the button dead.
+    const saved = new Map([[1, { allow: [], deny: ["SPEAK"] }]]);
+    const lifted = new Map([[1, { allow: [], deny: [] }]]);
+    expect(permissionMapsEqual(saved, lifted)).toBe(false);
+    expect(permissionMapsEqual(lifted, saved)).toBe(false); // direction must not matter
+
+    const unchanged = new Map([[1, { allow: ["AAA"], deny: ["SPEAK"] }]]);
+    const sameOrderIgnored = new Map([[1, { allow: ["AAA"], deny: ["SPEAK"] }]]);
+    expect(permissionMapsEqual(unchanged, sameOrderIgnored)).toBe(true);
+
+    const allowRemoved = new Map([[2, { allow: [], deny: [] }]]);
+    const allowAdded = new Map([[2, { allow: ["AAA"], deny: [] }]]);
+    expect(permissionMapsEqual(allowRemoved, allowAdded)).toBe(false);
+
+    const rowAdded = new Map([[3, { allow: [], deny: [] }]]);
+    expect(permissionMapsEqual(new Map(), rowAdded)).toBe(false); // a fresh @everyone row differs from none
+    expect(permissionMapsEqual(new Map(), new Map())).toBe(true);
   });
 });
 

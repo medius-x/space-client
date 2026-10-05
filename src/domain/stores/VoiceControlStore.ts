@@ -14,6 +14,9 @@ export interface VoiceMemberMarks {
   selfDeafened: boolean;
   modMuted: boolean;
   modDeafened: boolean;
+  /** The SPEAK-permission mute (security round 6): derived state, lifted only by
+   *  the server's permission sweeps — never by a self or moderator unmute. */
+  permMuted: boolean;
 }
 
 export interface VoiceControlSnapshot {
@@ -33,6 +36,7 @@ export class VoiceControlStore extends Emitter {
       selfDeafened: push.selfDeafened,
       modMuted: push.modMuted,
       modDeafened: push.modDeafened,
+      permMuted: push.permMuted,
     });
     this.state = { marks };
     this.emit();
@@ -60,6 +64,7 @@ export class VoiceControlStore extends Emitter {
   }
 
   marksFor(username: string): VoiceMemberMarks {
-    return this.state.marks.get(username) ?? { selfMuted: false, selfDeafened: false, modMuted: false, modDeafened: false };
+    return this.state.marks.get(username)
+      ?? { selfMuted: false, selfDeafened: false, modMuted: false, modDeafened: false, permMuted: false };
   }
 }

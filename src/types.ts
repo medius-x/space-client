@@ -331,10 +331,13 @@ export interface StorageStatus {
   lastRun: StorageGcRun | null;
 }
 
-/** GET /api/channels/{id}/permissions/me — override-aware, per channel. */
+/** GET /api/channels/{id}/permissions/me — override-aware, per channel. The `stream`
+ *  bit feeds the voice share/camera gate (security round 6); it is client-side only —
+ *  the gateway has no video mute, so the button hiding IS the enforcement. */
 export interface ChannelMyPermissions {
   sendMessages: boolean;
   attachFiles: boolean;
+  stream: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -457,6 +460,8 @@ export interface VoiceControlCommand {
  * /topic/voice.state broadcast (append-only wire contract). muted/deafened are the
  * UNION (compliance semantics); the four origin flags are EXPLICIT because
  * "mod = union ∖ self" is ambiguous when both hold — the server carries both.
+ * `permMuted` (security round 6) is the SPEAK-permission mute: paints like a
+ * moderator mute, but neither a self-unmute nor a moderator's Unmute lifts it.
  */
 export interface VoiceControlState {
   username: string;
@@ -467,6 +472,7 @@ export interface VoiceControlState {
   selfDeafened: boolean;
   modMuted: boolean;
   modDeafened: boolean;
+  permMuted: boolean;
 }
 
 /** /user/queue/voice.control push targeted at the acted-on member: type=KICKED (a

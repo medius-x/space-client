@@ -141,7 +141,7 @@ describe("RestClient chat + channels + profile (M1)", () => {
         return { status: 200, body: { permissions: ["SEND_MESSAGES", "MANAGE_CHANNELS"], owner: false } };
       }
       if (request.path === "/api/channels/7/permissions/me") {
-        return { status: 200, body: { sendMessages: false, attachFiles: false } };
+        return { status: 200, body: { sendMessages: false, attachFiles: false, stream: true } };
       }
       return { status: 500, body: { message: `unexpected ${request.path}` } };
     });

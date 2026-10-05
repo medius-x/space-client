@@ -52,6 +52,7 @@ import {
   inferAccessMode,
   inferGrantees,
   overrideMaps,
+  permissionMapsEqual,
   triStateOf,
   type AccessMode,
   type PermissionSets,
@@ -120,9 +121,11 @@ const PERMISSION_INFO: Record<string, { label: string; description: string }> = 
 };
 
 /** Permissions with no server enforcement behind them yet (marked in the editor, oak parity).
- *  Kept in lockstep with the server's never-enforced list — every other bit HAS call sites. */
+ *  Kept in lockstep with the server's never-enforced list — every other bit HAS call sites.
+ *  SPEAK and STREAM left the set with security round 6 (join-time perm-mute + sweeps /
+ *  the client share gate fed by the per-channel bit). */
 const NOT_IMPLEMENTED: ReadonlySet<string> = new Set([
-  "VIEW_AUDIT_LOG", "SPEAK", "USE_VAD", "PRIORITY_SPEAKER", "STREAM", "REQUEST_TO_SPEAK",
+  "VIEW_AUDIT_LOG", "USE_VAD", "PRIORITY_SPEAKER", "REQUEST_TO_SPEAK",
 ]);
 
 /**
@@ -1972,25 +1975,6 @@ function TriStateControl({ label, description, notImplemented, state, onChange }
       </span>
     </div>
   );
-}
-
-function permissionMapsEqual(left: ReadonlyMap<number, PermissionSets>, right: ReadonlyMap<number, PermissionSets>): boolean {
-  const keys = new Set([...left.keys(), ...right.keys()]);
-  for (const key of keys) {
-    const leftSets = left.get(key);
-    const rightSets = right.get(key);
-    if (leftSets === undefined && rightSets === undefined) {
-      continue;
-    }
-    if (leftSets === undefined || rightSets === undefined) {
-      return false;
-    }
-    if (new Set(leftSets.allow).size !== new Set([...leftSets.allow, ...rightSets.allow]).size
-      || new Set(rightSets.deny).size !== new Set([...leftSets.deny, ...rightSets.deny]).size) {
-      return false;
-    }
-  }
-  return true;
 }
 
 function ChannelAccessTab({ session, channel }: {

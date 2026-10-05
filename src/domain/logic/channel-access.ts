@@ -129,6 +129,36 @@ export function applyTriState(sets: PermissionSets, permission: string, next: Tr
   return { allow: [...allow].sort(), deny: [...deny].sort() };
 }
 
+/** Whether two override maps carry the same allow/deny sets — the Permissions tab's
+ *  dirty check. Equality must fire on a REMOVED bit as much as on an added one: a
+ *  one-sided subset test lit Save only for additions, so turning the only Deny back
+ *  to Inherit left the button dead (live smoke 2026-10-05). */
+export function permissionMapsEqual(
+  left: ReadonlyMap<number, PermissionSets>,
+  right: ReadonlyMap<number, PermissionSets>,
+): boolean {
+  const keys = new Set([...left.keys(), ...right.keys()]);
+  for (const key of keys) {
+    const leftSets = left.get(key);
+    const rightSets = right.get(key);
+    if (leftSets === undefined && rightSets === undefined) {
+      continue;
+    }
+    if (leftSets === undefined || rightSets === undefined) {
+      return false;
+    }
+    const allowUnion = new Set([...leftSets.allow, ...rightSets.allow]);
+    const denyUnion = new Set([...leftSets.deny, ...rightSets.deny]);
+    if (new Set(leftSets.allow).size !== allowUnion.size
+        || new Set(rightSets.allow).size !== allowUnion.size
+        || new Set(leftSets.deny).size !== denyUnion.size
+        || new Set(rightSets.deny).size !== denyUnion.size) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /** The channel Permissions tab shows Text+Voice groups plus MANAGE_CHANNELS; VIEW_CHANNEL belongs to Access. */
 export function channelEditablePermissions(catalog: readonly PermissionCatalogEntry[]): PermissionCatalogEntry[] {
   return catalog.filter((entry) =>

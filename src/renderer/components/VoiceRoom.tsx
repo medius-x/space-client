@@ -62,7 +62,9 @@ function markTone(modFlag: boolean, selfFlag: boolean): "none" | "self" | "mod" 
 
 /** Mute/deafen badges for a voice member — shared by the room tiles and the sidebar. */
 export function VoiceMarks({ marks }: { marks: VoiceMemberMarks | undefined }): React.JSX.Element | null {
-  const muteTone = markTone(marks?.modMuted ?? false, marks?.selfMuted ?? false);
+  // The SPEAK-permission mute paints with the moderator layer (red — it is server
+  // state), but its tooltip tells the real story: no unmute button lifts it.
+  const muteTone = markTone((marks?.modMuted ?? false) || (marks?.permMuted ?? false), marks?.selfMuted ?? false);
   const deafenTone = markTone(marks?.modDeafened ?? false, marks?.selfDeafened ?? false);
   if (muteTone === "none" && deafenTone === "none") {
     return null;
@@ -70,7 +72,7 @@ export function VoiceMarks({ marks }: { marks: VoiceMemberMarks | undefined }): 
   return (
     <span className="voice-marks">
       {muteTone !== "none" ? (
-        <span className={`voice-mark voice-mark-${muteTone}`} title={muteTone === "mod" ? "Muted by a moderator" : "Muted by themselves"}>
+        <span className={`voice-mark voice-mark-${muteTone}`} title={marks?.permMuted ? "Not allowed to speak in this channel" : muteTone === "mod" ? "Muted by a moderator" : "Muted by themselves"}>
           <span className="icon mdi-microphone-off" />
         </span>
       ) : null}
@@ -199,25 +201,31 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
   // button hides there entirely (nothing is ever live to stop in it).
   const channelAfk = useStore(session.channelStore, (allChannels) =>
     activeChannelId !== null && allChannels.some((channel) => channel.id === activeChannelId && channel.afk === true));
+  // Security round 6: STREAM gates the outgoing share/camera. Not-yet-fetched bits
+  // read as allowed (joinVoice fetches them; hiding the button on a fetch race is
+  // worse than showing it — the server remains the authority for everything real).
+  const canStream = useStore(session.permissionStore, (state) =>
+    activeChannelId !== null && (state.channels.get(activeChannelId)?.stream ?? true));
 
   // The bar owns the CALLER's ring (user decision) and the accepted call — but
   // NOT the callee's ring: oak's RINGING states own no surface, the callee's
   // ring lives in the toast-window card alone.
   const inCall = callState === "ringing-out" || callState === "connecting" || callState === "in-call";
   // A LIVE share dies when the room BECOMES an AFK room under its feet (the designation
-  // refetch flips the flag on every client). The server has no per-stream video mute
-  // in the gateway wiring (moderateAudio cuts audio m-lines only), so this stop is
-  // cooperative — the same trust model as the voice toggles.
+  // refetch flips the flag on every client), or when the STREAM right is taken away
+  // live (the permission refresh re-reads the channel bits). The server has no
+  // per-stream video mute in the gateway wiring (moderateAudio cuts audio m-lines
+  // only), so this stop is cooperative — the same trust model as the voice toggles.
   useEffect(() => {
-    if (!inCall && channelAfk && (sharing || cameraOn)) {
+    if (!inCall && (channelAfk || !canStream) && (sharing || cameraOn)) {
       if (cameraOn) {
         void toggleCamera(); // the toggle IS the camera's stop
       } else {
         void stopShare();
       }
-      log.info("voice", "AFK room — outgoing screen share stopped");
+      log.info("voice", channelAfk ? "AFK room — outgoing screen share stopped" : "STREAM right lost — outgoing screen share stopped");
     }
-  }, [inCall, channelAfk, sharing, cameraOn]);
+  }, [inCall, channelAfk, canStream, sharing, cameraOn]);
   if (activeChannelId === null && !inCall) {
     return null; // no voice session and no call — the card shrinks to the user bar alone
   }
@@ -335,7 +343,14 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
   const screenCount = participants.filter(feedHasLiveVideo).length;
 
   const ownMarks = marksByMember.get(session.username());
-  const selfMuted = (ownMarks?.selfMuted ?? false) || (ownMarks?.modMuted ?? false);
+  // The permission mute rides the OWN button as a locked red (security round 6):
+  // neither our unmute nor a moderator's can lift it, so the button disables.
+  const permMuted = ownMarks?.permMuted ?? false;
+  // The AFK room's channel-wide mute is the same story (a moderator-layer mark our
+  // unmute cannot lift) — a clickable no-op that still plays the sweep cue reads
+  // as broken (live smoke 2026-10-05), so the button locks there too.
+  const micLocked = permMuted || channelAfk;
+  const selfMuted = (ownMarks?.selfMuted ?? false) || (ownMarks?.modMuted ?? false) || permMuted;
   const selfDeafened = (ownMarks?.selfDeafened ?? false) || (ownMarks?.modDeafened ?? false);
   const statusClass = voiceState === "live" ? "live" : voiceState === "reconnecting" ? "reconnecting" : voiceState === "failed" ? "failed" : "connecting";
   // oak's voice bar texts (setVoiceStatus): "On a call" green / "Connecting"
@@ -373,7 +388,8 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
       <div className="voice-bar-buttons">
         <button
           className={"voice-toggle icon-button" + (selfMuted ? " on" : "")}
-          title={selfMuted ? "Unmute" : "Mute"}
+          disabled={micLocked}
+          title={permMuted ? "Not allowed to speak in this channel" : micLocked ? "Muted in the AFK channel" : selfMuted ? "Unmute" : "Mute"}
           onClick={toggleSelfMute}
         >
           <span className={"icon " + (selfMuted ? "mdi-microphone-off" : "mdi-microphone")} />
@@ -399,8 +415,10 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
         {/* oak has NO separate camera button on the panel — the camera is a
             SOURCE inside the share picker. This one button is the single
             outgoing-video toggle: stop whatever is live, or open the picker.
-            Hidden in the AFK room (no outgoing video there, Discord semantics). */}
-        {!channelAfk ? (
+            Hidden in the AFK room (no outgoing video there, Discord semantics) and
+            without the STREAM right — but kept alive while something streams so a
+            mid-stream revocation still leaves the member a way to STOP. */}
+        {!channelAfk && (canStream || sharing || cameraOn) ? (
           <button
             className={"voice-toggle icon-button share" + (sharing || cameraOn ? " on" : "")}
             title={sharing || cameraOn ? "Stop screen share" : "Share screen"}
