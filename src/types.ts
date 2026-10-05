@@ -274,10 +274,14 @@ export interface UserResponse {
 // RBAC viewer permissions (M1: UI gating only — the server 403 stays the authority)
 // ---------------------------------------------------------------------------
 
-/** GET /api/users/me/permissions — server-wide; owner gets every name listed. */
+/** GET /api/users/me/permissions — server-wide; owner gets every name listed.
+ *  `dmRestricted` (3rd field, wire append-only) mirrors the subtractive
+ *  RESTRICT_PRIVATE_MESSAGES role bit — deliberately NOT part of `permissions`
+ *  (that list is grants; the flag is computed server-side from raw held roles). */
 export interface MyPermissions {
   permissions: string[];
   owner: boolean;
+  dmRestricted?: boolean;
 }
 
 export const MANAGE_CHANNELS_PERMISSION = "MANAGE_CHANNELS";
@@ -606,6 +610,9 @@ export interface ServerMember {
   /** Permanent removal ("Remove from server") — true only on /api/members/bans rows;
    *  there is no undo, so the client renders such rows without actions. */
   removed?: boolean;
+  /** Holds a role with RESTRICT_PRIVATE_MESSAGES: the client dims DM entry points
+   *  toward this member (9th field, wire append-only). */
+  dmRestricted?: boolean;
 }
 
 /** GET /api/roles row — position DESC (highest first), color is ARGB int, nullable. */

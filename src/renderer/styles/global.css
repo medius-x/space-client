@@ -758,6 +758,9 @@ button.wide-add { width: 100%; }
   flex-shrink: 0;
 }
 .chat-error { color: var(--sp-red); font-size: 12px; padding: 4px 16px 0; }
+/* The read-only plate where the composer would be in a DM restricted by
+   RESTRICT_PRIVATE_MESSAGES (existing conversations stay readable). */
+.dm-restricted-note { color: var(--sp-text-dim); font-size: 12px; padding: 6px 16px; }
 
 .message-list { flex: 1; overflow-y: auto; padding: 16px 16px 8px; }
 .message-row { display: flex; gap: 6px; padding: 2px 0; border-radius: 4px; }
@@ -2618,11 +2621,13 @@ button.wide-add { width: 100%; }
 .toast-invite-dismiss { background: #4e5058; }
 .toast-invite-dismiss:hover { background: #80848e; }
 
-/* The voice channel's hover invite button (Discord's person-plus). */
+/* The voice channel's hover invite button (Discord's person-plus). Sized to
+   fit INSIDE the row's text line (an 18px box never stands taller than the
+   name text, so voice rows keep the same height as text rows). */
 .voice-invite-button {
   margin-left: auto;
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   border: none;
   border-radius: 4px;
   background: transparent;
@@ -3205,6 +3210,10 @@ body.role-dragging * { cursor: grabbing !important; }
 .role-editor-inner { flex: 1; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
 .role-editor-head, .settings-tabs { flex-shrink: 0; }
 .role-tab-body { flex: 1; min-height: 0; overflow-y: auto; }
+/* The single cross-tab Save row — pinned below the scrolling tab body (the
+   color draft from Appearance must never be saved separately from permissions:
+   a color-less PATCH resets it server-side). */
+.role-editor-save { flex-shrink: 0; border-top: 1px solid var(--sp-control); padding-top: 8px; }
 /* oak's role editor column: "Role details" caption, the big colored name, the
    kind line — stacked, not inline. */
 .role-editor-head { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }

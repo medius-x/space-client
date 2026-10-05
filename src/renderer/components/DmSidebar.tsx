@@ -97,15 +97,20 @@ export function DmSidebar({ session }: { session: ConnectionSession }): React.JS
       ]
     : [{ label: "Close DM", danger: true, action: () => void session.closeDm(menuRow.dm.id) }];
 
+  // A restricted member (RESTRICT_PRIVATE_MESSAGES) cannot start groups either.
+  const myDmRestricted = useStore(session.permissionStore, (state) => state.my?.dmRestricted === true);
+
   return (
     <>
       <div className="sidebar-section-title">
         <span>Direct Messages</span>
-        <button
-          className="section-add"
-          title="Start a group DM"
-          onClick={() => (friends.length < 2 ? setNotEnoughFriends(true) : setCreateGroup(true))}
-        >+</button>
+        {!myDmRestricted ? (
+          <button
+            className="section-add"
+            title="Start a group DM"
+            onClick={() => (friends.length < 2 ? setNotEnoughFriends(true) : setCreateGroup(true))}
+          >+</button>
+        ) : null}
       </div>
       <div
         className={"channel-row friends-entry" + (activeDmId === null ? " active" : "")}
@@ -217,10 +222,22 @@ function FriendPickerModal({ session, title, hint, confirmLabel, minimum, candid
   onClose: () => void;
   onConfirm(selected: readonly Relationship[]): Promise<void>;
 }): React.JSX.Element {
-  const pool = candidates.filter((entry) => !exclude.includes(entry.userId));
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Restricted members cannot be added to a group (the server 403s; the picker
+  // keeps the list honest) — both usages: group creation and "Add member…".
+  // Derived OUTSIDE the selector (the M6 identity trap: filter/map in a
+  // selector loops useSyncExternalStore).
+  const members = useStore(session.memberStore, (state) => state.members);
+  const restrictedIds = useMemo(
+    () => members.filter((member) => member.dmRestricted === true).map((member) => member.userId),
+    [members],
+  );
+  const pool = useMemo(
+    () => candidates.filter((entry) => !exclude.includes(entry.userId) && !restrictedIds.includes(entry.userId)),
+    [candidates, exclude, restrictedIds],
+  );
 
   const toggle = (userId: number) => {
     setSelected((previous) => {

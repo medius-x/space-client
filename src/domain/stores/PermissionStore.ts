@@ -25,6 +25,12 @@ export class PermissionStore extends Emitter {
     return this.state.my?.permissions.includes(permission) ?? false;
   }
 
+  /** Whether the viewer is barred from direct messages (the subtractive
+   *  RESTRICT_PRIVATE_MESSAGES role bit, mirrored from /users/me/permissions). */
+  dmRestricted(): boolean {
+    return this.state.my?.dmRestricted === true;
+  }
+
   channelPermissions(channelId: number): ChannelMyPermissions | null {
     return this.state.channels.get(channelId) ?? null;
   }

@@ -10,6 +10,7 @@ import {
 } from "../runtime";
 import { socialDirectory } from "../social-aggregate";
 import { mergeFriendRows, type FriendRowModel } from "../../domain/logic/social-aggregation";
+import { dmBlockHintText } from "../../domain/logic/dm-gating";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { RelationshipType, UserSummary } from "../../types";
 import { Avatar } from "./Avatar";
@@ -171,6 +172,14 @@ function FriendRow({ session, row }: { session: ConnectionSession; row: FriendRo
 
   const relationship = row.relationship;
   const statusText = relationship.type === "FRIEND" ? (row.online ? "Online" : "Offline") : STATUS_TEXT[relationship.type];
+  // The DM restriction (RESTRICT_PRIVATE_MESSAGES): the Message button explains
+  // itself instead of firing a doomed 403 — either I am barred, or the friend is.
+  const myDmRestricted = useStore(session.permissionStore, (state) => state.my?.dmRestricted === true);
+  const peerDmRestricted = useStore(session.memberStore, (state) =>
+    state.members.find((member) => member.userId === relationship.userId)?.dmRestricted === true);
+  const messageBlockedTitle = myDmRestricted || peerDmRestricted
+    ? dmBlockHintText(myDmRestricted ? "self" : "peer")
+    : undefined;
   // oak's "⋮" card rows are plain action rows — no danger tint. Both actions
   // open a confirmation first, the REST call fires only on the confirm button.
   const menuItems: ContextMenuItem[] = [
@@ -195,7 +204,12 @@ function FriendRow({ session, row }: { session: ConnectionSession; row: FriendRo
         <>
           {relationship.type === "FRIEND" ? (
             <>
-              <button className="friend-action" disabled={busy} onClick={() => void run(() => openDmWithUser(relationship.userId))}>
+              <button
+                className="friend-action"
+                disabled={busy || messageBlockedTitle !== undefined}
+                title={messageBlockedTitle}
+                onClick={() => void run(() => openDmWithUser(relationship.userId))}
+              >
                 Message
               </button>
               <button className="friend-action" disabled={busy} onClick={(event) => {

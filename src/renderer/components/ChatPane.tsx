@@ -29,6 +29,7 @@ import {
   type RecentExpressionEntry,
 } from "../../domain/logic/reaction-picker";
 import { displayNameOf } from "../../domain/logic/display-name";
+import { dmBlockHintText, dmSendBlockReason } from "../../domain/logic/dm-gating";
 import { tileReplyLabel } from "../../domain/logic/discussions-view";
 import { linkPreviewFor, type LinkPreview } from "../link-preview";
 import { notifications } from "../notifications";
@@ -205,9 +206,6 @@ interface ChatActions {
   selection: ReadonlySet<number>;
   toggleSelected(messageId: number): void;
 }
-
-/** DMs are always fully writable — participants need no permission bits (oak parity). */
-const DM_CHANNEL_PERMISSIONS: ChannelMyPermissions = { sendMessages: true, attachFiles: true };
 
 /** Channel-shaped view over a DM row — the chat surface is channel-agnostic. */
 function dmViewChannel(dm: DmChannel, selfUsername: string): Channel {
@@ -402,7 +400,26 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
   const aroundTarget = activeAround !== null && viewChannel !== null && activeAround.channelId === viewChannel.id
     ? activeAround.messageId
     : null;
-  const permissions = dm !== null ? DM_CHANNEL_PERMISSIONS : channelPermissions;
+  // The DM restriction (the subtractive RESTRICT_PRIVATE_MESSAGES role bit): a
+  // restricted member may not send, and a 1:1 with one is frozen for BOTH sides
+  // (a message toward them would be a received one); a group only silences the
+  // restricted member themselves. Reads stay open — the server 403 remains the
+  // authority, this only keeps the composer honest.
+  const myDmRestricted = useStore(session.permissionStore, (state) => state.my?.dmRestricted === true);
+  const dmPeerRestricted = useMemo(() => {
+    if (dm === null || dm.type !== "DM") {
+      return null;
+    }
+    const peer = dm.participants.find((participant) => participant.id !== session.selfUserId());
+    if (peer === undefined) {
+      return null;
+    }
+    return members.find((member) => member.userId === peer.id)?.dmRestricted ?? null;
+  }, [dm, members, session]);
+  const dmBlock = dm !== null ? dmSendBlockReason(myDmRestricted, dmPeerRestricted, dm.type === "GROUP_DM") : null;
+  const permissions: ChannelMyPermissions | null = dm !== null
+    ? { sendMessages: dmBlock === null, attachFiles: dmBlock === null }
+    : channelPermissions;
   const chatTitlePrefix = dm !== null && dm.type === "DM" ? "@" : "#";
   // The chat-surface binding while a discussion is open: a Channel-shaped adapter over the
   // discussion channel (id is all the send/reaction paths need; permissions resolve through
@@ -584,7 +601,11 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
       ) : null}
       {/* oak's applyComposerGating: without SEND_MESSAGES the whole card disappears
           (no gate line); without ATTACH_FILES only the paperclip hides (the composer
-          itself stays). DMs are always fully writable. */}
+          itself stays). A restricted DM shows WHY it is read-only (existing
+          conversations stay readable for both sides). */}
+      {permissions !== null && !permissions.sendMessages && dmBlock !== null ? (
+        <div className="dm-restricted-note">{dmBlockHintText(dmBlock)}</div>
+      ) : null}
       {permissions !== null && permissions.sendMessages ? (
         <Composer
           session={session}

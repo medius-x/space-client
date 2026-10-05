@@ -2965,6 +2965,53 @@ social-aggregate подписан на сторы фоновых сессий �
   designation (AfkController → applyOnEnter по каждому сидящему; см.
   oak-server/CLAUDE.md). — **клиент 568/568, сервер 431/431**.
 
+- **Раунд пермишшенов: запрет ЛС по роли + ревизия каталога (2026-10-05, код готов, смоук
+  pending; ДЕПЛОЙ ПАРНЫЙ с oak-server — сервер первым; серверная половина и ретайр
+  EMBED_LINKS/USE_EXTERNAL_EMOJIS + V16 — oak-server/CLAUDE.md).** **(A) Ревизия
+  редактора прав:** `NOT_IMPLEMENTED` очищен от лжи — убраны MANAGE_SERVER/
+  MANAGE_NICKNAMES/CHANGE_NICKNAME/MANAGE_MESSAGES/MENTION_EVERYONE/ADD_REACTIONS (все
+  реализованы; MENTION_EVERYONE тоже сидел в множестве ошибочно) и ретайр-пара
+  EMBED_LINKS/USE_EXTERNAL_EMOJIS (строк в каталоге больше нет); остаток = ровно 6
+  серверных never-enforced: VIEW_AUDIT_LOG/SPEAK/USE_VAD/PRIORITY_SPEAKER/STREAM/
+  REQUEST_TO_SPEAK. `PERMISSION_INFO` += MANAGE_STORAGE («Manage Storage» — прежде
+  рендерился голым enum-именем без описания) и RESTRICT_PRIVATE_MESSAGES; описания
+  MANAGE_SERVER/MANAGE_MEMBERS дописаны (connection info / invites). **Баг-фикс:**
+  `canManageServerSettings` += MANAGE_SERVER — держатель только этого права не мог
+  открыть Server Settings, чтобы попасть в единственную питаемую им секцию (Overview).
+  В RolePermissions строка RESTRICT скрыта при редактировании @everyone (копия бита на
+  базовой роли игнорируется серверной проверкой — чекбокс был бы ложью; идиома
+  VIEW_CHANNEL-фильтра, но условная). **(B) Запрет ЛС в UI:** `MyPermissions.
+  dmRestricted?` + `ServerMember.dmRestricted?` (wire append-only); `PermissionStore.
+  dmRestricted()`; НОВАЯ чистая `domain/logic/dm-gating.ts` (`dmSendBlockReason`:
+  self-блок везде, peer-блок ТОЛЬКО 1:1 — группа с запрещённым жива; `dmBlockHintText`).
+  ChatPane: константа DM_CHANNEL_PERMISSIONS заменена производными (композер скрыт как
+  у серверного канала без SEND; над ним плашка `.dm-restricted-note` «You are not
+  allowed…» / «This member cannot receive…»; peer из `dm.participants` → memberStore по
+  userId). FriendsPane: кнопка Message disabled + title-причина (свой запрет или
+  target.dmRestricted). DmSidebar: «+» группы скрыт при своём запрете;
+  FriendPickerModal (оба применения) фильтрует dmRestricted-кандидатов (фильтр ВНЕ
+  селектора — useMemo, M6-грабля идентичности). История/подписки/тосты DM не тронуты
+  (сервер держит читаемость). Тесты: НОВЫЙ `test/dm-gating.test.ts` (6). —
+  **клиент 574/574 + typecheck + build; сервер 439/439**.
+  **Смоук-полиш 1 (2026-10-05, юзер-репорт «Save во вкладке Permissions сбрасывал
+  цвет из Appearance» + юзер-запрос на СКВОЗНОЕ сохранение):** редактор роли
+  переведён на единый черновик `RoleDraft {name, color, mentionable, hoist,
+  permissions}` — он живёт в RoleEditor НАД вкладками (все вкладки управляемые,
+  patchDraft-проп), а ОДНА кнопка «Save Changes» закреплена ПОД скроллом тела
+  вкладки (`.role-editor-save`, видна на любой вкладке) и коммитит ВСЁ одним
+  PATCH: custom → `{name?(null=не трогать), color(БЕЗУСЛОВЕН — null=Default),
+  permissions, mentionable, hoist}`, @everyone → только `{permissions,
+  mentionable}`. КОРЕНЬ бага: серверный контракт «color на PATCH безусловен,
+  null = сброс» (RoleService.update) — permissions-only PATCH не нёс ключа color
+  → Jackson резолвил null → setColor(null) стирал цвет; теперь color-less PATCH
+  от клиента НЕ существует by construction (единственный call-site шлёт color
+  всегда; @everyone-ветка сервера цвет игнорирует и так — сервер не тронут).
+  Заголовок редактора показывает черновик name И color (live-фидбек); при ошибке
+  черновик НЕ откатывается (status + лог, юзер правит и ретраит — раньше
+  откатывалось только имя); Members-вкладка НЕ в черновике (назначения —
+  немедленные per-member PUT на другом эндпоинте). Старые per-tab Save-строки
+  удалены.
+
 - Гейт после каждой фазы: `npm test` + `npm run typecheck` зелёные.
 - Новые файлы сразу `git add`. Коммиты только по явной команде; subject на английском.
 - Никаких single-letter имён (кроме i/j цикла и T/E/K/V генериков); комментарии в коде

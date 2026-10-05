@@ -81,13 +81,15 @@ import { ServerIconPreview } from "./ServerRail";
  * refresh the stores, so a second client's edits re-render this screen too.
  */
 
-/** Human names + one-line descriptions for the permission catalog (no tooltips — always visible). */
+/** Human names + one-line descriptions for the permission catalog (no tooltips — always visible).
+ *  Mirrors the server's enforcement map — the retired bits (EMBED_LINKS, USE_EXTERNAL_EMOJIS)
+ *  are gone from /api/permissions entirely, so they carry no rows here either. */
 const PERMISSION_INFO: Record<string, { label: string; description: string }> = {
   ADMINISTRATOR: { label: "Administrator", description: "Every permission, bypassing channel overrides." },
-  MANAGE_SERVER: { label: "Manage Server", description: "Rename the server and edit its icon." },
+  MANAGE_SERVER: { label: "Manage Server", description: "Rename the server, edit its icon and connection info." },
   MANAGE_ROLES: { label: "Manage Roles", description: "Create, edit, delete and reorder roles." },
   MANAGE_CHANNELS: { label: "Manage Channels", description: "Create, rename, delete channels and edit overrides." },
-  MANAGE_MEMBERS: { label: "Manage Members", description: "Assign roles to members." },
+  MANAGE_MEMBERS: { label: "Manage Members", description: "Assign roles to members and manage invites." },
   KICK_MEMBERS: { label: "Kick Members", description: "Remove members from the server. Removal is permanent." },
   BAN_MEMBERS: { label: "Ban Members", description: "Ban members from logging in, and unban." },
   MANAGE_NICKNAMES: { label: "Manage Nicknames", description: "Change other members' names." },
@@ -97,10 +99,8 @@ const PERMISSION_INFO: Record<string, { label: string; description: string }> = 
   SEND_MESSAGES: { label: "Send Messages", description: "Type in text channels." },
   MANAGE_MESSAGES: { label: "Manage Messages", description: "Delete and edit other members' messages." },
   ATTACH_FILES: { label: "Attach Files", description: "Upload images and files." },
-  EMBED_LINKS: { label: "Embed Links", description: "Links render with a preview card." },
   READ_MESSAGE_HISTORY: { label: "Read Message History", description: "Read past messages." },
   MENTION_EVERYONE: { label: "Mention Everyone", description: "@everyone and @here ping everyone." },
-  USE_EXTERNAL_EMOJIS: { label: "Use External Emojis", description: "Use emoji from other servers." },
   ADD_REACTIONS: { label: "Add Reactions", description: "React to messages." },
   CONNECT: { label: "Connect", description: "Join voice channels." },
   SPEAK: { label: "Speak", description: "Talk in voice channels." },
@@ -112,13 +112,17 @@ const PERMISSION_INFO: Record<string, { label: string; description: string }> = 
   STREAM: { label: "Stream", description: "Share your screen or camera in voice." },
   REQUEST_TO_SPEAK: { label: "Request to Speak", description: "Ask to speak on stage channels." },
   VIEW_CHANNEL: { label: "View Channel", description: "See the channel at all." },
+  MANAGE_STORAGE: { label: "Manage Storage", description: "Edit the storage cleanup policy and trigger manual runs." },
+  RESTRICT_PRIVATE_MESSAGES: {
+    label: "Restrict Private Messages",
+    description: "Holders cannot send or receive direct messages. Existing conversations stay readable.",
+  },
 };
 
-/** Permissions with no server endpoint behind them yet (marked in the editor, oak parity). */
+/** Permissions with no server enforcement behind them yet (marked in the editor, oak parity).
+ *  Kept in lockstep with the server's never-enforced list — every other bit HAS call sites. */
 const NOT_IMPLEMENTED: ReadonlySet<string> = new Set([
-  "MANAGE_SERVER", "MANAGE_NICKNAMES", "CHANGE_NICKNAME", "VIEW_AUDIT_LOG",
-  "MANAGE_MESSAGES", "EMBED_LINKS", "MENTION_EVERYONE", "USE_EXTERNAL_EMOJIS",
-  "ADD_REACTIONS", "SPEAK", "USE_VAD", "PRIORITY_SPEAKER", "STREAM", "REQUEST_TO_SPEAK",
+  "VIEW_AUDIT_LOG", "SPEAK", "USE_VAD", "PRIORITY_SPEAKER", "STREAM", "REQUEST_TO_SPEAK",
 ]);
 
 /**
@@ -597,6 +601,29 @@ function RolesSection({ session }: { session: ConnectionSession }): React.JSX.El
   );
 }
 
+/** The role editor's cross-tab staged draft: every tab writes HERE and the single
+ *  "Save Changes" at the editor's foot commits the whole thing in ONE PATCH. The
+ *  per-tab saves are gone for a reason: a permissions-only PATCH carries no color
+ *  key, and the server's color contract is "null = reset" — saving permissions
+ *  alone silently wiped the color picked in Appearance (live report). */
+interface RoleDraft {
+  name: string;
+  color: number | null;
+  mentionable: boolean;
+  hoist: boolean;
+  permissions: ReadonlySet<string>;
+}
+
+function draftOf(role: Role): RoleDraft {
+  return {
+    name: role.name,
+    color: role.color,
+    mentionable: role.mentionable,
+    hoist: role.hoist,
+    permissions: new Set(role.permissions),
+  };
+}
+
 function RoleEditor({ session, role, canManageMembers }: {
   session: ConnectionSession;
   role: Role;
@@ -604,15 +631,73 @@ function RoleEditor({ session, role, canManageMembers }: {
 }): React.JSX.Element {
   const [tab, setTab] = useState<"appearance" | "permissions" | "members">("appearance");
   const builtin = role.kind !== "CUSTOM";
-  // The editable name lives HERE (the pencil in the title row replaces the old
-  // Title field) — reset on selection change so a switch never carries the
-  // previous role's draft (the same stale-state class the tabs are keyed for).
-  const [name, setName] = useState(role.name);
+  const roleSnapshot = useStore(session.memberStore, (state) => state.roles.find((entry) => entry.id === role.id) ?? role);
+  const [draft, setDraft] = useState<RoleDraft>(() => draftOf(roleSnapshot));
   const [editingName, setEditingName] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+
+  // Follow the store row — a save of ours refreshes it (the draft then equals the
+  // saved state), and so does any /topic/roles push. This is the same reset the
+  // per-tab local states used to do, now unified above the tabs.
   useEffect(() => {
-    setName(role.name);
+    setDraft(draftOf(roleSnapshot));
     setEditingName(false);
-  }, [role.id]);
+  }, [roleSnapshot]);
+
+  const patchDraft = (partial: Partial<RoleDraft>): void => {
+    setDraft((previous) => ({ ...previous, ...partial }));
+  };
+
+  const dirty = builtin
+    ? (!setsEqual(draft.permissions, new Set(roleSnapshot.permissions))
+      || draft.mentionable !== roleSnapshot.mentionable)
+    : (draft.name.trim() !== roleSnapshot.name || draft.color !== roleSnapshot.color
+      || draft.mentionable !== roleSnapshot.mentionable || draft.hoist !== roleSnapshot.hoist
+      || !setsEqual(draft.permissions, new Set(roleSnapshot.permissions)));
+
+  const submit = async (): Promise<void> => {
+    if (!dirty || busy) {
+      return;
+    }
+    setBusy(true);
+    setStatus(null);
+    try {
+      await session.updateRole(role.id, builtin
+        ? {
+          // @everyone: only permissions and mentionable are editable — no color
+          // key at all (the server ignores it for the base row anyway).
+          permissions: [...draft.permissions],
+          mentionable: draft.mentionable,
+        }
+        : {
+          // oak's partial-PATCH contract: the name travels ONLY when the user
+          // actually changed it. The server validates names on update, and legacy
+          // roles (created before that rule) can carry spaces — sending their
+          // stored name on every save bounced color-only edits with 400 (live
+          // report). null leaves the stored name untouched.
+          name: draft.name.trim() !== roleSnapshot.name ? draft.name.trim() : null,
+          // color is UNCONDITIONAL on the wire: null resets, so send the picked value.
+          color: draft.color,
+          permissions: [...draft.permissions],
+          mentionable: draft.mentionable,
+          hoist: draft.hoist,
+        });
+      setSaved(true);
+    } catch (error: unknown) {
+      // The inline status is momentary — a rejected save must also land in
+      // space.log (with what was actually sent) or the failure is undebuggable
+      // once the selection changes (live report). The draft STAYS so the user
+      // can fix and retry; only the status explains.
+      const message = error instanceof Error ? error.message : String(error);
+      log.error("settings", `role update failed (id=${role.id}, color=${draft.color}, name="${draft.name.trim()}"): ${message}`);
+      setStatus(message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="role-editor-inner">
       <div className="role-editor-head">
@@ -624,33 +709,34 @@ function RoleEditor({ session, role, canManageMembers }: {
             <input
               className="role-editor-name-input"
               autoFocus
-              value={name}
+              value={draft.name}
               /* The field IS the label: same font, same color, no chrome — the
                   only cue of edit mode is the caret at the end (user decision). */
               style={{
-                width: `${Math.max(name.length, role.name.length, 4) + 1}ch`,
-                color: role.color !== null ? argbIntToCss(role.color) : undefined,
+                width: `${Math.max(draft.name.length, roleSnapshot.name.length, 4) + 1}ch`,
+                color: draft.color !== null ? argbIntToCss(draft.color) : undefined,
               }}
               onFocus={(event) => {
                 event.target.setSelectionRange(event.target.value.length, event.target.value.length);
               }}
-              onChange={(event) => setName(event.target.value)}
+              onChange={(event) => patchDraft({ name: event.target.value })}
               onBlur={() => setEditingName(false)}
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   setEditingName(false);
                 } else if (event.key === "Escape") {
-                  setName(role.name); // cancel — back to the stored name
+                  patchDraft({ name: roleSnapshot.name }); // cancel — back to the stored name
                   setEditingName(false);
                 }
               }}
             />
           ) : (
-            /* The SPAN also shows the DRAFT, not role.name: the name is only PATCHed
-               on "Save Changes", so reading the store here reverted the display to
-               the old name on every blur/tab-switch while the draft was intact. */
-            <span className="role-editor-name" style={{ color: role.color !== null ? argbIntToCss(role.color) : undefined }}>
-              {name}
+            /* The SPAN shows the DRAFT (name AND color), not the store row: both
+               are only PATCHed on "Save Changes", so reading the store here
+               reverted the display on every blur/tab-switch while the draft was
+               intact. */
+            <span className="role-editor-name" style={{ color: draft.color !== null ? argbIntToCss(draft.color) : undefined }}>
+              {draft.name}
             </span>
           )}
           {!builtin && !editingName && tab === "appearance" ? (
@@ -668,75 +754,42 @@ function RoleEditor({ session, role, canManageMembers }: {
           <button className={"settings-tab" + (tab === "members" ? " active" : "")} onClick={() => setTab("members")}>Members</button>
         ) : null}
       </div>
-      {/* key=role.id REMOUNTS the tab on selection change: the tabs hold local
-          edit state (name/color/checkboxes) initialized from the role — without
-          the remount a switch kept the PREVIOUS role's values and lit the Save
-          button as if the user had made them (live report). The outer tab state
-          survives, matching oak's TabPane. The wrapper owns the tab's scroll:
-          the head and the tab row stay pinned above it. */}
+      {/* key=role.id REMOUNTS the tab on selection change (the tabs still hold
+          selection-adjacent local state like the fetched catalog — without the
+          remount a switch kept the PREVIOUS role's values; live report). The
+          editor-level DRAFT is re-seeded by the snapshot effect above; the outer
+          tab state survives, matching oak's TabPane. The wrapper owns the tab's
+          scroll: the head, the tab row and the save row stay pinned. */}
       <div className="role-tab-body">
         {tab === "appearance" ? (
-          <RoleAppearance key={role.id} session={session} role={role} name={name} setName={setName} />
+          <RoleAppearance key={role.id} role={role} draft={draft} patchDraft={patchDraft} />
         ) : tab === "permissions" ? (
-          <RolePermissions key={role.id} session={session} role={role} />
+          <RolePermissions key={role.id} session={session} role={role} draft={draft} patchDraft={patchDraft} />
         ) : (
           <RoleMembers key={role.id} session={session} role={role} />
         )}
       </div>
+      {/* ONE cross-tab save — pinned below the scroll body, visible on every tab.
+          Membership (the Members tab) is NOT part of the draft: assignments are
+          immediate per-member PUTs on their own endpoint. */}
+      {role.kind !== "OWNER" ? (
+        <div className="modal-actions left role-editor-save">
+          <SaveButton label="Save Changes" saved={saved} dirty={dirty} busy={busy} onClick={() => void submit()} />
+          {status !== null ? <span className="settings-status">{status}</span> : null}
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function RoleAppearance({ session, role, name, setName }: {
-  session: ConnectionSession;
+function RoleAppearance({ role, draft, patchDraft }: {
   role: Role;
-  name: string;
-  setName(next: string): void;
+  draft: RoleDraft;
+  patchDraft(partial: Partial<RoleDraft>): void;
 }): React.JSX.Element {
   const builtin = role.kind !== "CUSTOM";
-  const [color, setColor] = useState<number | null>(role.color);
-  const [mentionable, setMentionable] = useState(role.mentionable);
-  const [hoist, setHoist] = useState(role.hoist);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
-
-  const dirty = !builtin && (name !== role.name || color !== role.color
-    || mentionable !== role.mentionable || hoist !== role.hoist);
-
-  const submit = async (): Promise<void> => {
-    if (!dirty || busy) {
-      return;
-    }
-    setBusy(true);
-    setStatus(null);
-    try {
-      await session.updateRole(role.id, {
-        // oak's partial-PATCH contract: the name travels ONLY when the user
-        // actually changed it. The server validates names on update, and legacy
-        // roles (created before that rule) can carry spaces — sending their
-        // stored name on every save bounced color-only edits with 400 (live
-        // report). null leaves the stored name untouched.
-        name: name.trim() !== role.name ? name.trim() : null,
-        // color is UNCONDITIONAL on the wire: null resets, so send the picked value.
-        color,
-        mentionable,
-        hoist,
-      });
-      setSaved(true);
-    } catch (error: unknown) {
-      // Same contract as reorder: the inline status is momentary — a rejected color
-      // must also land in space.log (with what was actually sent) or the failure is
-      // undebuggable once the selection changes (live report).
-      const message = error instanceof Error ? error.message : String(error);
-      log.error("settings", `role update failed (id=${role.id}, color=${color}, name="${name.trim()}"): ${message}`);
-      setStatus(message);
-      setName(role.name); // a rejected name must not look saved
-    } finally {
-      setBusy(false);
-    }
-  };
+  const { color } = draft;
 
   // oak's swatch grid rows (presetColors): bright on top, muted below.
   const swatchRow = (presets: readonly number[], rowKey: string): React.JSX.Element => (
@@ -747,7 +800,7 @@ function RoleAppearance({ session, role, name, setName }: {
           className={"swatch" + (color === preset ? " chosen" : "")}
           style={{ background: argbIntToCss(preset) }}
           disabled={builtin}
-          onClick={() => setColor(preset)}
+          onClick={() => patchDraft({ color: preset })}
         />
       ))}
     </div>
@@ -769,7 +822,7 @@ function RoleAppearance({ session, role, name, setName }: {
             color PICKER (oak: modal SV/hue dialog; web: the native one). */}
         <div className="role-picker-row">
           <div className="role-picker-buttons">
-            <button className="ghost wide-add" disabled={builtin} onClick={() => setColor(null)}>Default</button>
+            <button className="ghost wide-add" disabled={builtin} onClick={() => patchDraft({ color: null })}>Default</button>
             <button className="ghost" disabled={builtin} onClick={() => setPickerOpen(true)}>Custom</button>
           </div>
           <div className="role-palette">
@@ -783,7 +836,7 @@ function RoleAppearance({ session, role, name, setName }: {
             onApply={(hex) => {
               const parsed = hexToArgb(hex);
               if (parsed !== null) {
-                setColor(parsed);
+                patchDraft({ color: parsed });
               }
             }}
             onClose={() => setPickerOpen(false)}
@@ -794,58 +847,33 @@ function RoleAppearance({ session, role, name, setName }: {
         <label className="settings-check">
           {/* oak: mentionable stays editable even for @everyone (only name/color/
               hoist are builtin-locked) — configureEditorForSelection. */}
-          <input type="checkbox" checked={mentionable} disabled={role.kind === "OWNER"} onChange={(event) => setMentionable(event.target.checked)} />
+          <input type="checkbox" checked={draft.mentionable} disabled={role.kind === "OWNER"} onChange={(event) => patchDraft({ mentionable: event.target.checked })} />
           <span>Mentionable</span>
         </label>
         <label className="settings-check">
-          <input type="checkbox" checked={hoist} disabled={builtin} onChange={(event) => setHoist(event.target.checked)} />
+          <input type="checkbox" checked={draft.hoist} disabled={builtin} onChange={(event) => patchDraft({ hoist: event.target.checked })} />
           <span>Display separately (hoist)</span>
         </label>
-      </div>
-      <div className="modal-actions left">
-        <SaveButton label="Save Changes" saved={saved} dirty={dirty} busy={busy} onClick={() => void submit()} />
-        {status !== null ? <span className="settings-status">{status}</span> : null}
       </div>
     </div>
   );
 }
 
-function RolePermissions({ session, role }: { session: ConnectionSession; role: Role }): React.JSX.Element {
+function RolePermissions({ session, role, draft, patchDraft }: {
+  session: ConnectionSession;
+  role: Role;
+  draft: RoleDraft;
+  patchDraft(partial: Partial<RoleDraft>): void;
+}): React.JSX.Element {
   const [catalog, setCatalog] = useState<readonly PermissionCatalogEntry[] | null>(null);
-  const [checked, setChecked] = useState<Set<string>>(new Set(role.permissions));
-  const [busy, setBusy] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
-  const roleSnapshot = useStore(session.memberStore, (state) => state.roles.find((entry) => entry.id === role.id) ?? role);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const checked = draft.permissions;
 
   useEffect(() => {
     void session.rest.getPermissionCatalog().then(setCatalog).catch((error: unknown) => {
-      setStatus(error instanceof Error ? error.message : String(error));
+      setCatalogError(error instanceof Error ? error.message : String(error));
     });
   }, [session]);
-
-  // The store row may have refreshed after our own save — follow it unless we have local edits.
-  useEffect(() => {
-    setChecked(new Set(roleSnapshot.permissions));
-  }, [roleSnapshot]);
-
-  const dirty = !setsEqual(checked, new Set(roleSnapshot.permissions));
-
-  const submit = async (): Promise<void> => {
-    if (!dirty || busy) {
-      return;
-    }
-    setBusy(true);
-    setStatus(null);
-    try {
-      await session.updateRole(role.id, { permissions: [...checked] });
-      setSaved(true);
-    } catch (error: unknown) {
-      setStatus(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(false);
-    }
-  };
 
   if (role.kind === "OWNER") {
     return <div className="settings-empty">The OWNER role cannot be edited.</div>;
@@ -856,14 +884,19 @@ function RolePermissions({ session, role }: { session: ConnectionSession; role: 
       {/* oak: the tab is captioned "Permissions" — no explainer paragraph (the
           VIEW_CHANNEL story lives in its absence: the checkbox simply isn't there). */}
       <div className="settings-hint">Permissions</div>
-      {catalog === null ? (
+      {catalogError !== null ? (
+        <div className="settings-empty">{catalogError}</div>
+      ) : catalog === null ? (
         <div className="settings-empty">Loading catalog…</div>
       ) : (
         /* Only the permission LIST scrolls (oak's permissions-scroll) — the
-           caption and the Save button stay put. */
+           caption and the cross-tab Save button stay put. */
         <div className="permissions-scroll-box">
           {(["GENERAL", "TEXT", "VOICE"] as const).map((group) => {
-            const entries = catalog.filter((entry) => entry.group === group && entry.name !== "VIEW_CHANNEL");
+            const entries = catalog.filter((entry) => entry.group === group && entry.name !== "VIEW_CHANNEL"
+              // The DM restriction reads RAW held roles only — @everyone's copy of the bit is
+              // ignored by the server check, so the checkbox on the base row would be a lie.
+              && !(role.kind === "EVERYONE" && entry.name === "RESTRICT_PRIVATE_MESSAGES"));
             if (entries.length === 0) {
               return null;
             }
@@ -878,15 +911,13 @@ function RolePermissions({ session, role }: { session: ConnectionSession; role: 
                         type="checkbox"
                         checked={checked.has(entry.name)}
                         onChange={(event) => {
-                          setChecked((previous) => {
-                            const next = new Set(previous);
-                            if (event.target.checked) {
-                              next.add(entry.name);
-                            } else {
-                              next.delete(entry.name);
-                            }
-                            return next;
-                          });
+                          const next = new Set(checked);
+                          if (event.target.checked) {
+                            next.add(entry.name);
+                          } else {
+                            next.delete(entry.name);
+                          }
+                          patchDraft({ permissions: next });
                         }}
                       />
                       <span className="permission-label">
@@ -902,10 +933,6 @@ function RolePermissions({ session, role }: { session: ConnectionSession; role: 
           })}
         </div>
       )}
-      <div className="modal-actions left">
-        <SaveButton label="Save Changes" saved={saved} dirty={dirty} busy={busy} onClick={() => void submit()} />
-        {status !== null ? <span className="settings-status">{status}</span> : null}
-      </div>
     </div>
   );
 }

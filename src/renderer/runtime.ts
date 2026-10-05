@@ -2118,14 +2118,16 @@ export function exitHomeMode(): void {
 // Settings surfaces (M7): the server settings screen + the user settings modal
 // ---------------------------------------------------------------------------
 
-/** oak's canManageAnySettings — gates the Server Settings entry point. */
+/** oak's canManageAnySettings — gates the Server Settings entry point. MANAGE_SERVER
+ *  belongs here too: it feeds the Overview section (rename/icon/connection), so a
+ *  holder of only that bit can reach the one screen it powers. */
 export function canManageServerSettings(session: ConnectionSession | null): boolean {
   if (session === null) {
     return false;
   }
   const permissions = session.permissionStore.getSnapshot().my?.permissions ?? [];
   return permissions.some((name) =>
-    name === "MANAGE_ROLES" || name === "MANAGE_MEMBERS" || name === "KICK_MEMBERS"
+    name === "MANAGE_SERVER" || name === "MANAGE_ROLES" || name === "MANAGE_MEMBERS" || name === "KICK_MEMBERS"
     || name === "BAN_MEMBERS" || name === "MANAGE_CHANNELS" || name === "MANAGE_EMOJIS" || name === "MANAGE_STORAGE");
 }
 
