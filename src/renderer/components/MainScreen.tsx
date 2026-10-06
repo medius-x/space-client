@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useStore } from "../hooks/useStore";
 import { appStore, retryConnection, toggleUserSettings } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
+import type { ConnectionQualitySnapshot } from "../../domain/logic/connection-quality";
 import { ServerRail } from "./ServerRail";
 import { Sidebar } from "./Sidebar";
 import { ChatPane } from "./ChatPane";
@@ -99,6 +100,7 @@ function UserBar({ session }: { session: ConnectionSession }): React.JSX.Element
   const stompState = useStore(appStore, (state) => state.stompState);
   const stompAttempt = useStore(appStore, (state) => state.stompAttempt);
   const stompCountdown = useStore(appStore, (state) => state.stompCountdown);
+  const connectionQuality = useStore(appStore, (state) => state.connectionQuality);
   const voiceConnected = useStore(appStore, (state) => state.activeVoiceChannelId !== null);
   const base = STOMP_STATUS[stompState] ?? STOMP_STATUS.off!;
   // oak's label exactly: "Reconnecting in Ns… M/10" while the attempt is
@@ -119,6 +121,9 @@ function UserBar({ session }: { session: ConnectionSession }): React.JSX.Element
         <span className="user-bar-name">{ownDisplayName}</span>
         <span className="user-bar-status-row">
           <span className={"user-bar-status " + status.className}>{status.text}</span>
+          {/* The ping indicator rides ALONGSIDE the status while connected —
+              while down, the status row itself already tells the story. */}
+          {stompState === "connected" ? <PingBadge quality={connectionQuality} /> : null}
           {/* oak's retryButton: visible only while the connection is down; the
               slot stays reserved so the row never jumps when it appears. */}
           {retryable ? (
@@ -137,4 +142,40 @@ function UserBar({ session }: { session: ConnectionSession }): React.JSX.Element
       </button>
     </div>
   );
+}
+
+/** The connection-quality dot + ms (RTT of the STOMP socket, Discord-style).
+ *  "unsupported" = this server build predates the /app/ping echo — the REST
+ *  request latency keeps the number alive; "probing" = the first ping flies. */
+function PingBadge({ quality }: { quality: ConnectionQualitySnapshot }): React.JSX.Element {
+  const millis = quality.state === "unsupported" ? quality.lastRestMillis : quality.lastRttMillis;
+  const text = quality.state === "probing" || millis === null
+    ? quality.state === "unsupported" ? "—" : "…"
+    : `${millis} ms`;
+  return (
+    <span className={"ping-badge " + quality.state} title={pingBadgeTitle(quality)}>
+      <span className="ping-dot" />
+      <span className="ping-text">{text}</span>
+    </span>
+  );
+}
+
+function pingBadgeTitle(quality: ConnectionQualitySnapshot): string {
+  if (quality.state === "probing") {
+    return "Measuring connection quality…";
+  }
+  if (quality.state === "unsupported") {
+    return quality.lastRestMillis === null
+      ? "Ping is not supported by this server build"
+      : `Ping is not supported by this server build — showing request latency (${quality.lastRestMillis} ms)`;
+  }
+  const verdict = quality.state === "good" ? "Stable" : quality.state === "weak" ? "Unstable" : "Poor";
+  const window = quality.windowAvgMillis === null
+    ? ""
+    : ` · avg ${Math.round(quality.windowAvgMillis)} / min ${quality.windowMinMillis} / max ${quality.windowMaxMillis} ms (last 60 s)`;
+  const jitter = quality.jitterMillis === null ? "" : ` · jitter ${Math.round(quality.jitterMillis)} ms`;
+  const misses = quality.consecutiveMisses > 0
+    ? ` · ${quality.consecutiveMisses} lost ping${quality.consecutiveMisses > 1 ? "s" : ""}`
+    : "";
+  return `${verdict} connection — ${quality.lastRttMillis} ms now${window}${jitter}${misses}`;
 }

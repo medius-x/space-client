@@ -3927,6 +3927,13 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 .user-bar-retry.connecting { color: var(--sp-yellow); }
 .user-bar-retry.lost { color: var(--sp-red); }
 .user-bar-retry:hover { background: var(--sp-card-hover); border-radius: 4px; }
+/* The ping indicator (connection-quality dot + ms) — rides the status row while
+   connected; probing/unsupported stay muted gray (no verdict to color yet). */
+.ping-badge { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; font-size: 11px; line-height: 14px; color: var(--sp-text-dim); }
+.ping-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--sp-text-dim); flex-shrink: 0; }
+.ping-badge.good .ping-dot { background: var(--sp-green); }
+.ping-badge.weak .ping-dot { background: var(--sp-yellow); }
+.ping-badge.bad .ping-dot { background: var(--sp-red); }
 .user-bar-button { padding: 4px 8px; flex-shrink: 0; }
 .user-bar-button:hover { background: var(--sp-card-hover); }
 

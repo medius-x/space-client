@@ -69,6 +69,11 @@ export interface RestClientOptions {
   /** Network-failure retry backoff for IDEMPOTENT calls (GET/PUT/DELETE and
    *  idempotency-keyed posts); tests inject zeros. Default [500, 1500]. */
   retryDelaysMs?: readonly number[];
+  /** Passive round-trip probe for the connection-quality indicator: fires on
+   *  every ATTEMPT the server answered (any HTTP status — an answer still proves
+   *  a round trip), timed per attempt so retry backoff never pollutes the value.
+   *  Byte endpoints (uploadBytes/downloadBytes) bypass it on purpose. */
+  onRequestLatency?: (info: { path: string; millis: number }) => void;
 }
 
 /** A JSON call must fail fast into the retry ladder — a hung request (dead
@@ -93,6 +98,7 @@ export class RestClient {
   private readonly fetchImpl: typeof fetch;
   private readonly onSessionExpired?: () => void;
   private readonly retryDelays: readonly number[];
+  private readonly onRequestLatency?: (info: { path: string; millis: number }) => void;
   private refreshInFlight: Promise<void> | null = null;
 
   constructor(options: RestClientOptions) {
@@ -104,6 +110,7 @@ export class RestClient {
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.onSessionExpired = options.onSessionExpired;
     this.retryDelays = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
+    this.onRequestLatency = options.onRequestLatency;
   }
 
   getTokens(): AuthTokens | null {
@@ -1174,13 +1181,16 @@ export class RestClient {
       }
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      const startedAt = Date.now();
       try {
-        return await this.fetchImpl(`${this.baseUrl}${path}`, {
+        const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
           method: init.method,
           headers,
           body: init.body,
           signal: controller.signal,
         });
+        this.onRequestLatency?.({ path, millis: Date.now() - startedAt });
+        return response;
       } catch (error: unknown) {
         lastError = error;
         const reason = error instanceof Error ? error.message : String(error);

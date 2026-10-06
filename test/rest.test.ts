@@ -25,6 +25,40 @@ describe("RestClient", () => {
     expect(fake.requests[1]?.authorization).toBe("Bearer access-1");
   });
 
+  it("reports per-attempt request latency for the connection-quality indicator", async () => {
+    const latencies: { path: string; millis: number }[] = [];
+    const fake = new FakeFetch(() => ({ status: 200, body: [] }));
+    const client = new RestClient({
+      baseUrl: "http://x",
+      tokenStorage: new MemoryTokenStorage(),
+      fetchImpl: fake.call,
+      onRequestLatency: (info) => latencies.push(info),
+    });
+
+    await client.getChannels();
+
+    expect(latencies).toHaveLength(1);
+    expect(latencies[0]?.path).toBe("/api/channels");
+    expect(latencies[0]?.millis).toBeGreaterThanOrEqual(0);
+  });
+
+  it("a request with NO answer reports no latency sample (no round trip happened)", async () => {
+    const latencies: { path: string; millis: number }[] = [];
+    const fake = new FakeFetch(() => {
+      throw new Error("network down");
+    });
+    const client = new RestClient({
+      baseUrl: "http://x",
+      tokenStorage: new MemoryTokenStorage(),
+      fetchImpl: fake.call,
+      retryDelaysMs: [0],
+      onRequestLatency: (info) => latencies.push(info),
+    });
+
+    await expect(client.getChannels()).rejects.toThrow("network down");
+    expect(latencies).toHaveLength(0);
+  });
+
   it("silently refreshes ONCE for N parallel 401s (single-flight)", async () => {
     const storage = new MemoryTokenStorage();
     storage.save({ token: "expired", refreshToken: "refresh-old", expiresAt: 0 });

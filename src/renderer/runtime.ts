@@ -32,6 +32,7 @@ import { dmToastHeader, toastBodyFallback, toastServerHeader } from "../domain/l
 import { paletteColor } from "../domain/logic/user-palette";
 import { displayNameOf } from "../domain/logic/display-name";
 import { isAfkActive } from "../domain/logic/afk-activity";
+import { initialConnectionQuality, type ConnectionQualitySnapshot } from "../domain/logic/connection-quality";
 import { memberKickReasonText, memberKickTitle } from "../domain/logic/moderation-reason";
 import { SettingsStore, type ClientSettings } from "../domain/stores/SettingsStore";
 import {
@@ -127,6 +128,9 @@ export interface AppState {
   stompAttempt: number;
   /** Seconds left until the scheduled attempt fires (null = no countdown). */
   stompCountdown: number | null;
+  /** The ACTIVE session's ping-indicator snapshot (RTT over the STOMP socket;
+   *  the user bar renders it while stompState === "connected"). */
+  connectionQuality: ConnectionQualitySnapshot;
   /** Server settings screen (in-app, replaces the content area) — M7. */
   serverSettingsOpen: boolean;
   serverSettingsSection: "overview" | "roles" | "members" | "invites" | "channels" | "emojis" | "stickers" | "server";
@@ -214,6 +218,7 @@ class AppStore extends Emitter {
     stompState: "off",
     stompAttempt: 0,
     stompCountdown: null,
+    connectionQuality: initialConnectionQuality(),
     serverSettingsOpen: false,
     serverSettingsSection: "overview",
     userSettingsOpen: false,
@@ -862,6 +867,13 @@ function makeSessionHooks(recordId: string): SessionHooks {
           stompState: state,
           ...(state === "connected" ? { stompAttempt: 0, stompCountdown: null } : {}),
         });
+      }
+    },
+    onConnectionQuality: (snapshot) => {
+      if (isActive()) {
+        // The ACTIVE session's indicator only — a background server's ping
+        // must never repaint the visible user bar.
+        appStore.patch({ connectionQuality: snapshot });
       }
     },
     onStompAttempt: (attempt) => {
@@ -1801,6 +1813,7 @@ export async function teardownSession(): Promise<void> {
     stompState: "off",
     stompAttempt: 0,
     stompCountdown: null,
+    connectionQuality: initialConnectionQuality(),
     ownUsername: null,
     activeChannelId: null,
     dmMode: false,

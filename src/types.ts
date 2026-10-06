@@ -457,6 +457,14 @@ export interface PresenceEvent {
   status: PresenceStatus;
 }
 
+/**
+ * STOMP /app/ping → /user/queue/ping: the client's epoch-millis timestamp,
+ * echoed VERBATIM by the server (a bare JSON number both ways — the same
+ * Long-timestamp-body convention as /topic/channels.changed). RTT is computed
+ * client-side as now − the echoed value; the server adds no timing of its own.
+ */
+export type PingEcho = number;
+
 /** One remote publisher as announced by Janus (publishers[] entries). */
 export interface FeedStream {
   type: "audio" | "video";

@@ -16,6 +16,7 @@ import type {
   Message,
   OwnershipEvent,
   PendingOwnershipTransfer,
+  PingEcho,
   PresenceEvent,
   ReactionEvent,
   Relationship,
@@ -49,6 +50,7 @@ import { generateVideoPreview } from "../../media/video-thumbnail";
 import { measureImageSize } from "../../media/image-size";
 import { isImageFile, isVideoFile } from "../logic/attachment-layout";
 import { sanitizeSlotFileName } from "../logic/ascii-name";
+import { ConnectionQuality, type ConnectionQualitySnapshot } from "../logic/connection-quality";
 import { ConnectionDirectory, RecordTokenStorage } from "./connection-record";
 
 /** Fires into the app shell (runtime.ts) — the session never touches UI state itself. */
@@ -99,6 +101,10 @@ export interface SessionHooks {
    *  accepted, declined, cancelled). The runtime toasts on a received accept; the
    *  pending banner rides the OwnershipStore refetch either way. */
   onOwnershipEvent?(event: OwnershipEvent): void;
+  /** The connection-quality indicator moved (ping echo, missed echo, reconnect
+   *  reset — see the ping cycle in ConnectionSession). The runtime mirrors the
+   *  ACTIVE session's snapshot into the app store for the user bar. */
+  onConnectionQuality?(snapshot: ConnectionQualitySnapshot): void;
 }
 
 export interface ConnectionSessionOptions {
@@ -130,6 +136,16 @@ const MEDIA_PREFETCH_CONCURRENCY = 2;
 const MEDIA_PREFETCH_MAX_ITEMS = 24;
 /** The latest scheduled media-prefetch sweep — a newer call aborts the older one. */
 let mediaPrefetchRunCounter = 0;
+
+/** Connection-quality ping cadence — 10 s keeps the indicator reactive while
+ *  costing the server one in-memory routing hop per client (raised from 25 s
+ *  on request; the keepalive role belongs to the heartbeat, not the ping). */
+const PING_INTERVAL_MS = 10_000;
+/** An echo later than this counts as missed — well under the interval, so a
+ *  degraded connection flags before the next ping is even due. */
+const PING_ECHO_TIMEOUT_MS = 10_000;
+const PING_DESTINATION = "/app/ping";
+const PING_ECHO_DESTINATION = "/user/queue/ping";
 
 function toWsUrl(hostUrl: string): string {
   return hostUrl.replace(/^http/, "ws") + "/ws";
@@ -189,6 +205,14 @@ export class ConnectionSession {
   private readonly directory: ConnectionDirectory;
   private readonly hooks: SessionHooks;
   private readonly tokenStorage: RecordTokenStorage;
+  /** Pure state machine of the ping indicator (see the ping cycle methods below). */
+  private readonly quality = new ConnectionQuality();
+  /** The interval re-arming SEND /app/ping (null = cycle stopped). */
+  private pingIntervalTimer: number | null = null;
+  /** The miss deadline of the in-flight ping (null = no ping in flight). */
+  private pingTimeoutTimer: number | null = null;
+  /** Send timestamp of the in-flight ping (guards echo/timeout pairing). */
+  private pingSentAtMillis: number | null = null;
   private readonly subscribedChannelIds = new Set<number>();
   /** Discussion channels whose topic family we hold (the OPEN one; StompClient has no
    *  unsubscribe, so the wire SUBSCRIBE lives until the socket — the set only guards
@@ -207,6 +231,13 @@ export class ConnectionSession {
       tokenStorage: this.tokenStorage,
       fetchImpl: options.fetchImpl,
       onSessionExpired: () => this.hooks.onSessionExpired(this.recordId),
+      // Passive RTT samples keep the ms readout alive on servers too old to
+      // echo /app/ping — the tracker ignores them once real echoes flow.
+      onRequestLatency: ({ millis }) => {
+        if (this.quality.recordRestSample(millis)) {
+          this.publishQuality();
+        }
+      },
     });
     this.stomp = new StompClient({
       url: toWsUrl(record?.hostUrl ?? ""),
@@ -215,6 +246,9 @@ export class ConnectionSession {
         onLost: (reason) => {
           log.warn("session", `STOMP lost: ${reason} (auto-reconnecting)`);
           this.hooks.onStompState("lost");
+          // No echo can arrive on a dead socket — cancel the in-flight ping
+          // WITHOUT counting a miss (the watchdog owns connection-death states).
+          this.stopPingCycle();
         },
         onAttempt: (attempt) => {
           this.hooks.onStompAttempt?.(attempt);
@@ -228,6 +262,7 @@ export class ConnectionSession {
         onConnected: (reconnected) => {
           this.hooks.onStompState("connected");
           this.hooks.onStompConnected();
+          this.startPingCycle();
           if (reconnected) {
             void this.resyncAfterReconnect();
           }
@@ -348,11 +383,94 @@ export class ConnectionSession {
     }
     this.disposed = true;
     this.playback.stop();
+    this.stopPingCycle();
     this.stomp.disconnect();
   }
 
   isDisposed(): boolean {
     return this.disposed;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Connection quality (the ping indicator)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The RTT cycle: SEND /app/ping carrying Date.now() every PING_INTERVAL_MS,
+   * the server echoes the value verbatim on /user/queue/ping and the tracker
+   * folds now − echo into the indicator. Started on EVERY (re)connect; stopped
+   * on loss/dispose and when the connection turns out to be "unsupported" (a
+   * server build without the mapping silently drops the SENDs — probing it
+   * forever would be pure noise; a reconnect re-probes).
+   */
+  private startPingCycle(): void {
+    this.stopPingCycle();
+    if (this.quality.reset()) {
+      this.publishQuality();
+    }
+    // The echo subscription MUST exist before the first SEND: on the INITIAL
+    // connect this runs from onConnected, which fires BEFORE start()'s
+    // subscribeGlobalTopics() — a ping sent unsubscribed would lose its echo
+    // and read as a false miss. subscribe() is wire-deduped by destination and
+    // replays with every reconnect, so repeating it here is safe.
+    this.stomp.subscribe(PING_ECHO_DESTINATION, (raw) => this.onPingEcho(raw));
+    this.sendPing();
+    this.pingIntervalTimer = window.setInterval(() => this.sendPing(), PING_INTERVAL_MS);
+  }
+
+  private stopPingCycle(): void {
+    if (this.pingIntervalTimer !== null) {
+      window.clearInterval(this.pingIntervalTimer);
+      this.pingIntervalTimer = null;
+    }
+    if (this.pingTimeoutTimer !== null) {
+      window.clearTimeout(this.pingTimeoutTimer);
+      this.pingTimeoutTimer = null;
+    }
+    this.pingSentAtMillis = null;
+  }
+
+  private sendPing(): void {
+    if (this.disposed || !this.stomp.isConnected() || this.pingSentAtMillis !== null) {
+      return; // dead session, dead socket, or the previous ping still in flight
+    }
+    this.pingSentAtMillis = Date.now();
+    this.stomp.send(PING_DESTINATION, this.pingSentAtMillis);
+    this.pingTimeoutTimer = window.setTimeout(() => {
+      this.pingTimeoutTimer = null;
+      this.pingSentAtMillis = null;
+      if (this.quality.recordTimeout()) {
+        this.publishQuality();
+      }
+      if (this.quality.snapshot().state === "unsupported") {
+        this.stopPingCycle(); // old server — nobody will echo; a reconnect re-probes
+      }
+    }, PING_ECHO_TIMEOUT_MS);
+  }
+
+  private onPingEcho(raw: string): void {
+    if (this.pingSentAtMillis === null) {
+      return; // a stale echo after the timeout already counted the miss
+    }
+    const sentAtMillis = JSON.parse(raw) as PingEcho;
+    if (sentAtMillis !== this.pingSentAtMillis) {
+      // A straggler of the PREVIOUS ping: the miss timeout equals the interval,
+      // so it fires just as the next ping leaves — without pairing by VALUE the
+      // late echo would be credited to the fresh ping as a bogus small RTT.
+      return;
+    }
+    this.pingSentAtMillis = null;
+    if (this.pingTimeoutTimer !== null) {
+      window.clearTimeout(this.pingTimeoutTimer);
+      this.pingTimeoutTimer = null;
+    }
+    if (this.quality.recordEcho(Date.now(), sentAtMillis)) {
+      this.publishQuality();
+    }
+  }
+
+  private publishQuality(): void {
+    this.hooks.onConnectionQuality?.(this.quality.snapshot());
   }
 
   // ---------------------------------------------------------------------------
