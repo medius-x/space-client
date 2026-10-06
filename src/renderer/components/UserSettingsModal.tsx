@@ -115,7 +115,10 @@ export function UserSettingsModal({ session }: { session: ConnectionSession }): 
           </button>
         ))}
       </div>
-      <div className="settings-body">
+      {/* Keybinds owns its scroll (the Roles idiom): the body stops scrolling,
+          the page heading and the section's reset row stay pinned and only the
+          row list scrolls (user request 2026-10-07). */}
+      <div className={"settings-body" + (activeSection === "keybinds" ? " keybinds-pinned" : "")}>
         <SectionHeading title={headingTitle} />
         {activeSection === "general" ? <GeneralSection session={session} /> : null}
         {activeSection === "account" ? <AccountSection session={session} /> : null}

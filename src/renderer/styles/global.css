@@ -3119,7 +3119,23 @@ input[type="checkbox"]:disabled { opacity: 0.5; cursor: default; }
    read as plain text), same grey as the per-row reset pills. The container caps
    at the rows' own 560px so the button's RIGHT edge lines up with the per-row
    reset pills, not with the wider settings pane. */
-.keybind-reset-all-row { display: flex; justify-content: flex-end; max-width: 560px; }
+.keybind-reset-all-row {
+  display: flex;
+  justify-content: flex-end;
+  max-width: 560px;
+  flex-shrink: 0;
+  border-top: 1px solid var(--sp-control);
+  padding-top: 12px;
+  margin-top: 12px;
+}
+
+/* The Keybinds tab owns its scroll (user request 2026-10-07, the Roles footer
+   idiom): the settings body stops scrolling, so the page heading and the reset
+   row stay pinned; only the row list inside the section scrolls, running down
+   into the divider above the button. */
+.settings-body.keybinds-pinned { display: flex; flex-direction: column; overflow: hidden; }
+.keybinds-section { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.keybinds-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 .keybind-reset-all {
   padding: 6px 14px;
   font-family: inherit;
@@ -3696,6 +3712,7 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 .friends-body:hover::-webkit-scrollbar-thumb,
 .friend-picker-list:hover::-webkit-scrollbar-thumb,
 .settings-body:hover::-webkit-scrollbar-thumb,
+.keybinds-scroll:hover::-webkit-scrollbar-thumb,
 .roles-list:hover::-webkit-scrollbar-thumb,
 .role-tab-body:hover::-webkit-scrollbar-thumb,
 .room-view-body:hover::-webkit-scrollbar-thumb,

@@ -286,23 +286,29 @@ export function KeybindsSection(): React.JSX.Element {
   const globalActions = KEYBIND_ACTIONS.filter((action) => action.scope === "global");
   const localActions = KEYBIND_ACTIONS.filter((action) => action.scope === "local");
   return (
-    <div>
-      <h3>Global</h3>
-      <div className="settings-hint">
-        These work even when the window is not focused — mute yourself from a game.
-        The chords are registered with the operating system; a chord another
-        application already owns is badged and will not fire.
+    /* The Roles footer idiom (user request 2026-10-07): the page heading (rendered
+       by the modal above this section) and the reset row stay pinned — only the
+       rows scroll, and the list runs down to the divider above the button. */
+    <div className="keybinds-section">
+      <div className="keybinds-scroll">
+        <h3>Global</h3>
+        <div className="settings-hint">
+          These work even when the window is not focused — mute yourself from a game.
+          The chords are registered with the operating system; a chord another
+          application already owns is badged and will not fire.
+        </div>
+        {globalActions.map(renderRow)}
+        <h3>In-app</h3>
+        <div className="settings-hint">
+          These fire while the window is focused. A bare key stays plain typing inside
+          the message composer; chords with Ctrl, Alt or Win fire everywhere.
+        </div>
+        {localActions.map(renderRow)}
       </div>
-      {globalActions.map(renderRow)}
-      <h3>In-app</h3>
-      <div className="settings-hint">
-        These fire while the window is focused. A bare key stays plain typing inside
-        the message composer; chords with Ctrl, Alt or Win fire everywhere.
-      </div>
-      {localActions.map(renderRow)}
       {/* Right-aligned WITH the rows: the row list is capped at 560px, so the
           button's container takes the same cap — its right edge lines up with
-          the per-row reset pills instead of the settings pane's edge. */}
+          the per-row reset pills instead of the settings pane's edge. The divider
+          above spans the same 560px column — the list runs down into it. */}
       <div className="keybind-reset-all-row">
         <button className="keybind-reset-all" onClick={() => setResetAllOpen(true)}>
           Reset all keybinds
