@@ -350,3 +350,44 @@ describe("RestClient server logs download", () => {
     await expect(client.downloadServerLogs()).rejects.toMatchObject({ status: 403, message: "no" });
   });
 });
+
+describe("RestClient server health", () => {
+  it("fetches the typed health snapshot with the Bearer header", async () => {
+    const snapshot = {
+      checkedAt: "2026-10-07T12:00:00Z",
+      services: [
+        {
+          name: "postgres",
+          service: { status: "UP", latencyMillis: 3, detail: null },
+          container: { status: "RUNNING", health: "HEALTHY", detail: "Up 2 hours (healthy)" },
+        },
+        {
+          name: "janus",
+          service: { status: "DOWN", latencyMillis: null, detail: "Connection refused" },
+          container: { status: "EXITED", health: "NONE", detail: "Exited (1) 2 minutes ago" },
+        },
+      ],
+    };
+    const fake = new FakeFetch(() => ({ status: 200, body: snapshot }));
+    const tokens = new MemoryTokenStorage();
+    tokens.save({ token: "t1", refreshToken: "r1", expiresAt: Date.now() + 3_600_000 });
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: tokens, fetchImpl: fake.call });
+
+    const health = await client.fetchServerHealth();
+
+    expect(fake.requests[0]?.method).toBe("GET");
+    expect(fake.requests[0]?.path).toBe("/api/server/health");
+    expect(fake.requests[0]?.authorization).toBe("Bearer t1");
+    expect(health.services).toHaveLength(2);
+    expect(health.services[1]?.name).toBe("janus");
+    expect(health.services[1]?.service.status).toBe("DOWN");
+    expect(health.services[0]?.container.health).toBe("HEALTHY");
+  });
+
+  it("surfaces the gate rejection as ApiError", async () => {
+    const fake = new FakeFetch(() => ({ status: 403, body: { status: 403, error: "Forbidden", message: "Missing permission" } }));
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: new MemoryTokenStorage(), fetchImpl: fake.call });
+
+    await expect(client.fetchServerHealth()).rejects.toMatchObject({ status: 403, message: "Missing permission" });
+  });
+});

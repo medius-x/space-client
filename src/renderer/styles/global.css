@@ -218,6 +218,22 @@ body.channel-dragging * { cursor: grabbing !important; }
   flex-shrink: 0;
 }
 .presence-dot.online { background: var(--sp-green); }
+/* The health-check variant (Server settings → Server): a failed or timed-out probe. */
+.presence-dot.down { background: var(--sp-red); }
+
+/* Service health rows (Server settings → Server): the presence-dot idiom — a fixed
+   name column so the four services line up, one detail line per row. */
+.health-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; max-width: 560px; }
+.health-row-name { font-weight: 700; width: 76px; flex-shrink: 0; }
+.health-row-detail {
+  flex: 1;
+  min-width: 0;
+  color: var(--sp-text-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .content {
   flex: 1;

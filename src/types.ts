@@ -331,6 +331,36 @@ export interface StorageStatus {
   lastRun: StorageGcRun | null;
 }
 
+/** GET /api/server/health — the live status of the backing services
+ *  (healthcheck round 2026-10-07, MANAGE_STORAGE). Two facets per service:
+ *  a probe the server itself runs (can it actually use the integration)
+ *  and the docker container state. */
+export interface ServiceHealthCheck {
+  status: "UP" | "DOWN" | "DISABLED" | "TIMEOUT";
+  latencyMillis: number | null;
+  detail: string | null;
+}
+
+export interface ContainerHealthCheck {
+  /** Docker state uppercased (RUNNING/EXITED/…), ABSENT when no container
+   *  matches the configured name, UNKNOWN when docker is unavailable. */
+  status: string;
+  /** The image HEALTHCHECK verdict; NONE when the image defines none. */
+  health: string | null;
+  detail: string | null;
+}
+
+export interface ServerHealthEntry {
+  name: string;
+  service: ServiceHealthCheck;
+  container: ContainerHealthCheck;
+}
+
+export interface ServerHealth {
+  checkedAt: string;
+  services: ServerHealthEntry[];
+}
+
 /** GET /api/channels/{id}/permissions/me — override-aware, per channel. The `stream`
  *  bit feeds the voice share/camera gate (security round 6); it is client-side only —
  *  the gateway has no video mute, so the button hiding IS the enforcement. */

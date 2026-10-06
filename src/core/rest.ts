@@ -26,6 +26,7 @@ import type {
   Role,
   RoomInfo,
   SearchMessagesResult,
+  ServerHealth,
   ServerMember,
   ServerProfile,
   Sticker,
@@ -676,6 +677,12 @@ export class RestClient {
   /** Fires one GC pass NOW; the run itself is background — poll getStorageStatus(). */
   async triggerStorageGc(): Promise<StorageGcRun> {
     return this.request<StorageGcRun>("/api/server/storage/run", { method: "POST" });
+  }
+
+  /** Live status of the backing services (postgres/minio/janus/coturn) — the
+   *  "Service health" block of the Server settings screen. */
+  async fetchServerHealth(): Promise<ServerHealth> {
+    return this.request<ServerHealth>("/api/server/health", { method: "GET" });
   }
 
   // --- Invite links (the Invites settings section, MANAGE_MEMBERS on the server) ---

@@ -27,6 +27,8 @@ import type {
   InviteLink,
   PermissionCatalogEntry,
   Role,
+  ServerHealth,
+  ServerHealthEntry,
   ServerMember,
   Sticker,
   StickerPack,
@@ -3169,6 +3171,44 @@ function parseTimeToMinuteOfDay(text: string): number | null {
   return hours * 60 + minutes;
 }
 
+/** The health block's auto-refresh cadence while the Server tab is open. */
+const HEALTH_REFRESH_MILLIS = 30_000;
+
+/** One backing-service row: a presence dot (green/red/grey) + name + one detail
+ *  line combining both facets, e.g. "up · 3 ms · running · healthy". */
+function HealthRow({ entry }: { entry: ServerHealthEntry }): React.JSX.Element {
+  const dotClass = entry.service.status === "UP" ? " online"
+    : entry.service.status === "DISABLED" ? ""
+    : " down";
+  return (
+    <div className="health-row">
+      <span className={"presence-dot" + dotClass} />
+      <span className="health-row-name">{entry.name}</span>
+      <span className="health-row-detail" title={describeHealthEntry(entry)}>{describeHealthEntry(entry)}</span>
+    </div>
+  );
+}
+
+function describeHealthEntry(entry: ServerHealthEntry): string {
+  const parts: string[] = [];
+  if (entry.service.status === "UP") {
+    parts.push("up" + (entry.service.latencyMillis != null ? ` · ${entry.service.latencyMillis} ms` : ""));
+  } else if (entry.service.status === "DISABLED") {
+    parts.push("disabled by configuration");
+  } else {
+    // DOWN / TIMEOUT — the detail carries the reason (red dot row)
+    parts.push(entry.service.status.toLowerCase() + (entry.service.detail != null ? ` — ${entry.service.detail}` : ""));
+  }
+  const container = entry.container;
+  if (container.status === "UNKNOWN" || container.status === "ABSENT") {
+    parts.push(container.detail ?? container.status.toLowerCase());
+  } else {
+    parts.push(container.status.toLowerCase()
+      + (container.health != null && container.health !== "NONE" ? ` · ${container.health.toLowerCase()}` : ""));
+  }
+  return parts.join(" · ");
+}
+
 function ServerStorageSection({ session }: { session: ConnectionSession }): React.JSX.Element {
   const [status, setStatus] = useState<StorageStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -3183,6 +3223,40 @@ function ServerStorageSection({ session }: { session: ConnectionSession }): Reac
   // logs failure never reads as a storage-policy failure.
   const [logsBusy, setLogsBusy] = useState(false);
   const [logsStatus, setLogsStatus] = useState<string | null>(null);
+  // Service health (healthcheck round, 2026-10-07) — its own states too: a dead
+  // janus must not look like a storage-policy error, and vice versa.
+  const [health, setHealth] = useState<ServerHealth | null>(null);
+  const [healthError, setHealthError] = useState<string | null>(null);
+  /** 404 from a pre-healthcheck server build: report once, stop polling. */
+  const [healthUnsupported, setHealthUnsupported] = useState(false);
+
+  const refreshHealth = (): void => {
+    void session.rest.fetchServerHealth()
+      .then((next) => {
+        setHealth(next);
+        setHealthError(null);
+      })
+      .catch((healthFailure: unknown) => {
+        if (healthFailure instanceof ApiError && healthFailure.status === 404) {
+          setHealthUnsupported(true);
+        } else {
+          setHealthError(healthFailure instanceof Error ? healthFailure.message : String(healthFailure));
+        }
+      });
+  };
+
+  useEffect(refreshHealth, [session]);
+
+  // Live while the tab is open: one refresh every 30 s (a stopped janus must
+  // flip the row red — and back — without the admin pressing anything).
+  useEffect(() => {
+    if (healthUnsupported) {
+      return;
+    }
+    const timer = window.setInterval(refreshHealth, HEALTH_REFRESH_MILLIS);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refreshHealth is a stable shape over setHealth/session only
+  }, [healthUnsupported, session]);
 
   const downloadServerArchive = async (): Promise<void> => {
     if (logsBusy) {
@@ -3398,6 +3472,29 @@ function ServerStorageSection({ session }: { session: ConnectionSession }): Reac
         </div>
       ) : null}
       {error !== null ? <div className="settings-warning">{error}</div> : null}
+
+      {/* Service health (healthcheck round): the server probes its own integrations
+          (is postgres/minio/janus/turn actually usable from there) and reports the
+          docker container state — "running but janus does not answer" is the case
+          this block exists for. */}
+      <h3 style={{ marginTop: 20 }}>Service health</h3>
+      <div className="settings-hint">
+        The backing services this server depends on: the probe says whether the server can
+        actually use the service, the second part is its docker container state. Refreshes
+        every {HEALTH_REFRESH_MILLIS / 1000} seconds.
+      </div>
+      {health !== null ? (
+        <>
+          {health.services.map((entry) => <HealthRow key={entry.name} entry={entry} />)}
+          <div className="settings-hint">Checked at {new Date(health.checkedAt).toLocaleTimeString()}</div>
+        </>
+      ) : null}
+      {healthUnsupported ? (
+        <div className="settings-hint">This server build does not report service health.</div>
+      ) : null}
+      {healthError !== null ? (
+        <div className="settings-warning">{healthError} — retrying every {HEALTH_REFRESH_MILLIS / 1000} seconds.</div>
+      ) : null}
 
       {/* Breathing room from the cleanup row above (user report 2026-10-07: too
           close, then 28px was too far — settled in between). */}
