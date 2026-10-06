@@ -3181,6 +3181,38 @@ social-aggregate подписан на сторы фоновых сессий �
   + title-подсказка «Deafens the member and disconnects them from the room; they can
   rejoin deafened» — клик больше не сюрприз. Клиент-only, 587/587 + typecheck.
 
+- **Полиш-раунд (2026-10-05, код готов, смоук pending; КЛИЕНТ-ONLY, сервер не тронут).**
+  Три юзер-правки. (1) **Roles → Permissions: список до черты над Save** — старый
+  фикс-кап `.permissions-scroll-box { max-height: 340px }` оставлял мёртвую зону между
+  концом списка и divider'ом над прижатой книзу кнопкой; теперь `.role-tab-body` стал
+  flex-КОЛОНКОЙ, НОВЫЙ класс `.perm-tab` (корни RolePermissions И ChannelPermissionsTab)
+  растягивается на тело таба, а `.permissions-scroll-box` = flex:1 + min-height:0 — скролл-область
+  списка идёт до самой черты; остальные табы (Appearance/Members/Access/AFK) — прежние блоки,
+  тело скроллит их как раньше. Побочный выигрыш канального редактора (Channels → Permissions):
+  его Save-строка (внутри потока таба) теперь прижата к низу тела — всегда видна, список
+  заполняет всё выше неё. (2) **Каналы↔обсуждения: выпадайка УДАЛЕНА, вход только глифом** —
+  переключатель по клику на заголовок «Channels»/«Discussions» вычищен (sectionMenu/
+  sectionTitleRef/ContextMenu-блок; мёртвый CSS `.sidebar-section-link` удалён); вход в режим
+  обсуждений — ТОЛЬКО кликабельный бейдж-глиф обсуждений на строке текст-канала; выход — НОВАЯ
+  кнопка `.sidebar-back` СПРАВА от заголовка «Discussions»: тот же глиф mdi-chevron-left, что у
+  room-view back, но компактная 20×20 (ряд заголовка держит фикс-высоту 24px — список не
+  сдвигается между режимами); клик = setSidebarDiscussions(false) + closeDiscussionView() —
+  «назад» возвращает в ПОСЛЕДНИЙ ТЕКСТОВЫЙ КАНАЛ (закрытый тред-вид гасится; activeChannelId
+  у открытого треда и так = родителю), а не только в список каналов. (3) **Drop-оверлей без
+  ATTACH_FILES не показывается** — «Drop files to attach» обещает работающий дроп: onDragOver
+  гейтит setDragOver по `permissions?.attachFiles !== false` (preventDefault остаётся БЕЗУСЛОВНЫМ —
+  броузер не навигируется на отпущенном файле); addStagedFiles переведён с channelPermissions на
+  тот же MERGED-гейт (серверные биты + dmBlock) — раньше restricted-DM-дроп стейджил файлы без
+  композера. **Итерация 2 (смоук-репорты, 2026-10-06):** (4) back-глиф Discussions подвинут
+  ВЛЕВО на одну вертикаль с крестиками отписки тайлов — `.sidebar-back { margin-right: 4px }`
+  (паддинг-право ряда заголовка 4px против внутреннего паддинга тайла 8px). (5) **Футер
+  канального редактора идентичен Roles**: `.role-editor-save` получил `margin-top: auto` (пин
+  к низу тела таба и без растущего сиблинга) и применён к Save-строкам ВСЕХ трёх табов Channels
+  (Permissions/Access/AFK); `.perm-tab` переименован в универсальный `.fill-tab` и присвоен также
+  корням Access/AFK; AFK-строка сохранения переведена с `.settings-apply` + отдельной error-line на
+  общий идиом `.modal-actions left role-editor-save` со статусом ВНУТРИ строки (как у остальных
+  табов). Гейты: **587/587 + typecheck + build** (иконки не менялись — mdi-chevron-left
+  уже в наборе).
 - Гейт после каждой фазы: `npm test` + `npm run typecheck` зелёные.
 - Новые файлы сразу `git add`. Коммиты только по явной команде; subject на английском.
 - Никаких single-letter имён (кроме i/j цикла и T/E/K/V генериков); комментарии в коде

@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useStore } from "../hooks/useStore";
 import {
   appStore,
+  closeDiscussionView,
   connectionDirectory,
   joinVoiceGuarded,
   openDiscussion,
@@ -89,11 +90,6 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
   // rail avatar's right-click): the state lives in appStore — ServerMenu.tsx
   // renders the card and the dialogs for BOTH triggers.
   const serverHeaderRef = useRef<HTMLDivElement | null>(null);
-  // The section-title dropdown (the channels↔discussions switch): "Channels" opens a menu
-  // with the single "Discussions" entry, and vice versa — the server header's toggle
-  // button is gone, the title itself carries the switch now.
-  const sectionTitleRef = useRef<HTMLDivElement | null>(null);
-  const [sectionMenu, setSectionMenu] = useState<{ x: number; y: number } | null>(null);
   // oak's showVoiceMemberMenu, sidebar surface: the card only fires for a row
   // under the room the VIEWER is in, and never for self.
   const [voiceMemberMenu, setVoiceMemberMenu] = useState<{ username: string; hasShare: boolean; x: number; y: number } | null>(null);
@@ -567,18 +563,23 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
           <OwnershipBanner session={session} />
           {sidebarDiscussions ? (
             <>
-              <div className="sidebar-section-title" ref={sectionTitleRef}>
-                {/* The title is the switch's trigger (user decision): click opens a
-                    one-entry dropdown — same interaction as the server-name header. */}
-                <span
-                  className="sidebar-section-link"
+              {/* No switch dropdown anymore (user decision 2026-10-05): entering
+                  the discussions side is the channel-row badge alone; leaving is
+                  this back button — the room-view back glyph, compact so the
+                  section row keeps its fixed 24px. It also closes an open thread
+                  view: "back" lands on the last text channel, not just the list. */}
+              <div className="sidebar-section-title">
+                <span>Discussions</span>
+                <button
+                  className="sidebar-back"
+                  title="Back to channels"
                   onClick={() => {
-                    const rect = sectionTitleRef.current?.getBoundingClientRect();
-                    if (rect !== undefined) {
-                      setSectionMenu({ x: rect.left, y: rect.bottom + 4 });
-                    }
+                    setSidebarDiscussions(false);
+                    closeDiscussionView();
                   }}
-                >Discussions</span>
+                >
+                  <span className="icon mdi-chevron-left" />
+                </button>
               </div>
               <DiscussionsList
                 session={session}
@@ -588,16 +589,8 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
             </>
           ) : (
             <>
-              <div className="sidebar-section-title" ref={sectionTitleRef}>
-                <span
-                  className="sidebar-section-link"
-                  onClick={() => {
-                    const rect = sectionTitleRef.current?.getBoundingClientRect();
-                    if (rect !== undefined) {
-                      setSectionMenu({ x: rect.left, y: rect.bottom + 4 });
-                    }
-                  }}
-                >Channels</span>
+              <div className="sidebar-section-title">
+                <span>Channels</span>
                 {canManageChannels ? (
                   <button className="section-add" title="Create channel" onClick={() => setCreateRequest({ kind: "TEXT", parentId: null, inCategory: false })}>+</button>
                 ) : null}
@@ -625,16 +618,6 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
       })() : null}
 
       {menu !== null ? <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} /> : null}
-      {sectionMenu !== null ? (
-        <ContextMenu
-          x={sectionMenu.x}
-          y={sectionMenu.y}
-          items={[sidebarDiscussions
-            ? { label: "Channels", action: () => setSidebarDiscussions(false) }
-            : { label: "Discussions", action: () => setSidebarDiscussions(true) }]}
-          onClose={() => setSectionMenu(null)}
-        />
-      ) : null}
       {voiceMemberMenu !== null ? (
         <VoiceMemberCard
           session={session}
@@ -806,8 +789,8 @@ function DiscussionsList({ session, channels, discussions }: {
     channels.find((channel) => channel.id === parentChannelId)?.name ?? "#deleted";
   return (
     <>
-      {/* No section title here — Sidebar renders the clickable "Discussions" caption
-          (the channels↔discussions switch) above this list. */}
+      {/* No section title here — Sidebar renders the "Discussions" caption with the
+          back button (the channels↔discussions switch) above this list. */}
       {discussions.length === 0 ? (
         <div className="discussions-empty">No tracked discussions — start one from a message's context menu.</div>
       ) : (

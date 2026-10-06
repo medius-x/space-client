@@ -1763,11 +1763,27 @@ button.wide-add { width: 100%; }
 
 /* ===== Discussions (threads) ===== */
 
-/* The section-title switch (user decision): the "Channels"/"Discussions" caption is the
-   trigger of the one-entry dropdown — the SAME text-only hover as the server-name header
-   (brighten the text, no background band; the server-header lesson). */
-.sidebar-section-link { cursor: pointer; }
-.sidebar-section-link:hover { color: var(--sp-text); }
+/* The discussions side's exit (user decision 2026-10-05): the switch dropdown on the
+   section title is gone — the back button carries it. Same glyph as the room-view back
+   (mdi-chevron-left), but COMPACT (20×20): the section row keeps its fixed 24px so the
+   list below never shifts between the two sides. */
+.sidebar-back {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: transparent;
+  color: var(--sp-text-dim);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.sidebar-back:hover { background: transparent; color: var(--sp-text); }
+.sidebar-back .icon { font-size: 18px; }
+/* Nudged LEFT to the tiles' own edge (user decision 2026-10-06): the row's
+   padding-right is 4px while a discussion tile pads 8px — the extra margin
+   puts the back glyph on one vertical line with the tiles' untrack buttons. */
+.sidebar-back { margin-right: 4px; }
 
 /* The discussions side of the sidebar: search-hit-like tiles (channel line + snippet). */
 .discussions-list { display: flex; flex-direction: column; gap: 2px; padding: 2px 0; }
@@ -3193,11 +3209,18 @@ body.role-dragging * { cursor: grabbing !important; }
 .role-editor { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
 .role-editor-inner { flex: 1; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
 .role-editor-head, .settings-tabs { flex-shrink: 0; }
-.role-tab-body { flex: 1; min-height: 0; overflow-y: auto; }
-/* The single cross-tab Save row — pinned below the scrolling tab body (the
-   color draft from Appearance must never be saved separately from permissions:
-   a color-less PATCH resets it server-side). */
-.role-editor-save { flex-shrink: 0; border-top: 1px solid var(--sp-control); padding-top: 8px; }
+.role-tab-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+/* The tab roots that FILL the tab body (user decision 2026-10-05): the content's
+   scroll area runs all the way down to the Save divider — the old fixed 340px cap
+   left dead space between the list and the pinned button. Plain tabs (Appearance/
+   Members) stay blocks: they stack at the top and the body scrolls them as before. */
+.fill-tab { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* The footer Save row — border-top divider above the button, pinned to the panel's
+   bottom edge (margin-top:auto does it inside a .fill-tab; in the role editor the
+   flex:1 tab body above already holds the same position). Shared by Roles (the
+   cross-tab draft save) and every Channels-editor tab (user decision 2026-10-06:
+   identical footers in both editors). */
+.role-editor-save { flex-shrink: 0; border-top: 1px solid var(--sp-control); padding-top: 8px; margin-top: auto; }
 /* oak's role editor column: "Role details" caption, the big colored name, the
    kind line — stacked, not inline. */
 .role-editor-head { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
@@ -3323,7 +3346,7 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 }
 /* oak's permissions-scroll: ONLY the permission list scrolls (340px tall),
    the caption/role picker/buttons stay pinned around it. */
-.permissions-scroll-box { max-height: 340px; overflow-y: auto; }
+.permissions-scroll-box { flex: 1; min-height: 0; overflow-y: auto; }
 /* The tri rows are the ROLE-permissions rows (permission-row / permission-label
    verbatim): box left, label column right, same gaps and padding. */
 .tri-control { display: flex; gap: 10px; padding: 6px 4px; align-items: flex-start; max-width: 560px; }

@@ -883,7 +883,7 @@ function RolePermissions({ session, role, draft, patchDraft }: {
   }
 
   return (
-    <div>
+    <div className="fill-tab">
       {/* oak: the tab is captioned "Permissions" — no explainer paragraph (the
           VIEW_CHANNEL story lives in its absence: the checkbox simply isn't there). */}
       <div className="settings-hint">Permissions</div>
@@ -892,8 +892,9 @@ function RolePermissions({ session, role, draft, patchDraft }: {
       ) : catalog === null ? (
         <div className="settings-empty">Loading catalog…</div>
       ) : (
-        /* Only the permission LIST scrolls (oak's permissions-scroll) — the
-           caption and the cross-tab Save button stay put. */
+        /* The permission list FILLS the tab body (user decision 2026-10-05): its
+           scroll area reaches the divider above the pinned cross-tab Save button —
+           no fixed cap, no dead space under a short-looking list. */
         <div className="permissions-scroll-box">
           {(["GENERAL", "TEXT", "VOICE"] as const).map((group) => {
             const entries = catalog.filter((entry) => entry.group === group && entry.name !== "VIEW_CHANNEL"
@@ -1791,7 +1792,7 @@ function ChannelAfkTab({ session, channel }: {
   }
 
   return (
-    <div className="afk-settings">
+    <div className="afk-settings fill-tab">
       <div className="overview-heading">AFK channel</div>
       <div className="settings-hint">
         Idle voice members are moved here automatically. Members in this channel are
@@ -1816,10 +1817,13 @@ function ChannelAfkTab({ session, channel }: {
           </select>
         </label>
       ) : null}
-      <div className="settings-apply">
+      {/* The shared footer idiom (user decision 2026-10-06): the same divider +
+          Save row pinned to the panel bottom as in Roles — the status rides INSIDE
+          the row like every other tab's, not on a separate error line below. */}
+      <div className="modal-actions left role-editor-save">
         <SaveButton label="Save changes" saved={saved} dirty={dirty} busy={busy} onClick={() => void save()} />
+        {error !== null ? <span className="settings-status">{error}</span> : null}
       </div>
-      <div className="error-line">{error ?? ""}</div>
     </div>
   );
 }
@@ -1887,7 +1891,7 @@ function ChannelPermissionsTab({ session, channel }: {
   };
 
   return (
-    <div>
+    <div className="fill-tab">
       <div className="settings-hint">
         Click cycles Inherit → Allow (✓, blurple) → Deny (✗, red) — Inherit uses the role's base.
         Deny @everyone SEND_MESSAGES = a read-only channel. VIEW_CHANNEL lives in the Access tab.
@@ -1905,10 +1909,11 @@ function ChannelPermissionsTab({ session, channel }: {
         <div className="settings-empty">{overrides === null ? "Loading…" : "Pick a role to edit overrides."}</div>
       ) : (
         <>
-          {/* Only the permission LIST scrolls (oak's permissions-scroll): the
-              hint, the role picker and the buttons stay put. Grouped and laid
-              out EXACTLY like the role-permissions list (same sections, same
-              row geometry, same fonts) — only the box is the tri-state cycler. */}
+          {/* The permission LIST fills the tab body and scrolls INSIDE it (user
+              decision 2026-10-05): the hint, the role picker and the Save row stay
+              pinned, the list runs down to the Save row — no fixed 340px cap.
+              Grouped and laid out EXACTLY like the role-permissions list (same
+              sections, same row geometry, same fonts) — only the box cycles. */}
           <div className="permissions-scroll-box">
             {(["GENERAL", "TEXT", "VOICE"] as const).map((group) => {
               const entries = channelEditablePermissions(catalog).filter((entry) => entry.group === group);
@@ -1932,7 +1937,7 @@ function ChannelPermissionsTab({ session, channel }: {
               );
             })}
           </div>
-          <div className="modal-actions left">
+          <div className="modal-actions left role-editor-save">
             <SaveButton label="Save Changes" saved={saved} dirty={dirty} busy={busy} onClick={() => void submit()} />
             {status !== null ? <span className="settings-status">{status}</span> : null}
           </div>
@@ -2101,7 +2106,7 @@ function ChannelAccessTab({ session, channel }: {
     ?? `user ${userId}`;
 
   return (
-    <div>
+    <div className="fill-tab">
       <div className="settings-hint">
         Locked: everyone sees the channel, only the listed roles/members can use it.
         Hidden: everyone else does not see it at all. Writes the same overrides as the
@@ -2160,7 +2165,7 @@ function ChannelAccessTab({ session, channel }: {
           <button className="ghost wide-add" disabled={candidateMembers.length === 0} onClick={() => setMemberPickerOpen(true)}>Add member…</button>
         </>
       )}
-      <div className="modal-actions left">
+      <div className="modal-actions left role-editor-save">
         <SaveButton label="Save Changes" saved={saved} dirty={dirty} busy={busy} onClick={() => void submit()} />
         {status !== null ? <span className="settings-status">{status}</span> : null}
       </div>

@@ -357,7 +357,9 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
   }, [activeChatId, dm, session]);
 
   const addStagedFiles = (fileList: readonly File[]) => {
-    if (channelPermissions?.attachFiles === false) {
+    // The merged gate (channel bits AND the DM restriction): the drop overlay
+    // lights up exactly when staging actually works — the same expression.
+    if (permissions?.attachFiles === false) {
       return; // no ATTACH_FILES — staging stays empty, the gate line explains
     }
     const known = new Set(staged.map((entry) => `${entry.file.name}:${entry.file.size}`));
@@ -504,8 +506,13 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
     <div
       className={"chat-pane" + (dragOver ? " drag-over" : "")}
       onDragOver={(event) => {
+        // preventDefault stays UNCONDITIONAL — a dropped file must never
+        // navigate the window away — but the overlay promises a working drop:
+        // a viewer without ATTACH_FILES (or a restricted DM) never sees it.
         event.preventDefault();
-        setDragOver(true);
+        if (permissions?.attachFiles !== false) {
+          setDragOver(true);
+        }
       }}
       onDragLeave={() => setDragOver(false)}
       onDrop={(event) => {
