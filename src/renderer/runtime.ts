@@ -3483,7 +3483,10 @@ function syncGlobalKeybinds(): void {
   lastSyncedGlobalChords = payload;
   window.spaceHotkey?.sync(entries)
     .then((status) => keybindStatusStore.setAll(status))
-    .catch(() => undefined);
+    .catch((error: unknown) => {
+      // global mute/deafen would be silently dead — the OS chords never registered
+      log.warn("hotkey", `global chord sync failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
 }
 
 /** bootstrapApp installs the whole hotkey layer ONCE (never at module top level —

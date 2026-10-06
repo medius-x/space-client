@@ -516,7 +516,9 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
       setCallPeerVideoReady(true);
       if (element) {
         element.srcObject = new MediaStream([track]);
-        void element.play().catch(() => undefined);
+        void element.play().catch((error: unknown) => {
+          log.warn("call", `peer video play() failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
       }
     };
     callView.dropPeerVideo = () => {
@@ -584,7 +586,9 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
     const track = getCallPeerVideoTrack();
     if (track !== null) {
       element.srcObject = new MediaStream([track]);
-      void element.play().catch(() => undefined);
+      void element.play().catch((error: unknown) => {
+        log.warn("call", `peer video play() failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
       setCallPeerVideoReady(true);
     }
   }, [callMode, callPeerMedia]);

@@ -791,7 +791,9 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
           <div className="modal-actions">
             <button className="ghost" onClick={() => setDeleteTarget(null)}>Cancel</button>
             <button className="danger" onClick={() => {
-              void session.deleteMessage(deleteTarget.channelId, deleteTarget.id).catch(() => undefined);
+              void session.deleteMessage(deleteTarget.channelId, deleteTarget.id).catch((error: unknown) => {
+                log.warn("chat", `delete message ${deleteTarget.id} failed: ${error instanceof Error ? error.message : String(error)}`);
+              });
               setDeleteTarget(null);
             }}>Delete</button>
           </div>
@@ -1179,7 +1181,9 @@ function MessageList(props: MessageListProps): React.JSX.Element {
         firstLayoutRef.current = false; // the explicit bottom scroll below is the layout
         window.setTimeout(() => listRef.current?.scrollToBottom(), 30);
       })
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        log.warn("chat", `"jump to present" reload failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
   };
 
   const wiredActions: ChatActions = {
@@ -1216,7 +1220,9 @@ function MessageList(props: MessageListProps): React.JSX.Element {
           pendingJumpRef.current = null; // the backfill cap gave up — say so (oak's toast)
           notifications.showToast({ title: "space", channelName: "", body: "Message is too far back to jump to" });
         }
-      })().catch(() => undefined);
+      })().catch((error: unknown) => {
+        log.warn("chat", `jump-to backfill (message ${messageId}) failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
     },
   };
 
@@ -1508,7 +1514,11 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
         thumbnailKey: attachment.thumbnailKey,
         durationMillis: attachment.durationMillis,
       }))
-      : undefined).catch(() => undefined);
+      : undefined).catch((error: unknown) => {
+      // a rejected edit just returns the OLD text in place — without this line the
+      // failure looks like the editor ignored the input (logging round, 2026-10-06).
+      log.warn("chat", `edit message ${message.id} failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
     props.setEditing(null);
   };
 

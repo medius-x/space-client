@@ -809,7 +809,9 @@ function DiscussionsList({ session, channels, discussions }: {
                   title="Stop following this discussion"
                   onClick={(event) => {
                     event.stopPropagation();
-                    void session.untrackDiscussion(discussion.id).catch(() => undefined);
+                    void session.untrackDiscussion(discussion.id).catch((error: unknown) => {
+                      log.warn("chat", `untrack discussion ${discussion.id} failed: ${error instanceof Error ? error.message : String(error)}`);
+                    });
                   }}
                 >
                   <span className="icon mdi-close" />

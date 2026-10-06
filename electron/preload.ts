@@ -16,6 +16,14 @@ contextBridge.exposeInMainWorld("spaceLog", {
   },
 });
 
+/** Log-export bridge (logging round): main flushes its write queue and hands the
+ *  last-24h bucket files over; the renderer zips them and offers the OS save dialog. */
+contextBridge.exposeInMainWorld("spaceLogs", {
+  collect(): Promise<unknown> {
+    return ipcRenderer.invoke("space-logs:collect");
+  },
+});
+
 /** KV persistence bridge: declarative mutations executed under the main-process lock. */
 contextBridge.exposeInMainWorld("spaceKv", {
   get(key: string): Promise<unknown> {

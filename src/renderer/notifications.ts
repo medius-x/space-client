@@ -1,3 +1,4 @@
+import { log } from "../logging";
 import { decideNotification, messageHasEveryoneHere, messageMentionsRole, messageMentionsUser, type MentionIdentity } from "../domain/logic/notification-decider";
 import { toastBodyFallback, toastPreviewSegments } from "../domain/logic/toast-preview";
 import { knockSchedule } from "../domain/logic/knock-sound";
@@ -124,9 +125,13 @@ class NotificationHub {
     const sinkCapable = context as AudioContext & { setSinkId?: (deviceId: string) => Promise<void> };
     if (typeof sinkCapable.setSinkId === "function") {
       try {
-        sinkCapable.setSinkId(deviceId ?? "").catch(() => undefined);
-      } catch {
-        // a failed sink switch must never take the app down
+        sinkCapable.setSinkId(deviceId ?? "").catch((error: unknown) => {
+          // every UI sound rides this context — a silent failure is "no ping at all"
+          log.warn("audio", `notification sink switch to "${deviceId ?? "default"}" failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      } catch (error: unknown) {
+        // a failed sink switch must never take the app down — but it must be on disk
+        log.warn("audio", `notification sink switch threw: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   }

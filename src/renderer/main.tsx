@@ -8,6 +8,18 @@ import { log } from "../logging";
 import "./styles/global.css";
 import "./styles/icons.css";
 
+// Stray renderer failures must reach space.log (logging round, 2026-10-06): the main
+// process already traps uncaughtException/unhandledRejection, the renderer did not —
+// a rejected promise outside any .catch vanished without a line on disk.
+window.addEventListener("error", (event) => {
+  const where = event.filename.length > 0 ? ` (${event.filename.slice(-64)}:${event.lineno})` : "";
+  log.error("ui", `uncaught error${where}: ${event.message}`);
+});
+window.addEventListener("unhandledrejection", (event) => {
+  const reason = event.reason instanceof Error ? event.reason.message : String(event.reason);
+  log.error("ui", `unhandled rejection: ${reason}`);
+});
+
 // Jank tracer (diagnostics): long tasks and slow input/scroll events land in
 // space.log with their durations — a "sticky scroll" report turns into numbers
 // instead of guesses. The event observer names the interaction ("scroll",

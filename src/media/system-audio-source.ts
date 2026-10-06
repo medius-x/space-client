@@ -8,6 +8,8 @@
  * 10 ms but a busy main can hiccup.
  */
 
+import { log } from "../logging";
+
 const INJECTOR_WORKLET_SOURCE = `
 class PcmInjector extends AudioWorkletProcessor {
   constructor() {
@@ -108,7 +110,10 @@ type SinkCapableAudioContext = AudioContext & {
 function applyContextSink(context: AudioContext, sinkId: string | null): void {
   const capable = context as SinkCapableAudioContext;
   if (sinkId !== null && typeof capable.setSinkId === "function") {
-    capable.setSinkId(sinkId).catch(() => undefined); // a dead id falls back to the default device
+    capable.setSinkId(sinkId).catch((error: unknown) => {
+      // a dead id falls back to the default device — on disk, not just silently
+      log.warn("audio", `system-audio monitor sink "${sinkId}" failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
   }
 }
 

@@ -21,6 +21,7 @@ import type { ConnectionSession } from "../../domain/session/connection-session"
 import { DEFAULT_NOTIFICATION_PREFS } from "../../domain/session/connection-record";
 import { CHANGE_NICKNAME_PERMISSION, type NotificationPrefs } from "../../types";
 import { useDisplayName } from "../hooks/useDisplayName";
+import { downloadClientLogs } from "../logs-export";
 import { Avatar } from "./Avatar";
 import { AvatarEditor, userAvatarApi } from "./ProfileModal";
 import { KeybindsSection } from "./KeybindsSection";
@@ -30,14 +31,14 @@ import { KeybindsSection } from "./KeybindsSection";
  * decision): General (avatar + nickname) and Account (password/login) are
  * SERVER-related — they edit THIS instance's account, and the panel heading
  * carries " — {server name}" for them; Audio/Video/Appearance/Notifications/
- * Connections are CLIENT-related (one set for every server). oak's STAGED
+ * Diagnostics are CLIENT-related (one set for every server). oak's STAGED
  * model for the client sections: the controls write a draft in memory, the
  * window-level Apply button commits, leaving the section (or closing the
- * window) without Apply discards. General/Account/Connections are immediate
+ * window) without Apply discards. General/Account/Diagnostics are immediate
  * (oak parity — their buttons act directly).
  */
 
-type Section = "general" | "account" | "audio" | "video" | "keybinds" | "appearance" | "notifications" | "connections";
+type Section = "general" | "account" | "audio" | "video" | "keybinds" | "appearance" | "notifications" | "diagnostics";
 
 const SECTIONS: { key: Section; label: string }[] = [
   { key: "general", label: "General" },
@@ -47,7 +48,7 @@ const SECTIONS: { key: Section; label: string }[] = [
   { key: "keybinds", label: "Keybinds" },
   { key: "appearance", label: "Appearance" },
   { key: "notifications", label: "Notifications" },
-  { key: "connections", label: "Connections" },
+  { key: "diagnostics", label: "Diagnostics" },
 ];
 
 /** The sections that stage their edits behind the window-level Apply button.
@@ -123,7 +124,7 @@ export function UserSettingsModal({ session }: { session: ConnectionSession }): 
         {activeSection === "keybinds" ? <KeybindsSection /> : null}
         {activeSection === "appearance" ? <AppearanceSection staged={staged} /> : null}
         {activeSection === "notifications" ? <NotificationsSection session={session} staged={staged} /> : null}
-        {activeSection === "connections" ? <ConnectionsSection session={session} /> : null}
+        {activeSection === "diagnostics" ? <DiagnosticsSection session={session} /> : null}
         {/* The Apply button hugs the section content (staged sections only) and
             commits the draft; leaving the section without it discards. */}
         {STAGED_SECTIONS.has(activeSection) ? (
@@ -423,6 +424,33 @@ function AccountSection({ session }: { session: ConnectionSession }): React.JSX.
           <LoginForm current={ownUsername} />
         </>
       ) : null}
+    </div>
+  );
+}
+
+/** "Download client logs": a plain utility row (not a profile action — no primary
+ *  button), PasswordForm's busy/status idiom. Lives in Diagnostics (any member,
+ *  no permissions) and is duplicated in Server Settings → Server (the admin
+ *  downloads everything from one place). */
+function ClientLogsRow(): React.JSX.Element {
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+
+  const download = async (): Promise<void> => {
+    if (busy) {
+      return;
+    }
+    setBusy(true);
+    setStatus("Preparing…");
+    const outcome = await downloadClientLogs();
+    setStatus(outcome === "saved" ? "Saved." : outcome === "canceled" ? null : "Export failed — see the log.");
+    setBusy(false);
+  };
+
+  return (
+    <div className="modal-actions left">
+      <button disabled={busy} onClick={() => void download()}>Download client logs</button>
+      <span className="settings-status">{status ?? ""}</span>
     </div>
   );
 }
@@ -756,7 +784,13 @@ function NotificationsSection({ session, staged }: {
   );
 }
 
-function ConnectionsSection({ session }: { session: ConnectionSession }): React.JSX.Element {
+/** The client-side diagnostics surface: connection info (the former Connections
+ *  section) plus the client-logs download. Renamed from "Connections" (user
+ *  decision 2026-10-07): the section is where ANY member — admin or not — grabs
+ *  their own log archive for a problem report; "Diagnostics" says what it is
+ *  for, "Connections" said only what a third of it shows. Client-scoped, so the
+ *  ⚙ button opens it for everyone; no server permission is involved. */
+function DiagnosticsSection({ session }: { session: ConnectionSession }): React.JSX.Element {
   const records = useStore(connectionDirectory, (allRecords) => allRecords);
   const record = records.find((entry) => entry.id === session.recordId) ?? null;
   // The ADVERTISED address a member types into "Add server" — stored server-side
@@ -769,8 +803,11 @@ function ConnectionsSection({ session }: { session: ConnectionSession }): React.
     <div>
       <h3>This server</h3>
       <div className="settings-hint">{record?.cachedServerName ?? session.hostUrl()}</div>
+      {/* The advertised address is what a NEW member types into "Add server". When the
+          server has not set one, fall back to the address THIS client is connected by —
+          it demonstrably works, unlike the old "not set by the server" dead end. */}
       <div className="settings-hint">
-        Address to enter when connecting: {address ?? "not set by the server"}
+        Address to enter when connecting: {address ?? (record?.hostUrl ?? session.hostUrl())}
       </div>
       <h3>Saved connections</h3>
       {records.map((entry) => (
@@ -778,9 +815,12 @@ function ConnectionsSection({ session }: { session: ConnectionSession }): React.
           {entry.cachedServerName ?? entry.hostUrl} — {entry.hostUrl}
         </div>
       ))}
+      <h3>Client logs</h3>
       <div className="settings-hint">
-        The address is stored on the server; the future set-up flow will fill it in automatically.
+        The last 24 hours of this client's log file, zipped and saved through the OS dialog —
+        attach it to a bug report.
       </div>
+      <ClientLogsRow />
     </div>
   );
 }

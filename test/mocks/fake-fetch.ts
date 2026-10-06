@@ -13,6 +13,8 @@ export interface RecordedRequest {
 export interface FakeResponse {
   status: number;
   body?: unknown;
+  /** Raw (non-JSON) body — binary downloads (the server-logs zip). */
+  rawBody?: BodyInit;
 }
 
 export type FakeHandler = (request: RecordedRequest) => FakeResponse | Promise<FakeResponse>;
@@ -47,7 +49,10 @@ export class FakeFetch {
     // 204/205/304 are null-body statuses — the fetch Response constructor
     // rejects a body on them (the real server logout answers a bare 204).
     const nullBody = answer.status === 204 || answer.status === 205 || answer.status === 304;
-    return new Response(nullBody || answer.body === undefined ? null : JSON.stringify(answer.body), {
+    const responseBody = answer.rawBody !== undefined
+      ? answer.rawBody
+      : nullBody || answer.body === undefined ? null : JSON.stringify(answer.body);
+    return new Response(responseBody, {
       status: answer.status,
       headers: { "Content-Type": "application/json" },
     });

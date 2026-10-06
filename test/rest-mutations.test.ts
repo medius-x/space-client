@@ -326,3 +326,27 @@ describe("RestClient AFK settings", () => {
     expect(fake.requests[1]?.body).toEqual({ afkChannelId: null, afkTimeoutMinutes: 15 });
   });
 });
+
+describe("RestClient server logs download", () => {
+  it("downloads the archive bytes with the Bearer header", async () => {
+    const zipBytes = new Uint8Array([0x50, 0x4b, 1, 2, 3]);
+    const fake = new FakeFetch(() => ({ status: 200, rawBody: zipBytes }));
+    const tokens = new MemoryTokenStorage();
+    tokens.save({ token: "t1", refreshToken: "r1", expiresAt: Date.now() + 3_600_000 });
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: tokens, fetchImpl: fake.call });
+
+    const archive = await client.downloadServerLogs();
+
+    expect(fake.requests[0]?.method).toBe("GET");
+    expect(fake.requests[0]?.path).toBe("/api/server/logs");
+    expect(fake.requests[0]?.authorization).toBe("Bearer t1");
+    expect(Array.from(archive.slice(0, 2))).toEqual([0x50, 0x4b]);
+  });
+
+  it("surfaces a rejection as ApiError (the gate answers JSON)", async () => {
+    const fake = new FakeFetch(() => ({ status: 403, body: { status: 403, error: "Forbidden", message: "no" } }));
+    const client = new RestClient({ baseUrl: "http://x", tokenStorage: new MemoryTokenStorage(), fetchImpl: fake.call });
+
+    await expect(client.downloadServerLogs()).rejects.toMatchObject({ status: 403, message: "no" });
+  });
+});

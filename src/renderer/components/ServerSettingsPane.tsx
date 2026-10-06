@@ -59,6 +59,7 @@ import {
   type TriState,
 } from "../../domain/logic/channel-access";
 import { argbIntToCss, canActOn, memberNameColor, topPosition } from "../../domain/logic/roster-grouping";
+import { downloadClientLogs } from "../logs-export";
 import { ApiError } from "../../core/rest";
 import { useAttachmentImage } from "../hooks/useAttachmentImage";
 import { measureImageSize } from "../../media/image-size";
@@ -1083,7 +1084,10 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
           setRemovedMembers(banned.filter((member) => member.removed === true));
         }
       })
-      .catch(() => undefined); // a transient failure keeps the previous audit list
+      .catch((refreshError: unknown) => {
+        // a transient failure keeps the previous audit list — but not silently
+        log.warn("settings", `banned/removed audit refresh failed: ${refreshError instanceof Error ? refreshError.message : String(refreshError)}`);
+      });
     return () => {
       cancelled = true;
     };
@@ -1854,7 +1858,10 @@ function ChannelPermissionsTab({ session, channel }: {
   };
   useEffect(load, [session, channel.id]);
   useEffect(() => {
-    void session.rest.getPermissionCatalog().then(setCatalog).catch(() => undefined);
+    void session.rest.getPermissionCatalog().then(setCatalog).catch((catalogError: unknown) => {
+      // the picker shows bare enum names without descriptions — the reason belongs on disk
+      log.warn("settings", `permission catalog fetch failed: ${catalogError instanceof Error ? catalogError.message : String(catalogError)}`);
+    });
   }, [session]);
 
   const editableRoles = roles.filter((role) => role.kind !== "OWNER");
@@ -3172,6 +3179,40 @@ function ServerStorageSection({ session }: { session: ConnectionSession }): Reac
   const [autoEnabled, setAutoEnabled] = useState(true);
   const [saved, setSaved] = useState(false);
   const [confirmRun, setConfirmRun] = useState(false);
+  // The logs download pair (logging round, 2026-10-06) — its OWN busy/status so a
+  // logs failure never reads as a storage-policy failure.
+  const [logsBusy, setLogsBusy] = useState(false);
+  const [logsStatus, setLogsStatus] = useState<string | null>(null);
+
+  const downloadServerArchive = async (): Promise<void> => {
+    if (logsBusy) {
+      return;
+    }
+    setLogsBusy(true);
+    setLogsStatus("Downloading…");
+    try {
+      const archive = await session.rest.downloadServerLogs();
+      const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
+      // A dismissed dialog is not an error (the expression-export contract).
+      const savedPath = await window.spaceMedia?.saveFile(`server-logs-${stamp}.zip`, archive);
+      setLogsStatus(savedPath == null ? null : "Saved.");
+    } catch (downloadError: unknown) {
+      setLogsStatus(downloadError instanceof Error ? downloadError.message : String(downloadError));
+    } finally {
+      setLogsBusy(false);
+    }
+  };
+
+  const downloadClientArchive = async (): Promise<void> => {
+    if (logsBusy) {
+      return;
+    }
+    setLogsBusy(true);
+    setLogsStatus("Preparing…");
+    const outcome = await downloadClientLogs();
+    setLogsStatus(outcome === "saved" ? "Saved." : outcome === "canceled" ? null : "Export failed — see the log.");
+    setLogsBusy(false);
+  };
 
   const applyStatus = (next: StorageStatus): void => {
     setStatus(next);
@@ -3262,7 +3303,9 @@ function ServerStorageSection({ session }: { session: ConnectionSession }): Reac
 
   return (
     <div>
-      <div className="roles-list-header overview-heading"><span>Storage</span></div>
+      {/* The nav tab is "Server" — the pane heading must repeat it (user report
+          2026-10-07): "Storage" named only the first of the tab's blocks. */}
+      <div className="roles-list-header overview-heading"><span>Server</span></div>
 
       <h3>Disk usage</h3>
       {/* The instance's data disk (Postgres + MinIO live on it): the watermark
@@ -3355,6 +3398,20 @@ function ServerStorageSection({ session }: { session: ConnectionSession }): Reac
         </div>
       ) : null}
       {error !== null ? <div className="settings-warning">{error}</div> : null}
+
+      {/* Breathing room from the cleanup row above (user report 2026-10-07: too
+          close, then 28px was too far — settled in between). */}
+      <h3 style={{ marginTop: 20 }}>Logs</h3>
+      <div className="settings-hint">
+        The server log of the last 24 hours in one zip — the container logs of postgres, minio,
+        janus and coturn are included when Docker is available. "Download client logs" saves this
+        client's own log file; both help investigate a problem report.
+      </div>
+      <div className="modal-actions left">
+        <button disabled={logsBusy} onClick={() => void downloadServerArchive()}>Download server logs</button>
+        <button disabled={logsBusy} onClick={() => void downloadClientArchive()}>Download client logs</button>
+        <span className="settings-status">{logsStatus ?? ""}</span>
+      </div>
     </div>
   );
 }

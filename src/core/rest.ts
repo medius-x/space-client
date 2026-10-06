@@ -73,8 +73,10 @@ export interface RestClientOptions {
 /** A JSON call must fail fast into the retry ladder — a hung request (dead
  *  socket, stalled middleware) pends forever otherwise. Not applied to the
  *  byte endpoints (uploadBytes/downloadBytes): large bodies legitimately take
- *  minutes. */
+ *  minutes. The logs archive is a body endpoint too — tens of MB over a slow
+ *  uplink — with its own generous budget. */
 const REQUEST_TIMEOUT_MS = 20_000;
+const BYTES_TIMEOUT_MS = 120_000;
 const DEFAULT_RETRY_DELAYS_MS: readonly number[] = [500, 1500];
 
 /**
@@ -506,6 +508,7 @@ export class RestClient {
       body: bytes,
     });
     if (!response.ok) {
+      log.warn("rest", `PUT ${presignedUrl.slice(0, 96)}… upload failed: HTTP ${response.status}`);
       throw new ApiError(response.status, `MinIO upload failed: HTTP ${response.status}`);
     }
   }
@@ -514,9 +517,52 @@ export class RestClient {
   async downloadBytes(url: string): Promise<ArrayBuffer> {
     const response = await this.fetchImpl(url, { method: "GET" });
     if (!response.ok) {
+      log.warn("rest", `GET ${url.slice(0, 96)}… download failed: HTTP ${response.status}`);
       throw new ApiError(response.status, `download failed: HTTP ${response.status}`);
     }
     return await response.arrayBuffer();
+  }
+
+  /** GET /api/server/logs — the zipped server-log archive (MANAGE_STORAGE-gated).
+   *  request() is JSON-only, so this mirrors its Bearer + silent-401-refresh ladder
+   *  but returns the raw bytes (logging round, 2026-10-06). */
+  async downloadServerLogs(): Promise<Uint8Array> {
+    return await this.authedBytes("/api/server/logs");
+  }
+
+  /** Authenticated binary GET with the request() auth contract (no JSON parse). */
+  private async authedBytes(path: string, retried = false): Promise<Uint8Array> {
+    const headers: Record<string, string> = {};
+    const tokens = this.tokenStorage.load();
+    if (tokens) {
+      headers.Authorization = `Bearer ${tokens.token}`;
+    }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), BYTES_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.baseUrl}${path}`, { method: "GET", headers, signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (response.status === 401 && !retried && tokens) {
+      await this.refreshOnce();
+      return await this.authedBytes(path, true);
+    }
+    if (!response.ok) {
+      let message = `HTTP ${response.status}`;
+      try {
+        const body = (await response.json()) as { message?: string };
+        if (body && typeof body.message === "string") {
+          message = body.message;
+        }
+      } catch {
+        // non-JSON error body — keep the HTTP status line
+      }
+      log.warn("rest", `GET ${path} → ${response.status}: ${message}`);
+      throw new ApiError(response.status, message);
+    }
+    return new Uint8Array(await response.arrayBuffer());
   }
 
   /** Re-mint a presigned GET for a key we already hold; null when the object is gone. */
@@ -1076,6 +1122,16 @@ export class RestClient {
         }
       } catch {
         // non-JSON error body — keep the HTTP status line
+      }
+      // Every non-OK answer lands in the log (logging round, 2026-10-06): an HTTP
+      // failure was previously invisible unless its caller happened to log — and
+      // most fire-and-forget callers did not. Server rejections (5xx) and rate
+      // limits are WARN; plain 4xx are info — expected validation/gate answers,
+      // still worth the trail.
+      if (response.status >= 500 || response.status === 429) {
+        log.warn("rest", `${init.method} ${path} → ${response.status}: ${message}`);
+      } else {
+        log.info("rest", `${init.method} ${path} → ${response.status}: ${message}`);
       }
       throw new ApiError(response.status, message);
     }

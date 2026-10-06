@@ -93,7 +93,9 @@ export function PopoutScreen(): React.JSX.Element {
           return;
         }
         element.srcObject = new MediaStream([track]);
-        void element.play().catch(() => undefined);
+        void element.play().catch((error: unknown) => {
+          log.warn("popout", `share video play() failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
         setHasVideo(true);
       },
       onGone: () => stopViewer(), // feed ended mid-watch → the waiting state

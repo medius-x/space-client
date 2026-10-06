@@ -2,9 +2,11 @@ import { isSystemAudioAvailable, startSystemAudio, stopSystemAudio } from "./sys
 import { getClientSize, isWindowConfirmedDead, watchSourceLiveness } from "./window-liveness";
 import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, globalShortcut, ipcMain, nativeTheme, net, powerMonitor, protocol, safeStorage, screen, session, shell } from "electron";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { lookup } from "node:dns/promises";
 import { isBlockedAddress, PREVIEW_REDIRECT_LIMIT, previewUrlFromString } from "../src/domain/logic/net-guard";
+import { logBucketName, outdatedLogBucketNames } from "../src/domain/logic/log-buckets";
 
 /**
  * Space spike — Electron main process.
@@ -131,12 +133,44 @@ if (traceFramesArgument) {
 // (sandboxed renderers cannot touch the fs) and lands here next to the main-process ones.
 // Ordered ASYNC appends: a sync write per line blocked the main thread (the
 // cache IPC handlers share it — 2026-09-25 scroll-freeze round).
+//
+// Retention (logging round, 2026-10-06): the log lives in HOURLY bucket files
+// userData/logs/space-<YYYYMMDD-HH>.log (UTC — the lines themselves are ISO-UTC), buckets
+// older than 24 h are pruned on rollover and at startup, and the legacy unbounded
+// userData/space.log is removed once. "Download client logs" (space-logs:collect)
+// reads exactly this directory.
 const fsp = fs.promises;
-const logFilePath = path.join(app.getPath("userData"), "space.log");
-let logWriteChain: Promise<void> = Promise.resolve();
+const logsDirectory = path.join(app.getPath("userData"), "logs");
+let logWriteChain: Promise<void> = fsp.mkdir(logsDirectory, { recursive: true })
+  .then(() => fsp.rm(path.join(app.getPath("userData"), "space.log"), { force: true })) // the legacy unbounded log
+  .catch(() => {
+    // logging must never take the app down
+  })
+  .then(() => pruneOldLogBuckets());
+let currentLogBucket = "";
+
+function pruneOldLogBuckets(): Promise<void> {
+  return fsp.readdir(logsDirectory)
+    .then((files) => {
+      const stale = outdatedLogBucketNames(files, new Date());
+      return Promise.all(stale.map((name) =>
+        fsp.unlink(path.join(logsDirectory, name)).catch(() => undefined)));
+    })
+    .then(() => undefined)
+    .catch(() => {
+      // logging must never take the app down
+    });
+}
+
 function appendLog(line: string): void {
+  const bucket = logBucketName(new Date());
+  const rolledOver = bucket !== currentLogBucket;
+  if (rolledOver) {
+    currentLogBucket = bucket;
+  }
   logWriteChain = logWriteChain
-    .then(() => fsp.appendFile(logFilePath, `${new Date().toISOString()} ${line}\n`))
+    .then(() => (rolledOver ? pruneOldLogBuckets() : undefined))
+    .then(() => fsp.appendFile(path.join(logsDirectory, bucket), `${new Date().toISOString()} ${line}\n`))
     .catch(() => {
       // logging must never take the app down
     });
@@ -146,7 +180,29 @@ ipcMain.on("space-log", (_event, line: unknown) => {
     appendLog(line);
   }
 });
-appendLog("--- space started (main) ---");
+
+// "Download client logs": flush the ordered write chain (the newest lines must be
+// in the file), then hand the retention-window bucket files to the renderer, which
+// zips and saves them. The log lines ride Uint8Arrays through the structured clone.
+ipcMain.handle("space-logs:collect", async () => {
+  await logWriteChain.catch(() => undefined);
+  try {
+    const files = (await fsp.readdir(logsDirectory)).sort();
+    const collected: { name: string; bytes: Uint8Array }[] = [];
+    for (const name of files) {
+      const bytes = await fsp.readFile(path.join(logsDirectory, name));
+      collected.push({ name: `logs/${name}`, bytes: new Uint8Array(bytes) });
+    }
+    return collected;
+  } catch (error) {
+    appendLog(`[logs] collect failed: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+});
+// The boot line is the first thing read in an exported archive — it must identify
+// the build AND the machine: the OS release (10.0.22631 etc.) separates "a Windows
+// 11 quirk" from "an old build" at a glance (user request, logging round smoke).
+appendLog(`--- space started (main) v${app.getVersion()} ${process.platform}-${process.arch} os=${os.release()} instance=${instanceName ?? "a"} ---`);
 
 // KV store: atomic JSON files in userData. set() with an UPDATER runs the
 // read-modify-write under a per-key lock IN THIS PROCESS — token rotation and UI
@@ -495,7 +551,10 @@ ipcMain.handle("space-file:save", async (_event, fileName: unknown, bytes: unkno
   try {
     fs.writeFileSync(chosen.filePath, bytes);
     return chosen.filePath;
-  } catch {
+  } catch (error) {
+    // The user picked a destination and the write still failed — without this line
+    // the failure is indistinguishable from "canceled" everywhere (logging round).
+    appendLog(`[file] save to "${chosen.filePath}" failed: ${error instanceof Error ? error.message : String(error)}`);
     return null;
   }
 });

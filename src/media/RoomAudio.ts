@@ -2,6 +2,14 @@ import { LEVEL_POLL_MS } from "../config";
 import { log } from "../logging";
 import { floatRms, isSpeaking, rmsToDbfs, speakingLevel } from "../core/audio-math";
 
+/** DOMExceptions often carry an EMPTY message — the name is the signal (device-lesson). */
+function describeError(error: unknown): string {
+  if (error instanceof DOMException) {
+    return `${error.name}${error.message.length > 0 ? `: ${error.message}` : ""}`;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 /**
  * Remote-audio plumbing for the spike. Two lessons baked in from the live smokes:
  *
@@ -56,15 +64,22 @@ interface ShareChain {
   referenceGain: GainNode;
 }
 
-function playbackElement(track: MediaStreamTrack, initialVolume: number, deafened: boolean, outputDeviceId: string | null): HTMLAudioElement {
+function playbackElement(track: MediaStreamTrack, initialVolume: number, deafened: boolean,
+  outputDeviceId: string | null, chainLabel: string): HTMLAudioElement {
   const element = new Audio();
   element.autoplay = true;
   element.volume = deafened ? 0 : Math.min(1, Math.max(0, initialVolume));
   element.srcObject = new MediaStream([track]);
+  // A failed sink switch or play() means the user hears NOTHING while every log line
+  // looks healthy — these failures must be on disk (logging round, 2026-10-06).
   if (outputDeviceId !== null && typeof element.setSinkId === "function") {
-    void element.setSinkId(outputDeviceId).catch(() => undefined);
+    void element.setSinkId(outputDeviceId).catch((error: unknown) => {
+      log.warn("audio", `playback (${chainLabel}) setSinkId failed: ${describeError(error)}`);
+    });
   }
-  void element.play().catch(() => undefined);
+  void element.play().catch((error: unknown) => {
+    log.warn("audio", `playback (${chainLabel}) play() failed: ${describeError(error)}`);
+  });
   return element;
 }
 
@@ -168,7 +183,9 @@ export class RoomAudio {
     this.outputDeviceId = deviceId;
     for (const chain of [...this.voiceChains.values(), ...this.shareChains.values()]) {
       if (typeof chain.element.setSinkId === "function") {
-        void chain.element.setSinkId(deviceId ?? "").catch(() => undefined);
+        void chain.element.setSinkId(deviceId ?? "").catch((error: unknown) => {
+          log.warn("audio", `output switch to "${deviceId ?? "default"}" failed: ${describeError(error)}`);
+        });
       }
     }
   }
@@ -183,7 +200,7 @@ export class RoomAudio {
     }
     this.detachVoiceFeed(feedId);
     const context = this.ensureContext();
-    const element = playbackElement(track, volume, this.deafened, this.outputDeviceId);
+    const element = playbackElement(track, volume, this.deafened, this.outputDeviceId, `voice ${username}`);
     const analysisSource = context.createMediaStreamSource(new MediaStream([track]));
     const analyser = context.createAnalyser();
     analyser.fftSize = 512;
@@ -215,7 +232,7 @@ export class RoomAudio {
     }
     this.detachShareFeed(feedId);
     const context = this.ensureContext();
-    const element = playbackElement(track, volume, this.deafened, this.outputDeviceId);
+    const element = playbackElement(track, volume, this.deafened, this.outputDeviceId, `share ${username}`);
     const analysisSource = context.createMediaStreamSource(new MediaStream([track]));
     const splitter = context.createChannelSplitter(2);
     const analyserLeft = context.createAnalyser();
