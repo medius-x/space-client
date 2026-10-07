@@ -15,6 +15,7 @@
     "test": "vitest run",
     "watch": "vitest",
     "icons": "node scripts/regen-icons.mjs",
+    "logo": "node scripts/gen-placeholder-logo.mjs",
     "profile": "node scripts/capture-profile.mjs",
     "start:tools": "npm run build && electron . --space-devtools",
     "start2:tools": "npm run build && electron . --space-instance=b --space-devtools",

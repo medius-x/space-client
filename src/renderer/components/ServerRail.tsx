@@ -287,7 +287,9 @@ function HomeRailButton({ session }: { session: ConnectionSession }): React.JSX.
   return (
     <div className={"rail-wrap home" + (dmMode ? " active" : "")} onClick={toggleHomeMode}>
       {dmMode ? <span className="rail-pill" /> : null}
-      <div className="rail-icon home"><span className="icon mdi-home" /></div>
+      {/* The app logo in the Home button (placeholder art until the real logo
+          lands — scripts/gen-placeholder-logo.mjs); click semantics unchanged. */}
+      <div className="rail-icon home"><img className="rail-logo" src="logo.png" alt="" draggable={false} /></div>
       {!dmMode && badgeEnabled && dmUnread > 0 ? (
         <span className="rail-badge">{dmUnread > 99 ? "99+" : dmUnread}</span>
       ) : null}

@@ -1,6 +1,6 @@
 import { isSystemAudioAvailable, startSystemAudio, stopSystemAudio } from "./system-audio";
 import { getClientSize, isWindowConfirmedDead, watchSourceLiveness } from "./window-liveness";
-import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, globalShortcut, ipcMain, nativeTheme, net, powerMonitor, protocol, safeStorage, screen, session, shell } from "electron";
+import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeTheme, net, powerMonitor, protocol, safeStorage, screen, session, shell, Tray } from "electron";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -1016,6 +1016,11 @@ async function createWindow(): Promise<void> {
     title: "space",
     frame: false, // oak's borderless chrome — the renderer draws the caption bar
     backgroundColor: "#1e1f22",
+    // Window/taskbar icon (placeholder art until the real logo). The existence
+    // guard keeps packaged builds quiet — there the exe resource owns the icon.
+    icon: fs.existsSync(path.join(app.getAppPath(), "electron", "build", "icon.png"))
+      ? path.join(app.getAppPath(), "electron", "build", "icon.png")
+      : undefined,
     webPreferences: {
       preload: path.join(__dirname, "..", "preload", "preload.js"),
       contextIsolation: true, // default on modern Electron — pinned explicitly
@@ -1071,23 +1076,20 @@ async function createWindow(): Promise<void> {
     popoutWindow?.close();
   });
 
-  // Graceful close (live report 2026-09-25): closing the app while in a voice
-  // room left PHANTOM tiles for ~a minute — the server drops the voice member
-  // on the WS cut, but JANUS keeps the dead publisher session until its own
-  // timeout. The first close is forestalled ~900ms while the renderer leaves
-  // the room explicitly (voice.leave STOMP + Janus destroy HTTP) — the peers'
-  // tiles drop instantly. A hard kill (crash/taskkill) still pays the Janus
-  // timeout: nothing client-side survives that.
-  let closeDeferred = false;
+  // Close-to-tray (user request 2026-10-07): the X button HIDES the window
+  // instead of quitting — voice, long-polls and toast notifications keep
+  // running (backgroundThrottling is off). The real quit lives in the tray
+  // menu and runs the GRACEFUL path below: the renderer leaves voice/call
+  // rooms first (voice.leave STOMP + Janus destroy HTTP within ~900 ms — the
+  // phantom-tile fix of 2026-09-25), then the window closes for real.
   mainWindow.on("close", (event) => {
-    if (closeDeferred || mainWindow.webContents.isDestroyed()) {
-      return;
+    if (gracefulQuitStarted || mainWindow.webContents.isDestroyed()) {
+      return; // the deferred real close after the voice teardown
     }
-    closeDeferred = true;
     event.preventDefault();
-    mainWindow.webContents.send("app:closing");
-    setTimeout(() => mainWindow.close(), 900);
+    mainWindow.hide();
   });
+  createTray(mainWindow);
 
   // Security: this spike never navigates anywhere except its own local page.
   mainWindowRef = mainWindow;
@@ -1169,7 +1171,58 @@ async function createWindow(): Promise<void> {
   }
 }
 
+// True between a tray-Quit (or app.quit()) and the deferred window close — the
+// close handler must let THAT close through; every other close hides to tray.
+let gracefulQuitStarted = false;
+
+/** The tray-Quit path: let the renderer leave voice/call rooms first (the
+ *  ~900 ms teardown that used to run on the X button), then close for real.
+ *  A hidden trayed window is closed the same way. */
+function initiateGracefulQuit(mainWindow: BrowserWindow): void {
+  if (gracefulQuitStarted) {
+    return;
+  }
+  gracefulQuitStarted = true;
+  if (mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
+    app.quit();
+    return;
+  }
+  mainWindow.webContents.send("app:closing");
+  setTimeout(() => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.close();
+    }
+  }, 900);
+}
+
+/** The tray icon (one per process — the dev two-instance smoke gets two).
+ *  Quit runs the graceful path; Open/Click re-show the hidden window. */
+function createTray(mainWindow: BrowserWindow): void {
+  const iconPath = path.join(app.getAppPath(), "electron", "build", "icon-48.png");
+  if (!fs.existsSync(iconPath)) {
+    // Nothing to anchor the tray with (e.g. a packaged build shipping its own
+    // icon set) — X would then still hide; quit stays possible via taskbar.
+    appendLog("[main] WARN tray icon not found — running without a tray");
+    return;
+  }
+  const tray = new Tray(iconPath);
+  tray.setToolTip(instanceName ? `SPACE (${instanceName.toUpperCase()})` : "SPACE");
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: "Open", click: () => { mainWindow.show(); mainWindow.focus(); } },
+    { type: "separator" },
+    { label: "Quit", click: () => initiateGracefulQuit(mainWindow) },
+  ]));
+  // Bare left-click shows the window — the Windows tray habit.
+  tray.on("click", () => {
+    mainWindow.show();
+    mainWindow.focus();
+  });
+}
+
 app.whenReady().then(() => {
+  // Windows identity for the taskbar/notification surfaces: without an explicit
+  // AppUserModelID the tray/window group under the process name (electron.exe).
+  app.setAppUserModelId("oak.space");
   // The app is dark, period — regardless of the Windows color scheme. Among
   // other things this makes Electron apply the DWM immersive-dark styling to
   // the native window, so any native paint behind the compositor (resize
@@ -1196,6 +1249,12 @@ process.on("unhandledRejection", (reason) => {
 
 app.on("window-all-closed", () => {
   app.quit();
+});
+
+// Any programmatic quit (auto-update later, OS shutdown paths that reach
+// app.quit()) must not be eaten by the close-to-tray guard.
+app.on("before-quit", () => {
+  gracefulQuitStarted = true;
 });
 
 // OS-wide chords must die with the app — nothing else frees them.

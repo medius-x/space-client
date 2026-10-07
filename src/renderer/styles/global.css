@@ -612,6 +612,9 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 }
 .rail-icon.expired { color: var(--sp-text-dim); }
 .rail-wrap.home.active .rail-icon { background: var(--sp-green); }
+/* The logo image inside the Home button (carries its own dark card + green
+   planet, so it stays readable on hover/active backgrounds too). */
+.rail-logo { width: 100%; height: 100%; object-fit: contain; }
 .rail-icon.add { color: var(--sp-green); }
 .rail-wrap:hover .rail-icon.add { background: var(--sp-green); color: #fff; }
 .rail-separator { width: 32px; height: 2px; background: var(--sp-control); border-radius: 1px; flex-shrink: 0; margin: 4px 0; }
