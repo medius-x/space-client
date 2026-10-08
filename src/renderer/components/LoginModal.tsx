@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useStore } from "../hooks/useStore";
 import { appStore, closeLoginForm, startSession } from "../runtime";
 import { DEFAULT_REST_BASE_URL } from "../../config";
+import { isValidHostUrl, normalizeHostUrl } from "../../domain/session/connection-record";
 import { parseInviteLink } from "../../domain/logic/invite-link";
 import { Modal } from "./Modal";
 
@@ -13,6 +14,12 @@ import { Modal } from "./Modal";
  * automatically), Log in (the classic address/username/password form) and Register —
  * invite-link registration on an existing server ONLY: the link is required and its
  * origin is the address (no separate address field).
+ *
+ * A bare host in the address auto-gains a scheme (localhost → http, anything else →
+ * https — the deployed-server default since the TLS entry point). When the server's
+ * certificate fails validation (self-signed deployment), main surfaces the
+ * fingerprint and the App-level TlsTrustModal renders the trust decision; its Trust
+ * button re-runs the attempt registered here via `tlsRetry`.
  */
 export function LoginModal(): React.JSX.Element {
   const error = useStore(appStore, (state) => state.loginError);
@@ -26,7 +33,16 @@ export function LoginModal(): React.JSX.Element {
   const [inviteLink, setInviteLink] = useState("");
 
   const submitLogin = () => {
-    void startSession(serverUrl.trim().replace(/\/+$/, ""), "login", username.trim(), password);
+    const attempt = () => {
+      const normalized = normalizeHostUrl(serverUrl);
+      if (!isValidHostUrl(normalized)) {
+        appStore.patch({ loginError: "Server address must start with http:// or https://." });
+        return;
+      }
+      void startSession(normalized, "login", username.trim(), password);
+    };
+    appStore.patch({ tlsRetry: attempt });
+    attempt();
   };
 
   // Register: the link is REQUIRED — its origin IS the server address, its hash carries
@@ -35,18 +51,22 @@ export function LoginModal(): React.JSX.Element {
   const parsedInviteLink = parseInviteLink(inviteLink);
 
   const submitRegister = () => {
-    if (parsedInviteLink === null) {
-      appStore.patch({
-        loginError: inviteLink.trim().length === 0
-          ? "Paste an invite link to register."
-          : "That invite link does not look valid.",
+    const attempt = () => {
+      if (parsedInviteLink === null) {
+        appStore.patch({
+          loginError: inviteLink.trim().length === 0
+            ? "Paste an invite link to register."
+            : "That invite link does not look valid.",
+        });
+        return;
+      }
+      void startSession(parsedInviteLink.origin, "register", username.trim(), password, {
+        nickname: nickname.trim().length > 0 ? nickname.trim() : undefined,
+        inviteSecret: parsedInviteLink.secret,
       });
-      return;
-    }
-    void startSession(parsedInviteLink.origin, "register", username.trim(), password, {
-      nickname: nickname.trim().length > 0 ? nickname.trim() : undefined,
-      inviteSecret: parsedInviteLink.secret,
-    });
+    };
+    appStore.patch({ tlsRetry: attempt });
+    attempt();
   };
 
   return (
@@ -71,7 +91,7 @@ export function LoginModal(): React.JSX.Element {
         <>
           <label className="settings-field">
             <span>Server address</span>
-            <input type="url" value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} placeholder="http://localhost:8080" autoFocus />
+            <input type="url" value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} placeholder="https://server.host (localhost defaults to http)" autoFocus />
           </label>
           <label className="settings-field">
             <span>Username</span>
@@ -104,7 +124,7 @@ export function LoginModal(): React.JSX.Element {
         <>
           <label className="settings-field">
             <span>Invite link</span>
-            <input type="text" value={inviteLink} onChange={(event) => setInviteLink(event.target.value)} placeholder="http://host:8080/#invite=…" autoFocus />
+            <input type="text" value={inviteLink} onChange={(event) => setInviteLink(event.target.value)} placeholder="https://server.host/#invite=…" autoFocus />
           </label>
           {parsedInviteLink !== null ? (
             // The address rides the link — confirm where the registration goes, no separate field.

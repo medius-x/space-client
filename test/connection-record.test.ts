@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ConnectionDirectory,
   EXPIRED_MARKER,
+  isValidHostUrl,
+  normalizeHostUrl,
   RecordTokenStorage,
   recordKey,
 } from "../src/domain/session/connection-record";
@@ -176,5 +178,35 @@ describe("RecordTokenStorage IPC routing", () => {
 
     await storage.save(tokens("loser"), tokens("1"));
     expect(storage.load()?.token).toBe("access-winner"); // healed to the disk truth
+  });
+});
+
+describe("normalizeHostUrl", () => {
+  it("keeps explicit schemes and trims trailing slashes", () => {
+    expect(normalizeHostUrl(" https://203.0.113.10/ ")).toBe("https://203.0.113.10");
+    expect(normalizeHostUrl("http://localhost:8080///")).toBe("http://localhost:8080");
+  });
+
+  it("auto-prefixes a scheme: localhost stays http, a deployed host becomes https", () => {
+    expect(normalizeHostUrl("localhost:8080")).toBe("http://localhost:8080");
+    expect(normalizeHostUrl("127.0.0.1")).toBe("http://127.0.0.1");
+    expect(normalizeHostUrl("[::1]:8443")).toBe("http://[::1]:8443");
+    expect(normalizeHostUrl("203.0.113.10")).toBe("https://203.0.113.10");
+    expect(normalizeHostUrl("oak.example.com")).toBe("https://oak.example.com");
+  });
+
+  it("leaves non-http schemes for isValidHostUrl to reject", () => {
+    expect(normalizeHostUrl("ftp://x")).toBe("ftp://x");
+  });
+});
+
+describe("isValidHostUrl", () => {
+  it("accepts only http/https origins", () => {
+    expect(isValidHostUrl("http://localhost:8080")).toBe(true);
+    expect(isValidHostUrl("https://203.0.113.10")).toBe(true);
+    expect(isValidHostUrl("https://oak.example.com:8443")).toBe(true);
+    expect(isValidHostUrl("ftp://x")).toBe(false);
+    expect(isValidHostUrl("")).toBe(false);
+    expect(isValidHostUrl("https://host/some/path")).toBe(false); // origins only
   });
 });

@@ -148,8 +148,9 @@ describe("PeerCallSession", () => {
   });
 
   it("passively binds the receiver tracks of the empty slots after each remote description", async () => {
+    const offerSdp = "v=0\r\nm=audio 9 RTP/SAVPF 111\r\na=mid:0\r\nm=video 9 RTP/SAVPF 96\r\na=mid:1\r\nm=audio 9 RTP/SAVPF 111\r\na=mid:2\r\n";
     const { session, events } = makeSession({ isCaller: false });
-    await session.handleSignal({ type: "OFFER", from: "bob", to: "me", sdp: "v=0 offer", candidate: null });
+    await session.handleSignal({ type: "OFFER", from: "bob", to: "me", sdp: offerSdp, candidate: null });
     const kinds = events.map((entry) => entry.kind);
     expect(kinds).toContain("video");  // receiver.track of the video slot — muted until RTP
     expect(kinds).toContain("share");  // receiver.track of the second audio slot
@@ -165,6 +166,28 @@ describe("PeerCallSession", () => {
     // Re-running (an ICE restart round) must not double-bind the same tracks.
     await session.handleSignal({ type: "OFFER", from: "bob", to: "me", sdp: "v=0 offer2", candidate: null });
     expect(events.filter((entry) => entry.kind === "video")).toHaveLength(1);
+  });
+
+  it("callee adopts the media slots from the offer — no dead pre-created transceivers (live 2026-10-08)", async () => {
+    // The callee used to pre-create empty video/share transceivers; Chromium
+    // does not reuse them on SRD, so its senders sat on dead unassociated
+    // slots and its share RTP never reached the caller (black tile).
+    const offerSdp = "v=0\r\nm=audio 9 RTP/SAVPF 111\r\na=mid:0\r\nm=video 9 RTP/SAVPF 96\r\na=mid:1\r\nm=audio 9 RTP/SAVPF 111\r\na=mid:2\r\n";
+    const { session } = makeSession({ isCaller: false });
+    const pc = FakePeerConnection.instances[0]!;
+    expect(pc.transceivers).toHaveLength(1); // only the mic before the offer
+
+    await session.handleSignal({ type: "OFFER", from: "bob", to: "me", sdp: offerSdp, candidate: null });
+    // The SRD created recvonly transceivers for the offer's m-lines; the answer
+    // path must raise ours to sendrecv or the callee could never send.
+    expect(pc.transceivers.map((entry) => entry.direction)).toEqual(["sendrecv", "sendrecv", "sendrecv"]);
+
+    await session.startShare(new MediaStream([
+      fakeTrack("video-screen") as unknown as MediaStreamTrack,
+      fakeTrack("audio-share") as unknown as MediaStreamTrack,
+    ]));
+    expect(pc.transceivers[1]!.sender.track).toMatchObject({ id: "video-screen" }); // video slot by mid
+    expect(pc.transceivers[2]!.sender.track).toMatchObject({ id: "audio-share" }); // share slot by mid
   });
 
   it("senders and receivers resolve by a=mid from the negotiated SDP, not by array index", async () => {

@@ -35,6 +35,7 @@ export function VideoModal({ session, attachment, onClose }: {
   const recover = async (): Promise<void> => {
     const video = videoRef.current;
     if (video === null || recoveryTriedRef.current || attachment.key === null) {
+      log.warn("video", `load failed (no recovery path): src=${video?.src ?? "-"} key=${attachment.key ?? "-"}`);
       setStatus("link expired — open externally");
       return;
     }
@@ -43,9 +44,11 @@ export function VideoModal({ session, attachment, onClose }: {
       const diedAt = video.currentTime;
       const fresh = await session.rest.freshAttachmentLink(attachment.key);
       if (fresh === null) {
+        log.warn("video", `load failed, fresh link is null: src=${video.src} key=${attachment.key}`);
         setStatus("link expired — open externally");
         return;
       }
+      log.info("video", `recovery: ${video.src} -> ${fresh}`);
       video.src = fresh;
       video.currentTime = diedAt;
       void video.play();

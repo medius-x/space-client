@@ -96,15 +96,24 @@ export class PeerCallSession {
     // is still ringing) must survive the session: read the gate, don't assume on.
     this.micEnabled = this.micTrack?.enabled ?? true;
 
-    // The m-line contract: voice carries the real track; video and share audio are
-    // pre-negotiated EMPTY sendrecv slots activated later by replaceTrack.
+    // The m-line contract: voice carries the real track from the start; video
+    // and share audio are pre-negotiated EMPTY sendrecv slots activated later
+    // by replaceTrack. The CALLER pre-creates all three (its own offer then
+    // associates them); the CALLEE creates only the mic — Chromium does NOT
+    // reuse callee-side empty transceivers on SRD (live smoke 2026-10-08: ours
+    // stayed unassociated with mid=null, Chromium made its own RECVONLY ones,
+    // and the callee's share RTP never left the machine — a black tile on the
+    // caller while the caller's own share worked). The callee's media slots
+    // are adopted from the offer instead — see answerOffer/ensureSendDirection.
     if (this.micTrack) {
       this.peerConnection.addTrack(this.micTrack, options.micStream);
     } else {
       this.peerConnection.addTransceiver("audio", { direction: "sendrecv" });
     }
-    this.videoSender = this.peerConnection.addTransceiver("video", { direction: "sendrecv" }).sender;
-    this.shareAudioSender = this.peerConnection.addTransceiver("audio", { direction: "sendrecv" }).sender;
+    if (this.isCaller) {
+      this.videoSender = this.peerConnection.addTransceiver("video", { direction: "sendrecv" }).sender;
+      this.shareAudioSender = this.peerConnection.addTransceiver("audio", { direction: "sendrecv" }).sender;
+    }
 
     this.peerConnection.onicecandidate = (event) => {
       if (event.candidate) {
@@ -345,6 +354,7 @@ export class PeerCallSession {
   private async answerOffer(sdp: string | null): Promise<void> {
     await this.peerConnection.setRemoteDescription({ type: "offer", sdp: sdp ?? "" });
     this.adoptMids(sdp ?? "", "offer");
+    this.ensureSendDirectionOnSlots();
     const answer = await this.peerConnection.createAnswer();
     const mungedAnswer = mungeStereoIntoAnswerIfOfferHasIt(answer.sdp ?? "", sdp ?? "");
     await this.peerConnection.setLocalDescription({ type: "answer", sdp: mungedAnswer });
@@ -375,8 +385,15 @@ export class PeerCallSession {
   }
 
   /** Track routing: ontrack is only authoritative for the VOICE slot (its track
-   *  was in the offer from the start); the empty slots fire no ontrack ever when the
-   *  peer activates them via replaceTrack — those are bound passively instead. */
+   *  was in the offer from the start); every other slot — and ANY track whose
+   *  transceiver does not match the slot map — belongs to the PASSIVE binder,
+   *  the single delivery path for video/share. ontrack may fire INSIDE
+   *  setRemoteDescription, BEFORE the offer's mids are learned (live smoke
+   *  2026-10-08: callee logged "slot 3, mid 1 — dropped" a millisecond BEFORE
+   *  "mids from offer" — the fallback index answered, the mid map was still
+   *  empty), so a mismatch here must never become a drop: return quietly and
+   *  let bindPassiveReceiverSlots (which runs after the mids are known) deliver
+   *  the track by mid. */
   private routeRemoteTrack(event: RTCTrackEvent): void {
     const slot = this.slotOf(event.transceiver);
     if (slot === MLINE_VOICE) {
@@ -393,7 +410,9 @@ export class PeerCallSession {
     if (slot === MLINE_VIDEO || slot === MLINE_SHARE_AUDIO) {
       return; // passively bound
     }
-    log.warn("call", `remote track outside the slot contract (slot ${slot}, mid ${event.transceiver.mid ?? "?"}) — dropped`);
+    // Unknown transceiver: also passive territory — bindPassiveReceiverSlots
+    // resolves by mid once they are known and ignores everything else.
+    log.info("call", `remote track not in the slot map (slot ${slot}, mid ${event.transceiver.mid ?? "?"}) — leaving it to the passive binder`);
   }
 
   /**
@@ -419,13 +438,39 @@ export class PeerCallSession {
       }
       this.boundRemoteTracks.add(track);
       this.callbacks.onRemoteTrack(kind, track);
+      // Success is logged because a BLACK peer tile means exactly this path
+      // never ran (or ran on a dead transceiver) — a silent success is
+      // indistinguishable from a silent miss in the log (live smoke 2026-10-08).
+      log.info("call", `passive bind: ${kind} mid=${mid ?? "?"} track=${track.id} muted=${track.muted}`);
     };
     bind(MLINE_VIDEO, "video");
     bind(MLINE_SHARE_AUDIO, "share");
   }
 
-  /** Slot by a=mid first (the stable identity), array index only as a last resort. */
-  private slotOf(transceiver: RTCRtpTransceiver): number {
+  /**
+   * The callee's half of the m-line contract: the transceivers the SRD created
+   * for the offer's m-lines arrive RECVONLY (that is how JSEP mandates fresh
+   * ones), which would lock the callee out of ever sending video/share — the
+   * callee's replaceTrack would land on a sender with no encodings and no
+   * permission to send (live 2026-10-08: share RTP never left, "Read-only
+   * field modified" from setParameters, black peer tile on the caller). Raise
+   * every negotiated slot back to sendrecv BEFORE the answer is composed.
+   */
+  private ensureSendDirectionOnSlots(): void {
+    for (const slot of [MLINE_VOICE, MLINE_VIDEO, MLINE_SHARE_AUDIO]) {
+      const mid = this.slotMids[slot];
+      if (mid === null) {
+        continue;
+      }
+      const transceiver = this.peerConnection.getTransceivers().find((entry) => entry.mid === mid);
+      if (transceiver !== undefined && transceiver.direction !== "sendrecv") {
+        transceiver.direction = "sendrecv";
+        log.info("call", `slot ${slot} transceiver (mid ${mid}) raised to sendrecv before answering`);
+      }
+    }
+  }
+
+  /** Slot by a=mid first (the stable identity), array index only as a last resort. */  private slotOf(transceiver: RTCRtpTransceiver): number {
     if (transceiver.mid !== null) {
       const byMid = this.slotMids.indexOf(transceiver.mid);
       if (byMid !== -1) {

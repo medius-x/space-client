@@ -27,6 +27,7 @@ import { ConnectionSession, type SessionHooks } from "../domain/session/connecti
 import { MAX_VOICE_REJOIN_ATTEMPTS, rejoinDelayMs, rejoinExhausted } from "../domain/logic/rejoin-ladder";
 import { dmDisplayName } from "../domain/logic/dm-display";
 import type { MentionIdentity } from "../domain/logic/notification-decider";
+import type { ConnectionRecord } from "../domain/session/connection-record";
 import { messageHasEveryoneHere, messageMentionsRole, messageMentionsUser } from "../domain/logic/notification-decider";
 import { dmToastHeader, toastBodyFallback, toastServerHeader } from "../domain/logic/toast-preview";
 import { paletteColor } from "../domain/logic/user-palette";
@@ -34,6 +35,7 @@ import { displayNameOf } from "../domain/logic/display-name";
 import { isAfkActive } from "../domain/logic/afk-activity";
 import { initialConnectionQuality, type ConnectionQualitySnapshot } from "../domain/logic/connection-quality";
 import { memberKickReasonText, memberKickTitle } from "../domain/logic/moderation-reason";
+import type { TlsUntrustedEvent } from "./bridges";
 import { SettingsStore, type ClientSettings } from "../domain/stores/SettingsStore";
 import {
   acceleratorFromKeyboardEvent,
@@ -177,6 +179,18 @@ export interface AppState {
    *  (null = open at the picker step). */
   ownershipModalOpen: boolean;
   ownershipPreselect: number | null;
+  /** An untrusted server certificate awaiting the user's trust decision (TLS entry
+   *  point, round B): main rejected the connection and surfaced the fingerprint.
+   *  Rendered by TlsTrustModal (App level — the prompt can arrive for a BACKGROUND
+   *  session with the login form closed). */
+  tlsPrompt: TlsUntrustedEvent | null;
+  /** The boot ladder's record name once it stops painting "Connecting…" — the
+   *  empty screen shows the honest "could not reach, retrying in background"
+   *  wording while the ladder keeps trying silently. Null = no offline notice. */
+  bootRetryNotice: string | null;
+  /** The login/register attempt to re-run after a Trust decision (the rejected
+   *  attempt died before reaching the server). Set by LoginModal on every submit. */
+  tlsRetry: (() => void) | null;
 }
 
 class AppStore extends Emitter {
@@ -234,6 +248,9 @@ class AppStore extends Emitter {
     serverMenu: null,
     ownershipModalOpen: false,
     ownershipPreselect: null,
+    tlsPrompt: null,
+    tlsRetry: null,
+    bootRetryNotice: null,
   };
 
   getSnapshot = (): AppState => this.state;
@@ -1400,12 +1417,20 @@ function scheduleBootResume(recordId: string, delaySeconds: number): void {
   }, delaySeconds * 1000);
 }
 
+/** Boot-ladder attempts keep the "Connecting…" paint for this many tries; after
+ *  that the empty screen switches to the honest offline wording (the ladder
+ *  itself keeps retrying in the background — it just stops PRETENDING). */
+const BOOT_CONNECTING_ATTEMPTS = 2;
+
 async function retryBootResume(recordId: string): Promise<void> {
   const record = connectionDirectory.get(recordId);
   if (!record || activeSession !== null || record.token === EXPIRED_MARKER || record.refreshToken === "") {
     // The user acted (a session is live), the record is gone, or its token
     // family died mid-ladder (the login modal is already up). Stand down —
     // a live session owns stompState, only clear what we painted ourselves.
+    if (appStore.getSnapshot().bootRetryNotice !== null) {
+      appStore.patch({ bootRetryNotice: null }); // never outlives the ladder
+    }
     if (activeSession === null && appStore.getSnapshot().stompState === "connecting") {
       appStore.patch({ stompState: "off" });
     }
@@ -1417,9 +1442,13 @@ async function retryBootResume(recordId: string): Promise<void> {
   }
   bootResumeAttempt += 1;
   try {
+    // The cheap reachability probe first: a dead server fails in milliseconds
+    // instead of paying a full session bootstrap with its REST retry chains.
+    await probeServerReachable(record.hostUrl);
     await openSession(recordId);
     log.info("app", `auto-resumed ${record.username} @ ${record.hostUrl} (boot attempt ${bootResumeAttempt})`);
     bootResumeRecordId = null;
+    appStore.patch({ bootRetryNotice: null }); // the offline wording must not outlive the outage
     return; // connected — openSession took it from here
   } catch (error) {
     log.info("app", `boot resume attempt ${bootResumeAttempt} failed (${errorMessage(error)})`);
@@ -1428,9 +1457,18 @@ async function retryBootResume(recordId: string): Promise<void> {
     bootResumeRecordId = null;
     return; // removed while the attempt was flying
   }
-  // stompState was reset to "off" by teardownSession inside the failed attempt —
-  // repaint "connecting" so the empty screen keeps saying we are reaching out.
-  appStore.patch({ stompState: "connecting" });
+  // stompState was reset to "off" by teardownSession inside the failed attempt.
+  // The first few attempts repaint "connecting" (the screen says we are still
+  // reaching out); past that, keep the honest offline wording — an eternal
+  // "Connecting…" reads as a freeze (user report 2026-10-08).
+  if (bootResumeAttempt <= BOOT_CONNECTING_ATTEMPTS) {
+    appStore.patch({ stompState: "connecting" });
+  } else if (appStore.getSnapshot().bootRetryNotice === null) {
+    appStore.patch({
+      stompState: "lost",
+      bootRetryNotice: record.cachedServerName ?? record.hostUrl,
+    });
+  }
   scheduleBootResume(recordId, Math.min(2 ** bootResumeAttempt, 30));
 }
 
@@ -1442,6 +1480,7 @@ export async function bootstrapApp(): Promise<void> {
   installHotkeys(); // global OS chords + the window keydown (local binds)
   installSourceDeadListener(); // the window-share liveness watchdog reports here
   installPopoutClosedListener(); // the share pop-out's own close lands here
+  installTlsPromptListener(); // untrusted server certificates ask for trust here
   installPopoutVolumeListener(); // the share pop-out's volume slider lands here
   installPopoutVoiceActionListener(); // the pop-out's mirrored voice-panel buttons land here
   installAppClosingListener(); // the forestalled window close leaves voice/call cleanly
@@ -1530,26 +1569,49 @@ export async function startSession(baseUrl: string, mode: "login" | "register", 
   }
 }
 
-/** Rail click on another record: switch (resume) or re-login when the family is dead. */
+/**
+ * Quick reachability probe used BEFORE a rail switch tears anything down: fetch
+ * resolves on ANY HTTP answer (401/500 included — that still proves the server
+ * is alive) and rejects only on a network failure. The timeout cap keeps a
+ * black-hole host (Windows firewalls DROP instead of rejecting — live log
+ * 2026-10-08: every fetch to a dead port hung the full window) from freezing
+ * the switch; a plain refused port fails in milliseconds. No auth is sent.
+ */
+async function probeServerReachable(hostUrl: string, timeoutMillis: number = 4_000): Promise<void> {
+  await fetch(`${hostUrl.replace(/\/+$/, "")}/api/server`, { signal: AbortSignal.timeout(timeoutMillis) });
+}
+
+/**
+ * Rail click on another record: switch (resume) or re-login when the family is
+ * dead. NEVER gated (user decision 2026-10-08): the rail is the primary
+ * navigation and must stay clickable at all times — a dead target server means
+ * openSession lands in the ACTIVE OFFLINE view (the user panel says Offline, a
+ * quiet watcher reopens the session once the server answers), and the login
+ * form appears solely when the server answered and rejected the tokens.
+ */
 export async function switchConnection(recordId: string): Promise<void> {
-  if (appStore.getSnapshot().loginBusy) {
-    return;
-  }
   const record = connectionDirectory.get(recordId);
   if (!record || activeSession?.recordId === recordId) {
     return;
   }
-  appStore.patch({ loginBusy: true, loginError: null });
+  // A Trust decision on the certificate this attempt tripped over re-runs it
+  // (the offline landing probe dies on an untrusted https cert).
+  appStore.patch({
+    tlsRetry: () => {
+      void switchConnection(recordId);
+    },
+  });
   try {
     await openSession(recordId);
   } catch (error) {
+    // Only an ANSWERING server reaches this catch (network failures land in
+    // the offline view inside openSession): its rejection of the credentials
+    // genuinely needs a re-login.
     appStore.patch({
       loginFormOpen: true,
       loginError: errorMessage(error),
       loginPrefill: { url: record.hostUrl, username: record.username },
     });
-  } finally {
-    appStore.patch({ loginBusy: false });
   }
 }
 
@@ -1677,6 +1739,12 @@ async function openSession(recordId: string): Promise<void> {
     }
     sessionBinding.set(existing);
     sessionsIndex.bump();
+    // A promoted background session may sit deep in its reconnect backoff (its
+    // server blinked while it was in the background) — the switch is the
+    // user's explicit "connect me NOW", not "wait out the timer".
+    if (!existing.stomp.isConnected()) {
+      existing.stomp.reconnectNow();
+    }
     appStore.patch({
       loginFormOpen: false,
       loginError: null,
@@ -1701,6 +1769,19 @@ async function openSession(recordId: string): Promise<void> {
   // Same invariant on the fresh-session path: a REST-fallback entry of this
   // record from its sessionless days must not survive its activation.
   socialDirectory.drop(recordId);
+  // THE ACTIVE OFFLINE VIEW (user decision 2026-10-08): the rail switch must
+  // ALWAYS go through. The quick probe after the teardown keeps a black-hole
+  // host (a firewall DROP — the REST chain would hang for tens of seconds per
+  // request) from freezing the switch; when the server does not answer, the
+  // half-built session stays alive as the ACTIVE view with an "Offline" status
+  // in the user panel and a quiet watcher that reopens everything once the
+  // server is back.
+  try {
+    await probeServerReachable(record.hostUrl);
+  } catch {
+    enterActiveOfflineView(session, record);
+    return;
+  }
   try {
     await session.start();
     session.attachmentCache.setDiskBudget(settingsStore.getSnapshot().imageCacheMegabytes * 1024 * 1024);
@@ -1714,6 +1795,10 @@ async function openSession(recordId: string): Promise<void> {
       ownUsername: record.username,
       baseUrl: record.hostUrl,
     });
+    // Remember the own avatar's key for the offline view (the roster is empty
+    // there; this field is its only source — same trick as the server icon).
+    const ownSummary = session.rosterStore.getSnapshot().users.find((user) => user.username === record.username) ?? null;
+    void connectionDirectory.update(recordId, { cachedOwnAvatarKey: ownSummary?.avatarKey ?? null });
     // A DM/channel clicked on a NON-active instance: open it instead of the
     // restored last channel (oak's pendingOpenDm).
     consumePendingOpen(session);
@@ -1723,9 +1808,71 @@ async function openSession(recordId: string): Promise<void> {
     // snapshot loader only covers records that cannot hold a session.
     void startBackgroundSessions();
   } catch (error) {
-    await teardownSession();
-    throw error;
+    if (error instanceof ApiError) {
+      await teardownSession();
+      throw error;
+    }
+    // The probe passed but the bootstrap still died on the network (a flaky
+    // window): the same offline view, not a dead screen.
+    enterActiveOfflineView(session, record);
   }
+}
+
+/** Paint the half-built session as the ACTIVE OFFLINE view: the familiar
+ *  server screen with empty stores and an "Offline" status in the user panel.
+ *  The session's STOMP was never started, so nothing will overwrite the status. */
+function enterActiveOfflineView(session: ConnectionSession, record: ConnectionRecord): void {
+  if (activeSession !== session) {
+    return; // the user switched away while the probe was flying
+  }
+  appStore.patch({
+    loginFormOpen: false,
+    loginError: null,
+    loginPrefill: null,
+    ownUsername: record.username,
+    baseUrl: record.hostUrl,
+    stompState: "off", // the user panel renders this as "Offline"
+    stompAttempt: 0,
+    stompCountdown: null,
+  });
+  log.warn("app", `${record.hostUrl} unreachable — active offline view, watching for the server`);
+  armOfflineWatch(session.recordId);
+}
+
+let offlineWatchRecordId: string | null = null;
+let offlineWatchTimer: number | null = null;
+
+/** Re-probe the ACTIVE offline view's server every 10 s; the moment it answers,
+ *  reopen the session for real. Re-arming for another record retargets the
+ *  watch; any switch to a live session disarms it. */
+function armOfflineWatch(recordId: string): void {
+  offlineWatchRecordId = recordId;
+  if (offlineWatchTimer !== null) {
+    return; // the shared timer serves whatever record is watched now
+  }
+  offlineWatchTimer = window.setTimeout(function offlineWatchTick(): void {
+    offlineWatchTimer = null;
+    const watched = offlineWatchRecordId;
+    const record = watched !== null ? connectionDirectory.get(watched) : null;
+    if (watched === null || record === null || activeSession === null
+      || activeSession.recordId !== watched || activeSession.stomp.isConnected()) {
+      offlineWatchRecordId = null; // switched away / connected / record gone
+      return;
+    }
+    void probeServerReachable(record.hostUrl).then(() => {
+      if (offlineWatchRecordId !== watched || activeSession?.recordId !== watched) {
+        return;
+      }
+      offlineWatchRecordId = null;
+      log.info("app", `${record.hostUrl} is back — reopening the session`);
+      void openSession(watched).catch(() => enterActiveOfflineView(activeSession!, record));
+    }).catch(() => {
+      if (offlineWatchRecordId !== watched) {
+        return;
+      }
+      offlineWatchTimer = window.setTimeout(offlineWatchTick, 10_000);
+    });
+  }, 10_000);
 }
 
 /** A quiet revival pass for background records whose start() failed — the
@@ -1744,7 +1891,13 @@ function scheduleBackgroundRevival(): void {
   }, 30_000);
 }
 
-/** Start (once) a background session for every saved record that has none. */
+/** Start (once) a background session for every saved record that has none.
+ *  Each start is GATED by the reachability probe: against a black-hole host
+ *  (connection accepted, then silence — a firewall DROP) the old path fired
+ *  the whole REST bootstrap chain, and those 20-s-timeout fetches saturated
+ *  the browser's per-host connection pool, freezing every other request to
+ *  that host INCLUDING interactive switch probes (live report 2026-10-08).
+ *  A probe failure skips the session entirely — the revival pass retries. */
 function startBackgroundSessions(): void {
   for (const record of connectionDirectory.getSnapshot()) {
     // bootResumeRecordId: the boot ladder owns that record — a background start
@@ -1756,13 +1909,22 @@ function startBackgroundSessions(): void {
     if (sessionMap.has(record.id)) {
       continue;
     }
-    const session = new ConnectionSession({ directory: connectionDirectory, recordId: record.id, hooks: makeSessionHooks(record.id) });
-    sessionMap.set(record.id, session);
-    sessionsIndex.bump();
-    bindLiveBackgroundSession(session, connectionDirectory);
-    void session.start().catch((error: unknown) => {
-      log.warn("app", `background session for ${record.username} @ ${record.hostUrl} failed (${errorMessage(error)}) — REST snapshots, will retry`);
-      disposeBackgroundSession(record.id);
+    void probeServerReachable(record.hostUrl, 2_500).then(() => {
+      if (sessionMap.has(record.id) || connectionDirectory.get(record.id) === null) {
+        return; // someone started it first / the record is gone
+      }
+      const session = new ConnectionSession({ directory: connectionDirectory, recordId: record.id, hooks: makeSessionHooks(record.id) });
+      sessionMap.set(record.id, session);
+      sessionsIndex.bump();
+      bindLiveBackgroundSession(session, connectionDirectory);
+      return session.start().catch((error: unknown) => {
+        log.warn("app", `background session for ${record.username} @ ${record.hostUrl} failed (${errorMessage(error)}) — REST snapshots, will retry`);
+        disposeBackgroundSession(record.id);
+        scheduleBackgroundRevival();
+      });
+    }).catch(() => {
+      // Quiet by design: dead servers are the NORM for saved-but-inactive
+      // records; a warn per revival pass is noise (the ladder owns retries).
       scheduleBackgroundRevival();
     });
   }
@@ -3057,6 +3219,35 @@ function installSourceDeadListener(): void {
   });
 }
 
+/** The TLS trust dialog's answer to main: Accept stores the session allowance
+ *  (main lets the fingerprint through and pins it into the record); Reject
+ *  blocks. Either way the prompt closes — the caller decides about a retry. */
+export async function decideTlsCertificate(prompt: TlsUntrustedEvent, accept: boolean): Promise<void> {
+  try {
+    await window.spaceTls?.decide({ hostname: prompt.hostname, fingerprint: prompt.fingerprint, accept });
+  } catch (error) {
+    log.warn("tls", `certificate decision delivery failed: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    appStore.patch({ tlsPrompt: null });
+  }
+}
+
+/** Main reports an untrusted server certificate (TLS entry point, round B) —
+ *  surface it for a trust decision. Only the MAIN window gets these. */
+function installTlsPromptListener(): void {
+  window.spaceTls?.onUntrusted((event) => {
+    if (event === null || typeof event !== "object") {
+      return;
+    }
+    const prompt = event as TlsUntrustedEvent;
+    if (typeof prompt.hostname !== "string" || typeof prompt.fingerprint !== "string") {
+      return;
+    }
+    log.warn("tls", `untrusted certificate for ${prompt.hostname} (${prompt.changedPinned ? "PIN CHANGED" : "no pin yet"})`);
+    appStore.patch({ tlsPrompt: prompt });
+  });
+}
+
 /** The pop-out window's volume slider remote-controls THIS window's share
  *  playout (the pop-out subscribes video-only — one audible stream). The same
  *  path the roster's member card slider takes: live chain + persisted gain. */
@@ -3661,10 +3852,10 @@ let pendingVoiceJoin: { recordId: string; channelId: number } | null = null;
 /** Wiring point for the room view's imperative peer-video element (call mode). */
 export const callView = {
   attachPeerVideo(_track: MediaStreamTrack): void {
-    // replaced by RoomView at mount (call mode)
+    // replaced by the call-watch overlay at mount
   },
   dropPeerVideo(): void {
-    // replaced by RoomView at mount (call mode)
+    // replaced by the call-watch overlay at mount
   },
 };
 

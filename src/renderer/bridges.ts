@@ -219,6 +219,28 @@ export interface IdleBridge {
   getSystemIdleTime(): Promise<number>;
 }
 
+/** An untrusted server certificate main rejected and surfaced for a trust
+ *  decision (TLS entry point, round B). `fingerprint` is the NORMALIZED hex
+ *  (no separators); `displayFingerprint` is the colon-separated form for the
+ *  dialog. `changedPinned` marks the dangerous case: a PINNED host presented
+ *  a different certificate (possible MITM). */
+export interface TlsUntrustedEvent {
+  hostname: string;
+  fingerprint: string;
+  displayFingerprint: string;
+  subjectName: string;
+  changedPinned: boolean;
+}
+
+export interface TlsCertBridge {
+  /** The user's trust decision for a hostname. Accept stores a SESSION
+   *  allowance (main lets the fingerprint through and pins it into the
+   *  server record on its next write); Reject blocks and forgets. */
+  decide(decision: { hostname: string; fingerprint: string; accept: boolean }): Promise<boolean>;
+  /** Main → the main window: a certificate needs a decision. */
+  onUntrusted(callback: (event: TlsUntrustedEvent) => void): void;
+}
+
 declare global {
   interface Window {
     spaceCapture?: CaptureBridge;
@@ -227,5 +249,6 @@ declare global {
     spaceToast?: ToastBridge;
     spaceHotkey?: HotkeyBridge;
     spaceIdle?: IdleBridge;
+    spaceTls?: TlsCertBridge;
   }
 }

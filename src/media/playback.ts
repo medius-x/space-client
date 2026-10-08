@@ -1,4 +1,5 @@
 import { Emitter } from "../domain/lib/store";
+import { log } from "../logging";
 import type { RestClient } from "../core/rest";
 
 /**
@@ -155,11 +156,16 @@ export class PlaybackService extends Emitter {
       return;
     }
     const diedAt = this.state.positionSeconds;
-    const fresh = await client.freshAttachmentLink(key).catch(() => null);
+    const fresh = await client.freshAttachmentLink(key).catch((error: unknown) => {
+      log.warn("playback", `fresh link failed for ${key}: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    });
     if (fresh === null || fresh === undefined || this.state.key !== key) {
+      log.warn("playback", `audio load failed, no fresh link: url=${this.audio?.src ?? "-"} key=${key ?? "-"}`);
       this.patch({ playing: false });
       return;
     }
+    log.info("playback", `recovery: ${this.audio?.src ?? "-"} -> ${fresh}`);
     const audio = this.ensureAudio();
     audio.src = fresh;
     audio.currentTime = diedAt;

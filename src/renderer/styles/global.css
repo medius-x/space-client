@@ -2510,7 +2510,6 @@ button.wide-add { width: 100%; }
    both back. */
 .popout-root.hide-cursor { cursor: none; }
 .popout-toolbar .icon { font-size: 18px; color: #fff; }
-.popout-toolbar:has(.popout-volume:disabled) .popout-toolbar-volume { opacity: 0.55; }
 /* The mirrored voice-panel buttons (mute/deafen/NS): transparent 26×26, the
    "on" tint follows the panel's semantics (yellow self-state; NS green). */
 .popout-voice-toggle {
@@ -2527,11 +2526,12 @@ button.wide-add { width: 100%; }
 }
 .popout-voice-toggle .icon { font-size: 17px; }
 .popout-voice-toggle:hover { background: rgba(255, 255, 255, 0.18); }
+/* The volume icon of a share with no audio (a disabled toggle reads dim). */
+.popout-voice-toggle:disabled { opacity: 0.55; cursor: default; }
 /* The panel's on-semantics, mirrored: mute/deafen RED, an NS engine running GREEN. */
 .popout-voice-toggle.on { background: var(--sp-red); color: #fff; }
 .popout-voice-toggle.ns.on { background: var(--sp-green); color: #fff; }
 .popout-toolbar-sep { width: 1px; height: 18px; background: rgba(255, 255, 255, 0.35); }
-.popout-toolbar-volume { display: inline-flex; align-items: center; }
 .popout-volume { width: 90px; flex: none; margin: 0; }
 .popout-volume:disabled { opacity: 0.45; }
 .popout-fullscreen {
@@ -2787,6 +2787,8 @@ button.wide-add { width: 100%; }
 
 /* The Invites section rows: secret preview, creator, expiry label, actions right. */
 .invite-secret { font-family: monospace; color: var(--sp-text-muted); }
+/* The TLS trust dialog's fingerprint (read-only, select-on-focus for copying). */
+.tls-fingerprint { font-family: monospace; font-size: 12px; }
 .invite-meta { font-size: 12px; color: var(--sp-text-muted); }
 .invite-actions { margin-left: auto; display: flex; gap: 6px; }
 /* The TTL row's flex line (label / field / "min" / Save, vertically centered) is the
@@ -4117,3 +4119,78 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 .picker-thumb-placeholder .icon { font-size: 24px; }
 .roles-row .mdi-lock { font-size: 12px; color: var(--sp-text-dim); }
 .role-editor-name .icon { font-size: 16px; color: var(--sp-text-dim); }
+
+/* The 1-on-1 call peer tile's video STAGE (user decision 2026-10-08, replaced
+   the floating-window experiment): inline video in the tile + a small
+   fullscreen pill at the video's bottom edge. The STAGE is the element that
+   goes fullscreen — the video AND the control pill ride the top layer
+   together, so everything keeps working fullscreen. A real OS pop-out window
+   is impossible for a P2P track (MediaStream never crosses renderers). */
+.call-watch-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #000;
+}
+.call-watch-stage video { display: block; width: 100%; height: 100%; object-fit: contain; }
+.call-watch-stage .tile-slot-plate {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* The fullscreen entry pill (windowed mode): a small translucent button at
+   the video's bottom-right corner, always visible in the tile.
+   z-index 3 LIFTS IT OVER THE VIDEO: .tile-screen-slot video carries z-index 1,
+   and an unlifted overlay renders under the video element — invisible and
+   click-through (live report: "no fullscreen button in the tile"). */
+.call-watch-open {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 3;
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  border-radius: 13px;
+  background: rgba(128, 128, 128, 0.45);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.call-watch-open .icon { font-size: 18px; }
+.call-watch-open:hover { background: rgba(128, 128, 128, 0.65); }
+/* Element-fullscreen: the stage owns the whole screen; Esc exits by itself. */
+.call-watch-stage:fullscreen video { object-fit: contain; }
+
+/* The control pill (fullscreen only): the SHARE POP-OUT's pill design reused
+   verbatim (user decision 2026-10-08 — one look for both watch surfaces; the
+   .popout-voice-toggle / .popout-toolbar-sep / .popout-volume / .popout-fullscreen
+   classes carry the buttons). Shown while the CURSOR IS ACTIVE (a JS
+   pointer-activity flag — in fullscreen the stage covers the whole screen, so
+   a CSS :hover reveal would never hide it; video-player semantics: any
+   movement shows, 2.5 s idle hides, an open NS menu holds it). */
+.call-watch-toolbar {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 12px;
+  z-index: 3; /* over the video (its .tile-screen-slot rule carries z-index: 1) — the same lift as .call-watch-open */
+  display: none; /* windowed mode shows .call-watch-open instead */
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(128, 128, 128, 0.45);
+  color: #fff;
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+  pointer-events: none;
+}
+.call-watch-stage:fullscreen .call-watch-toolbar { display: flex; }
+.call-watch-toolbar.visible { opacity: 1; pointer-events: auto; }
+/* While the pill is idle-hidden in fullscreen, the IDLE CURSOR hides with it
+   (video-player semantics — the pop-out share window idiom). */
+.call-watch-stage:fullscreen.hide-cursor { cursor: none; }

@@ -7,6 +7,7 @@ import { LoginModal } from "./components/LoginModal";
 import { MainScreen } from "./components/MainScreen";
 import { ServerMenu } from "./components/ServerMenu";
 import { TransferOwnershipModal } from "./components/TransferOwnershipModal";
+import { TlsTrustModal } from "./components/TlsTrustModal";
 import { ServerRail } from "./components/ServerRail";
 import { ServerSettingsPane } from "./components/ServerSettingsPane";
 import { UserSettingsModal } from "./components/UserSettingsModal";
@@ -50,6 +51,10 @@ export function App(): React.JSX.Element {
               the rail and an empty content area (oak parity); login is a modal. */}
           {session !== null ? <MainScreen session={session} /> : <EmptyMainScreen />}
           {loginFormOpen ? <LoginModal /> : null}
+          {/* The TLS trust decision (round B) — App level on purpose: an untrusted
+              certificate can surface for a BACKGROUND session too, with the login
+              form closed. */}
+          <TlsTrustModal />
           {/* The server dropdown (the Sidebar header click AND the rail avatar's
               right-click): mounted here so the rail path works with no live
               session too (Re-login/Delete need none). */}
@@ -94,11 +99,14 @@ export function App(): React.JSX.Element {
 /** No live session (fresh install / the active server was removed): the rail —
  *  its "+" opens the login modal — plus an empty content area. The one other
  *  no-session state is the BOOT RESUME LADDER: a network-dead server at
- *  startup keeps "connecting" alive with no session, and the empty screen then
- *  says the server is being reached instead of inviting the user to add one. */
+ *  startup keeps retrying with no session. The screen says "Connecting…"
+ *  for the first few attempts, then switches to the honest OFFLINE wording
+ *  (an eternal "Connecting…" reads as a freeze — user report 2026-10-08)
+ *  while the ladder keeps trying silently in the background. */
 function EmptyMainScreen(): React.JSX.Element {
   const records = useStore(connectionDirectory, (allRecords) => allRecords);
   const stompState = useStore(appStore, (state) => state.stompState);
+  const bootRetryNotice = useStore(appStore, (state) => state.bootRetryNotice);
   const bootConnecting = stompState === "connecting";
   const target = records[0];
   return (
@@ -113,7 +121,9 @@ function EmptyMainScreen(): React.JSX.Element {
         <div className="chat-empty">
           {bootConnecting
             ? `Connecting to ${target?.cachedServerName ?? target?.hostUrl ?? "the server"}…`
-            : "No server connected — add one with the + on the rail."}
+            : bootRetryNotice !== null
+              ? `Could not reach ${bootRetryNotice} — still retrying in the background. Pick a server on the rail or add one with the +.`
+              : "No server connected — add one with the + on the rail."}
         </div>
       </main>
     </div>

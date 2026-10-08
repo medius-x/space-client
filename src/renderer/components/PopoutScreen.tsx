@@ -60,9 +60,14 @@ export function PopoutScreen(): React.JSX.Element {
   const [shareUsername, setShareUsername] = useState<string | null>(null);
   const [shareAudio, setShareAudio] = useState(false);
   const [shareVolume, setShareVolume] = useState(1);
+  /** The volume icon's 0 ↔ last-positive toggle memory (the VolumeRow idiom). */
+  const shareVolumeLastPositiveRef = useRef(1);
   const [fullscreen, setFullscreen] = useState(false);
   const [voiceState, setVoiceState] = useState<PopoutVoiceState>({ muted: false, deafened: false, nsEngine: "rnnoise" });
   const [nsMenuAt, setNsMenuAt] = useState<{ x: number; y: number } | null>(null);
+  // The NS toggle button — its press must not outside-dismiss the menu, or the
+  // click-toggle re-opens it (the emoji-picker anchorRef lesson).
+  const nsButtonRef = useRef<HTMLButtonElement | null>(null);
   const [toolbarVisible, setToolbarVisible] = useState(false);
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   const lastLocalVolumeEditRef = useRef(0);
@@ -83,6 +88,9 @@ export function PopoutScreen(): React.JSX.Element {
     setShareUsername(share.username);
     setShareAudio(share.audio);
     setShareVolume(share.volume);
+    if (share.volume > 0) {
+      shareVolumeLastPositiveRef.current = share.volume;
+    }
     const viewer = new PopoutViewer({
       room: { janusUrl: target.janusUrl, roomId: target.roomId, token: target.token, pin: target.pin },
       feedId: target.feedId,
@@ -157,6 +165,9 @@ export function PopoutScreen(): React.JSX.Element {
     window.spaceWindow?.onPopoutVolumeSync((username, gain) => {
       if (username === shareUsernameRef.current && Date.now() - lastLocalVolumeEditRef.current > VOLUME_SYNC_GRACE_MS) {
         setShareVolume(gain);
+        if (gain > 0) {
+          shareVolumeLastPositiveRef.current = gain;
+        }
       }
     });
   }, []);
@@ -179,37 +190,26 @@ export function PopoutScreen(): React.JSX.Element {
 
   // Toolbar reveal (video-player semantics, driven by pointermove — CSS :hover
   // goes STALE after Chromium's leave-fullscreen transition, so it can never be
-  // the mechanism): in the WINDOWED mode the pill appears when the cursor is
-  // over/near the pill itself (user request); in FULLSCREEN any cursor movement
-  // reveals it and a 2.5s idle timer hides it again. NO focus-holder: a click on
-  // the pill's own button left activeElement inside it, and the holder then kept
-  // the pill visible forever (live reports 2026-09-25 — "won't hide after
-  // leaving fullscreen"); the NS menu being open is the only non-cursor holder.
+  // the mechanism): ANY cursor movement reveals the pill and a 2.5 s idle timer
+  // hides it again — the SAME rule in the windowed and the fullscreen mode (user
+  // decision 2026-10-08: the call watch pill's behavior won; the old windowed
+  // near-the-pill-only hit test is gone). The NS menu being open is the only
+  // non-cursor holder. NO focus-holder: a click on the pill's own button left
+  // activeElement inside it, and the holder then kept the pill visible forever
+  // (live reports 2026-09-25 — "won't hide after leaving fullscreen").
   useEffect(() => {
     const hideDelayMs = 2500;
     let hideTimer: number | null = null;
-    const onPointerMove = (event: PointerEvent): void => {
-      const toolbar = toolbarRef.current;
-      if (toolbar === null) {
-        return;
-      }
+    const onPointerMove = (): void => {
       if (hideTimer !== null) {
         window.clearTimeout(hideTimer);
         hideTimer = null;
       }
-      if (fullscreen) {
-        setToolbarVisible(true);
-        hideTimer = window.setTimeout(() => {
-          hideTimer = null;
-          setToolbarVisible(false);
-        }, hideDelayMs);
-        return;
-      }
-      const rect = toolbar.getBoundingClientRect();
-      const hitMargin = 24; // a slightly generous invisible hit area
-      const near = event.clientX >= rect.left - hitMargin && event.clientX <= rect.right + hitMargin
-        && event.clientY >= rect.top - hitMargin && event.clientY <= rect.bottom + hitMargin;
-      setToolbarVisible(near || nsMenuAt !== null);
+      setToolbarVisible(true);
+      hideTimer = window.setTimeout(() => {
+        hideTimer = null;
+        setToolbarVisible(nsMenuAt !== null);
+      }, hideDelayMs);
     };
     window.addEventListener("pointermove", onPointerMove);
     // Leaving the WINDOW entirely: pointermove stops coming (the last one said
@@ -230,7 +230,7 @@ export function PopoutScreen(): React.JSX.Element {
       window.removeEventListener("pointermove", onPointerMove);
       document.removeEventListener("mouseleave", onMouseLeave);
     };
-  }, [fullscreen, nsMenuAt]);
+  }, [nsMenuAt]);
 
   // A plain window resize moves the anchored pill the same way a fullscreen
   // flip does — drop the stale reveal there too (the next pointermove
@@ -275,6 +275,7 @@ export function PopoutScreen(): React.JSX.Element {
               <span className={"icon " + (voiceState.deafened ? "mdi-headphones-off" : "mdi-headphones")} />
             </button>
             <button
+              ref={nsButtonRef}
               className={"popout-voice-toggle ns" + (nsEngine !== "off" ? " on" : "")}
               title="Noise suppression engine"
               onClick={(event) => {
@@ -289,7 +290,28 @@ export function PopoutScreen(): React.JSX.Element {
               <span className="icon mdi-triangle-wave" />
             </button>
             <span className="popout-toolbar-sep" />
-            <span className={"popout-toolbar-volume icon " + (volumeInteractive && shareVolume > 0 ? "mdi-volume-high" : "mdi-volume-off")} />
+            {/* The volume ICON is a 0 ↔ last-positive mute toggle (the VolumeRow
+                idiom); disabled when this share carries no audio at all. */}
+            <button
+              className="popout-voice-toggle"
+              disabled={!volumeInteractive}
+              title={volumeInteractive ? (shareVolume > 0 ? "Mute share audio" : "Unmute share audio") : "This share has no audio"}
+              onClick={() => {
+                const nextGain = shareVolume > 0
+                  ? 0
+                  : (shareVolumeLastPositiveRef.current > 0 ? shareVolumeLastPositiveRef.current : 1);
+                if (shareVolume > 0) {
+                  shareVolumeLastPositiveRef.current = shareVolume;
+                }
+                lastLocalVolumeEditRef.current = Date.now();
+                setShareVolume(nextGain);
+                if (shareUsername !== null) {
+                  window.spaceWindow?.popoutVolume(shareUsername, nextGain);
+                }
+              }}
+            >
+              <span className={"icon " + (volumeInteractive && shareVolume > 0 ? "mdi-volume-high" : "mdi-volume-off")} />
+            </button>
             <input
               className="popout-volume"
               type="range" min={0} max={2} step={0.01}
@@ -321,6 +343,7 @@ export function PopoutScreen(): React.JSX.Element {
             y={nsMenuAt.y}
             onPick={(next) => window.spaceWindow?.popoutVoiceAction("ns-engine", next)}
             onClose={() => setNsMenuAt(null)}
+            triggerRef={nsButtonRef}
           />
         ) : null}
       </div>

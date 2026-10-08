@@ -186,6 +186,9 @@ export interface ServerProfile {
   avatarUrl: string | null;
   connectionHost: string | null;
   connectionPort: number | null;
+  /** Advertised scheme ("http" | "https"; null = the historical default http) —
+   *  wire-appended by the server's TLS round (2026-10-07); old servers omit it. */
+  connectionScheme?: string | null;
 }
 
 // ---------------------------------------------------------------------------

@@ -50,12 +50,11 @@ export function ServerRail({ activeRecordId, session }: {
   session: ConnectionSession | null;
 }): React.JSX.Element {
   const records = useStore(connectionDirectory, (records) => records);
-  const busy = useStore(appStore, (state) => state.loginBusy);
   const dmMode = useStore(appStore, (state) => state.dmMode);
 
   return (
     <nav className="server-rail">
-      {session !== null ? <HomeRailButton session={session} /> : null}
+      {session !== null ? <HomeRailButton session={session} /> : <DisabledHomeRailButton />}
       <div className="rail-separator" />
       {records.map((record) => (
         <RailRow
@@ -63,7 +62,6 @@ export function ServerRail({ activeRecordId, session }: {
           record={record}
           active={record.id === activeRecordId && !dmMode}
           expired={record.token === EXPIRED_MARKER}
-          busy={busy}
           session={session}
           onActivate={() => {
             if (record.id === activeRecordId) {
@@ -73,9 +71,10 @@ export function ServerRail({ activeRecordId, session }: {
               exitHomeMode();
               return;
             }
-            if (!busy) {
-              void switchConnection(record.id);
-            }
+            // NEVER gated: the rail is the primary navigation and a switching
+            // attempt in flight must not eat clicks (user decision 2026-10-08) —
+            // switchConnection/openSession tolerate the overlap.
+            void switchConnection(record.id);
           }}
         />
       ))}
@@ -136,11 +135,10 @@ function ServerIconBody({ iconUrl, name }: { iconUrl: string | null; name: strin
  * selection pill at the rail's left edge, the 48×48 squircle icon and the
  * unread badge at its bottom-right corner.
  */
-function RailRow({ record, active, expired, busy, session, onActivate }: {
+function RailRow({ record, active, expired, session, onActivate }: {
   record: ConnectionRecord;
   active: boolean;
   expired: boolean;
-  busy: boolean;
   session: ConnectionSession | null;
   onActivate(): void;
 }): React.JSX.Element {
@@ -256,6 +254,18 @@ function useServerBadge(recordId: string, session: ConnectionSession | null): { 
   }
   const snapshot = background.find((entry) => entry.recordId === recordId) ?? null;
   return snapshot !== null && snapshot.serverCounts.unread > 0 ? snapshot.serverCounts : null;
+}
+
+/** The Home placeholder while NO session is live (all servers offline at
+ *  startup): Home is the DM view and has nothing to show without a session,
+ *  but the button vanishing between offline/online states reads as breakage
+ *  (user report 2026-10-08) — it stays in place, inert, with a hint. */
+function DisabledHomeRailButton(): React.JSX.Element {
+  return (
+    <div className="rail-wrap home" title="Connect to a server to open your direct messages">
+      <div className="rail-icon home"><img className="rail-logo" src="logo.png" alt="" draggable={false} /></div>
+    </div>
+  );
 }
 
 /** Home button + the DM-unread badge (mounted only while a session is live).

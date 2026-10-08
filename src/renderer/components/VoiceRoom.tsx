@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { useStore } from "../hooks/useStore";
 import {
   appStore,
@@ -144,15 +144,19 @@ function nsTitle(engine: NoiseEngineKind): string {
  *  BOTTOM of the voice bar, so the popup's LOWER edge anchors 6px above the
  *  button's top (translateY(-100%) — no fixed-height guessing); a repeated
  *  button click toggles the card closed. The callers pass the button's TOP. */
-export function NsEngineMenu({ engine, x, y, onPick, onClose }: {
+export function NsEngineMenu({ engine, x, y, onPick, onClose, triggerRef }: {
   engine: NoiseEngineKind;
   x: number;
   y: number;
   onPick(next: NoiseEngineKind): void;
   onClose(): void;
+  /** The NS button that opened this menu: its own press must not count as an
+   *  outside dismiss, or the button's click-toggle re-opens the menu it just
+   *  closed (the emoji-picker anchorRef lesson). */
+  triggerRef?: RefObject<HTMLButtonElement | null>;
 }): React.JSX.Element {
   const cardRef = useRef<HTMLDivElement | null>(null);
-  useOutsideDismiss(cardRef, onClose);
+  useOutsideDismiss(cardRef, onClose, triggerRef);
   const options: NoiseEngineKind[] = ["rnnoise", "deepfilternet3", "dtln", "speex", "gate", "off"];
   return (
     <div ref={cardRef} className="member-card engine-card" style={{ left: Math.max(8, x), top: Math.max(44, y - 6), transform: "translateY(-100%)" }}>
@@ -197,6 +201,9 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
   const peerScreenOn = useStore(appStore, (state) => state.peerScreenOn);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [nsMenu, setNsMenu] = useState<{ x: number; y: number } | null>(null);
+  // The NS toggle button (call or room branch — one is mounted at a time): its
+  // press must not outside-dismiss the menu, so the onClick toggle closes it.
+  const nsButtonRef = useRef<HTMLButtonElement | null>(null);
   // The AFK room forbids outgoing video (Discord semantics) — the share/camera
   // button hides there entirely (nothing is ever live to stop in it).
   const channelAfk = useStore(session.channelStore, (allChannels) =>
@@ -287,6 +294,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
             <span className={"icon " + (callDeafenedOn ? "mdi-headphones-off" : "mdi-headphones")} />
           </button>
           <button
+            ref={nsButtonRef}
             className={"voice-toggle icon-button ns" + (nsEngine !== "off" ? " on" : "")}
             title={nsTitle(nsEngine)}
             onClick={(event) => setNsMenu(nsMenu === null ? { x: event.currentTarget.getBoundingClientRect().left, y: event.currentTarget.getBoundingClientRect().top } : null)}
@@ -333,6 +341,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
             y={nsMenu.y}
             onPick={(next) => settingsStore.apply({ noiseSuppressionEngine: next })}
             onClose={() => setNsMenu(null)}
+            triggerRef={nsButtonRef}
           />
         ) : null}
       </div>
@@ -406,6 +415,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
         {/* oak: the NS button opens the ENGINE SELECTOR card; the button itself
             is green while an engine runs, grey on Off (applyNoiseEngineState). */}
         <button
+          ref={nsButtonRef}
           className={"voice-toggle icon-button ns" + (nsEngine !== "off" ? " on" : "")}
           title={nsTitle(nsEngine)}
           onClick={(event) => setNsMenu(nsMenu === null ? { x: event.currentTarget.getBoundingClientRect().left, y: event.currentTarget.getBoundingClientRect().top } : null)}
@@ -485,6 +495,8 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
   const peerDeafenedOn = useStore(appStore, (state) => state.peerDeafenedOn);
   const peerCameraOn = useStore(appStore, (state) => state.peerCameraOn);
   const peerScreenOn = useStore(appStore, (state) => state.peerScreenOn);
+  // The fullscreen pill's NS engine state (mirror of the voice panel's button).
+  const nsEngine = useStore(settingsStore, (settings) => settings.noiseSuppressionEngine);
   const marksByMember = useStore(session.voiceControlStore, (snapshot) => snapshot.marks);
   const members = useStore(session.memberStore, (state) => state.members);
   const roles = useStore(session.memberStore, (state) => state.roles);
@@ -496,43 +508,30 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const callSelfVideoRef = useRef<HTMLVideoElement | null>(null);
   const callPeerVideoRef = useRef<HTMLVideoElement | null>(null);
+  const callWatchStageRef = useRef<HTMLDivElement | null>(null);
   const [speakingUsers, setSpeakingUsers] = useState<ReadonlySet<string>>(new Set());
   const [memberMenu, setMemberMenu] = useState<{ username: string; x: number; y: number } | null>(null);
   /** True once the peer's video track actually landed in the <video> element —
    *  the "Sharing screen…" plate reads until then (oak's renameRemoteScreen). */
   const [callPeerVideoReady, setCallPeerVideoReady] = useState(false);
+  /** Element-fullscreen of the peer tile's stage (the video + the control pill
+   *  ride the top layer together — the pill keeps working fullscreen). */
+  const [callWatchFullscreen, setCallWatchFullscreen] = useState(false);
+  /** Fullscreen-only cursor-activity flag (the pop-out share window's video
+   *  player semantics): the pill hides after 2.5 s of no pointer movement; an
+   *  open NS menu holds it. Any move brings it back. */
+  const [callWatchActive, setCallWatchActive] = useState(true);
+  const [callNsMenuAt, setCallNsMenuAt] = useState<{ x: number; y: number } | null>(null);
+  // The pill's NS toggle — same anchorRef lesson as the voice bar's button.
+  const callNsButtonRef = useRef<HTMLButtonElement | null>(null);
+  /** The pill's peer-volume slider value (seeded from the record on peer
+   *  change; the slider IS the source afterwards — drags go to the runtime). */
+  const [callPeerGain, setCallPeerGain] = useState(1);
+  /** The volume icon's 0 ↔ last-positive toggle memory (the VolumeRow idiom). */
+  const callPeerGainLastPositiveRef = useRef(1);
 
   const callMode = callState === "connecting" || callState === "in-call";
   const callPeerMedia = peerScreenOn || peerCameraOn;
-
-  // The call's peer-video hook (the runtime routes the remote track here) —
-  // mounted only in call mode; the track may have arrived before this render.
-  useEffect(() => {
-    if (!callMode) {
-      return;
-    }
-    callView.attachPeerVideo = (track: MediaStreamTrack) => {
-      const element = callPeerVideoRef.current;
-      setCallPeerVideoReady(true);
-      if (element) {
-        element.srcObject = new MediaStream([track]);
-        void element.play().catch((error: unknown) => {
-          log.warn("call", `peer video play() failed: ${error instanceof Error ? error.message : String(error)}`);
-        });
-      }
-    };
-    callView.dropPeerVideo = () => {
-      setCallPeerVideoReady(false);
-      const element = callPeerVideoRef.current;
-      if (element) {
-        element.srcObject = null;
-      }
-    };
-    return () => {
-      callView.attachPeerVideo = () => undefined;
-      callView.dropPeerVideo = () => undefined;
-    };
-  }, [callMode]);
 
   // oak's speaking poll (pollSpeakingLevels): every 150 ms take the SNAPSHOT of
   // who is speaking and repaint the set — self-healing against a missed
@@ -574,24 +573,143 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
     element.srcObject = track !== null ? new MediaStream([track]) : null;
   }, [callCameraOn, callSharing]);
 
-  // The peer's video may have arrived before the <video> element mounted — re-bind on flip.
+  // The call's peer-video hook (the runtime routes the remote track here) —
+  // mounted only in call mode; the track may have arrived before this render.
+  // The CallWatchOverlay experiment (floating window, 2026-10-08) is GONE by
+  // user verdict: the wiring lives back in the peer TILE.
   useEffect(() => {
-    if (!callMode || !callPeerMedia) {
+    if (!callMode) {
       return;
     }
-    const element = callPeerVideoRef.current;
-    if (!element || element.srcObject !== null) {
+    callView.attachPeerVideo = (track: MediaStreamTrack) => {
+      const element = callPeerVideoRef.current;
+      setCallPeerVideoReady(true);
+      if (element) {
+        element.srcObject = new MediaStream([track]);
+        log.info("call", `peer video attached to mounted element (track ${track.id}, muted=${track.muted})`);
+        void element.play().catch((error: unknown) => {
+          log.warn("call", `peer video play() failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      } else {
+        log.info("call", `peer video arrived with no element mounted (track ${track.id})`);
+      }
+    };
+    callView.dropPeerVideo = () => {
+      setCallPeerVideoReady(false);
+      const element = callPeerVideoRef.current;
+      if (element) {
+        element.srcObject = null;
+      }
+    };
+    return () => {
+      callView.attachPeerVideo = () => undefined;
+      callView.dropPeerVideo = () => undefined;
+    };
+  }, [callMode]);
+
+  // The peer's video may have arrived before the <video> element mounted — AND
+  // the element may be remounted later (a play() on the just-removed old
+  // element is exactly the "media was removed from the document" live failure,
+  // 2026-10-08). A REF CALLBACK rebinds on every mount; the old dep-effect
+  // missed remounts that did not flip its deps.
+  const bindCallPeerVideoElement = (element: HTMLVideoElement | null): void => {
+    callPeerVideoRef.current = element;
+    if (element === null || element.srcObject !== null) {
       return;
     }
     const track = getCallPeerVideoTrack();
     if (track !== null) {
       element.srcObject = new MediaStream([track]);
+      log.info("call", `peer video bound to element (track ${track.id}, muted=${track.muted})`);
       void element.play().catch((error: unknown) => {
         log.warn("call", `peer video play() failed: ${error instanceof Error ? error.message : String(error)}`);
       });
       setCallPeerVideoReady(true);
+    } else {
+      // A mounted element with NO track behind it is the black-tile signature:
+      // the announce arrived but the passive bind never delivered (live smoke).
+      log.info("call", "peer video element mounted with no track yet");
     }
+  };
+  useEffect(() => {
+    bindCallPeerVideoElement(callPeerVideoRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [callMode, callPeerMedia]);
+
+  // The peer tile's ELEMENT FULLSCREEN: the stage (video + control pill) is
+  // the fullscreened element, so the pill rides the top layer with it. Esc
+  // exits by itself — the listener only repaints (and folds the NS menu).
+  useEffect(() => {
+    const onFullscreenChange = (): void => {
+      const nowFullscreen = document.fullscreenElement === callWatchStageRef.current;
+      // Logged because a "flickers as if entering fullscreen forever" report
+      // (2026-10-08) needs the enter/exit cadence visible in space.log.
+      log.info("call", `watch fullscreen ${nowFullscreen ? "on" : "off"}`);
+      setCallWatchFullscreen(nowFullscreen);
+      if (!nowFullscreen) {
+        setCallNsMenuAt(null);
+        setCallWatchActive(true);
+      }
+    };
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, []);
+  const toggleCallWatchFullscreen = (): void => {
+    const stage = callWatchStageRef.current;
+    if (stage === null) {
+      return;
+    }
+    if (document.fullscreenElement === stage) {
+      void document.exitFullscreen().catch(() => undefined);
+    } else {
+      void stage.requestFullscreen().catch((error: unknown) => {
+        log.warn("call", `watch fullscreen failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
+  };
+
+  // The fullscreen pill's idle-hide (the pop-out share window semantics): a
+  // CSS :hover reveal cannot work here — the stage covers the whole screen in
+  // fullscreen, so the hover is always on. A pointer-activity flag driven by
+  // JS timer it is; the NS menu (rendered outside the pill) holds the pill.
+  const CALL_WATCH_IDLE_HIDE_MS = 2500;
+  useEffect(() => {
+    if (!callWatchFullscreen) {
+      return;
+    }
+    let idleTimer: number | null = null;
+    const armIdleHide = (): void => {
+      setCallWatchActive(true);
+      if (idleTimer !== null) {
+        window.clearTimeout(idleTimer);
+      }
+      idleTimer = window.setTimeout(() => {
+        idleTimer = null;
+        setCallWatchActive(false);
+      }, CALL_WATCH_IDLE_HIDE_MS);
+    };
+    armIdleHide();
+    document.addEventListener("pointermove", armIdleHide);
+    return () => {
+      document.removeEventListener("pointermove", armIdleHide);
+      if (idleTimer !== null) {
+        window.clearTimeout(idleTimer);
+      }
+    };
+  }, [callWatchFullscreen]);
+
+  // The pill's volume seed — one read per peer; the slider is the source after.
+  useEffect(() => {
+    if (callPeer !== null) {
+      const record = connectionDirectory.getSnapshot().find((entry) => entry.username === callPeer);
+      const seededGain = record?.voiceVolumes[callPeer] ?? 1;
+      setCallPeerGain(seededGain);
+      if (seededGain > 0) {
+        callPeerGainLastPositiveRef.current = seededGain;
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [callPeer]);
 
   // Watching a share opens the POP-OUT WINDOW directly (runtime's
   // watchShareInWindow) — there is no in-app watch surface anymore.
@@ -670,12 +788,122 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
           ) : isSelf ? (
             <Avatar session={session} username={username} size={100} />
           ) : callPeerMedia ? (
-            <>
+            // The peer's video INLINE in the tile (user decision 2026-10-08,
+            // replaced the floating overlay): the small pill at the video's
+            // bottom edge enters ELEMENT FULLSCREEN on this stage — and the
+            // stage carries the video AND the control pill into the top layer,
+            // so everything keeps working fullscreen. Double click toggles too
+            // — on the VIDEO element only: it covers the whole stage, and a
+            // double click on a pill control must not exit fullscreen.
+            <div
+              ref={callWatchStageRef}
+              className={"call-watch-stage"
+                + (callWatchFullscreen ? " is-fullscreen" : "")
+                + (callWatchFullscreen && !callWatchActive ? " hide-cursor" : "")}
+            >
+              <video ref={bindCallPeerVideoElement} autoPlay playsInline onDoubleClick={toggleCallWatchFullscreen} />
               {callPeerVideoReady ? null : (
                 <div className="tile-slot-plate"><span className="icon mdi-monitor" /> Sharing screen…</div>
               )}
-              <video ref={callPeerVideoRef} autoPlay playsInline />
-            </>
+              {callWatchFullscreen ? (
+                <div className={"call-watch-toolbar" + (callWatchActive || callNsMenuAt !== null ? " visible" : "")}>
+                  {/* The share pop-out's pill design, reused verbatim (user
+                      decision 2026-10-08: one look for both watch surfaces):
+                      transparent 26×26 toggles — a cut-off state red, an NS
+                      engine running green — separator, volume group, exit. */}
+                  <button
+                    className={"popout-voice-toggle" + (callMicOn ? "" : " on")}
+                    title={callMicOn ? "Mute" : "Unmute"}
+                    onClick={toggleCallMic}
+                  >
+                    <span className={"icon " + (callMicOn ? "mdi-microphone" : "mdi-microphone-off")} />
+                  </button>
+                  <button
+                    className={"popout-voice-toggle" + (callDeafenedOn ? " on" : "")}
+                    title={callDeafenedOn ? "Undeafen" : "Deafen"}
+                    onClick={toggleCallDeafen}
+                  >
+                    <span className={"icon " + (callDeafenedOn ? "mdi-headphones-off" : "mdi-headphones")} />
+                  </button>
+                  <button
+                    ref={callNsButtonRef}
+                    className={"popout-voice-toggle ns" + (nsEngine !== "off" ? " on" : "")}
+                    title={nsTitle(nsEngine)}
+                    onClick={(event) => {
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      setCallNsMenuAt(callNsMenuAt === null ? { x: rect.left, y: rect.top - 6 } : null);
+                    }}
+                  >
+                    <span className="icon mdi-triangle-wave" />
+                  </button>
+                  <span className="popout-toolbar-sep" />
+                  {/* The volume ICON is a 0 ↔ last-positive mute toggle (the
+                      VolumeRow idiom) — "peer volume" is BOTH peer streams. */}
+                  <button
+                    className="popout-voice-toggle"
+                    title={callPeerGain > 0 ? "Mute peer" : "Unmute peer"}
+                    onClick={() => {
+                      const nextGain = callPeerGain > 0
+                        ? 0
+                        : (callPeerGainLastPositiveRef.current > 0 ? callPeerGainLastPositiveRef.current : 1);
+                      if (callPeerGain > 0) {
+                        callPeerGainLastPositiveRef.current = callPeerGain;
+                      }
+                      setCallPeerGain(nextGain);
+                      if (callPeer !== null) {
+                        setVoiceVolume(callPeer, nextGain);
+                        setShareVolume(callPeer, nextGain);
+                      }
+                    }}
+                  >
+                    <span className={"icon " + (callPeerGain > 0 ? "mdi-volume-high" : "mdi-volume-off")} />
+                  </button>
+                  <input
+                    type="range"
+                    className="popout-volume"
+                    min={0}
+                    max={2}
+                    step={0.01}
+                    value={callPeerGain}
+                    title={`Peer volume — ${Math.round(callPeerGain * 100)}%`}
+                    onChange={(event) => {
+                      const nextGain = Number(event.target.value);
+                      if (nextGain > 0) {
+                        callPeerGainLastPositiveRef.current = nextGain;
+                      }
+                      setCallPeerGain(nextGain);
+                      if (callPeer !== null) {
+                        setVoiceVolume(callPeer, nextGain);
+                        setShareVolume(callPeer, nextGain);
+                      }
+                    }}
+                  />
+                  <span className="popout-toolbar-sep" />
+                  <button className="popout-fullscreen" title="Exit fullscreen (Esc)" onClick={toggleCallWatchFullscreen}>
+                    <span className="icon mdi-fullscreen-exit" />
+                  </button>
+                </div>
+              ) : (
+                <button className="call-watch-open" title="Fullscreen" onClick={toggleCallWatchFullscreen}>
+                  <span className="icon mdi-fullscreen" />
+                </button>
+              )}
+              {callWatchFullscreen && callNsMenuAt !== null ? (
+                // Inside the STAGE, not a body portal — a body portal renders
+                // BELOW the fullscreen top layer and is invisible fullscreen.
+                <NsEngineMenu
+                  engine={nsEngine}
+                  x={callNsMenuAt.x}
+                  y={callNsMenuAt.y}
+                  onPick={(nextEngine) => {
+                    void settingsStore.apply({ noiseSuppressionEngine: nextEngine });
+                    setCallNsMenuAt(null);
+                  }}
+                  onClose={() => setCallNsMenuAt(null)}
+                  triggerRef={callNsButtonRef}
+                />
+              ) : null}
+            </div>
           ) : (
             <Avatar session={session} username={username} size={100} />
           )}

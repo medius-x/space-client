@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useStore } from "../hooks/useStore";
-import { appStore, retryConnection, toggleUserSettings } from "../runtime";
+import { appStore, connectionDirectory, retryConnection, toggleUserSettings } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { ConnectionQualitySnapshot } from "../../domain/logic/connection-quality";
 import { ServerRail } from "./ServerRail";
@@ -97,6 +97,10 @@ function UserBar({ session }: { session: ConnectionSession }): React.JSX.Element
   const ownUsername = useStore(appStore, (state) => state.ownUsername) ?? session.username();
   // The rename model: the bar shows the NICKNAME; the login never renders.
   const ownDisplayName = useDisplayName(session, ownUsername);
+  // The own avatar's key from the record — in the ACTIVE OFFLINE view the
+  // roster never loaded, and this is the only source for a disk-cache hit.
+  const ownAvatarKey = useStore(connectionDirectory, (records) =>
+    records.find((record) => record.id === session.recordId)?.cachedOwnAvatarKey ?? null);
   const stompState = useStore(appStore, (state) => state.stompState);
   const stompAttempt = useStore(appStore, (state) => state.stompAttempt);
   const stompCountdown = useStore(appStore, (state) => state.stompCountdown);
@@ -116,7 +120,7 @@ function UserBar({ session }: { session: ConnectionSession }): React.JSX.Element
   const retryable = stompState === "lost" || stompState === "connecting";
   return (
     <div className={"user-bar" + (voiceConnected ? " with-voice" : "")}>
-      <Avatar session={session} username={ownUsername} size={32} />
+      <Avatar session={session} username={ownUsername} size={32} diskFallbackKey={ownAvatarKey} />
       <div className="user-bar-text">
         <span className="user-bar-name">{ownDisplayName}</span>
         <span className="user-bar-status-row">

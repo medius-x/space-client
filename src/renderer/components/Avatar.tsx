@@ -23,11 +23,15 @@ const nullRosterStore = {
  * fallbacks (live report 2026-09-24). `showPresence` overlays the presence dot
  * on the avatar's bottom-right corner (oak's MemberNode).
  */
-export function Avatar({ session, username, size, override, showPresence = false, online = false }: {
+export function Avatar({ session, username, size, override, diskFallbackKey = null, showPresence = false, online = false }: {
   session: ConnectionSession | null;
   username: string;
   size: number;
   override?: { avatarKey: string | null; avatarUrl: string | null } | null;
+  /** Key of LAST RESORT when neither the roster nor an override resolved (the
+   *  active OFFLINE view: the roster never loaded) — a disk-cache-only lookup,
+   *  never a mint. */
+  diskFallbackKey?: string | null;
   showPresence?: boolean;
   online?: boolean;
 }): React.JSX.Element {
@@ -36,7 +40,9 @@ export function Avatar({ session, username, size, override, showPresence = false
   const source = override ?? user;
   const imageSpec = source !== null && source.avatarKey !== null && source.avatarUrl !== null
     ? { key: source.avatarKey, url: source.avatarUrl }
-    : null;
+    : diskFallbackKey !== null
+      ? { key: diskFallbackKey, url: null } // disk-only: no live URL exists offline
+      : null;
   // Both hooks run unconditionally (hook rules). The cached path wins whenever
   // it has anything (the session's own cache, or the shared dormant one); the
   // uncached presigned <img> is only a stopgap for a null-session row while the

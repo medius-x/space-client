@@ -193,6 +193,20 @@ contextBridge.exposeInMainWorld("spaceIdle", {
   },
 });
 
+/** Untrusted-certificate bridge (TLS entry point, round B): main surfaces the
+ *  fingerprints it rejected; the renderer asks for the user's trust decision. */
+contextBridge.exposeInMainWorld("spaceTls", {
+  decide(decision: { hostname: string; fingerprint: string; accept: boolean }): Promise<boolean> {
+    return ipcRenderer.invoke("space-tls:decide", decision);
+  },
+  onUntrusted(callback: (event: unknown) => void): void {
+    // Single-subscriber channel: replace any previous listener — a remount
+    // (HMR, StrictMode) must not stack a second one and duplicate prompts.
+    ipcRenderer.removeAllListeners("tls:untrusted");
+    ipcRenderer.on("tls:untrusted", (_event, payload: unknown) => callback(payload));
+  },
+});
+
 /** Native system-audio bridge (#485): WASAPI process-loopback. Without a
  *  source id the capture is the desktop minus OUR process (screen shares);
  *  a WINDOW source id switches it to that application's own audio. Frames

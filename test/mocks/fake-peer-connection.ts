@@ -125,6 +125,30 @@ export class FakePeerConnection {
 
   async setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void> {
     this.remoteDescription = description;
+    if (description.type !== "offer") {
+      return;
+    }
+    // Emulate the JSEP offer processing Chromium performs: every m-section NOT
+    // covered by an existing transceiver (by mid) gets a FRESH recvonly one —
+    // empty pre-created transceivers are NOT reused (live smoke 2026-10-08:
+    // the callee's own video/share slots stayed unassociated, Chromium made
+    // its own, and the callee's share RTP never left the machine).
+    for (const section of offerMSections(description.sdp ?? "")) {
+      if (this.transceivers.some((entry) => entry.mid === section.mid)) {
+        continue;
+      }
+      const transceiver: FakeTransceiver = {
+        mid: section.mid,
+        kind: section.kind,
+        direction: "recvonly",
+        sender: { track: null, replaceTrack: async () => undefined },
+        receiver: { track: fakeTrack(`recv-${section.kind}-${section.mid}`) },
+      };
+      transceiver.sender.replaceTrack = async (replacement: unknown) => {
+        transceiver.sender.track = replacement;
+      };
+      this.transceivers.push(transceiver);
+    }
   }
 
   async addIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
@@ -205,6 +229,25 @@ export class FakePeerConnection {
 
 export function resetFakePeerConnections(): void {
   FakePeerConnection.instances = [];
+}
+
+/** m= sections with their a=mid of an offer SDP (the shape the peer-call tests
+ *  write); sections without a mid are dropped — a fake without a mid has no
+ *  identity to create a transceiver for. */
+function offerMSections(sdp: string): { kind: string; mid: string }[] {
+  const sections: { kind: string; mid: string }[] = [];
+  for (const line of sdp.split(/\r?\n/)) {
+    const mediaMatch = /^m=(\w+)/.exec(line);
+    if (mediaMatch !== null) {
+      sections.push({ kind: mediaMatch[1]!, mid: "" });
+      continue;
+    }
+    const midMatch = /^a=mid:(\S+)/.exec(line);
+    if (midMatch !== null && sections.length > 0 && sections[sections.length - 1]!.mid === "") {
+      sections[sections.length - 1]!.mid = midMatch[1]!;
+    }
+  }
+  return sections.filter((section) => section.mid !== "");
 }
 
 /** A stand-in track with an id (the msid-munge key). */

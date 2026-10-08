@@ -4,9 +4,11 @@ import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, globalShor
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as crypto from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isBlockedAddress, PREVIEW_REDIRECT_LIMIT, previewUrlFromString } from "../src/domain/logic/net-guard";
 import { logBucketName, outdatedLogBucketNames } from "../src/domain/logic/log-buckets";
+import { certFingerprintsMatch, formatCertFingerprint, hostnameFromUrl, normalizeCertFingerprint } from "../src/domain/logic/cert-pin";
 
 /**
  * Space spike — Electron main process.
@@ -277,7 +279,9 @@ ipcMain.handle("space-kv:get", (_event, key: unknown) => {
 async function kvMutate(key: string, apply: (current: unknown) => unknown): Promise<unknown> {
   const previous = kvLocks.get(key) ?? Promise.resolve();
   const job = previous.then(() => {
-    const next = apply(kvRead(key));
+    // The TOFU certificate pin (see the TLS section below) rides along on
+    // connection-record writes — a plain `apply` result never carries it.
+    const next = withSessionCertificatePin(apply(kvRead(key)));
     try {
       fs.writeFileSync(kvPath(key), kvEncode(key, JSON.stringify(next ?? null, null, 2)));
     } catch (error) {
@@ -564,6 +568,182 @@ ipcMain.handle("space-kv:merge", (_event, key: unknown, partial: unknown) => {
     return null;
   }
   return kvMutate(key, (current) => ({ ...(current as object ?? {}), ...(partial as object) }));
+});
+
+// ---------------------------------------------------------------------------
+// TLS entry point (round B): trust-on-first-use certificate pinning for
+// self-signed deployments — a bare-IP host cannot obtain a CA certificate, so
+// the user confirms the SHA-256 fingerprint once, it is pinned to the server
+// record, and every later connection compares against the pin. The pin is
+// keyed by HOSTNAME, not origin: one Caddy certificate covers the oak host on
+// 443, MinIO on 9443 and the /janus route — three origins, one pin.
+// ---------------------------------------------------------------------------
+
+/** Hostnames the user accepted THIS SESSION (hostname → normalized SHA-256). */
+const sessionAcceptedCertificates = new Map<string, string>();
+
+/** The pinned fingerprint stored on the server record for this hostname (null =
+ *  no pin yet). Direct KV read of the sanitized connection_*.json files — the
+ *  certificate-error event is rare, no cache is worth invalidation plumbing. */
+function persistedPinForHostname(hostname: string): string | null {
+  try {
+    const names = fs.readdirSync(app.getPath("userData"))
+      .filter((name) => name.startsWith("connection_") && name.endsWith(".json"));
+    for (const name of names) {
+      const record = kvRead(name.slice(0, -".json".length)) as
+        { hostUrl?: unknown; certFingerprint?: unknown } | null;
+      if (record !== null && typeof record.hostUrl === "string"
+          && hostnameFromUrl(record.hostUrl) === hostname
+          && typeof record.certFingerprint === "string" && record.certFingerprint !== "") {
+        return record.certFingerprint;
+      }
+    }
+  } catch {
+    // best effort — an unreadable dir reads as "no pin"
+  }
+  return null;
+}
+
+/** A connection-record write adopts the certificate the user accepted this
+ *  session for the record's host: the TOFU pin persists with the record (and a
+ *  deliberately re-trusted certificate change refreshes it). */
+function withSessionCertificatePin(next: unknown): unknown {
+  if (next === null || typeof next !== "object") {
+    return next;
+  }
+  const record = next as { hostUrl?: unknown; certFingerprint?: unknown };
+  if (typeof record.hostUrl !== "string") {
+    return next;
+  }
+  const hostname = hostnameFromUrl(record.hostUrl);
+  if (hostname === null) {
+    return next;
+  }
+  const pin = sessionAcceptedCertificates.get(hostname);
+  if (pin === undefined || record.certFingerprint === pin) {
+    return next;
+  }
+  return { ...record, certFingerprint: pin };
+}
+
+/** Surfaces a rejected certificate to the login UI — the user decides. */
+function notifyUntrustedCertificate(hostname: string, fingerprint: string, subjectName: string, changedPinned: boolean): void {
+  mainWindowRef?.webContents.send("tls:untrusted", {
+    hostname,
+    fingerprint,
+    displayFingerprint: formatCertFingerprint(fingerprint),
+    subjectName,
+    changedPinned,
+  });
+}
+
+/** SHA-256 of the certificate's DER encoding — byte-identical to
+ *  `openssl x509 -fingerprint -sha256` and to what the trust dialog shows.
+ *  Computed from certificate.data on purpose: Electron 44's typings expose only
+ *  the SHA-1 `fingerprint`, and SHA-1 is not a pinning-grade hash. */
+function certFingerprintOf(certificate: Electron.Certificate): string {
+  if (typeof certificate.data !== "string" || certificate.data === "") {
+    return "";
+  }
+  const der = Buffer.from(certificate.data.replace(/-----(?:BEGIN|END) CERTIFICATE-----|\s/g, ""), "base64");
+  if (der.length === 0) {
+    return "";
+  }
+  return crypto.createHash("sha256").update(der).digest("hex").toUpperCase();
+}
+
+/** Persists the just-accepted pin onto EVERY record of this host right away.
+ *  Relying on a later record write left the connection retry racing the stale
+ *  persisted pin (and a client restart before any record write would silently
+ *  drop the acceptance) — the decide handler calls this immediately. */
+function persistAcceptedPin(hostname: string): void {
+  try {
+    const names = fs.readdirSync(app.getPath("userData"))
+      .filter((name) => name.startsWith("connection_") && name.endsWith(".json"));
+    for (const name of names) {
+      const key = name.slice(0, -".json".length);
+      const record = kvRead(key) as { hostUrl?: unknown; certFingerprint?: unknown } | null;
+      if (record === null || typeof record.hostUrl !== "string"
+          || hostnameFromUrl(record.hostUrl) !== hostname
+          || record.certFingerprint === sessionAcceptedCertificates.get(hostname)) {
+        continue;
+      }
+      // The identity mutation still passes through withSessionCertificatePin in
+      // kvMutate — that is the write that adopts the accepted pin.
+      void kvMutate(key, (current) => current);
+    }
+  } catch (error: unknown) {
+    appendLog(`[tls] pin persist sweep failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+// The verdict owner for EVERY https/wss connection (REST, the /ws STOMP
+// upgrade, MinIO presigned URLs, the Janus long-poll): a valid CA-signed
+// certificate never lands here — only validation failures do, so a
+// Let's-Encrypt deployment simply never meets its pinned cousin.
+app.on("certificate-error", (event, _webContents, url, _error, certificate, callback) => {
+  event.preventDefault();
+  const hostname = hostnameFromUrl(url);
+  const fingerprint = certFingerprintOf(certificate);
+  if (hostname === null || fingerprint === "") {
+    callback(false);
+    return;
+  }
+  // The user accepted THIS EXACT fingerprint moments ago (the trust dialog's
+  // Connect): the retry MUST pass even while the persisted pin still holds the
+  // OLD certificate — a re-trusted change is exactly what the acceptance means.
+  // Checking the pin first re-blocked the retry in the mismatch branch below
+  // and re-opened the dialog in a loop (live 2026-10-08: "Connect → dialog
+  // reappears / Reconnecting forever").
+  if (sessionAcceptedCertificates.get(hostname) === fingerprint) {
+    callback(true);
+    return;
+  }
+  const pinned = persistedPinForHostname(hostname);
+  if (pinned !== null && certFingerprintsMatch(pinned, fingerprint)) {
+    callback(true); // the pinned self-signed certificate — the whole point
+    return;
+  }
+  if (pinned !== null) {
+    // A PINNED host presents a DIFFERENT certificate: possible MITM — block and
+    // surface the change loudly (a legitimate server reinstall re-trusts through
+    // the same dialog).
+    appendLog(`[tls] certificate CHANGED for ${hostname}: pinned ${pinned.slice(0, 16)}…, presented ${fingerprint.slice(0, 16)}… — blocked`);
+    callback(false);
+    notifyUntrustedCertificate(hostname, fingerprint, certificate.subjectName, true);
+    return;
+  }
+  // No pin, nothing accepted: reject now and let the user decide; the retried
+  // connection passes through the session allowance above.
+  appendLog(`[tls] untrusted certificate for ${hostname} (${fingerprint.slice(0, 16)}…) — awaiting the user's decision`);
+  callback(false);
+  notifyUntrustedCertificate(hostname, fingerprint, certificate.subjectName, false);
+});
+
+ipcMain.handle("space-tls:decide", (_event, decision: unknown): boolean => {
+  if (decision === null || typeof decision !== "object") {
+    return false;
+  }
+  const { hostname, fingerprint, accept } = decision as
+    { hostname?: unknown; fingerprint?: unknown; accept?: unknown };
+  if (typeof hostname !== "string" || hostname === ""
+      || typeof fingerprint !== "string" || fingerprint === "") {
+    return false;
+  }
+  // One canonical form for the stored pin (the event carries it already; the
+  // renderer echo is normalized defensively).
+  const pin = normalizeCertFingerprint(fingerprint);
+  if (accept === true) {
+    sessionAcceptedCertificates.set(hostname, pin);
+    persistAcceptedPin(hostname);
+    appendLog(`[tls] user ACCEPTED certificate for ${hostname} (${pin.slice(0, 16)}…)`);
+  } else {
+    if (sessionAcceptedCertificates.get(hostname) === pin) {
+      sessionAcceptedCertificates.delete(hostname);
+    }
+    appendLog(`[tls] user REJECTED certificate for ${hostname}`);
+  }
+  return true;
 });
 
 ipcMain.handle("space-kv:rotate-tokens", (_event, key: unknown, expectedRefreshToken: unknown, tokens: unknown) => {

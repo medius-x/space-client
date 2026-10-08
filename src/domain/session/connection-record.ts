@@ -14,7 +14,8 @@ import { log } from "../../logging";
 export interface ConnectionRecord {
   /** uuid — sanitize-stable, so it survives the KV filename unmangled. */
   id: string;
-  /** Normalized origin (no trailing slash), e.g. http://localhost:8080. */
+  /** Normalized origin (no trailing slash), e.g. http://localhost:8080 or
+   *  https://203.0.113.10 (the TLS entry point). */
   hostUrl: string;
   username: string;
   token: string;
@@ -27,6 +28,15 @@ export interface ConnectionRecord {
   cachedServerName: string | null;
   /** Stable MinIO key of the server icon (offline rail rendering by key). */
   cachedServerAvatarKey: string | null;
+  /** Stable MinIO key of the logged-in user's own avatar — the offline view's
+   *  user panel renders by key from the disk cache (the roster is empty there,
+   *  so this record field is the only offline source of the key). */
+  cachedOwnAvatarKey?: string | null;
+  /** The self-signed server certificate's SHA-256 pin (normalized hex, no
+   *  separators), written by MAIN when the user trusts the certificate — the
+   *  key-by-HOSTNAME TOFU pin of the TLS entry point. Null on http servers and
+   *  CA-signed https (nothing to pin). */
+  certFingerprint?: string | null;
   /** username → gain multiplier (1.0 = 100%). */
   voiceVolumes: Record<string, number>;
   shareVolumes: Record<string, number>;
@@ -63,8 +73,28 @@ function newRecordId(): string {
   });
 }
 
+/**
+ * Normalizes a typed server address into an origin: trims, drops trailing
+ * slashes, and PREFIXES a scheme when the user typed a bare host — localhost
+ * defaults to http (the dev topology), everything else to https (a deployed
+ * server is the TLS entry point since round B; type "http://host:8080"
+ * explicitly for a plain deployment).
+ */
 export function normalizeHostUrl(hostUrl: string): string {
-  return hostUrl.trim().replace(/\/+$/, "");
+  const trimmed = hostUrl.trim().replace(/\/+$/, "");
+  if (trimmed === "") {
+    return "";
+  }
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+    const isLocal = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(trimmed);
+    return `${isLocal ? "http" : "https"}://${trimmed}`;
+  }
+  return trimmed;
+}
+
+/** A normalized address the app can actually speak (only http/https origins). */
+export function isValidHostUrl(normalizedHostUrl: string): boolean {
+  return /^https?:\/\/[^\s/]+$/i.test(normalizedHostUrl);
 }
 
 function isValidRecord(value: unknown): value is ConnectionRecord {

@@ -15,7 +15,7 @@
        connect-src carries space-asset: — the engines' heavy assets (wasm/models) are
        fetched over main's read-only file protocol (a file:// document cannot fetch()
        its own files — CORS origin null); the worklet modules ride blob: as before. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' blob: space-asset: http://localhost:* ws://localhost:*; media-src mediastream: blob: 'self' http://localhost:*; img-src 'self' data: blob:">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' blob: space-asset: http://localhost:* ws://localhost:* https: wss:; media-src mediastream: blob: 'self' http://localhost:* https:; img-src 'self' data: blob: https:">
   <title>space</title>
 </head>
 <body>
