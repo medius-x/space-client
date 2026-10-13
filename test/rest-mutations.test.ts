@@ -366,6 +366,13 @@ describe("RestClient server health", () => {
           service: { status: "DOWN", latencyMillis: null, detail: "Connection refused" },
           container: { status: "EXITED", health: "NONE", detail: "Exited (1) 2 minutes ago" },
         },
+        // A provisioned server sends NO container side at all (oak runs in a
+        // container without the host's docker socket) — null on the wire.
+        {
+          name: "coturn",
+          service: { status: "UP", latencyMillis: 1, detail: null },
+          container: null,
+        },
       ],
     };
     const fake = new FakeFetch(() => ({ status: 200, body: snapshot }));
@@ -378,10 +385,11 @@ describe("RestClient server health", () => {
     expect(fake.requests[0]?.method).toBe("GET");
     expect(fake.requests[0]?.path).toBe("/api/server/health");
     expect(fake.requests[0]?.authorization).toBe("Bearer t1");
-    expect(health.services).toHaveLength(2);
+    expect(health.services).toHaveLength(3);
     expect(health.services[1]?.name).toBe("janus");
     expect(health.services[1]?.service.status).toBe("DOWN");
-    expect(health.services[0]?.container.health).toBe("HEALTHY");
+    expect(health.services[0]?.container?.health).toBe("HEALTHY");
+    expect(health.services[2]?.container).toBeNull();
   });
 
   it("surfaces the gate rejection as ApiError", async () => {

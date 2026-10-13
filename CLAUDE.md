@@ -3612,3 +3612,18 @@ certificate-error не стреляет, пин не пишется.
   happy path порядок шагов/секреты/файлы, docker-install, adopt ×3 ветки, не-Linux, ufw
   порт, register-fail) + `provisioning-units.test.ts` (13: params/env/caddy/SAN/fingerprint/
   curl/JSON-парсеры). Гейты: **649/649** (75 файлов, +22) + typecheck + build.
+
+**Смоук-фиксы Debian-прогона раунда C (2026-10-13; ДЕПЛОЙ ПАРНЫЙ с oak-server — регистрация
+пушит оба ростер-канала, health-check шлёт container:null; см. oak-server/CLAUDE.md).**
+(1) **Modal.locked** — живой прогон: случайный клик по фону закрыл Add-a-server и спрятал
+экран 15-минутной установки (сам прогон живёт в main и НЕ отменяется — Cancel единственный
+выход; повторный Set up при живом прогоне отвергается «already in progress»). Пока
+SSH-прогон активен (onRunningChange — строже onBusyChange, который включает и автологин),
+модалка заперта: фон, Escape и крестик не работают (Modal.tsx, LoginModal). (2)
+**Container-грань health-check nullable**: ServerHealthEntry.container → `| null`
+(провижено-деплой не имеет docker-сокета — сервер шлёт null), describeHealthEntry рендерит
+только пробу («up · 1 ms» без хвоста); на dev-машине грань прежняя (running · healthy).
+(3) **MemberEvent.type += "joined"** — регистрация новичка анонсируется в /topic/members
+(contentless-рефеч memberStore — панель членов обновляется без перезахода; обработчик уже
+был contentless, клиентской логики ноль). Живая верификация: Ubuntu-22 прогон + инвайт
+новичка при открытом овнере — появился мгновенно. Гейты: 666/666 + typecheck + build.

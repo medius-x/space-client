@@ -37,6 +37,10 @@ export function LoginModal(): React.JSX.Element {
    *  it): the tabs lock — a stray click must not walk away from the run
    *  (live report 2026-10-12: the switch unmounted the panel mid-install). */
   const [provisionBusy, setProvisionBusy] = useState(false);
+  /** The strict run signal: while the SSH pipeline is live, the WHOLE dialog
+   *  locks (backdrop clicks, Escape and the close button do nothing — live
+   *  report 2026-10-13: a stray backdrop click hid the install screen). */
+  const [provisionRunning, setProvisionRunning] = useState(false);
 
   const submitLogin = () => {
     const attempt = () => {
@@ -76,7 +80,7 @@ export function LoginModal(): React.JSX.Element {
   };
 
   return (
-    <Modal title="Add a server" onClose={closeLoginForm}>
+    <Modal title="Add a server" onClose={closeLoginForm} locked={provisionRunning}>
       <div className="settings-tabs login-tabs">
         <button disabled={provisionBusy} className={"settings-tab" + (tab === "create" ? " active" : "")} onClick={() => setTab("create")}>Create</button>
         <button disabled={provisionBusy} className={"settings-tab" + (tab === "login" ? " active" : "")} onClick={() => setTab("login")}>Log in</button>
@@ -86,7 +90,7 @@ export function LoginModal(): React.JSX.Element {
           tabs are open: an in-flight run keeps its step screen and listeners
           even if the user somehow walks away. */}
       <div style={{ display: tab === "create" ? "" : "none" }}>
-        <ProvisioningPanel onBusyChange={setProvisionBusy} />
+        <ProvisioningPanel onBusyChange={setProvisionBusy} onRunningChange={setProvisionRunning} />
       </div>
       {tab === "login" ? (
         <>

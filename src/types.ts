@@ -337,7 +337,9 @@ export interface StorageStatus {
 /** GET /api/server/health — the live status of the backing services
  *  (healthcheck round 2026-10-07, MANAGE_STORAGE). Two facets per service:
  *  a probe the server itself runs (can it actually use the integration)
- *  and the docker container state. */
+ *  and the docker container state — the container facet is null when the
+ *  deployment cannot answer it (provisioned servers: oak runs in a container
+ *  without the host's docker socket). */
 export interface ServiceHealthCheck {
   status: "UP" | "DOWN" | "DISABLED" | "TIMEOUT";
   latencyMillis: number | null;
@@ -356,7 +358,7 @@ export interface ContainerHealthCheck {
 export interface ServerHealthEntry {
   name: string;
   service: ServiceHealthCheck;
-  container: ContainerHealthCheck;
+  container: ContainerHealthCheck | null;
 }
 
 export interface ServerHealth {
@@ -674,9 +676,11 @@ export interface Role {
   kind: "EVERYONE" | "OWNER" | "CUSTOM";
 }
 
-/** /topic/members broadcast — contentless refetch ping (oak reacts with a refetch). */
+/** /topic/members broadcast — contentless refetch ping (oak reacts with a refetch).
+ *  "joined": a fresh registration (the newcomer must appear in every connected
+ *  client's member pane without a refetch, live VPS 2026-10-13). */
 export interface MemberEvent {
-  type: "rolesChanged" | "kicked" | "banned" | "removed";
+  type: "rolesChanged" | "kicked" | "banned" | "removed" | "joined";
   userId: number;
 }
 

@@ -55,7 +55,14 @@ interface StepState {
   detail?: string;
 }
 
-export function ProvisioningPanel({ onBusyChange }: { onBusyChange?: (busy: boolean) => void }): React.JSX.Element {
+export function ProvisioningPanel({ onBusyChange, onRunningChange }: {
+  onBusyChange?: (busy: boolean) => void;
+  /** The strict "an SSH run is in flight" signal (busy also covers the
+   *  automatic login): while true, the surrounding dialog is LOCKED — a stray
+   *  backdrop click must not hide the install screen (the run survives in the
+   *  main process, but its UI would be gone; live report 2026-10-13). */
+  onRunningChange?: (running: boolean) => void;
+}): React.JSX.Element {
   // ── the form ────────────────────────────────────────────────────────────
   const [host, setHost] = useState("");
   const [sshLogin, setSshLogin] = useState("root");
@@ -83,6 +90,14 @@ export function ProvisioningPanel({ onBusyChange }: { onBusyChange?: (busy: bool
     onBusyChange?.(phase === "running" || phase === "loggingIn");
     return () => onBusyChange?.(false);
   }, [phase, onBusyChange]);
+
+  // The dialog itself locks while the SSH pipeline is live (its Cancel button
+  // stays the one explicit exit). NOT locked for the automatic login: that
+  // phase has no cancel path, and startSession survives on its own in runtime.
+  useEffect(() => {
+    onRunningChange?.(phase === "running");
+    return () => onRunningChange?.(false);
+  }, [phase, onRunningChange]);
 
   useEffect(() => {
     window.spaceProvisioning?.onEvent((event: ProvisioningIpcEvent) => {

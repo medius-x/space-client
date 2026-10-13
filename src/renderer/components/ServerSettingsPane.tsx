@@ -3199,12 +3199,17 @@ function describeHealthEntry(entry: ServerHealthEntry): string {
     // DOWN / TIMEOUT — the detail carries the reason (red dot row)
     parts.push(entry.service.status.toLowerCase() + (entry.service.detail != null ? ` — ${entry.service.detail}` : ""));
   }
+  // The container facet is null on deployments that cannot answer it (provisioned
+  // servers run oak inside a container, without the host's docker socket) — the
+  // row then shows the service probe alone, no placeholder text.
   const container = entry.container;
-  if (container.status === "UNKNOWN" || container.status === "ABSENT") {
-    parts.push(container.detail ?? container.status.toLowerCase());
-  } else {
-    parts.push(container.status.toLowerCase()
-      + (container.health != null && container.health !== "NONE" ? ` · ${container.health.toLowerCase()}` : ""));
+  if (container != null) {
+    if (container.status === "UNKNOWN" || container.status === "ABSENT") {
+      parts.push(container.detail ?? container.status.toLowerCase());
+    } else {
+      parts.push(container.status.toLowerCase()
+        + (container.health != null && container.health !== "NONE" ? ` · ${container.health.toLowerCase()}` : ""));
+    }
   }
   return parts.join(" · ");
 }
