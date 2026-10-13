@@ -25,6 +25,7 @@ import { downloadClientLogs } from "../logs-export";
 import { Avatar } from "./Avatar";
 import { AvatarEditor, userAvatarApi } from "./ProfileModal";
 import { KeybindsSection } from "./KeybindsSection";
+import { PasswordInput } from "./PasswordInput";
 
 /**
  * User settings — oak's SettingsWindow. The sections split by SCOPE (user
@@ -495,13 +496,13 @@ function PasswordForm(): React.JSX.Element {
   return (
     <div>
       <label className="settings-field"><span>Current password</span>
-        <input type="password" value={oldPassword} onChange={(event) => setOldPassword(event.target.value)} />
+        <PasswordInput value={oldPassword} onChange={setOldPassword} autoComplete="current-password" />
       </label>
       <label className="settings-field"><span>New password (at least 8 characters)</span>
-        <input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
+        <PasswordInput value={newPassword} onChange={setNewPassword} autoComplete="new-password" />
       </label>
       <label className="settings-field"><span>Confirm new password</span>
-        <input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} />
+        <PasswordInput value={confirmPassword} onChange={setConfirmPassword} autoComplete="new-password" />
       </label>
       <div className="modal-actions left">
         <button className="primary" disabled={busy || validation !== null || oldPassword.length === 0 || newPassword.length < 8 || newPassword !== confirmPassword}

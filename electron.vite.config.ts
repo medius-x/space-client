@@ -15,7 +15,9 @@ export default defineConfig({
       lib: { entry: resolve(__dirname, "electron/main.ts") },
       // koffi is a NATIVE module — it must stay external and resolve from
       // node_modules at runtime (bundling a .node addon is impossible).
-      rollupOptions: { external: ["electron", "koffi"] },
+      // ssh2 loads its crypto backends with runtime requires — bundling
+      // breaks them the same way, so it resolves from node_modules too.
+      rollupOptions: { external: ["electron", "koffi", "ssh2"] },
     },
   },
   preload: {

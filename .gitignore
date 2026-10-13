@@ -3,6 +3,15 @@ dist/
 out/
 *.log
 
+# The bundled server jar for provisioning: a 79 MB binary that must never be
+# committed — refresh it from a local oak-server build with `npm run jar:sync`
+# (round D wires the release artifact into the packaged build).
+electron/provisioning/files/oak-server.jar
+# The bundled docker-image archives (docker save | gzip, hundreds of MB) —
+# refreshed with `npm run images:sync`. manifest.json STAYS committed: it is
+# the readable record of the pinned digests.
+electron/provisioning/files/images/*.tar.gz
+
 # Profiler artifacts (npm run profile)
 profile-trace.json
 profile-hotspots.txt

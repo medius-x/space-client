@@ -876,7 +876,8 @@ function makeSessionHooks(recordId: string): SessionHooks {
       }
       log.warn("app", `session expired (record ${expiredRecordId}) — back to login`);
       void teardownSession();
-      appStore.patch({ loginFormOpen: true, loginError: "Session expired — log in again", userSettingsOpen: false });
+      openLoginForm({ loginError: "Session expired — log in again" });
+      appStore.patch({ userSettingsOpen: false });
     },
     onStompState: (state) => {
       if (isActive()) {
@@ -1312,12 +1313,11 @@ function makeSessionHooks(recordId: string): SessionHooks {
       // just answers 401/403 instead of reconnecting), oak's ErrorDialog parity.
       const record = connectionDirectory.get(recordId);
       void teardownSession().finally(() => {
-        appStore.patch({
-          loginFormOpen: true,
+        openLoginForm({
           loginError: reason,
           loginPrefill: record !== null ? { url: record.hostUrl, username: record.username } : null,
-          userSettingsOpen: false,
         });
+        appStore.patch({ userSettingsOpen: false });
         notifications.showToast({ title, channelName: event.by, body: reason });
       });
     },
@@ -1607,8 +1607,7 @@ export async function switchConnection(recordId: string): Promise<void> {
     // Only an ANSWERING server reaches this catch (network failures land in
     // the offline view inside openSession): its rejection of the credentials
     // genuinely needs a re-login.
-    appStore.patch({
-      loginFormOpen: true,
+    openLoginForm({
       loginError: errorMessage(error),
       loginPrefill: { url: record.hostUrl, username: record.username },
     });
@@ -1678,9 +1677,20 @@ export async function reloginConnection(recordId: string, password: string): Pro
   await openSession(recordId);
 }
 
+/** Bumped on EVERY opening of the login form: an openSession that started
+ *  BEFORE the form was opened (the boot resume, the offline watcher) must not
+ *  close it on completion — the user-opened Create dialog flashed and
+ *  vanished exactly this way (live report 2026-10-12). */
+let loginFormGeneration = 0;
+
+function openLoginForm(fields: { loginError?: string | null; loginPrefill?: { url: string; username: string } | null }): void {
+  loginFormGeneration += 1;
+  appStore.patch({ loginFormOpen: true, loginError: null, loginPrefill: null, ...fields });
+}
+
 /** "+" on the rail: the login modal with an empty form (the live session stays alive). */
 export function beginAddServer(): void {
-  appStore.patch({ loginFormOpen: true, loginError: null, loginPrefill: null });
+  openLoginForm({});
 }
 
 /** The server dropdown's two triggers: the Sidebar's server-name header (anchored
@@ -1713,6 +1723,15 @@ async function openSession(recordId: string): Promise<void> {
   if (!record) {
     return;
   }
+  // The completion patches below close the login form — but ONLY when it was
+  // not (re)opened while this openSession was flying: the boot resume and the
+  // offline watcher may finish long after the user opened the Create dialog,
+  // and must not slam it shut (loginFormGeneration, live report 2026-10-12).
+  const formGenerationAtStart = loginFormGeneration;
+  const formClosePatch = (): { loginFormOpen: false; loginError: null; loginPrefill: null } | Record<string, never> =>
+    loginFormGeneration === formGenerationAtStart
+      ? { loginFormOpen: false, loginError: null, loginPrefill: null }
+      : {};
   // PROMOTE: a live background session for this record switches in place —
   // no teardown, no fresh handshake (oak's promoteActiveSession). The demoted
   // session stays alive in the map as a background listener.
@@ -1746,9 +1765,7 @@ async function openSession(recordId: string): Promise<void> {
       existing.stomp.reconnectNow();
     }
     appStore.patch({
-      loginFormOpen: false,
-      loginError: null,
-      loginPrefill: null,
+      ...formClosePatch(),
       ownUsername: record.username,
       baseUrl: record.hostUrl,
       stompState: existing.stomp.isConnected() ? "connected" : "connecting",
@@ -1779,7 +1796,7 @@ async function openSession(recordId: string): Promise<void> {
   try {
     await probeServerReachable(record.hostUrl);
   } catch {
-    enterActiveOfflineView(session, record);
+    enterActiveOfflineView(session, record, formClosePatch);
     return;
   }
   try {
@@ -1789,9 +1806,7 @@ async function openSession(recordId: string): Promise<void> {
     roomAudio.setOutputDevice(resolvedDevices.speaker); // the saved sink, before any chain attaches
     notifications.setOutputDevice(resolvedDevices.speaker); // UI sounds follow the same speaker (oak's playout line)
     appStore.patch({
-      loginFormOpen: false,
-      loginError: null,
-      loginPrefill: null,
+      ...formClosePatch(),
       ownUsername: record.username,
       baseUrl: record.hostUrl,
     });
@@ -1814,21 +1829,26 @@ async function openSession(recordId: string): Promise<void> {
     }
     // The probe passed but the bootstrap still died on the network (a flaky
     // window): the same offline view, not a dead screen.
-    enterActiveOfflineView(session, record);
+    enterActiveOfflineView(session, record, formClosePatch);
   }
 }
 
 /** Paint the half-built session as the ACTIVE OFFLINE view: the familiar
  *  server screen with empty stores and an "Offline" status in the user panel.
- *  The session's STOMP was never started, so nothing will overwrite the status. */
-function enterActiveOfflineView(session: ConnectionSession, record: ConnectionRecord): void {
+ *  The session's STOMP was never started, so nothing will overwrite the status.
+ *  `formClosePatch` comes from the owning openSession (the login-form guard). */
+function enterActiveOfflineView(
+  session: ConnectionSession,
+  record: ConnectionRecord,
+  // Default: never touch the form (the offline watcher's fallback call has no
+  // owning openSession to inherit the guard from).
+  formClosePatch: () => { loginFormOpen: false; loginError: null; loginPrefill: null } | Record<string, never> = () => ({}),
+): void {
   if (activeSession !== session) {
     return; // the user switched away while the probe was flying
   }
   appStore.patch({
-    loginFormOpen: false,
-    loginError: null,
-    loginPrefill: null,
+    ...formClosePatch(),
     ownUsername: record.username,
     baseUrl: record.hostUrl,
     stompState: "off", // the user panel renders this as "Offline"

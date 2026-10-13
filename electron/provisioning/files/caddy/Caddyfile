@@ -1,0 +1,51 @@
+# OAK TLS entry point — the ONLY public HTTP surface of a provisioned server.
+#
+# DERIVED FROM oak-server/env/caddy/Caddyfile — keep the two in sync when the
+# routing changes. One deliberate difference: the `tls` lines below carry the
+# trailing "provisioning:tls-file" marker. The client's provisioning flow strips
+# every marked line for a DOMAIN deployment before uploading (Caddy then runs
+# ACME/Let's Encrypt on its own); for a bare-IP deployment the lines stay and the
+# self-signed certificate from caddy/certs (10 years, generated on the server)
+# is pinned by every client (TOFU).
+#
+# Routes over one certificate:
+#   https://<host>       → oak (REST /api/** + the /ws STOMP upgrade)
+#                          …/janus* → janus REST (long-poll signaling)
+#   https://<host>:9443  → MinIO S3 API (presigned uploads/downloads)
+#
+# MinIO rides its OWN PORT, never a path prefix: S3v4 signatures are computed
+# over Host + path, and Caddy's reverse_proxy passes the ORIGINAL Host header
+# through — a signature minted for https://host:9443 validates only if MinIO
+# sees that exact Host and path.
+
+{
+	# The explicit tls directives below own certificate management; the admin
+	# endpoint has no use inside the compose network.
+	admin off
+	# Browsers never send SNI for bare-IP addresses (RFC 6066) — without a
+	# fallback name Caddy cannot pick a certificate for such clients and kills
+	# the TLS handshake with "internal error" (live VPS 2026-10-13: the
+	# post-provisioning automatic login spun forever on exactly this). The
+	# public host is the site's own name, so the match is always exact.
+	default_sni {$OAK_PUBLIC_HOST}
+}
+
+{$OAK_SITE_ADDRESS} {
+	tls {$OAK_TLS_CERT} {$OAK_TLS_KEY} # provisioning:tls-file
+
+	# Janus REST keeps its /janus prefix — the janus container itself serves
+	# under /janus, so the path is passed through untouched.
+	handle /janus* {
+		reverse_proxy janus:8088
+	}
+	# Everything else — REST /api/** and the /ws WebSocket upgrade — goes to
+	# oak. Caddy proxies the Upgrade handshake transparently.
+	handle {
+		reverse_proxy oak:8080
+	}
+}
+
+{$OAK_MINIO_SITE_ADDRESS} {
+	tls {$OAK_TLS_CERT} {$OAK_TLS_KEY} # provisioning:tls-file
+	reverse_proxy minio:9000
+}

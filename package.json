@@ -16,6 +16,8 @@
     "watch": "vitest",
     "icons": "node scripts/regen-icons.mjs",
     "logo": "node scripts/gen-placeholder-logo.mjs",
+    "jar:sync": "node scripts/sync-server-jar.mjs",
+    "images:sync": "node scripts/sync-server-images.mjs",
     "profile": "node scripts/capture-profile.mjs",
     "start:tools": "npm run build && electron . --space-devtools",
     "start2:tools": "npm run build && electron . --space-instance=b --space-devtools",
@@ -28,6 +30,7 @@
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
+    "@types/ssh2": "^1.15.6",
     "@vitejs/plugin-react": "^5.2.0",
     "@workadventure/noise-suppression": "^0.1.1",
     "electron": "^44.1.1",
@@ -46,6 +49,7 @@
     "fflate": "^0.8.3",
     "koffi": "^3.3.0",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "ssh2": "^1.17.0"
   }
 }

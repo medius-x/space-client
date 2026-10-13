@@ -1,0 +1,19 @@
+# oak-server runtime image — a plain JRE + the packaged jar.
+#
+# The build context must contain the jar under the FIXED name oak-server.jar:
+#   mvn -B package -DskipTests
+#   cp target/oak-server-1.0-SNAPSHOT.jar env/oak-server.jar
+#   docker compose --profile full up -d --build oak
+# Building the jar INSIDE the image was rejected on purpose: a weak VPS would
+# spend many minutes and gigabytes on a Maven image, while this runner builds in
+# seconds from the jar produced by CI or the dev machine. The provisioning flow
+# (round C) ships this same Dockerfile + jar pair to /opt/oak on the target host.
+FROM eclipse-temurin@sha256:8993f1aed8b25fcea7a7047a7949c1866fa558fc6830d938c22c4f13b26be9d7
+
+WORKDIR /app
+COPY oak-server.jar app.jar
+
+# REST + WS (behind Caddy in a full deployment — never host-mapped).
+EXPOSE 8080
+
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]

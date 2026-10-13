@@ -1,0 +1,32 @@
+[
+  {
+    "ref": "postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777",
+    "archive": "postgres.tar.gz",
+    "bytes": 115399507
+  },
+  {
+    "ref": "minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e",
+    "archive": "minio.tar.gz",
+    "bytes": 61971628
+  },
+  {
+    "ref": "coturn/coturn@sha256:0c0e8fc0c263b85a134e9e4242b5e46e1f4c077c5029633511191c05b5c2c814",
+    "archive": "coturn.tar.gz",
+    "bytes": 45227202
+  },
+  {
+    "ref": "caddy@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772",
+    "archive": "caddy.tar.gz",
+    "bytes": 24842827
+  },
+  {
+    "ref": "eclipse-temurin@sha256:8993f1aed8b25fcea7a7047a7949c1866fa558fc6830d938c22c4f13b26be9d7",
+    "archive": "oak-base.tar.gz",
+    "bytes": 92544332
+  },
+  {
+    "ref": "canyan/janus-gateway@sha256:80970d0b1c407222e2f88d7a6d31a16686fb9a5145a491b4b4d843ee40ee4ce1",
+    "archive": "janus-base.tar.gz",
+    "bytes": 189642138
+  }
+]

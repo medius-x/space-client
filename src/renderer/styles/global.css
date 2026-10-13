@@ -694,6 +694,10 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   flex-direction: column;
   gap: 12px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  /* The card never outgrows the window — tall content (the Create tab's
+     Advanced section) scrolls INSIDE instead (live report 2026-10-12). */
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
 }
 .modal-title { font-size: 18px; font-weight: 700; }
 .modal-note { color: var(--sp-text-muted); font-size: 13px; }
@@ -2895,6 +2899,42 @@ button.wide-add { width: 100%; }
 
 /* The add-server dialog rides the same underline-tab idiom for its three modes. */
 .login-tabs { margin-bottom: 8px; }
+/* Locked while a provisioning run is in flight (Create reports it). */
+.settings-tab:disabled { opacity: 0.55; cursor: default; }
+
+/* ── Create tab: the SSH provisioning form and its step screen ─────────── */
+.prov-advanced { margin: 4px 0 8px; }
+.prov-advanced summary { font-size: 12px; color: var(--sp-text-muted); cursor: pointer; user-select: none; }
+.prov-advanced .settings-field { margin: 10px 0 0; }
+.prov-check { flex-direction: row !important; align-items: center; gap: 8px !important; }
+.prov-check input { width: auto; }
+.prov-check span { text-transform: none !important; font-weight: 400 !important; font-size: 12px !important; color: var(--sp-text-muted) !important; }
+.prov-steps { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
+.prov-step { display: flex; align-items: baseline; gap: 8px; font-size: 13px; color: var(--sp-text); }
+.prov-step-pending { color: var(--sp-text-dim); }
+.prov-step-icon { flex: none; width: 18px; text-align: center; font-size: 12px; }
+.prov-step-done .prov-step-icon { color: var(--sp-green); }
+.prov-step-failed .prov-step-icon { color: var(--sp-red); }
+.prov-step-running .prov-step-icon { color: var(--sp-text-muted); animation: sp-spin 900ms linear infinite; }
+/* The label never wraps or gives way: a long detail must ELLIPSIZE in the
+   remaining space, not push "TLS certificate" onto a second line (live
+   report 2026-10-12). min-width: 0 is the flex-item part of that contract. */
+.prov-step-label { flex: none; white-space: nowrap; }
+.prov-step-detail { flex: 1; min-width: 0; color: var(--sp-text-dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prov-log { margin: 8px 0; }
+.prov-log summary { font-size: 12px; color: var(--sp-text-muted); cursor: pointer; user-select: none; }
+.prov-log-lines {
+  margin-top: 6px;
+  max-height: 140px;
+  overflow-y: auto;
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  color: var(--sp-text-muted);
+  white-space: pre-wrap;
+  background: var(--sp-darkest);
+  border-radius: 6px;
+  padding: 8px;
+}
 
 /* Settings cover the WHOLE window below the caption bar. Mounted from App as
    a direct child of #app (not inside app-frame) so no intermediate box can
@@ -3036,6 +3076,29 @@ input[type="checkbox"]:disabled { opacity: 0.5; cursor: default; }
 .settings-field > span:has(+ input:disabled) { color: var(--sp-text-dim); }
 .settings-check { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
 .settings-hint { font-size: 12px; color: var(--sp-text-dim); margin: 6px 0 10px; max-width: 520px; }
+
+/* Password fields: the visibility toggle rides inside the field's right edge
+   (PasswordInput renders every password input in the app through it). */
+.password-field { position: relative; display: block; }
+.password-field input { width: 100%; padding-right: 34px !important; }
+.password-toggle {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--sp-text-muted);
+  cursor: pointer;
+}
+.password-toggle:hover { color: var(--sp-text); background: transparent; }
+.password-toggle .icon { font-size: 17px; }
 .settings-status { font-size: 12px; color: var(--sp-text-muted); }
 
 /* Keybinds section (2026-09-18): one row per action — the label block on the

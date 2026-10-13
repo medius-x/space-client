@@ -5,15 +5,17 @@ import { DEFAULT_REST_BASE_URL } from "../../config";
 import { isValidHostUrl, normalizeHostUrl } from "../../domain/session/connection-record";
 import { parseInviteLink } from "../../domain/logic/invite-link";
 import { Modal } from "./Modal";
+import { PasswordInput } from "./PasswordInput";
+import { ProvisioningPanel } from "./ProvisioningPanel";
 
 /**
  * The add-server dialog as a MODAL over the always-present main window (oak's Add
  * Server dialog): opened by the rail "+", an expired session or a kick. Three tabs
- * (the Server Settings → Roles underline idiom): Create (a provisioning placeholder
- * until that feature lands — a new server's OWNER account will be created by it
- * automatically), Log in (the classic address/username/password form) and Register —
- * invite-link registration on an existing server ONLY: the link is required and its
- * origin is the address (no separate address field).
+ * (the Server Settings → Roles underline idiom): Create (provisioning — the client
+ * deploys a brand-new OAK server over SSH and logs in as its OWNER account),
+ * Log in (the classic address/username/password form) and Register — invite-link
+ * registration on an existing server ONLY: the link is required and its origin is
+ * the address (no separate address field).
  *
  * A bare host in the address auto-gains a scheme (localhost → http, anything else →
  * https — the deployed-server default since the TLS entry point). When the server's
@@ -31,6 +33,10 @@ export function LoginModal(): React.JSX.Element {
   const [password, setPassword] = useState("");
   const [nickname, setNickname] = useState("");
   const [inviteLink, setInviteLink] = useState("");
+  /** True while a provisioning run is in flight (the Create panel reports
+   *  it): the tabs lock — a stray click must not walk away from the run
+   *  (live report 2026-10-12: the switch unmounted the panel mid-install). */
+  const [provisionBusy, setProvisionBusy] = useState(false);
 
   const submitLogin = () => {
     const attempt = () => {
@@ -72,22 +78,17 @@ export function LoginModal(): React.JSX.Element {
   return (
     <Modal title="Add a server" onClose={closeLoginForm}>
       <div className="settings-tabs login-tabs">
-        <button className={"settings-tab" + (tab === "create" ? " active" : "")} onClick={() => setTab("create")}>Create</button>
-        <button className={"settings-tab" + (tab === "login" ? " active" : "")} onClick={() => setTab("login")}>Log in</button>
-        <button className={"settings-tab" + (tab === "register" ? " active" : "")} onClick={() => setTab("register")}>Register</button>
+        <button disabled={provisionBusy} className={"settings-tab" + (tab === "create" ? " active" : "")} onClick={() => setTab("create")}>Create</button>
+        <button disabled={provisionBusy} className={"settings-tab" + (tab === "login" ? " active" : "")} onClick={() => setTab("login")}>Log in</button>
+        <button disabled={provisionBusy} className={"settings-tab" + (tab === "register" ? " active" : "")} onClick={() => setTab("register")}>Register</button>
       </div>
-      {tab === "create" ? (
-        <>
-          <div className="settings-hint">
-            Server provisioning is coming soon.
-            <em className="not-implemented"> (not implemented yet)</em>
-          </div>
-          <div className="settings-hint">
-            Setting up a new server from the client will also create its owner account
-            automatically — no registration needed.
-          </div>
-        </>
-      ) : tab === "login" ? (
+      {/* The Create panel stays MOUNTED (hidden, not unmounted) while other
+          tabs are open: an in-flight run keeps its step screen and listeners
+          even if the user somehow walks away. */}
+      <div style={{ display: tab === "create" ? "" : "none" }}>
+        <ProvisioningPanel onBusyChange={setProvisionBusy} />
+      </div>
+      {tab === "login" ? (
         <>
           <label className="settings-field">
             <span>Server address</span>
@@ -99,15 +100,10 @@ export function LoginModal(): React.JSX.Element {
           </label>
           <label className="settings-field">
             <span>Password</span>
-            <input
-              type="password"
+            <PasswordInput
               value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  submitLogin();
-                }
-              }}
+              onChange={setPassword}
+              onEnter={submitLogin}
               placeholder="Password (8+ chars)"
               autoComplete="current-password"
             />
@@ -120,7 +116,7 @@ export function LoginModal(): React.JSX.Element {
             </button>
           </div>
         </>
-      ) : (
+      ) : tab === "register" ? (
         <>
           <label className="settings-field">
             <span>Invite link</span>
@@ -140,15 +136,10 @@ export function LoginModal(): React.JSX.Element {
           </label>
           <label className="settings-field">
             <span>Password</span>
-            <input
-              type="password"
+            <PasswordInput
               value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  submitRegister();
-                }
-              }}
+              onChange={setPassword}
+              onEnter={submitRegister}
               placeholder="Password (8+ chars)"
               autoComplete="new-password"
             />
@@ -162,7 +153,7 @@ export function LoginModal(): React.JSX.Element {
             </button>
           </div>
         </>
-      )}
+      ) : null}
     </Modal>
   );
 }

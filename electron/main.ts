@@ -1,5 +1,6 @@
 import { isSystemAudioAvailable, startSystemAudio, stopSystemAudio } from "./system-audio";
 import { getClientSize, isWindowConfirmedDead, watchSourceLiveness } from "./window-liveness";
+import { cancelProvisioningRun, startProvisioningRun } from "./provisioning";
 import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeTheme, net, powerMonitor, protocol, safeStorage, screen, session, shell, Tray } from "electron";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -743,6 +744,44 @@ ipcMain.handle("space-tls:decide", (_event, decision: unknown): boolean => {
     }
     appendLog(`[tls] user REJECTED certificate for ${hostname}`);
   }
+  return true;
+});
+
+// ---------------------------------------------------------------------------
+// Server provisioning (round C): the Create tab drives an SSH deployment of
+// the whole OAK stack on a fresh Ubuntu host. The renderer starts/cancels and
+// renders the step events; the heavy lifting (ssh2, the templates, the jar)
+// lives in ./provisioning. SSH credentials never pass through the log.
+// ---------------------------------------------------------------------------
+ipcMain.handle("provisioning:start", (_event, params: unknown): boolean => {
+  if (typeof params !== "object" || params === null) {
+    return false;
+  }
+  void startProvisioningRun(params as never, {
+    sendEvent: (event) => {
+      mainWindowRef?.webContents.send("provisioning:event", event);
+    },
+    onSucceeded: (outcome) => {
+      // The certificate fingerprint arrived over the TRUSTED SSH channel —
+      // the deployment's own certificate is pre-trusted without a dialog,
+      // which is exactly what the TOFU dialog's "verify with the server
+      // owner" step asks the user to do by hand.
+      if (outcome.certFingerprint !== null) {
+        const hostname = hostnameFromUrl(outcome.hostUrl);
+        if (hostname !== null) {
+          sessionAcceptedCertificates.set(hostname, outcome.certFingerprint);
+          persistAcceptedPin(hostname);
+        }
+      }
+    },
+    log: (line) => appendLog(line),
+  });
+  return true;
+});
+
+ipcMain.handle("provisioning:cancel", () => {
+  cancelProvisioningRun();
+  appendLog("[provisioning] cancelled by the user");
   return true;
 });
 

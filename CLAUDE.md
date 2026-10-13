@@ -3460,3 +3460,155 @@ certificate-error не стреляет, пин не пишется.
 **Смоук-полиш 14 (юзер-запрос: повторное нажатие NS-кнопки должно ЗАКРЫВАТЬ меню движков).** Корень — грабля эмодзи-пикера (полиш 5 фазы 1): useOutsideDismiss без якоря ловит pointerdown ПО КНОПКЕ-ТРИГГЕРУ как «вне карточки» → дисмисс закрывает меню ДО click → onClick-тоггл видит null и ПЕРЕОТКРЫВАЕТ. NsEngineMenu += опциональный проп triggerRef (проброс третьим аргументом в useOutsideDismiss — якорь считается «внутри» поверхности); ref повешен на ВСЕ ТРИ NS-кнопки: voice panel (обе ветки VoiceBar — call и room), фуллскрин-пилюля звонка (RoomView), попап шара (PopoutScreen). Гейты: 627/627 + typecheck + build.
 **Смоук-полиш 15 (юзер-запросы: кликабельная иконка динамика в пилюлях + ЕДИНЫЙ дизайн/поведение пилюль, эталон — попап голосовой комнаты; поведение «показ при движении мыши» побеждитель).** (1) **Иконка динамика = кнопка mute 0↔lastPositive** (VolumeRow-идиома, lastPositiveRef сеется из ретаргета/записи пира и обновляется слайдером/синком): в попапе шара — гасит share-громкость (грейс lastLocalVolumeEditRef на mute-клике — как у драга слайдера, иначе popout:volumeSync эхо перебьёт; disabled при шаре без звука, .popout-voice-toggle:disabled opacity .55 — старое :has-правило группы удалено); в фуллскрин-пилюле звонка — гасит ОБА гейна пира (voice+share вместе, «громкость пира»). (2) **Единый дизайн**: звонковая пилюля переведена на КЛАССЫ попапа дословно (.popout-voice-toggle 26×26 прозрачные с красным on для mute/deafen и зелёным для NS, .popout-toolbar-sep, .popout-volume 90px, .popout-fullscreen-exit) — .call-watch-toolbar сам стал попап-геометрией (padding 6/8, radius 8, gap 6, bottom 12); мёртвые .pill-* стили ВЫЧИЩЕНЫ. (3) **Единое поведение**: попап в ОКОННОМ режиме больше не хит-тестит «курсор над плашкой» — любое движение мыши показывает, 2.5с бездействия скрывают (NS-меню держит, mouseleave окна гасит) — ровно как фуллскрин-режим попапа и пилюля звонка; эффект потерял fullscreen-деп (один код-путь). Гейты: 627/627 + typecheck + build.
 **Смоук-фикс 7 (фаза 5 смоука — смена серта; репорт: «клиент 1: Connect → диалог пропал, Reconnecting навсегда; клиент 2: диалог моргает — исчезает и появляется»).** Корень: в certificate-error ветка «пин записан и НЕ совпал» проверялась РАНЬШЕ session-allowance — после Connect ретрай блокировался СТАРЫМ пином из записи (новый пин доезжал в KV только при следующей kvMutate записи, которая сама требовала успешного коннекта = deadlock), и каждый заблокированный ретрай слал tls:untrusted заново → диалог переоткрывался циклом. Фикс main.ts: (1) session-allowance (принят секунду назад ТОЧНО этот отпечаток) проверяется ПЕРВЫМ — ретраст после Connect проходит независимо от старого пина; (2) decide(accept) теперь НЕМЕДЛЕННО персистит пин sweep-ом по всем записям hostname (persistAcceptedPin: kvMutate(key, identity) — withSessionCertificatePin в kvMutate применяет пин поверх identity-результата), не полагаясь на будущие записи записи (рестарт клиента до любой записи терял бы acceptance). Гейты: 627/627 + typecheck + build.
+
+## Launch-раунд C: client provisioning — SSH-деплой сервера из вкладки Create (2026-10-12, код готов, смоук pending; КЛИЕНТ-ONLY, сервер не тронут)
+
+Вкладка Create диалога Add a server больше не заглушка: IP + SSH-креды → клиент ставит на
+свежую Ubuntu-машину весь стек OAK (Docker → /opt/oak с compose-стеком → случайные секреты →
+сертификат → файрволл → OWNER-аккаунт) и автоматически логинится. ssh2 ^1.17.0 — новый dep
+(external main-бандла, как koffi; @types/ssh2 devDep).
+
+- **Архитектура — чистое ядро + тонкая обвязка**: `src/domain/provisioning/` — пайплайн как
+  функция от ШВОВ (транспорт-интерфейс exec/writeFile/readFile, файлы-шаблоны, randomHex);
+  `electron/provisioning.ts` — Ssh2Transport (ssh2 Client, exec с таймаутами, SFTP write/
+  read, буферы stdout/stderr с капом), чтение шаблонов, jar-резолв, старт/канцел прогона;
+  main.ts регистрирует IPC `provisioning:start/cancel` + событие `provisioning:event`
+  (step | succeeded | failed). Креды SSH живут только в scope прогона — не логируются и не
+  персистятся.
+- **Шаблоны** `electron/provisioning/files/` (читаются в main; при чтении CRLF→LF — janus
+  libconfig не прощает CRLF, git autocrlf на Windows мог бы их подменить): janus/* и
+  Dockerfile.server — ДОСЛОВНЫЕ копии oak-server/env; docker-compose.yml и caddy/Caddyfile —
+  ПРОИЗВОДНЫЕ с прод-отличиями (шапки файлов объясняют): compose без profiles и БЕЗ
+  host-маппингов периферии (5432/9000/9001/8088/8188/7088 остаются в docker-сети — Caddy
+  единственная HTTP-поверхность; мапятся только 443/9443 + coturn + RTP 2000-2300/udp —
+  УРЕЗАН с 2000-4000 живым репортом 2026-10-13: dockerd программит published-порты ПО
+  ОДНОМУ iptables-правилу НА ПОРТ (форк на каждый), и на пике памяти при старте стека
+  fork падал с EAGAIN («Unable to enable DNAT rule … resource temporarily unavailable»);
+  301 порт ≈ 150 голосовых потоков — за глаза для 2 ГБ VPS; janus.jcfg РАСКОММЕНТИРОВАН
+  rtp_port_range = "2000-2300" — ДО ЭТОГО диапазон в jcfg был закомментирован (janus брал
+  бы эфемерные порты ОС ВНЕ маппинга = голос на провиженом сервере не ходил бы ВООБЩЕ,
+  скрытый баг, пойманный тем же репортом); ДИАПАЗОН ЖИВЁТ В ТРЁХ МЕСТАХ СИНХРОННО:
+  compose ports + janus.jcfg rtp_port_range + ufw-правило pipeline);
+  Caddyfile с маркером `# provisioning:tls-file` на tls-строках и `default_sni
+  {$OAK_PUBLIC_HOST}` в глобальном блоке (браузеры НЕ шлют SNI для bare-IP — RFC 6066; без
+  fallback-имени caddy не находит сертификат для без-SNI клиента и рвёт handshake
+  «internal error» — живой репорт 2026-10-13: автологин после provisioning вечно крутился
+  на этом; строка НЕ помечена маркером — переживает ACME-вырезание и корректна для домена;
+  ГРАБЛЯ ENV: переменные .env доходят до контейнера ТОЛЬКО через список environment в
+  compose — bare `{$OAK_PUBLIC_HOST}` в Caddyfile без проброса резолвится в пустоту и caddy
+  умирает на валидации конфига в рестарт-цикле, живой прогон 2026-10-13; проброс
+  `OAK_PUBLIC_HOST` добавлен в environment caddy).
+  **СИНХРОНИЗАЦИЯ: правка
+  oak-server/env/* обязана mirrored в electron/provisioning/files/** (отмечено и в
+  oak-server/CLAUDE.md).
+- **Пайплайн** (`pipeline.ts`, шаги = события для UI): probe (uname/os-release/curl;
+  не-Linux → честный отказ; **HOST PRE-FLIGHT** (юзер-запрос 2026-10-13): диск `df -Pm /`
+  ≥ 5 ГБ свободных, RAM ≥ 1.2 ГБ, своп и RAM читаются ОДИН раз здесь и переиспользуются
+  swap-guard'ом; **cgroup-потолок хостера** `cat /sys/fs/cgroup/memory.max` (< floor →
+  отказ «the hosting provider caps this machine's memory» — внутри cgroup-capped VM
+  OOM-killer неотличим от нехватки RAM, подозрение проверено вручную на живом VPS);
+  ГРАБЛЯ ПАРСИНГА: `Number("")` = 0, а не NaN — пустой вывод фейка/хоста читался бы как
+  «0 ГБ» и валидный хост отказывался; весь парсинг через `parseInt` (пусто → NaN → skip);
+  провал = отказ за 5 секунд ДО системной стадии вместо 15-минутного обречённого прогона;
+  done-деталь несёт сводку «RAM + swap · disk free») → docker (systemd-стадия + нет →
+  `get.docker.com` по юзер-спеке) → layout
+  (mkdir /opt/oak; живой docker-compose.yml → **ADOPT**: шаблоны обновляются, .env и серт
+  НЕ трогаются — пины клиентов живут; НИКОГДА down -v) → upload (шаблоны + jar) → env
+  (fresh: generateEnvSecrets от crypto.randomBytes — 16 байт для паролей БД/MinIO, 32 для
+  JWT/Janus/TURN HMAC; TURN_EXTERNAL_IP = сырой IP, OAK_PUBLIC_HOST = домен??IP) →
+  certificate (домен → tls-строки Caddyfile вырезаются `caddyFileForMode` — Caddy сам ACME,
+  пина нет; bare-IP → openssl req self-signed 10 лет с SAN localhost+127.0.0.1+IP, SHA-256
+  отпечаток парсится из `openssl x509 -fingerprint`; ADOPT читает отпечаток существующего
+  серта, не перегенеря) → firewall (ufw allow **sshPort**/tcp — порт из формы, не хардкод
+  22: enable с закрытым нестандартным SSH-портом запер бы юзера — security-находка раунда;
+  + 443/9443/5349/34780 tcp, 2000:2300 + 55000:55050 udp; нет ufw → apt install) → compose
+  (`docker compose up -d --build`, таймаут 15 мин) → wait (полл ИЗНУТРИ сервера:
+  `curl -k https://localhost/api/server` с Host-заголовком публичного адреса до любого
+  HTTP-кода — не зависит от сети клиента и ещё не установленного доверия к серту;
+  **Host-заголовок ОБЯЗАТЕЛЕН**, живой репорт 2026-10-13: Caddy маршрутизирует по Host,
+  голый `localhost` не матчится НИ на один site-блок → caddy отвечает ПУСТЫМ 200 — полл
+  видел ложную готовность, а register падал «registration failed (HTTP 200)»; прямой
+  заход по публичному IP с самой машины тоже не вариант — hairpin у хостера не работает
+  (000); self-signed SAN покрывает localhost — handshake проходит; **прокси-коды 502/503/504
+  — НЕ готовность**: caddy отвечает 502, пока oak грузится, и полл, принявший 502 за ответ,
+  гнал register в 502 — «registration failed (HTTP 502)», живой прогон 2026-10-13; готовность
+  = любой код ПРИЛОЖЕНИЯ, кроме прокси-тройки и 000) → register (см. ниже).
+- **Register + advertised-адрес — curl-ами на localhost по SSH** (не из клиента; ВСЕ
+  localhost-curl несут `-H "Host: <publicHost>"` — см. wait): тела
+  POST /api/auth/register и /api/auth/login едут ФАЙЛАМИ через SFTP (пароль никогда не в
+  командной строке — ps/history), ответ парсится parseCurlWithStatus (curl -w
+  `__STATUS__`); **register по wire возвращает СОЗДАННОГО ЮЗЕРА (UserResponse, БЕЗ токена
+  — токен даёт только /login, AuthController)** → после 201 И после 409 пайплайн логинится
+  тем же паролем (200 → токен; 401 на 409-ветке → ownerReady=false, юзер логинится старым
+  паролем вручную); токен → PATCH
+  /api/server/connection — **wire = UpdateConnectionInfoRequest:
+  {connectionHost, connectionPort: 443, connectionScheme}**, НЕ host/scheme
+  (чужие поля Jackson молча игнорирует → все DTO-поля null → «null = не менять» → 200
+  БЕЗ изменений, молчаливый no-op — живой прогон 2026-10-13; порт обязателен, иначе
+  invite-ссылки соберутся как host:8080 под https-схемой) — invite-ссылки едут на
+  правильный адрес; временные файлы rm'ятся (и best-effort scrub в catch — security-
+  проход 2026-10-13).
+- **TOFU-пин без диалога**: отпечаток серта получен по ДОВЕРЕННОМУ SSH-каналу — main после
+  успеха прогона сам ставит sessionAcceptedCertificates + persistAcceptedPin (hostname из
+  hostUrl): автологин не спотыкается о certificate-error. Это ровно та side-channel сверка,
+  о которой TLS-диалог просит «verify with the server owner».
+- **UI** `ProvisioningPanel.tsx` (Create-таб LoginModal): форма Host/SSH user (root)/SSH
+  password/**Space account** login/nickname/password (юзер-решение 2026-10-12: пустые поля
+  аккаунта → дефолты admin/admin/password — константы DEFAULT_ACCOUNT_*; валидация: login
+  `[A-Za-z0-9_-]{3,32}`, nickname unicode-без-пробелов, пароль 8+) + `<details>` Advanced
+  (SSH порт, путь к ключу, домен, тоггл firewall default ON, override jar); hint под полями
+  напоминает сменить дефолтный пароль на публичном сервере; прогон — фиксированный список
+  шагов (✓/спиннер mdi-refresh+sp-spin/○/✕ + detail), сворачиваемый лог, Cancel (рвёт SSH —
+  in-flight шаг фейлится); succeeded+ownerReady → автологин startSession(hostUrl, "login",
+  <adminLogin>, <пароль>); needsLogin → подсказка + Back. Никнейм едет в register-body
+  только когда задан и ≠ логина (сервер сам дефолтит ник = логину).
+- **Jar — лестница источников** (юзер-решение 2026-10-12: клиент НЕСЁТ сервер в себе —
+  версионная гарантия парных деплоев by construction): локальный путь (Advanced, override)
+  → **bundled jar** `electron/provisioning/files/oak-server.jar` (git-ignored, ~79 МБ;
+  dev — `npm run jar:sync` из соседнего oak-server-билда; пак раунда D кладёт его через
+  extraResources из релизного артефакта) → GitHub latest release (последний рубеж для
+  сборок без jar; константа PROVISIONING_JAR_URL). Цена: установщик +79 МБ (~180-190 МБ
+  скачивания, установленная копия ~340-370 МБ) — принятая цена zero-конфиг установки
+  без внешних зависимостей.
+- **Bundled docker-образы + ПОЭЛЕМЕНТНАЯ лестница пуллов + точечная докачка**
+  (юзер-решение 2026-10-12, после живой саги с VPS: Hub денил IP, daocloud denied
+  анонимов, gcr-кэш не имеет minio; «insufficient_scope» в Docker 29 с
+  containerd-snapshotter маскирует и rate-limit, и абуз-листы; docker compose pull
+  АБОРТИТСЯ на первом неудачном образе — minio по алфавиту раньше postgres резал всё):
+  `npm run images:sync` — пинует ВСЕ образы стека по digest'ам РОВНО тех версий, что
+  работают на dev-машине (docker save | gzip → `files/images/<name>.tar.gz`, git-ignored;
+  перезаписывает пины в compose/Dockerfile.server/janus/Dockerfile — коммит диффа пинов
+  = запись об обновлении версии; пишет `files/images/manifest.json` — ОН в git).
+  ПАЙПЛАЙН (юзер-спека: «сначала пробегаем по всему списку, спуллить что можно, с
+  клиента грузим ТОЛЬКО неспуллившееся»): (1) список образов = manifest (digest-пины),
+  а без него — parse `image:`-строк compose (`composeImageRefs`: без ${}-интерполяций
+  и локально-собираемых :local/:secured); missing-check `docker image inspect` — всё
+  на месте → реестр не нужен; (2) каждый недостающий образ тянется ОТДЕЛЬНО
+  `docker pull 'ref'` (одна неудача не мешает остальным; таймаут 600 с/образ);
+  (3) остались хвосты → DNS-fix (`sed 1i nameserver 1.1.1.1`) → re-pull хвостов;
+  (4) хвосты → зеркала [**gcr первым**, daocloud вторым — denied/404 от зеркала
+  авторитетен для dockerd, фолбэка нет, daocloud-лидером резал работу gcr] + рестарт
+  демона → re-pull; (5) хвосты → снятие зеркал + рестарт → re-pull (rate-limit окно
+  могло пройти); (6) финальные хвосты → точечная докачка ИЗ ВШИТОГО НАБОРА
+  (writeLocalFile → SFTP-стрим 4-МБ чанками — ЕДИНЫЙ путь с jar'ом + `gunzip | docker
+  load`), recheck; остаток → fail «neither pullable nor bundled: …». fresh-clone без
+  архивов: manifest-записи без файла отфильтровываются → чисто пулл-лестница.
+  images:sync сам `docker pull`-ит отсутствующее локально (eclipse-temurin, напр.).
+  Комплект: 6 образов ~505 МБ gzip.
+- **Security-проход раунда**: host/domain — ЕДИНСТВЕННЫЕ пользовательские строки в shell-
+  командах и .env, charset `[A-Za-z0-9.:-]` (валидация ДВАЖДЫ: renderer + main за IPC) —
+  инъекции невозможны, тест на метасимволы; пароль админа только в SFTP-файлах; креды SSH
+  не логируются; ufw открывает SSH-порт сессии; PATCH авторизован токеном с серверным
+  гейтом MANAGE_SERVER; UI-строки рендерятся React-экранированием. **Security-проход
+  2026-10-13** (после смоук-фиксов: Host-заголовки, register→login, pre-flight, default_sni,
+  swap-guard): shell-инъекций нет (все новые команды — константы; publicHost в двойных
+  кавычках за двойной валидацией); ЕДИНСТВЕННАЯ находка — при падении register-шага файлы
+  с паролем (`.provision-*.json`, mode 644) оставались в /opt/oak (rm стоял только на
+  success-пути) → best-effort scrub в общем catch; README ост. риска: на выделенном
+  root-сервере не-root читателей нет by design. default_sni значения — из валидированного
+  env. Сужение RTP-диапазона 2000→2300 уменьшает поверхность. TOFU-пин приходит по
+  доверенному SSH-каналу (side-channel сверка, которую TLS-диалог просит вручную).
+- Тесты: `provisioning-pipeline.test.ts` (9 сценариев против FakeProvisioningTransport —
+  happy path порядок шагов/секреты/файлы, docker-install, adopt ×3 ветки, не-Linux, ufw
+  порт, register-fail) + `provisioning-units.test.ts` (13: params/env/caddy/SAN/fingerprint/
+  curl/JSON-парсеры). Гейты: **649/649** (75 файлов, +22) + typecheck + build.

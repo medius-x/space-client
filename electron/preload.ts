@@ -193,6 +193,23 @@ contextBridge.exposeInMainWorld("spaceIdle", {
   },
 });
 
+/** Provisioning bridge (round C): the Create tab starts an SSH deployment of
+ *  the OAK stack on a fresh server and renders the step events streaming back. */
+contextBridge.exposeInMainWorld("spaceProvisioning", {
+  start(params: Record<string, unknown>): Promise<unknown> {
+    return ipcRenderer.invoke("provisioning:start", params);
+  },
+  cancel(): Promise<unknown> {
+    return ipcRenderer.invoke("provisioning:cancel");
+  },
+  onEvent(callback: (event: unknown) => void): void {
+    // Single-subscriber channel: replace any previous listener — a remount
+    // (HMR, StrictMode) must not stack a second one and duplicate steps.
+    ipcRenderer.removeAllListeners("provisioning:event");
+    ipcRenderer.on("provisioning:event", (_event, payload: unknown) => callback(payload));
+  },
+});
+
 /** Untrusted-certificate bridge (TLS entry point, round B): main surfaces the
  *  fingerprints it rejected; the renderer asks for the user's trust decision. */
 contextBridge.exposeInMainWorld("spaceTls", {

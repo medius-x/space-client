@@ -241,6 +241,65 @@ export interface TlsCertBridge {
   onUntrusted(callback: (event: TlsUntrustedEvent) => void): void;
 }
 
+// ---------------------------------------------------------------------------
+// Provisioning (round C): the Create tab's SSH deployment of a fresh server
+// ---------------------------------------------------------------------------
+
+/** The form the Create tab submits. SSH credentials stay in the IPC call —
+ *  they are never persisted and never logged on either side. */
+export interface ProvisioningFormParams {
+  host: string;
+  sshPort: number;
+  sshLogin: string;
+  sshPassword: string | null;
+  sshKeyPath: string | null;
+  domain: string | null;
+  firewall: boolean;
+  /** The Space account (OWNER): the panel resolves empty fields to the
+   *  admin/admin/password defaults before submitting. */
+  adminLogin: string;
+  adminNickname: string | null;
+  adminPassword: string;
+  jarPath: string | null;
+}
+
+/** One pipeline stage report; "connect" and "download" are main-side stages
+ *  wrapped around the SSH stages proper (probe…register). */
+export interface ProvisioningStepIpcEvent {
+  kind: "step";
+  stage: "connect" | "download" | "probe" | "docker" | "layout" | "upload" | "env"
+    | "certificate" | "firewall" | "compose" | "wait" | "register";
+  state: "start" | "done" | "log" | "failed";
+  detail?: string;
+}
+
+/** The successful end of a run — everything the automatic login needs. */
+export interface ProvisioningOutcomeIpc {
+  hostUrl: string;
+  /** The self-signed certificate's normalized SHA-256 pin (null on a domain
+   *  deployment — CA-signed, nothing to pin). Main pre-trusts it: the
+   *  fingerprint arrived over the SSH channel, not an open network. */
+  certFingerprint: string | null;
+  /** False when the admin account exists with a DIFFERENT password (an adopt
+   *  re-run) — the user logs in manually with the old one. */
+  ownerReady: boolean;
+  adminUsername: string;
+}
+
+export type ProvisioningIpcEvent =
+  | ProvisioningStepIpcEvent
+  | { kind: "succeeded"; outcome: ProvisioningOutcomeIpc }
+  | { kind: "failed"; stage: string; message: string };
+
+export interface ProvisioningBridge {
+  /** Start a run; false = rejected outright (already running / bad params). */
+  start(params: ProvisioningFormParams): Promise<boolean>;
+  /** Drop the SSH connection — the in-flight step fails as "cancelled". */
+  cancel(): Promise<boolean>;
+  /** The step/result stream (single subscriber). */
+  onEvent(callback: (event: ProvisioningIpcEvent) => void): void;
+}
+
 declare global {
   interface Window {
     spaceCapture?: CaptureBridge;
@@ -250,5 +309,6 @@ declare global {
     spaceHotkey?: HotkeyBridge;
     spaceIdle?: IdleBridge;
     spaceTls?: TlsCertBridge;
+    spaceProvisioning?: ProvisioningBridge;
   }
 }

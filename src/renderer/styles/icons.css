@@ -33,6 +33,8 @@
 .icon.mdi-crown::before { content: "\F01A5"; }
 .icon.mdi-download::before { content: "\F01DA"; }
 .icon.mdi-emoticon::before { content: "\F0C68"; }
+.icon.mdi-eye::before { content: "\F0208"; }
+.icon.mdi-eye-off::before { content: "\F0209"; }
 .icon.mdi-eye-off-outline::before { content: "\F06D1"; }
 .icon.mdi-eye-plus-outline::before { content: "\F086C"; }
 .icon.mdi-file-video-outline::before { content: "\F0E2C"; }
@@ -42,7 +44,6 @@
 .icon.mdi-fullscreen-exit::before { content: "\F0294"; }
 .icon.mdi-headphones::before { content: "\F02CB"; }
 .icon.mdi-headphones-off::before { content: "\F07CE"; }
-.icon.mdi-home::before { content: "\F02DC"; }
 .icon.mdi-information-outline::before { content: "\F02FD"; }
 .icon.mdi-location-enter::before { content: "\F0FC4"; }
 .icon.mdi-lock::before { content: "\F033E"; }

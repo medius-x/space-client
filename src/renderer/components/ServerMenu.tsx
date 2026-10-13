@@ -16,6 +16,7 @@ import {
 import type { ConnectionRecord } from "../../domain/session/connection-record";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { Modal } from "./Modal";
+import { PasswordInput } from "./PasswordInput";
 
 /**
  * The server dropdown, lifted out of the Sidebar (2026-09-24) so BOTH triggers
@@ -131,16 +132,11 @@ function ReloginModal({ record, onClose }: {
   return (
     <Modal title="Re-login" onClose={onClose}>
       <div className="modal-note">{`Re-enter the password for "${record.username}" on ${serverName}.`}</div>
-      <input
+      <PasswordInput
         autoFocus
-        type="password"
         value={password}
-        onChange={(event) => setPassword(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            void submit();
-          }
-        }}
+        onChange={setPassword}
+        onEnter={() => void submit()}
       />
       <div className="error-line">{error ?? ""}</div>
       <div className="modal-actions left">
