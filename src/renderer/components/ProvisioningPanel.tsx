@@ -242,6 +242,9 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange }: {
         <span>SSH password</span>
         <PasswordInput value={sshPassword} onChange={setSshPassword} placeholder="The server account's password" autoComplete="off" />
       </label>
+      {/* Server credentials above / Space account below (user request
+          2026-10-15): a rule makes the two groups read as separate blocks. */}
+      <div className="prov-section-rule" />
       <label className="settings-field">
         <span>Space account login</span>
         <input
@@ -274,8 +277,7 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange }: {
       </label>
       <div className="settings-hint">
         Empty Space account fields default to {DEFAULT_ACCOUNT_LOGIN} / {DEFAULT_ACCOUNT_LOGIN} /
-        {DEFAULT_ACCOUNT_PASSWORD} — change the password after the first login if the server is
-        reachable from the internet.
+        {DEFAULT_ACCOUNT_PASSWORD} — change the password after the first login.
       </div>
       <details className="prov-advanced">
         <summary>Advanced</summary>

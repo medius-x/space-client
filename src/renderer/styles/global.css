@@ -2906,6 +2906,9 @@ button.wide-add { width: 100%; }
 .prov-advanced { margin: 4px 0 8px; }
 .prov-advanced summary { font-size: 12px; color: var(--sp-text-muted); cursor: pointer; user-select: none; }
 .prov-advanced .settings-field { margin: 10px 0 0; }
+/* The Create tab's rule between the SERVER credentials (SSH) and the SPACE
+   ACCOUNT credentials — --sp-control is the app's divider colour. */
+.prov-section-rule { border: 0; border-top: 1px solid var(--sp-control); margin: 14px 0 10px; }
 .prov-check { flex-direction: row !important; align-items: center; gap: 8px !important; }
 .prov-check input { width: auto; }
 .prov-check span { text-transform: none !important; font-weight: 400 !important; font-size: 12px !important; color: var(--sp-text-muted) !important; }
