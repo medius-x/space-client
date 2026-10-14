@@ -618,4 +618,38 @@ describe("provisioning pipeline", () => {
     expect(failed?.stage).toBe("register");
     expect(failed?.detail).toContain("Password must be 8 chars");
   });
+
+  it("surfaces live progress: the jar byte counter and the command output line", async () => {
+    const transport = new FakeProvisioningTransport();
+    scriptHappyPath(transport);
+    // The system upgrade "prints" one apt line — the docker step must surface
+    // it as its progress text. (Match "dist-upgrade" only: the full command is
+    // "apt-get -y -qq dist-upgrade" — "apt-get dist-upgrade" is not a
+    // substring of it.)
+    transport.respond("dist-upgrade", {
+      stdout: "done\n",
+      outputLines: ["Unpacking docker-ce (23 MB) over 1/1"],
+    });
+    const { events, emit } = collectEvents();
+
+    await runProvisioningPipeline(transport, baseParams(), baseFiles(), emit, fixedRandomHex);
+
+    // The upload step carries the jar's REAL byte counter (the fake transport
+    // reports 40/80 MB then 80/80; the throttled emitter keeps the first of a
+    // same-millisecond burst).
+    const uploadProgress = events.filter((event) => event.stage === "upload" && event.progress !== undefined);
+    expect(uploadProgress.length).toBeGreaterThanOrEqual(1);
+    expect(uploadProgress[0]!.progress).toContain("oak-server.jar");
+    expect(uploadProgress[0]!.progress).toContain("50%");
+    // A progress-only event must not wipe the step's standing description.
+    expect(uploadProgress[0]!.detail).toBeUndefined();
+
+    // The docker step surfaces the command's output line.
+    const dockerProgress = events.find((event) => event.stage === "docker" && event.progress !== undefined);
+    expect(dockerProgress?.progress).toContain("Unpacking docker-ce");
+
+    // Completion clears the slot: done events carry no progress text.
+    const uploadDone = events.find((event) => event.stage === "upload" && event.state === "done");
+    expect(uploadDone?.progress).toBeUndefined();
+  });
 });

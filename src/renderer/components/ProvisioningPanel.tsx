@@ -53,6 +53,10 @@ const STAGE_LABELS: Record<StageId, string> = {
 interface StepState {
   state: "start" | "done" | "log" | "failed";
   detail?: string;
+  /** Live progress of the active step (user decision 2026-10-15): after the
+   *  step name, before the detail — a byte counter for uploads, the running
+   *  command's last output line for docker/compose. */
+  progress?: string;
 }
 
 export function ProvisioningPanel({ onBusyChange, onRunningChange }: {
@@ -105,7 +109,13 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange }: {
         const stage = event.stage as StageId;
         setSteps((previous) => ({
           ...previous,
-          [stage]: { state: event.state, detail: event.detail },
+          [stage]: {
+            state: event.state,
+            // A progress-only event (state "log" without detail) must not wipe
+            // the step's standing description.
+            detail: event.detail ?? previous[stage]?.detail,
+            progress: event.progress,
+          },
         }));
         if (event.detail !== undefined) {
           setLogLines((previous) => [...previous, `${STAGE_LABELS[stage] ?? stage}: ${event.detail}`]);
@@ -186,6 +196,9 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange }: {
                   {status === "done" ? "✓" : status === "failed" ? "✕" : status === "pending" ? "○" : ""}
                 </span>
                 <span className="prov-step-label">{STAGE_LABELS[stage]}</span>
+                {step?.progress !== undefined && status === "running"
+                  ? <span className="prov-step-progress">{step.progress}</span>
+                  : null}
                 {step?.detail !== undefined && status !== "pending"
                   ? <span className="prov-step-detail">{step.detail}</span>
                   : null}

@@ -271,6 +271,8 @@ export interface ProvisioningStepIpcEvent {
     | "certificate" | "firewall" | "compose" | "wait" | "register";
   state: "start" | "done" | "log" | "failed";
   detail?: string;
+  /** Live progress of the active step (byte counter / last output line). */
+  progress?: string;
 }
 
 /** The successful end of a run — everything the automatic login needs. */

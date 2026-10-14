@@ -3719,6 +3719,25 @@ renderer'е тост-окна: pointerdown есть / clicked нет = click н�
 680/680 + typecheck + build. НЕ воспроизведено на dev-стенде — ждём повторения на
 игровой машине с новой диагностикой; тайминг репро важнее фикса-кандидата.
 
+**Прогресс-индикаторы шагов провижининга (юзер-решение 2026-10-15, отложенная доработка
+№1 реализована; «процент после названия шага, до описания»).** `ProvisioningStepEvent`
++= `progress?: string` (IPC-мост bridges.ts синхронно; прогресс-only события не несут
+detail — UI-мерж не затирает стоящее описание шага, done очищает слот). Три источника:
+(1) **upload** — НАСТОЯЩИЙ байтовый счётчик: `Ssh2Transport.writeLocalFile` += onProgress
+(счёт по read-чанкам; backpressure pipe прижимает темп чтения к темпу сети — счётчик
+честный в пределах одного 4-МБ чанка); jar и bundled-архивы докачки шлют
+`formatByteProgress` («oak-server.jar 40.0 / 80.0 MB · 50%», чистая
+domain/provisioning/progress.ts + тесты; кап процента 100, NaN/мусор → пусто);
+(2) **docker** — последняя строка ВЫВОДА команды (честных процентов у apt нет): exec +=
+onOutputLine (строчный реассемблер в транспорте: буфер по \n, \r-прогрессбары флашатся
+как строки), питают apt dist-upgrade/dpkg и get.docker.com; (3) **compose** — то же для
+последовательных `docker compose up -d --build <svc>`. Троттлер `progressEmitter` в
+пайплайне (новый текст ≥250 мс, тот же текст ≥1 с — чанковый поток не топит IPC). UI:
+`.prov-step-progress` (моно, muted, max-width 46%, ellipsis) между label и detail,
+рендер только у running-шага. Фейк-транспорт: ScriptedResponse += outputLines (эмуляция
+вывода), writeLocalFile зовёт onProgress (40/80 → 80/80); тест «surfaces live progress».
+Гейты: 687/687 + typecheck + build. Смоук pending (следующий прогон с игровой).
+
 ## Launch-раунд D: electron-builder установщик + CI/релизы (2026-10-13, код готов; GitHub-переезд D1 — следующим шагом юзера)
 
 Четвёртый под-раунд launch-блока: упаковка клиента в Windows-установщик, CI и релизные

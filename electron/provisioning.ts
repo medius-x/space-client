@@ -22,7 +22,7 @@ import {
 import { validateProvisioningParams, type ProvisioningParams } from "../src/domain/provisioning/params";
 
 export type ProvisioningIpcEvent =
-  | { kind: "step"; stage: ProvisioningStage | "connect" | "download"; state: "start" | "done" | "log" | "failed"; detail?: string }
+  | { kind: "step"; stage: ProvisioningStage | "connect" | "download"; state: "start" | "done" | "log" | "failed"; detail?: string; progress?: string }
   | { kind: "succeeded"; outcome: ProvisioningOutcome }
   | { kind: "failed"; stage: string; message: string };
 
@@ -152,10 +152,36 @@ export class Ssh2Transport implements ProvisioningTransport {
     });
   }
 
-  async exec(command: string, options?: { timeoutMs?: number }): Promise<{ code: number; stdout: string; stderr: string }> {
+  async exec(
+    command: string,
+    options?: { timeoutMs?: number; onOutputLine?: (line: string) => void },
+  ): Promise<{ code: number; stdout: string; stderr: string }> {
     if (!this.connected) {
       return { code: -1, stdout: "", stderr: "connection closed" };
     }
+    // Line reassembly for the live progress: apt/docker/compose emit complete
+    // lines; a trailing partial chunk stays buffered until its newline, and a
+    // \r-redrawn progress bar flushes the visible line on every carriage
+    // return.
+    const lineSink = options?.onOutputLine ?? null;
+    let lineBuffer = "";
+    const feedLines = (text: string): void => {
+      if (lineSink === null) {
+        return;
+      }
+      lineBuffer += text;
+      let newlineIndex = lineBuffer.indexOf("\n");
+      while (newlineIndex >= 0) {
+        lineSink(lineBuffer.slice(0, newlineIndex));
+        lineBuffer = lineBuffer.slice(newlineIndex + 1);
+        newlineIndex = lineBuffer.indexOf("\n");
+      }
+      const carriageIndex = lineBuffer.lastIndexOf("\r");
+      if (carriageIndex >= 0) {
+        lineSink(lineBuffer.slice(0, carriageIndex));
+        lineBuffer = lineBuffer.slice(carriageIndex + 1);
+      }
+    };
     const outcome = await new Promise<ExecOutcome>((resolve, reject) => {
       this.connection.exec(command, (error, stream) => {
         if (error) {
@@ -165,14 +191,18 @@ export class Ssh2Transport implements ProvisioningTransport {
         let stdout = "";
         let stderr = "";
         stream.on("data", (chunk: Buffer) => {
-          stdout += chunk.toString("utf8");
+          const text = chunk.toString("utf8");
+          stdout += text;
+          feedLines(text);
           // Long-running steps must not buffer unbounded output.
           if (stdout.length > 4_000_000) {
             stdout = stdout.slice(-2_000_000);
           }
         });
         stream.stderr.on("data", (chunk: Buffer) => {
-          stderr += chunk.toString("utf8");
+          const text = chunk.toString("utf8");
+          stderr += text;
+          feedLines(text);
           if (stderr.length > 1_000_000) {
             stderr = stderr.slice(-500_000);
           }
@@ -225,11 +255,16 @@ export class Ssh2Transport implements ProvisioningTransport {
     });
   }
 
-  async writeLocalFile(localPath: string, remotePath: string): Promise<void> {
+  async writeLocalFile(
+    localPath: string,
+    remotePath: string,
+    onProgress?: (bytesSent: number, bytesTotal: number) => void,
+  ): Promise<void> {
     if (!this.connected) {
       throw new Error("connection closed");
     }
     const sftp = await this.openSftp();
+    const bytesTotal = fs.statSync(localPath).size;
     await new Promise<void>((resolve, reject) => {
       // LARGE chunks on both ends: Node's default 64 KB read chunks serialize
       // against the SFTP backpressure one round-trip at a time — on a ~200 ms
@@ -239,9 +274,19 @@ export class Ssh2Transport implements ProvisioningTransport {
       const writeStream = sftp.createWriteStream(remotePath, { highWaterMark: 4 * 1024 * 1024 });
       writeStream.on("close", () => resolve());
       writeStream.on("error", reject);
-      fs.createReadStream(localPath, { highWaterMark: 4 * 1024 * 1024 })
-        .on("error", reject)
-        .pipe(writeStream);
+      let bytesSent = 0;
+      const readStream = fs.createReadStream(localPath, { highWaterMark: 4 * 1024 * 1024 });
+      // The REAL delivery pace: pipe backpressure pauses the disk reads to the
+      // network's tempo, so counting read chunks tracks the wire (within one
+      // chunk) instead of racing ahead of it.
+      readStream.on("data", (chunk: string | Buffer) => {
+        // No encoding is set, so chunks are Buffers in practice; the union is
+        // the stream typings' default.
+        bytesSent += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.length;
+        onProgress?.(bytesSent, bytesTotal);
+      });
+      readStream.on("error", reject);
+      readStream.pipe(writeStream);
     });
   }
 

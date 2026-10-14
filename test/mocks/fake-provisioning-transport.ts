@@ -9,6 +9,9 @@ export interface ScriptedResponse {
   code?: number;
   stdout?: string;
   stderr?: string;
+  /** Emulated command OUTPUT, delivered through the exec's onOutputLine —
+   *  the live-progress surface (docker/compose steps). */
+  outputLines?: string[];
 }
 
 export class FakeProvisioningTransport implements ProvisioningTransport {
@@ -33,7 +36,10 @@ export class FakeProvisioningTransport implements ProvisioningTransport {
     this.handlers.unshift({ match, response, once: true });
   }
 
-  async exec(command: string): Promise<ExecResult> {
+  async exec(
+    command: string,
+    options?: { timeoutMs?: number; onOutputLine?: (line: string) => void },
+  ): Promise<ExecResult> {
     this.commands.push(command);
     if (this.closed) {
       return { code: 255, stdout: "", stderr: "connection closed" };
@@ -46,6 +52,9 @@ export class FakeProvisioningTransport implements ProvisioningTransport {
       if (hit) {
         if (handler.once) {
           this.handlers.splice(index, 1);
+        }
+        for (const line of handler.response.outputLines ?? []) {
+          options?.onOutputLine?.(line);
         }
         return { code: handler.response.code ?? 0, stdout: handler.response.stdout ?? "", stderr: handler.response.stderr ?? "" };
       }
@@ -65,9 +74,19 @@ export class FakeProvisioningTransport implements ProvisioningTransport {
     return this.files.get(remotePath) ?? null;
   }
 
-  async writeLocalFile(localPath: string, remotePath: string): Promise<void> {
+  async writeLocalFile(
+    localPath: string,
+    remotePath: string,
+    onProgress?: (bytesSent: number, bytesTotal: number) => void,
+  ): Promise<void> {
     this.commands.push(`(writeLocalFile ${localPath})`);
     this.writes.push({ path: remotePath, contents: `(local archive ${localPath})` });
+    // A plausible transfer trace: halfway, then complete (the real transport
+    // counts the streamed chunks — the pipeline only formats the numbers).
+    if (onProgress !== undefined) {
+      onProgress(40 * 1024 * 1024, 80 * 1024 * 1024);
+      onProgress(80 * 1024 * 1024, 80 * 1024 * 1024);
+    }
   }
 
   close(): void {

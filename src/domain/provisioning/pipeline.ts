@@ -15,6 +15,7 @@
  * survive), and `docker compose down -v` is never run.
  */
 import { buildEnvFile, generateEnvSecrets, type RandomHexSource } from "./env-file";
+import { clipProgressLine, formatByteProgress } from "./progress";
 import type { ProvisioningParams } from "./params";
 import {
   caddyFileForMode,
@@ -37,12 +38,19 @@ export interface ExecResult {
 
 /** The SSH seam — implemented by Ssh2Transport in the main process. */
 export interface ProvisioningTransport {
-  exec(command: string, options?: { timeoutMs?: number }): Promise<ExecResult>;
+  /** onOutputLine fires per COMPLETE line of the command's combined output —
+   *  the pipeline surfaces it as the step's live progress text. */
+  exec(command: string, options?: { timeoutMs?: number; onOutputLine?: (line: string) => void }): Promise<ExecResult>;
   writeFile(remotePath: string, contents: string | Uint8Array): Promise<void>;
   readFile(remotePath: string): Promise<string | null>;
   /** Streams a LOCAL file to the remote path (the image archives: hundreds of
-   *  megabytes must never be buffered in memory). */
-  writeLocalFile(localPath: string, remotePath: string): Promise<void>;
+   *  megabytes must never be buffered in memory). onProgress fires with the
+   *  REAL byte counts of the transfer (throttling is the caller's job). */
+  writeLocalFile(
+    localPath: string,
+    remotePath: string,
+    onProgress?: (bytesSent: number, bytesTotal: number) => void,
+  ): Promise<void>;
 }
 
 /** The bundled image set (files/images/*, manifest.json) — the registry-free
@@ -87,6 +95,12 @@ export interface ProvisioningStepEvent {
   stage: ProvisioningStage;
   state: "start" | "done" | "log" | "failed";
   detail?: string;
+  /** Live progress of the ACTIVE step (user decision 2026-10-15), rendered
+   *  after the step name and before the detail: a byte counter for uploads
+   *  ("34.2 / 79.1 MB · 43%") or the running command's last output line
+   *  (docker/compose have no honest percentage). Absent on done/failed — the
+   *  UI clears the slot with the step's completion. */
+  progress?: string;
 }
 
 /** The terminal outcome handed to the renderer for the automatic login. */
@@ -164,13 +178,32 @@ export async function runProvisioningPipeline(
   const must = async (
     stage: ProvisioningStage,
     command: string,
-    options?: { timeoutMs?: number },
+    options?: { timeoutMs?: number; onOutputLine?: (line: string) => void },
   ): Promise<ExecResult> => {
     const result = await transport.exec(command, options);
     if (result.code !== 0) {
       throw new ProvisioningFailure(stage, failureReason(result));
     }
     return result;
+  };
+
+  /** Rate-limited progress text for the ACTIVE step (user decision
+   *  2026-10-15): per-chunk callbacks must not flood the IPC. Unchanged text
+   *  repeats at most once a second; a forced flush rides along with the
+   *  step's own done event. */
+  const progressEmitter = (stage: ProvisioningStage) => {
+    let lastSentAt = 0;
+    let lastText = "";
+    return (text: string): void => {
+      const now = Date.now();
+      const sameText = text === lastText;
+      if (now - lastSentAt < (sameText ? 1000 : 250)) {
+        return;
+      }
+      lastSentAt = now;
+      lastText = text;
+      emit({ stage, state: "log", progress: text });
+    };
   };
 
   try {
@@ -250,6 +283,16 @@ export async function runProvisioningPipeline(
     // updater for good — package upgrades on a dedicated OAK server are the
     // owner's deliberate act, never a background one.
     emit({ stage: "docker", state: "start", detail: "stopping the background updater and upgrading system packages" });
+    // No honest percentage exists for apt/docker output — the step surfaces the
+    // running command's LAST OUTPUT LINE instead (a moving line separates
+    // "slow" from "hung" on a fresh host's multi-minute install).
+    const dockerProgress = progressEmitter("docker");
+    const dockerLine = (line: string): void => {
+      const clipped = clipProgressLine(line);
+      if (clipped.length > 0) {
+        dockerProgress(clipped);
+      }
+    };
     await must(
       "docker",
       "systemctl stop unattended-upgrades apt-daily-upgrade 2>/dev/null; "
@@ -262,11 +305,11 @@ export async function runProvisioningPipeline(
       "for attempt in $(seq 1 60); do fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || exit 0; sleep 5; done; echo 'the dpkg lock is still held'; exit 1",
       { timeoutMs: 360_000 },
     );
-    await must("docker", "dpkg --configure -a", { timeoutMs: 600_000 });
+    await must("docker", "dpkg --configure -a", { timeoutMs: 600_000, onOutputLine: dockerLine });
     await must(
       "docker",
       "DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get -y -qq dist-upgrade",
-      { timeoutMs: SYSTEM_UPGRADE_TIMEOUT_MS },
+      { timeoutMs: SYSTEM_UPGRADE_TIMEOUT_MS, onOutputLine: dockerLine },
     );
     emit({ stage: "docker", state: "log", detail: "system packages updated" });
     const rebootNeeded = await transport.exec("test -f /var/run/reboot-required && echo yes || echo no");
@@ -276,7 +319,7 @@ export async function runProvisioningPipeline(
 
     if (!dockerPresent) {
       emit({ stage: "docker", state: "log", detail: "installing Docker (this can take a few minutes)" });
-      await must("docker", "curl -fsSL https://get.docker.com | sh", { timeoutMs: DOCKER_INSTALL_TIMEOUT_MS });
+      await must("docker", "curl -fsSL https://get.docker.com | sh", { timeoutMs: DOCKER_INSTALL_TIMEOUT_MS, onOutputLine: dockerLine });
       // The installer usually starts the daemon; make sure it is enabled too.
       await transport.exec("systemctl enable --now docker 2>/dev/null || service docker start 2>/dev/null || true");
       const verify = await transport.exec("docker compose version");
@@ -304,13 +347,21 @@ export async function runProvisioningPipeline(
 
     // ── upload: templates + the server jar ──────────────────────────────
     emit({ stage: "upload", state: "start", detail: "uploading the deployment files" });
+    // The jar is the one multi-megabyte upload on this step — its REAL byte
+    // counter (the SFTP stream knows both numbers) is the step's progress.
+    const uploadProgress = progressEmitter("upload");
     await transport.writeFile(`${REMOTE_ROOT}/docker-compose.yml`, files.composeFile);
     await transport.writeFile(`${REMOTE_ROOT}/Dockerfile.server`, files.dockerfileServer);
     await transport.writeFile(`${REMOTE_ROOT}/janus/Dockerfile`, files.janusDockerfile);
     await transport.writeFile(`${REMOTE_ROOT}/janus/janus.jcfg`, files.janusConfig);
     await transport.writeFile(`${REMOTE_ROOT}/janus/janus.transport.http.jcfg`, files.janusHttpConfig);
     await transport.writeFile(`${REMOTE_ROOT}/caddy/Caddyfile`, caddyFileForMode(files.caddyFileTemplate, domainDeployment));
-    await transport.writeLocalFile(files.jarLocalPath, `${REMOTE_ROOT}/oak-server.jar`);
+    await transport.writeLocalFile(files.jarLocalPath, `${REMOTE_ROOT}/oak-server.jar`, (bytesSent, bytesTotal) => {
+      const text = formatByteProgress(bytesSent, bytesTotal);
+      if (text.length > 0) {
+        uploadProgress(`oak-server.jar ${text}`);
+      }
+    });
     emit({
       stage: "upload",
       state: "done",
@@ -517,6 +568,7 @@ export async function runProvisioningPipeline(
           detail: `the registry could not deliver ${remaining.length} image(s) — deploying them from the bundled set`,
         });
         await must("compose", `mkdir -p ${REMOTE_ROOT}/images`);
+        const composeProgress = progressEmitter("compose");
         for (const ref of remaining) {
           const entry = bundledImages.manifest.find((candidate) => candidate.ref === ref);
           if (entry === undefined) {
@@ -527,7 +579,16 @@ export async function runProvisioningPipeline(
             state: "log",
             detail: `uploading ${ref} (${Math.round(entry.bytes / 1024 / 1024)} MB)`,
           });
-          await transport.writeLocalFile(`${bundledImages.directory}/${entry.archive}`, `${REMOTE_ROOT}/images/${entry.archive}`);
+          await transport.writeLocalFile(
+            `${bundledImages.directory}/${entry.archive}`,
+            `${REMOTE_ROOT}/images/${entry.archive}`,
+            (bytesSent, bytesTotal) => {
+              const text = formatByteProgress(bytesSent, bytesTotal);
+              if (text.length > 0) {
+                composeProgress(`${entry.archive} ${text}`);
+              }
+            },
+          );
           await must("compose", `gunzip -c ${REMOTE_ROOT}/images/${entry.archive} | docker load`, { timeoutMs: IMAGE_LOAD_TIMEOUT_MS });
         }
         const recheck = parseMissingImages((await transport.exec(missingCheck)).stdout);
@@ -545,8 +606,20 @@ export async function runProvisioningPipeline(
     // (compose would raise them implicitly anyway); each `up` is idempotent,
     // so re-runs and partial stacks just continue where they stopped.
     const START_ORDER = ["postgres", "minio", "minio-init", "janus", "coturn", "oak", "caddy"];
+    // The per-service `up` prints one status line per container — surfacing it
+    // shows the bring-up ORDER living ("Building oak…", "Started oak-janus").
+    const composeLineProgress = progressEmitter("compose");
+    const composeLine = (line: string): void => {
+      const clipped = clipProgressLine(line);
+      if (clipped.length > 0) {
+        composeLineProgress(clipped);
+      }
+    };
     for (const service of START_ORDER) {
-      await must("compose", `cd ${REMOTE_ROOT} && docker compose up -d --build ${service}`, { timeoutMs: COMPOSE_UP_TIMEOUT_MS });
+      await must("compose", `cd ${REMOTE_ROOT} && docker compose up -d --build ${service}`, {
+        timeoutMs: COMPOSE_UP_TIMEOUT_MS,
+        onOutputLine: composeLine,
+      });
     }
     // Every rebuild with a CHANGED jar leaves the previous image dangling
     // (<none>, ~the jar layer each) — re-runs must not slowly fill the disk.

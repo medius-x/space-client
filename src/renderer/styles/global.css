@@ -2923,6 +2923,10 @@ button.wide-add { width: 100%; }
    remaining space, not push "TLS certificate" onto a second line (live
    report 2026-10-12). min-width: 0 is the flex-item part of that contract. */
 .prov-step-label { flex: none; white-space: nowrap; }
+/* Live progress between the step name and its description (user request
+   2026-10-15): a byte counter for uploads, the command's last output line for
+   docker/compose. Muted-mono keeps digits readable without shouting. */
+.prov-step-progress { flex: none; max-width: 46%; font-size: 12px; color: var(--sp-text-muted); font-family: Consolas, "Cascadia Mono", monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prov-step-detail { flex: 1; min-width: 0; color: var(--sp-text-dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prov-log { margin: 8px 0; }
 .prov-log summary { font-size: 12px; color: var(--sp-text-muted); cursor: pointer; user-select: none; }
