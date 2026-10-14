@@ -38,7 +38,7 @@ export interface ProvisioningHooks {
 
 /** The last-resort jar source: the latest GitHub release artifact (round D
  *  publishes it). The bundled jar next to the templates is the default. */
-const PROVISIONING_JAR_URL = "https://github.com/oak-server/oak-server/releases/latest/download/oak-server.jar";
+const PROVISIONING_JAR_URL = "https://github.com/medius-x/oak-server/releases/latest/download/oak-server.jar";
 const JAR_DOWNLOAD_TIMEOUT_MS = 300_000;
 
 // Dev (npm run dev AND the unpacked `npm start`): the templates live in the

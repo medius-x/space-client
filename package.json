@@ -1,7 +1,7 @@
 {
   "name": "space-client",
   "version": "0.1.0",
-  "description": "Space — Electron/TypeScript spike client for the OAK server (stereo + per-user volume validation)",
+  "description": "SPACE — Electron/TypeScript desktop client for the OAK server",
   "author": "OAK project",
   "license": "AGPL-3.0-only",
   "private": true,
