@@ -37,6 +37,7 @@ import type { ConnectionSession } from "../../domain/session/connection-session"
 import type { VoiceMemberMarks } from "../../domain/stores/VoiceControlStore";
 import type { FeedInfo } from "../../types";
 import { canActOn, memberNameColor, topPosition, type HierarchyView } from "../../domain/logic/roster-grouping";
+import { voiceSignalLevel, type VoiceSignalLevel } from "../../domain/logic/voice-rtt";
 import { feedHasLiveVideo } from "../../core/classifier";
 import { displayNameOf } from "../../domain/logic/display-name";
 import { log } from "../../logging";
@@ -177,9 +178,30 @@ export function NsEngineMenu({ engine, x, y, onPick, onClose, triggerRef }: {
   );
 }
 
+/** Discord-style voice-signal waves (user decision 2026-10-15): three arcs
+ *  whose LIT COUNT and colour follow voiceSignalLevel — 3 green / 2 yellow /
+ *  1 red, unlit arcs stay dim, level 0 (no reading yet) keeps everything dim.
+ *  Inline SVG on purpose: the MDI font has no glyph whose wave count can be
+ *  toggled; the root-App "svg shifts layout" pitfall does not apply to a
+ *  fixed-size flex child. The exact RTT travels in the wrapper's tooltip. */
+function VoiceSignalGlyph({ level }: { level: VoiceSignalLevel }): React.JSX.Element {
+  // The arcs are vertically CENTERED in the viewBox (the first draft sat them
+  // in the lower half of a 24×24 box — the glyph read as sunken under the
+  // status text even with flex centering).
+  return (
+    <svg className={"voice-signal level-" + level} width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+      <circle className="dot" cx="12" cy="15.2" r="1.7" />
+      <path className={level >= 1 ? "wave" : "wave off"} d="M14.83 13.17 A4 4 0 0 0 9.17 13.17" />
+      <path className={level >= 2 ? "wave" : "wave off"} d="M17.30 10.70 A7.5 7.5 0 0 0 6.70 10.70" />
+      <path className={level >= 3 ? "wave" : "wave off"} d="M19.78 8.22 A11 11 0 0 0 4.22 8.22" />
+    </svg>
+  );
+}
+
 export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX.Element | null {
   const voiceState = useStore(appStore, (state) => state.voiceState);
   const stateDetail = useStore(appStore, (state) => state.stateDetail);
+  const voiceRttMillis = useStore(appStore, (state) => state.voiceRttMillis);
   const sharing = useStore(appStore, (state) => state.sharing);
   const cameraOn = useStore(appStore, (state) => state.cameraOn);
   const activeChannelId = useStore(appStore, (state) => state.activeVoiceChannelId);
@@ -362,10 +384,15 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
   const selfMuted = (ownMarks?.selfMuted ?? false) || (ownMarks?.modMuted ?? false) || permMuted;
   const selfDeafened = (ownMarks?.selfDeafened ?? false) || (ownMarks?.modDeafened ?? false);
   const statusClass = voiceState === "live" ? "live" : voiceState === "reconnecting" ? "reconnecting" : voiceState === "failed" ? "failed" : "connecting";
-  // oak's voice bar texts (setVoiceStatus): "On a call" green / "Connecting"
-  // yellow / "Reconnecting… N/5" yellow — over the "{channel}/{server}" detail line.
+  // oak's room statuses were "On a call"/"Connecting"/"Reconnecting… N/5" — the
+  // live text is OURS (user decision 2026-10-15): a call-style phrase in a room
+  // read as a foreign status, and with the STOMP "Connected" badge nearby a dead
+  // media path looked healthy (live 2026-10-14 — janus candidates unreachable,
+  // nobody noticed). The exact RTT does NOT ride the status line (a green
+  // "230 ms" read as "everything is fine" — live 2026-10-15): it lives in the
+  // waves glyph's tooltip, the glyph itself carries the quality tier.
   const statusText = voiceState === "live"
-    ? "On a call"
+    ? "Voice connected"
     : voiceState === "reconnecting"
       ? `Reconnecting…${stateDetail ? ` ${stateDetail}` : ""}`
       : voiceState === "failed"
@@ -379,7 +406,17 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
             detail (voiceInfoRow VBox). NO chevron — the only chevron in the
             subsystem is the room header's back button (main.fxml has none here). */}
         <div className="voice-bar-text">
-          <span className={"voice-bar-status " + statusClass}>{statusText}</span>
+          <div className="voice-status-line">
+            <span className={"voice-bar-status " + statusClass}>{statusText}</span>
+            {voiceState === "live" ? (
+              <span
+                className="voice-signal-wrap"
+                title={voiceRttMillis !== null ? `Voice connection: ${voiceRttMillis} ms` : "Voice connection: measuring…"}
+              >
+                <VoiceSignalGlyph level={voiceSignalLevel(voiceRttMillis)} />
+              </span>
+            ) : null}
+          </div>
           <span className="voice-bar-details">
             {channel !== null ? `${channel.name} / ${serverName}` : ""}
           </span>

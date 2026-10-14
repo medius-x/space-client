@@ -23,6 +23,9 @@ files:
   - out/**
 
 npmRebuild: false
+# electron-builder infers a GitHub publish feed from the git remote and emits
+# resources/app-update.yml; we ship no auto-updates — the hook strips the file.
+afterPack: scripts/remove-app-update.cjs
 asarUnpack:
   - node_modules/koffi/**
 

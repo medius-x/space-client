@@ -2,6 +2,7 @@ import { log } from "../logging";
 import type { FeedInfo, RemoteTrackKind, RoomInfo } from "../types";
 import type { JanusClient, JanusJsep } from "./janus";
 import { isBadPin, isRoomVanished, type VideoroomEvent } from "./janus-events";
+import { voiceRttMillis, type CandidatePairEntry } from "../domain/logic/voice-rtt";
 import {
   classifyFeed,
   diffSubscriptions,
@@ -1073,6 +1074,21 @@ export class SfuSession {
         packetsLost: null,
         jitterMs: null,
       };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Media-path RTT for the voice badge: the publisher transport's candidate
+   *  pair (see domain/logic/voice-rtt.ts). Null while the transport is not
+   *  established — the badge renders without the number. */
+  async getVoiceRttMillis(): Promise<number | null> {
+    if (this.publisherPc === null) {
+      return null;
+    }
+    try {
+      const report = await this.publisherPc.getStats();
+      return voiceRttMillis(Array.from(report.values()) as unknown as CandidatePairEntry[]);
     } catch {
       return null;
     }

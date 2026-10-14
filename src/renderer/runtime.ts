@@ -9,7 +9,7 @@ import { feedHasLiveVideo, feedHasShareAudio } from "../core/classifier";
 import { extractAudioFmtpLines } from "../core/sdp";
 import { rmsToDbfs, stereoVerdict } from "../core/audio-math";
 import { RoomAudio } from "../media/RoomAudio";
-import { createNoisePipeline, type NoiseEngineKind, type NoisePipeline } from "../media/noise-suppression";
+import { createNoisePipeline, noisePipelineStillWanted, type NoiseEngineKind, type NoisePipeline } from "../media/noise-suppression";
 import { createShareSubtraction, suppressionDb } from "../media/share-subtraction";
 import { createSystemAudioSource, type SystemAudioSource } from "../media/system-audio-source";
 import { acquireNativeShareAudioTrack, isNativeShareActive, isShareMonitorWanted, monitorActiveShare, releaseNativeShareAudio, setActiveShareMonitorSink } from "../media/native-share-audio";
@@ -99,6 +99,10 @@ export interface AppState {
   activeVoiceChannelId: number | null;
   voiceState: VoiceRoomState;
   stateDetail: string | null;
+  /** Media-path RTT of the live voice transport (publisher candidate pair,
+   *  ms) — the voice badge's "· N ms". NULL while not established; distinct
+   *  from the STOMP ping (signalling) by design. */
+  voiceRttMillis: number | null;
   participants: FeedInfo[];
   sharing: boolean;
   cameraOn: boolean;
@@ -208,6 +212,7 @@ class AppStore extends Emitter {
     activeVoiceChannelId: null,
     voiceState: "idle",
     stateDetail: null,
+    voiceRttMillis: null,
     participants: [],
     sharing: false,
     cameraOn: false,
@@ -2004,6 +2009,7 @@ export async function teardownSession(): Promise<void> {
     activeVoiceChannelId: null,
     voiceState: "idle",
     stateDetail: null,
+    voiceRttMillis: null,
     participants: [],
     sharing: false,
     cameraOn: false,
@@ -2748,7 +2754,7 @@ export async function joinVoice(channel: Channel): Promise<void> {
     voiceCompliance.deafened = false;
   }
   roomAudio.setDeafened(false);
-  appStore.patch({ activeVoiceChannelId: channel.id, voiceState: "connecting", stateDetail: null, participants: [], viewingFeedId: null });
+  appStore.patch({ activeVoiceChannelId: channel.id, voiceState: "connecting", stateDetail: null, voiceRttMillis: null, participants: [], viewingFeedId: null });
   // The share/camera gate reads the per-channel STREAM bit — a voice channel is
   // often never OPENED as a chat tab, so its bits would never be cached otherwise.
   void session.ensureChannelPermissions(channel.id);
@@ -2818,7 +2824,15 @@ async function connectVoiceRoom(channel: Channel): Promise<void> {
           },
           onRemoteTrack: handleRemoteTrack,
           onRemoteTrackEnded: handleRemoteTrackEnded,
-          onState: (state, detail) => appStore.patch({ voiceState: state, stateDetail: detail ?? null }),
+          onState: (state, detail) => {
+            appStore.patch({ voiceState: state, stateDetail: detail ?? null });
+            // The media RTT badge only makes sense on a live transport.
+            if (state === "live") {
+              startVoiceRttPolling();
+            } else {
+              stopVoiceRttPolling();
+            }
+          },
           // The still-muted watchdog's lie detector: a muted publisher sends no RTP,
           // so "silent" is expected for a marked member — only an UNMARKED silent
           // feed is a real fault worth alarming about.
@@ -2876,6 +2890,43 @@ async function connectVoiceRoom(channel: Channel): Promise<void> {
       throw error;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Voice media RTT (user decision 2026-10-15): the badge's "Voice connected ·
+// N ms" reads the MEDIA transport (publisher candidate pair via getStats),
+// deliberately distinct from the STOMP ping badge (signalling) — a room can
+// be green on signalling while its media path is dead (live 2026-10-14).
+// ---------------------------------------------------------------------------
+
+const VOICE_RTT_POLL_MILLIS = 10_000;
+let voiceRttTimer: ReturnType<typeof setInterval> | null = null;
+
+function stopVoiceRttPolling(): void {
+  if (voiceRttTimer !== null) {
+    clearInterval(voiceRttTimer);
+    voiceRttTimer = null;
+  }
+  if (appStore.getSnapshot().voiceRttMillis !== null) {
+    appStore.patch({ voiceRttMillis: null });
+  }
+}
+
+function startVoiceRttPolling(): void {
+  stopVoiceRttPolling();
+  const poll = async (): Promise<void> => {
+    const session = sfuSession;
+    if (session === null) {
+      stopVoiceRttPolling(); // teardown raced the timer — nothing to read
+      return;
+    }
+    const rtt = await session.getVoiceRttMillis().catch(() => null);
+    if (sfuSession === session) { // a stale poll of a replaced session is dropped
+      appStore.patch({ voiceRttMillis: rtt });
+    }
+  };
+  void poll(); // the badge gets its number as soon as the pair reports one
+  voiceRttTimer = setInterval(() => void poll(), VOICE_RTT_POLL_MILLIS);
 }
 
 /**
@@ -2974,6 +3025,11 @@ function resetVoiceCompliance(): void {
 // (no re-capture, no renegotiation).
 // ---------------------------------------------------------------------------
 
+/** True while a call is preparing its mic: captureCallMic/wrapCallMic run
+ *  BEFORE the PeerCallSession exists (outgoing ring AND accept). The enhance
+ *  guard must treat that as a live consumer — see noisePipelineStillWanted. */
+let callMicBootInFlight = false;
+
 /** The SfuSession/PeerCallSession mic hook: raw in, published track out. */
 async function enhanceMicTrack(rawTrack: MediaStreamTrack): Promise<MediaStreamTrack> {
   disposeNoisePipeline();
@@ -2988,7 +3044,15 @@ async function enhanceMicTrack(rawTrack: MediaStreamTrack): Promise<MediaStreamT
     settings.deepFilterSuppressionLevel,
   );
   // The voice/call may have died while the engine booted — never resurrect it.
-  if (rawTrack.readyState !== "live" || (sfuSession === null && callSession === null)) {
+  // (A call still PREPARING its mic is alive for this purpose: the session
+  // object is created only after the wrap, live 2026-10-15.)
+  if (!noisePipelineStillWanted({
+    rawTrackLive: rawTrack.readyState === "live",
+    voiceSessionAlive: sfuSession !== null,
+    callSessionAlive: callSession !== null,
+    callMicBootInFlight,
+  })) {
+    log.warn("ns", `engine ${pipeline.engine} boot dropped — no live consumer`);
     pipeline.dispose();
     return rawTrack;
   }
@@ -3080,6 +3144,7 @@ function watchNoiseSettings(): void {
 
 export async function teardownVoice(): Promise<void> {
   stopAfkReporting();
+  stopVoiceRttPolling();
   feedShareAudioTracks.clear();
   releaseNativeShareAudio();
   watchShareSource(null);
@@ -4181,6 +4246,7 @@ export function callUser(username: string): void {
 }
 
 async function beginOutgoingCall(username: string): Promise<void> {
+  callMicBootInFlight = true;
   try {
     callMicStream = await captureCallMic();
     callPublishedMic = await wrapCallMic(callMicStream);
@@ -4190,6 +4256,8 @@ async function beginOutgoingCall(username: string): Promise<void> {
     log.error("call", `outgoing call failed to start: ${errorMessage(error)}`);
     notifications.showToast({ title: "Call", channelName: username, body: `Microphone unavailable — ${errorMessage(error)}` });
     return;
+  } finally {
+    callMicBootInFlight = false;
   }
   appStore.patch({ callState: "ringing-out", callPeer: username, callHealthy: true, callSeconds: 0 });
   activeSession?.sendCallSignal({ type: "RING", to: username, sdp: null, candidate: null });
@@ -4259,6 +4327,7 @@ async function acceptCallNow(): Promise<void> {
   // oak keeps the card through the accept→OFFER gap — it just stops offering
   // buttons and reads "Connecting…" until the offer lands.
   notifications.updateCallCardStatus("Connecting…");
+  callMicBootInFlight = true;
   try {
     callMicStream = await captureCallMic();
     callPublishedMic = await wrapCallMic(callMicStream);
@@ -4267,6 +4336,8 @@ async function acceptCallNow(): Promise<void> {
     notifications.showToast({ title: "Call", channelName: peer, body: `Microphone unavailable — ${errorMessage(error)}` });
     teardownCall();
     return;
+  } finally {
+    callMicBootInFlight = false;
   }
   attachOwnCallMic(callPublishedMic ?? callMicStream);
   const iceServers = await fetchIceServers();

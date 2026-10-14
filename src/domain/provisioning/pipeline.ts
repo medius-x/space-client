@@ -383,7 +383,11 @@ export async function runProvisioningPipeline(
       await must(
         "firewall",
         `ufw allow ${params.sshPort}/tcp && ufw allow 443/tcp && ufw allow 9443/tcp`
-          + " && ufw allow 34780/tcp && ufw allow 5349/tcp"
+          // 34780/udp is the PRIMARY TURN transport: a TURN Allocate travels
+          // as UDP first (the server also advertises ?transport=tcp, but a
+          // TCP relay's headroom is a poor voice path — UDP is the one that
+          // must be open for 1-on-1 calls behind strict NAT).
+          + " && ufw allow 34780/tcp && ufw allow 34780/udp && ufw allow 5349/tcp"
           + " && ufw allow 2000:2300/udp && ufw allow 55000:55050/udp"
           + " && ufw --force enable",
       );

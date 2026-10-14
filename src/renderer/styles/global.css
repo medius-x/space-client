@@ -3913,6 +3913,20 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 .voice-bar-status.live { color: var(--sp-green); }
 .voice-bar-status.connecting, .voice-bar-status.reconnecting { color: var(--sp-yellow); }
 .voice-bar-status.failed { color: var(--sp-red); }
+/* The status line with the Discord-style signal waves glyph (user decision
+   2026-10-15): the glyph carries the MEDIA quality tier, the exact RTT rides
+   its tooltip — a green "230 ms" in the status text read as "all fine". */
+.voice-status-line { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.voice-signal-wrap { display: inline-flex; flex: none; }
+.voice-signal { display: block; }
+.voice-signal .wave { fill: none; stroke: var(--sp-text-dim); stroke-width: 2.2; stroke-linecap: round; opacity: 0.5; }
+.voice-signal .dot { fill: var(--sp-text-dim); opacity: 0.5; }
+.voice-signal.level-1 .wave:not(.off) { stroke: var(--sp-red); opacity: 1; }
+.voice-signal.level-1 .dot { fill: var(--sp-red); opacity: 1; }
+.voice-signal.level-2 .wave:not(.off) { stroke: var(--sp-yellow); opacity: 1; }
+.voice-signal.level-2 .dot { fill: var(--sp-yellow); opacity: 1; }
+.voice-signal.level-3 .wave:not(.off) { stroke: var(--sp-green); opacity: 1; }
+.voice-signal.level-3 .dot { fill: var(--sp-green); opacity: 1; }
 /* oak's voiceInfoRow: the status sits ON ITS OWN LINE over the channel/server
    detail (a VBox); NO chevron — the only chevron in the subsystem is the room
    header's back button (main.fxml has none on the info row). */

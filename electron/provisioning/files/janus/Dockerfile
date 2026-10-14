@@ -7,6 +7,10 @@
 #     (compose passes it from env/.env). The secret is per-deployment and never baked into
 #     the image or the repo: it guards the Admin API on :7088 (token minting!) AND is the
 #     HMAC key oak-server derives every videoroom pin/secret from.
+#     nat_1_1_mapping = "@NAT_1_1_IP@" is the same mechanism for the public IP: Janus sits
+#     behind Docker's 1:1 published RTP range, so its host candidate must carry the public
+#     address or off-host clients can never reach it (ICE fails; live 2026-10-14). An empty
+#     env (bare `docker run`) DELETES the line instead of substituting an empty string.
 #   - janus.transport.http.jcfg: admin_http = true — MANDATORY: with token_auth (stored tokens)
 #     and no Admin/monitor transport Janus fatals at startup ("No Admin/monitor transport is
 #     available, but the stored token based authentication mechanism is enabled... giving up!",
@@ -19,4 +23,5 @@ COPY janus.jcfg /usr/local/etc/janus/janus.jcfg
 COPY janus.transport.http.jcfg /usr/local/etc/janus/janus.transport.http.jcfg
 # Fallback for bare `docker run` without compose: compose always overrides from .env.
 ENV JANUS_ADMIN_SECRET=change-me-janus-admin
-ENTRYPOINT ["/bin/sh", "-c", "sed -i \"s|@JANUS_ADMIN_SECRET@|${JANUS_ADMIN_SECRET}|g\" /usr/local/etc/janus/janus.jcfg && exec /usr/local/bin/janus"]
+ENV NAT_1_1_IP=
+ENTRYPOINT ["/bin/sh", "-c", "if [ -n \"${NAT_1_1_IP}\" ]; then sed -i \"s|@NAT_1_1_IP@|${NAT_1_1_IP}|g\" /usr/local/etc/janus/janus.jcfg; else sed -i \"/^[[:space:]]*nat_1_1_mapping/d\" /usr/local/etc/janus/janus.jcfg; fi && sed -i \"s|@JANUS_ADMIN_SECRET@|${JANUS_ADMIN_SECRET}|g\" /usr/local/etc/janus/janus.jcfg && exec /usr/local/bin/janus"]

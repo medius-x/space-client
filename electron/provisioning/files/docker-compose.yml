@@ -85,6 +85,11 @@ services:
     restart: unless-stopped
     environment:
       JANUS_ADMIN_SECRET: ${JANUS_ADMIN_SECRET}
+      # Rewrites Janus host candidates to the public IP (see nat_1_1_mapping in
+      # janus/janus.jcfg): the RTP range is published 1:1, so the public address
+      # is the only wrong part of the container's own candidate. TURN_EXTERNAL_IP
+      # is always the raw public IP in this .env.
+      NAT_1_1_IP: ${TURN_EXTERNAL_IP}
     ports:
       # RTP media range — must match rtp_port_range in janus.jcfg (janus
       # allocates RTP/RTCP pairs from it; clients send SRTP straight at the

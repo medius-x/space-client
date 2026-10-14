@@ -311,6 +311,10 @@ export function ToastStackScreen(): React.JSX.Element {
               <button
                 className="toast-call-accept"
                 title="Accept"
+                // pointerdown is the rawest hop marker (diagnostic, live
+                // 2026-10-15): it fires before click — presence without a
+                // following "accept clicked" means the click never assembled.
+                onPointerDown={() => log.info("toast", "call button pointerdown")}
                 onClick={() => {
                   log.info("toast", "call accept clicked");
                   window.spaceToast?.callAction("accept");
@@ -321,6 +325,7 @@ export function ToastStackScreen(): React.JSX.Element {
               <button
                 className="toast-call-decline"
                 title="Decline"
+                onPointerDown={() => log.info("toast", "call button pointerdown")}
                 onClick={() => {
                   log.info("toast", "call decline clicked");
                   window.spaceToast?.callAction("decline");

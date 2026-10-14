@@ -3628,6 +3628,97 @@ SSH-прогон активен (onRunningChange — строже onBusyChange, 
 был contentless, клиентской логики ноль). Живая верификация: Ubuntu-22 прогон + инвайт
 новичка при открытом овнере — появился мгновенно. Гейты: 666/666 + typecheck + build.
 
+**Packaged-смоук раунда D (2026-10-14, живой прогон установщика на чистой игровой машине
+Win10 → VPS; голос не коннектился — фикс по итогам).** Прогон доехал даже через задушенный
+канал (~0.3 МБ/с — хостер шейпит VPS в обе стороны, двусторонний SFTP-замер dev↔VPS;
+машинные/ОС-гипотезы сняты, лечится тикетом хостеру/сменой IP). Регистрация/автологин/чат
+работали, но вход в голосовую комнату умирал серией «ICE failed for component 1» в
+janus-логе (= rejoin-лестница клиента). **КОРЕНЬ: janus за Docker'ом без nat_1_1_mapping
+анонсировал КОНТЕЙНЕРНЫЙ IP (172.18.0.x) в ICE-кандидатах** — клиентская RTCPeerConnection
+комнат создаётся БЕЗ iceServers (vanilla host-кандидаты), 172.x не маршрутизируется в
+интернете → обе стороны глухи; на dev это прощалось (клиент и Docker Desktop на одной
+машине — внутренние адреса достижимы). **Фикс (6 файлов, оба репо, зеркало):** janus.jcfg
++= `nat_1_1_mapping = "@NAT_1_1_IP@"` (плейсхолдер), janus/Dockerfile ENTRYPOINT
+подставляет NAT_1_1_IP из env (пустой env → строка УДАЛЯЕТСЯ — bare docker run сохраняет
+сток), compose janus.environment += `NAT_1_1_IP: ${TURN_EXTERNAL_IP}` (в .env это всегда
+сырой публичный IP). Adopt-прогон провижининга подхватывает сам: layout перезаливает
+шаблоны, `up -d --build` пересобирает janus за секунды (базовый образ локальный). На
+dev-стенде нужен `docker compose build janus` (кандидаты станут LAN-IP — достижимо через
+UDP port-proxy, как coturn-relay). Уведомление фаервола Windows при первом заходе в голос —
+НОРМА (UDP-сокеты WebRTC), «разрешить» правильно. Гейты: 666/666 (шаблоны вне TS-бандла,
+тесты пайплайна на инлайн-фикстурах).
+
+**Доработка по итогам того же смоука (юзер-решение 2026-10-15, КЛИЕНТ-ONLY): «Voice
+connected» + глиф волн — честный медиа-статус комнатной голосовой панели.** Вскрылось, что
+комнатный live-статус существовал всегда, но нёс oak-текст «On a call» (юзер его читал
+как звонковый и не связывал с комнатой), рядом стоял зелёный STOMP-«Connected» панели —
+и мёртвый медиа-путь в одиночном прогоне выглядел здоровым. Правки: (1) live-текст комнаты
+= «Voice connected» (ОСОЗНАННОЕ ОТСТУПЛЕНИЕ от oak-текста); (2) медиа-RTT —
+чистая `domain/logic/voice-rtt.ts` (nominated succeeded candidate-pair →
+currentRoundTripTime, фолбэк на первую succeeded без nominated — vanilla-ICE стеки, санация
+NaN/отрицательных, +6 тестов) + `SfuSession.getVoiceRttMillis()` (getStats publisher-PC,
+та же идиома, что share-stats); (3) runtime-поллер 10 с (`startVoiceRttPolling` /
+`stopVoiceRttPolling`): старт/стоп хвостом `onState` колбэка SfuSession (live → поллим,
+прочее → стоп+null), первый замер сразу; teardownVoice гасит, joinVoice реинициализирует
+null; stale-полл заменённой сессии дропается по identity-сравнению sfuSession; (4)
+AppState += `voiceRttMillis: number | null` (ОБА инициализатора — грабла typecheck поймала).
+RTT МЕДИА-пути ≠ STOMP-пинг бейджа (сигналинг) — это и есть различимость, ради которой
+фича делалась. **Итерация 2 (юзер-репорт «зелёное 230 ms читается как норма», 2026-10-15):
+число УШЛО из статус-текста — Discord-стиль ВОЛНЫ-ГЛИФ** (`VoiceSignalGlyph`, inline-SVG
+3 дуги — mdi не умеет менять число волн; fixed-size flex-ребёнок, корневая svg-грабля
+неприменима): lit-количество и ЦВЕТ по `voiceSignalLevel` (<120 мс = 3 зелёные / <250 =
+2 жёлтые / иначе 1 красная; null/мусор = 0, всё dim) — чистая функция в voice-rtt.ts (+3
+теста вкл. живые 230 мс → уровень 2); точный RTT — в tooltip глифа («Voice connection:
+N ms»); CSS `.voice-status-line` (строка статуса стала flex-рядом) + `.voice-signal.level-N`
+(незажжённые дуги dim, зажжённые — цвет качества; корневые цвета --sp-green/yellow/red).
+Звонковая панель («On a call — MM:SS») НЕ тронута; медиа-RTT звонка —
+остался в бэклоге. Гейты: 675/675 + typecheck + build. Смоук: adopt-прогон прошёл, комната
+живая («Voice connected», RTT ~230 мс — VPS-маршрут), hearing-тест двумя клиентами pending.
+
+**Сопутствующая находка того же семейства (юзер-вопрос «нужен ли nat_1_1 для coturn?»):
+ufw НЕ открывал 34780/udp.** Сам coturn в порядке — `--external-ip` (аналог nat_1_1_mapping
+для relay-кандидатов) стоял в compose-шаблоне с раунда C, TURN_EXTERNAL_IP провижининг
+пишет правильный публичный IP. Но firewall-шаг пайплайна открывал 34780 ТОЛЬКО по tcp —
+а TURN Allocate едет по UDP в первую очередь (CallController даёт оба urls `?transport=udp|tcp`,
+TCP-relay — запасной путь с плохой латентностью для голоса): без udp-правила звонки 1-на-1
+за строгим NAT деградировали бы на TCP-релей. Фикс: pipeline.ts firewall += `ufw allow
+34780/udp`; шаг идемпотентен и выполняется В ОБЕИХ ветках (fresh и adopt) — повторный
+прогон доустановит правило на живой VPS. Гейты: 672/672.
+
+**Смоук-фикс NS в звонках 1-на-1 (живой репорт 2026-10-15, packaged-смоук: после комнаты
+DFN3 не работал в звонке — лечился переключением движка; всё остальное зелёное: комнаты,
+шары в обе стороны, звонки, шары в звонках).** Корень по instance-b логу: boot DFN3 дошёл
+до «worklet ready», но `engine live` не писался — guard в `enhanceMicTrack` («voice/call
+мог умереть, пока движок грузился — не воскрешать») проверял `sfuSession===null &&
+callSession===null`, а у ЗВОНКА оба вызова мика (`beginOutgoingCall` и `acceptCallNow`)
+гоняют `wrapCallMic` → `enhanceMicTrack` ДО создания PeerCallSession (конструктор строго
+после) → ЛЮБОЙ движок тихо убивался на старте каждого 1-на-1 (публиковался raw; с
+сентября не замечали — NS-проверки были комнатными; комната не задета: sfuSession
+присваивается до sfu.start). Фикс: чистая `noisePipelineStillWanted` (media/noise-
+suppression.ts, +5 тестов) + runtime-флаг `callMicBootInFlight` (вокруг capture/wrap в
+ОБОИХ звонковых путях, finally-сброс) + WARN-лог «boot dropped — no live consumer»
+(прежде гибель шла молча). teardownCall уже dispose'ил пайплайн — утечки нет. Гейты:
+680/680 + typecheck + build. В экзешнике, собранном 01:08 2026-10-15, фикса НЕТ.
+
+**Баг-хант: мёртвые клики звоночной карточки + «под браузером» (живой репорт игровой
+машины 2026-10-15, Win10 19045; лог client-logs-2026-10-14-21-42-06).** Факты по логу:
+RING 21:35:51 → карточка показана → 27 с кликов НИ ОДНОЙ строки «call accept clicked»
+(для соседних карточек пишется исправно) → в 21:36:18 message-тост показан БЕЗ suppress
+(«call card owns the corner» не сработал → callCardRef уже null — карточку снёс HANGUP
+сброса дева) → повторный RING 21:36:22 → accept за 2.6 с. Симптом юзера «hover работает,
+клик нет» + «карточка ПОД развёрнутым браузером». Рабочая гипотеза: Windows после
+hide()/showInactive()-циклов окна тостов (между звонками стек пустел → окно скрывалось)
+выводит окно из topmost-полосы → карточка под maximized-браузером; клики при этом
+терялись до renderer'а (ни pointerdown, ни clicked — ввод не доходил). Сделано: (1)
+**topmost-страховка** — при каждом показе окна тостов (show-обработчик + ready-flush)
+`setAlwaysOnTop(true,"screen-saver") + moveTop()`; (2) **диагностика по звеньям**:
+`[main] toast call action <action>` (IPC-хоп), `[main] toast interactive=true/false`
+(только переходы — маркер «окно вообще получало ввод»: нет флипа рядом с кликом = окно
+перекрыто, не DOM-баг), `[toast] call button pointerdown` (сырой маркер ввода в
+renderer'е тост-окна: pointerdown есть / clicked нет = click не собрался). Гейты:
+680/680 + typecheck + build. НЕ воспроизведено на dev-стенде — ждём повторения на
+игровой машине с новой диагностикой; тайминг репро важнее фикса-кандидата.
+
 ## Launch-раунд D: electron-builder установщик + CI/релизы (2026-10-13, код готов; GitHub-переезд D1 — следующим шагом юзера)
 
 Четвёртый под-раунд launch-блока: упаковка клиента в Windows-установщик, CI и релизные
@@ -3671,6 +3762,12 @@ workflows обоих репо, версионная связка «клиент 
   самохостинг, юзер подтверждает «все равно установить»); автообновлений нет (установщик
   перезаписывает поверх, KV userData переживает); packaged и dev делят AppData —
   следовательно GPU-cache LOCK при одновременном запуске (Chromium-шум, не блокирует).
+  **app-update.yml ВЫРЕЗАЕТСЯ из пака** (юзер-решение 2026-10-15): electron-builder
+  автоматически генерит resources/app-update.yml (feed-конфиг electron-updater из
+  git-remote: provider github, owner/repo; содержит updaterCacheDirName
+  «space-client-updater», сбивавший с толку) — механика мёртвая (electron-updater не в
+  deps, latest.yml не публикуется), потому `afterPack: scripts/remove-app-update.cjs`
+  удаляет файл из appOutDir. На размер установщика НЕ влияло (~100 байт).
 - Гейты: клиент 666/666 + typecheck + build + dist:dir смоук (трей/jar/образы в паке);
   сервер mvn package зелёный, target/oak-server.jar. Security-проход: workflows без
   секретов (github.token, permissions contents:write только в release; форк-PR —

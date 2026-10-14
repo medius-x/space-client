@@ -1160,7 +1160,13 @@ ipcMain.on("space-toast:show", (_event, payload: unknown) => {
     pendingToastPayloads.push(payload);
     return; // shown once the page is ready — showing an unloaded window paints nothing
   }
+  // Re-assert the topmost band on every show: after hide()/showInactive()
+  // cycles Windows can drop the window out of the topmost band and a maximized
+  // app covers it (live 2026-10-15: the call card surfaced UNDER a maximized
+  // browser). moveTop then forces the z-order above the previously-active app.
+  toast.setAlwaysOnTop(true, "screen-saver");
   toast.showInactive(); // visible, never stealing focus
+  toast.moveTop();
   toast.webContents.send("toast:show", payload);
 });
 
@@ -1171,7 +1177,9 @@ ipcMain.on("space-toast:ready", () => {
   }
   toastWindowReady = true;
   if (pendingToastPayloads.length > 0) {
+    toast.setAlwaysOnTop(true, "screen-saver");
     toast.showInactive();
+    toast.moveTop();
     for (const payload of pendingToastPayloads) {
       toast.webContents.send("toast:show", payload);
     }
@@ -1179,10 +1187,18 @@ ipcMain.on("space-toast:ready", () => {
   }
 });
 
+// Interactive = the cursor is over actual content — only then the window
+// accepts clicks; everywhere else it stays click-through. Transitions are
+// logged (diagnostic, live 2026-10-15): no flip next to a click means the
+// window never received the input at all (occluded), not a DOM fault.
+let toastInteractive = false;
 ipcMain.on("space-toast:hover", (_event, interactive: unknown) => {
-  // Interactive = the cursor is over actual content — only then the window
-  // accepts clicks; everywhere else it stays click-through.
-  toastWindow?.setIgnoreMouseEvents(interactive !== true, { forward: true });
+  const next = interactive === true;
+  if (next !== toastInteractive) {
+    toastInteractive = next;
+    appendLog(`[main] toast interactive=${next}`);
+  }
+  toastWindow?.setIgnoreMouseEvents(!next, { forward: true });
 });
 
 ipcMain.on("space-toast:geometry", (_event, contentHeight: unknown) => {
@@ -1217,6 +1233,9 @@ ipcMain.on("space-toast:clicked", (_event, id: unknown) => {
 // where the runtime answers the call machine (same relay shape as card clicks).
 ipcMain.on("space-toast:callAction", (_event, action: unknown) => {
   if (action === "accept" || action === "decline") {
+    // Diagnostic (live 2026-10-15): clicks on a live call card once vanished
+    // between the toast window and the runtime — every hop logs now.
+    appendLog(`[main] toast call action ${action}`);
     mainWindowRef?.webContents.send("toast:callAction", action);
   }
 });

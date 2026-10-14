@@ -631,3 +631,22 @@ async function createDtlnPipeline(rawTrack: MediaStreamTrack): Promise<NoisePipe
     },
   };
 }
+
+/** The mic-enhancer guard, extracted for tests: a freshly booted pipeline
+ *  survives only when something still wants it. A call that is PREPARING its
+ *  mic counts as wanting it — captureCallMic/wrapCallMic run BEFORE the
+ *  PeerCallSession exists (both the outgoing ring and the accept), so the old
+ *  "no live session" check killed EVERY engine boot on the 1-on-1 path and
+ *  calls went out with the raw mic (live 2026-10-15: DFN3 silently missing in
+ *  a call right after leaving a room). */
+export function noisePipelineStillWanted(input: {
+  rawTrackLive: boolean;
+  voiceSessionAlive: boolean;
+  callSessionAlive: boolean;
+  callMicBootInFlight: boolean;
+}): boolean {
+  if (!input.rawTrackLive) {
+    return false;
+  }
+  return input.voiceSessionAlive || input.callSessionAlive || input.callMicBootInFlight;
+}
