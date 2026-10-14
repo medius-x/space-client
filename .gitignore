@@ -1,6 +1,7 @@
 node_modules/
 dist/
 out/
+release/
 *.log
 
 # The bundled server jar for provisioning: a 79 MB binary that must never be

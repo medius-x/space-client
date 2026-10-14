@@ -13,7 +13,8 @@ import { dirname, join } from "node:path";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const sourceCandidates = [
-  join(scriptDir, "..", "..", "oak-server", "target", "oak-server-1.0-SNAPSHOT.jar"),
+  // <finalName>oak-server</finalName> in the pom builds target/oak-server.jar
+  join(scriptDir, "..", "..", "oak-server", "target", "oak-server.jar"),
   join(scriptDir, "..", "..", "oak-server", "env", "oak-server.jar"),
 ];
 const target = join(scriptDir, "..", "electron", "provisioning", "files", "oak-server.jar");

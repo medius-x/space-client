@@ -3627,3 +3627,80 @@ SSH-прогон активен (onRunningChange — строже onBusyChange, 
 (contentless-рефеч memberStore — панель членов обновляется без перезахода; обработчик уже
 был contentless, клиентской логики ноль). Живая верификация: Ubuntu-22 прогон + инвайт
 новичка при открытом овнере — появился мгновенно. Гейты: 666/666 + typecheck + build.
+
+## Launch-раунд D: electron-builder установщик + CI/релизы (2026-10-13, код готов; GitHub-переезд D1 — следующим шагом юзера)
+
+Четвёртый под-раунд launch-блока: упаковка клиента в Windows-установщик, CI и релизные
+workflows обоих репо, версионная связка «клиент vX несёт сервер vX».
+
+- **electron-builder** ^26.15.3 (devDep) + `electron-builder.yml`: appId `oak.space`,
+  productName SPACE, `win.target: nsis` (oneClick, per-user — без UAC), output `release/`
+  (gitignored), buildResources `electron/build` (icon.png 256 → exe-иконка и установщик),
+  **`npmRebuild: false`** (koffi — N-API prebuilt, не пересобирать), **`asarUnpack:
+  node_modules/koffi/**`** (билдер сам распаковал и ssh2/util/pagent.exe), `files: out/**`
+  (node_modules production_deps едут автоматически — main-бандл external koffi/ssh2).
+  **extraResources**: `electron/provisioning/files` → `resources/provisioning/files`
+  (шаблоны + ВШИТЫЙ jar + 6 docker-архивов, ~610 МБ — юзер-решение 2026-10-13: ПОЛНЫЙ
+  комплект, провижининг работает без реестров) + `electron/build/icon-48.png` →
+  `resources/build/` (трей). npm-скрипты: `dist` (build + electron-builder --win),
+  `dist:dir` (unpacked, локальный смоук).
+- **Packaged-пути** (`electron/provisioning.ts` + `main.ts createTray`): условие ветки —
+  `app.isPackaged` → `process.resourcesPath` (extraResources), иначе дерево проекта. ЭТО
+  ЖЕ закрыло дыру `npm start` (built-unpacked): прежнее условие ELECTRON_RENDERER_URL вело
+  built-режим в несуществующий `__dirname/provisioning`. **Живой packaged-смоук поймал
+  трей-баг**: close-to-tray прятал окно, а Tray-иконки в паке не было (путь в дерево
+  проекта) → приложение-зомби без UI; фикс = packaged-ветка + extraResources.
+  Рантайм-смоук зелёный: boot-строка в логе, трей создаётся, KV-записи подхватываются
+  (userData = %APPDATA%/space-client — ОБЩИЙ с dev, name из package.json; осознанное
+  следствие: прод- и dev-инстансы на одной машине делят userData — не запускать вдвоём).
+- **Workflows** (`.github/workflows/`): `ci.yml` — node 24 (как dev-машина) → npm ci →
+  typecheck → test → build; `release.yml` — windows-latest, push тега v*: гейт
+  (package.json version == тег) → npm ci → **скачивание серверного набора ТОЙ ЖЕ версии
+  из релиза oak-server** (jar + архивы образов по committed-манифесту; asset-имена из
+  manifest.json) → npm run dist → exe в GitHub Release (gh release create ||
+  upload --clobber). Образы в CI несутся релизом СЕРВЕРА: `npm run images:publish -- v*`
+  (НОВЫЙ scripts/publish-server-images.mjs, gh CLI, repo = owner из origin + /oak-server;
+  cross-check манифеста; --clobber) — 530 МБ одноразово на релиз, git остаётся чистым.
+  latest.yml НЕ выгружается: electron-builder генерит его только с publish-конфигурацией, а электрон-updater отсутствует.
+- **Версионная связка**: package.json 0.1.0 == pom.xml oak-server 0.1.0 (сервер переведён
+  с 1.0-SNAPSHOT; finalName=oak-server). Релизный порядок: bump ОБОИХ версий → тег
+  сервера (CI: jar) → images:publish на dev-машине → тег клиента (CI: установщик).
+  Fallback-URL провижинга PROVISIONING_JAR_URL всё ещё указывает на плейсхолдер
+  `github.com/oak-server/oak-server` — ПРАВИТЬ при D1 (реальный owner).
+- **Границы (принятые)**: подписи кода нет (SmartScreen предупредит при установке —
+  самохостинг, юзер подтверждает «все равно установить»); автообновлений нет (установщик
+  перезаписывает поверх, KV userData переживает); packaged и dev делят AppData —
+  следовательно GPU-cache LOCK при одновременном запуске (Chromium-шум, не блокирует).
+- Гейты: клиент 666/666 + typecheck + build + dist:dir смоук (трей/jar/образы в паке);
+  сервер mvn package зелёный, target/oak-server.jar. Security-проход: workflows без
+  секретов (github.token, permissions contents:write только в release; форк-PR —
+  read-only токен), инъекции в run-скрипты нет (тег/owner — не юзер-ввод; execFileSync
+  без shell в images:publish), extraResources не расширяет рантайм-поверхность.
+
+### Лицензионная атрибуция вшитого набора образов (2026-10-14, юзер-команда «сделай сейчас»)
+
+Редистрибьюция docker-образов (вшивание в установщик + архивы в релизе сервера) требует
+уведомлений — добавлены ДО первого публичного релиза: **`THIRD-PARTY-NOTICES.md`** в корне
+ОБОИХ репо (таблица: образ, digest из manifest.json, лицензия, upstream, исходники) +
+**`licenses/*.txt`** в space-client — канонические тексты (GPL-3.0/AGPL-3.0/GPL-2.0/
+Apache-2.0 с gnu.org/apache.org, Classpath-Exception-2.0 с openjdk, BSD-3-Clause coturn
+raw из репозитория, PostgreSQL License) — и те едут в установщик через extraResources
+(`resources/licenses/`, проверено пересборкой dist:dir). Лицензии верифицированы
+поиском: janus — GPL-3.0-only (официальный COPYING), coturn — BSD-3-Clause,
+eclipse-temurin — GPLv2+Classpath Exception (Adoptium FAQ; НЕ EPL — текст исключения
+обязателен). Electron/Chromium-атрибуция генерится electron-builder'ом сам
+(LICENSE.electron.txt/LICENSES.chromium.html в паке). Source-offer для копилефт-компонентов:
+публичные upstream-репо + digest-пин версии в manifest.json. Граница: базовые OS-слои
+образов (Debian/Ubuntu-пакеты) несут собственные лицензии дистрибутивов — отмечено в
+notices. Гейты: пересборка dist:dir зелёная, licenses/ в resources подтверждены.
+
+### Лицензия проекта: AGPL-3.0-only (2026-10-14, юзер-решение)
+
+Оба репо OAK выпускаются под **AGPL-3.0-only** (полный текст в `LICENSE`, copyright-строка
+«OAK project»; поле `license` в package.json, `<licenses>`-блок в pom.xml). Выбор юзера по
+рекомендации: self-hosted-дух + копилефт-защита от закрытых форк-сервисов (прецедент:
+Revolt). Зависимости не мешают: всё permissive (Spring/Electron-экосистема), а GPL/AGPL-
+образы (janus/minio/temurin) редистрибьютируются как ОТДЕЛЬНЫЕ программы (агрегация —
+наш код не содержит их исходников, копилефт на него не распространяется). Права владельца:
+в любой момент можно сменить лицензию СВОЕГО кода в следующих версиях; разжать уже
+выпущенное AGPL-нельзя — единственное необратимое следствие выбора, принято осознанно.

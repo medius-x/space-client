@@ -1,0 +1,49 @@
+# electron-builder config (round D): a one-click Windows NSIS installer.
+#
+# The app payload is the electron-vite output (out/main + out/preload +
+# out/renderer bundles) plus the production node_modules — main-bundle externals
+# (koffi, ssh2) resolve from node_modules at runtime, so they must ship.
+# koffi is an N-API prebuilt addon: it is never rebuilt (npmRebuild: false) and
+# is unpacked from the asar (a .node file cannot load from inside an archive).
+#
+# The server provisioning kit (templates + the bundled oak-server.jar + the
+# docker-image archives, ~610 MB) rides in extraResources — plain files next to
+# app.asar under resources/provisioning/files, matching TEMPLATE_ROOT in
+# electron/provisioning.ts (app.isPackaged → process.resourcesPath). The
+# installer therefore provisions a server with NO network access to registries
+# (user decision 2026-10-13: the full image set ships with the client).
+appId: oak.space
+productName: SPACE
+
+directories:
+  output: release
+  buildResources: electron/build
+
+files:
+  - out/**
+
+npmRebuild: false
+asarUnpack:
+  - node_modules/koffi/**
+
+extraResources:
+  - from: electron/provisioning/files
+    to: provisioning/files
+  # The tray icon — the only icon the exe resource cannot provide (Tray needs a
+  # file path; createTray reads resources/build/icon-48.png when packaged).
+  - from: electron/build/icon-48.png
+    to: build/icon-48.png
+  # License texts for the bundled docker images (see THIRD-PARTY-NOTICES.md) —
+  # redistribution notices must ride with the artifacts they cover.
+  - from: licenses
+    to: licenses
+
+win:
+  target: nsis
+  icon: electron/build/icon.png
+
+nsis:
+  oneClick: true
+  # The default per-user install needs no UAC elevation — the app writes nothing
+  # outside its own directories (userData for KV/logs, temp for provisioning).
+  perMachine: false

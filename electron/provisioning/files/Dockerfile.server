@@ -2,7 +2,7 @@
 #
 # The build context must contain the jar under the FIXED name oak-server.jar:
 #   mvn -B package -DskipTests
-#   cp target/oak-server-1.0-SNAPSHOT.jar env/oak-server.jar
+#   cp target/oak-server.jar env/oak-server.jar
 #   docker compose --profile full up -d --build oak
 # Building the jar INSIDE the image was rejected on purpose: a weak VPS would
 # spend many minutes and gigabytes on a Maven image, while this runner builds in

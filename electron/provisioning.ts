@@ -41,12 +41,15 @@ export interface ProvisioningHooks {
 const PROVISIONING_JAR_URL = "https://github.com/oak-server/oak-server/releases/latest/download/oak-server.jar";
 const JAR_DOWNLOAD_TIMEOUT_MS = 300_000;
 
-// Dev: the templates live in the project tree next to this source file. In a
-// packaged build they ship next to the main bundle (the electron-builder round
-// packs them); ELECTRON_RENDERER_URL is electron-vite's dev marker.
-const TEMPLATE_ROOT = process.env.ELECTRON_RENDERER_URL
-  ? path.resolve(app.getAppPath(), "electron", "provisioning", "files")
-  : path.join(__dirname, "provisioning", "files");
+// Dev (npm run dev AND the unpacked `npm start`): the templates live in the
+// project tree next to this source file. Packaged: electron-builder's
+// extraResources ships electron/provisioning/files under resources/provisioning/
+// files (process.resourcesPath) — including the bundled server jar and the
+// docker-image archives, which are too big for the asar and must stay plain
+// files on disk for the SFTP streaming upload.
+const TEMPLATE_ROOT = app.isPackaged
+  ? path.join(process.resourcesPath, "provisioning", "files")
+  : path.resolve(app.getAppPath(), "electron", "provisioning", "files");
 
 function readTemplates(): Omit<ProvisioningFiles, "jarLocalPath"> {
   const read = (relativePath: string): string => {

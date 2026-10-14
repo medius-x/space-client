@@ -1,0 +1,86 @@
+# Release: a pushed v* tag builds the Windows NSIS installer and attaches it
+# to a GitHub Release.
+#
+# The installer ships the FULL server kit (user decision 2026-10-13): the
+# oak-server.jar and the six docker-image archives of the SAME tag — pulled
+# from the oak-server release of this version — so a fresh VPS can be
+# provisioned with no registry access at all. The image archives are too big
+# for git: `npm run images:sync` builds them on the dev machine and
+# `npm run images:publish` attaches them to the oak-server release of this tag
+# BEFORE this workflow runs (manual web upload to that release works too).
+# A missing asset fails the version-pairing step below with a pointed message.
+#
+# How to release:
+#   1. bump <version> in pom.xml (oak-server) AND package.json here to the
+#      same value, commit both repos
+#   2. tag oak-server v0.2.0 and push → its workflow publishes the jar
+#   3. on the dev machine: npm run images:publish -- v0.2.0 (attach the image
+#      archives to that oak-server release)
+#   4. tag THIS repo v0.2.0 and push → installer lands in this repo's release
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Version gate — tag must match package.json
+        shell: pwsh
+        run: |
+          $tagVersion = "${env:GITHUB_REF_NAME}".TrimStart('v')
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          Write-Host "tag=${tagVersion} package.json=${packageVersion}"
+          if ($tagVersion -ne $packageVersion) {
+            Write-Error "tag ${env:GITHUB_REF_NAME} does not match package.json version ${packageVersion} — bump package.json to ${tagVersion} and re-tag"
+            exit 1
+          }
+
+      - run: npm ci
+
+      - name: Fetch the server kit of this version from the oak-server release
+        shell: pwsh
+        env:
+          SERVER_REPO: ${{ github.repository_owner }}/oak-server
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "${env:GITHUB_REF_NAME}"
+          $dest = "electron/provisioning/files"
+          New-Item -ItemType Directory -Force -Path "$dest/images" | Out-Null
+          $assets = @("oak-server.jar") + (Get-Content "$dest/images/manifest.json" -Raw | ConvertFrom-Json | ForEach-Object { "images/$($_.archive)" })
+          foreach ($asset in $assets) {
+            $url = "https://github.com/${env:SERVER_REPO}/releases/download/${tag}/${asset}"
+            Write-Host "fetching $url"
+            & curl.exe -fsSL --retry 3 -o "$dest/$asset" "$url"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "asset ${asset} is missing from the oak-server release ${tag} — run 'npm run images:publish -- ${tag}' on the dev machine (or upload the archives to that release) and re-run this workflow"
+              exit 1
+            }
+          }
+
+      - name: Build the installer
+        run: npm run dist
+
+      - name: Publish the installer to the GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${env:GITHUB_REF_NAME}"
+          # electron-builder names the artifact "SPACE Setup <version>.exe" (no v prefix)
+          $exe = Get-ChildItem -Path release -Filter "*.exe" | Select-Object -First 1
+          if ($null -eq $exe) { Write-Error "no installer produced"; exit 1 }
+          gh release create "$tag" "$($exe.FullName)" --title "$tag" --generate-notes --verify-tag `
+            || gh release upload "$tag" "$($exe.FullName)" --clobber

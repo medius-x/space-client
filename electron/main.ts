@@ -1415,12 +1415,17 @@ function initiateGracefulQuit(mainWindow: BrowserWindow): void {
 }
 
 /** The tray icon (one per process — the dev two-instance smoke gets two).
- *  Quit runs the graceful path; Open/Click re-show the hidden window. */
+ *  Quit runs the graceful path; Open/Click re-show the hidden window.
+ *  Packaged: the icon rides in extraResources (resources/build/icon-48.png) —
+ *  the project tree does not exist inside the asar, and close-to-tray WITHOUT
+ *  a tray would hide the window into a zombie process (packaged smoke). */
 function createTray(mainWindow: BrowserWindow): void {
-  const iconPath = path.join(app.getAppPath(), "electron", "build", "icon-48.png");
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, "build", "icon-48.png")
+    : path.join(app.getAppPath(), "electron", "build", "icon-48.png");
   if (!fs.existsSync(iconPath)) {
-    // Nothing to anchor the tray with (e.g. a packaged build shipping its own
-    // icon set) — X would then still hide; quit stays possible via taskbar.
+    // Nothing to anchor the tray with — X would then still hide; quit stays
+    // possible via the taskbar context menu.
     appendLog("[main] WARN tray icon not found — running without a tray");
     return;
   }
