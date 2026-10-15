@@ -176,7 +176,7 @@ export interface AppState {
    *  pre-2026-09-21 rail affordance, restored 2026-09-24). The recordId targets the
    *  ROW — session-bound entries appear only for the ACTIVE record. Rendered by
    *  ServerMenu.tsx. */
-  serverMenu: { recordId: string; x: number; y: number } | null;
+  serverMenu: { recordId: string; x: number; y: number; anchor?: HTMLElement | null } | null;
   /** The owner's "Transfer ownership" flow (Server Settings → Members → the member's
    *  Transfer ownership button, owner-only). Rendered by TransferOwnershipModal.tsx
    *  against the ACTIVE session; ownershipPreselect carries the picked member's id
@@ -1700,8 +1700,13 @@ export function beginAddServer(): void {
 
 /** The server dropdown's two triggers: the Sidebar's server-name header (anchored
  *  under it) and a right-click on a rail avatar (at the cursor, any record). */
-export function openServerMenu(recordId: string, x: number, y: number): void {
-  appStore.patch({ serverMenu: { recordId, x, y } });
+/** The anchor (the click-triggered header) counts as INSIDE the menu surface:
+ *  its pointerdown must not dismiss before its own click can toggle the menu
+ *  closed (the emoji-picker race — without it a second click reopens). The
+ *  right-click rail trigger passes no anchor: re-right-clicking REPLACES the
+ *  menu (oak popup behavior), by design. */
+export function openServerMenu(recordId: string, x: number, y: number, anchor?: HTMLElement | null): void {
+  appStore.patch({ serverMenu: { recordId, x, y, anchor: anchor ?? null } });
 }
 
 export function closeServerMenu(): void {
@@ -2359,9 +2364,23 @@ export function toggleUserSettings(): void {
   appStore.patch({ userSettingsOpen: !appStore.getSnapshot().userSettingsOpen, userSettingsScope: "client" });
 }
 
+/** True when the record's server is REACHABLE right now: the record's own live
+ *  session with a CONNECTED STOMP socket. The active offline view keeps its
+ *  half-session (stores, no socket) — every account form there would fail on
+ *  save, so "Account settings" hides against it (user request 2026-10-15). */
+export function recordServerOnline(recordId: string): boolean {
+  const session = sessionForRecord(recordId);
+  return session !== null && session.stomp.isConnected();
+}
+
 /** The server dropdown's "Account settings" entry — the settings modal scoped
- *  to General + Account (the server-scoped identity sections). */
+ *  to General + Account (the server-scoped identity sections). Offline the
+ *  surface never opens: the menu entry is hidden first, this gate is the belt
+ *  to its braces (the switch-and-open path lands here too). */
 export function openAccountSettings(): void {
+  if (activeSession === null || !activeSession.stomp.isConnected()) {
+    return;
+  }
   appStore.patch({ userSettingsOpen: true, userSettingsScope: "account" });
 }
 

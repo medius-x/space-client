@@ -7,9 +7,11 @@ import {
   connectionDirectory,
   openAccountSettings,
   openServerSettings,
+  recordServerOnline,
   reloginConnection,
   removeConnection,
   sessionBinding,
+  sessionsIndex,
   switchAndOpenAccountSettings,
   switchAndOpenServerSettings,
 } from "../runtime";
@@ -29,6 +31,12 @@ import { PasswordInput } from "./PasswordInput";
 export function ServerMenu(): React.JSX.Element {
   const session = useStore(sessionBinding, (current) => current);
   const menu = useStore(appStore, (state) => state.serverMenu);
+  // Re-evaluate the online gate on every STOMP flip of the ACTIVE record
+  // (appStore.stompState) and on background sessions appearing/disappearing
+  // (sessionsIndex); a background record's own reconnect flips are covered by
+  // the switch-and-open gate anyway.
+  useStore(appStore, (state) => state.stompState);
+  useStore(sessionsIndex, (version) => version);
   const [reloginTarget, setReloginTarget] = useState<ConnectionRecord | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ConnectionRecord | null>(null);
   const record = menu !== null ? connectionDirectory.get(menu.recordId) ?? null : null;
@@ -52,17 +60,25 @@ export function ServerMenu(): React.JSX.Element {
         { label: "", separator: true, action: () => undefined },
       ]
       : []),
-    {
-      label: "Account settings",
-      action: () => {
-        if (isActiveRecord) {
-          openAccountSettings();
-        } else {
-          void switchAndOpenAccountSettings(menu.recordId);
-        }
-      },
-    },
-    { label: "", separator: true, action: () => undefined },
+    // Offline the account forms (password/login/avatar) can only fail on save —
+    // the entry hides against a dead server (user request 2026-10-15), leaving
+    // Re-login as the honest way back in. The separator rides INSIDE this group
+    // so a hidden entry never leaves a leading/double rule.
+    ...(recordServerOnline(menu.recordId)
+      ? [
+        {
+          label: "Account settings",
+          action: () => {
+            if (isActiveRecord) {
+              openAccountSettings();
+            } else {
+              void switchAndOpenAccountSettings(menu.recordId);
+            }
+          },
+        },
+        { label: "", separator: true, action: () => undefined },
+      ]
+      : []),
     { label: "Re-login", action: () => {
       if (record !== null) {
         setReloginTarget(record);
@@ -79,7 +95,7 @@ export function ServerMenu(): React.JSX.Element {
   return (
     <>
       {menu !== null ? (
-        <ContextMenu x={menu.x} y={menu.y} items={items} onClose={() => closeServerMenu()} />
+        <ContextMenu x={menu.x} y={menu.y} items={items} anchor={menu.anchor} onClose={() => closeServerMenu()} />
       ) : null}
       {reloginTarget !== null ? (
         <ReloginModal record={reloginTarget} onClose={() => setReloginTarget(null)} />

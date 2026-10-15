@@ -12,16 +12,23 @@ export interface ContextMenuItem {
 /**
  * Lightweight right-click menu: fixed-position card. Any pointer press outside
  * (left OR right — so a second menu replaces the first), Escape, blur or
- * resize dismisses it.
+ * resize dismisses it. `anchor` (optional, a click-trigger element — the
+ * sidebar's server header) counts as INSIDE the surface so its click can
+ * toggle the menu closed instead of racing outside-dismiss into a reopen.
  */
-export function ContextMenu({ x, y, items, onClose }: {
+export function ContextMenu({ x, y, items, onClose, anchor }: {
   x: number;
   y: number;
   items: ContextMenuItem[];
   onClose: () => void;
+  anchor?: HTMLElement | null;
 }): React.JSX.Element {
   const menuRef = useRef<HTMLDivElement | null>(null);
-  useOutsideDismiss(menuRef, onClose);
+  // Latest-ref pattern: the ref object stays stable across renders (the dismiss
+  // effect's identity), .current always tracks the anchor of THIS menu.
+  const anchorRef = useRef<HTMLElement | null>(null);
+  anchorRef.current = anchor ?? null;
+  useOutsideDismiss(menuRef, onClose, anchorRef);
 
   const rows = items.filter((item) => !item.separator).length;
   const left = Math.min(Math.max(8, x), window.innerWidth - 190);

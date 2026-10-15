@@ -4,6 +4,7 @@ import { useStore } from "../hooks/useStore";
 import {
   appStore,
   closeDiscussionView,
+  closeServerMenu,
   connectionDirectory,
   joinVoiceGuarded,
   openDiscussion,
@@ -545,9 +546,17 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
             className="sidebar-server-header"
             ref={serverHeaderRef}
             onClick={() => {
+              // Honest toggle: with the header passed as the menu's ANCHOR its
+              // pointerdown does not outside-dismiss first, so a second click
+              // lands here with the menu still open and closes it (live report:
+              // it used to dismiss-then-reopen and never go away).
+              if (appStore.getSnapshot().serverMenu?.recordId === session.recordId) {
+                closeServerMenu();
+                return;
+              }
               const rect = serverHeaderRef.current?.getBoundingClientRect();
               if (rect !== undefined) {
-                openServerMenu(session.recordId, rect.left, rect.bottom + 4);
+                openServerMenu(session.recordId, rect.left, rect.bottom + 4, serverHeaderRef.current);
               }
             }}
           >
