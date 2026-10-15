@@ -29,3 +29,10 @@ describe("advertisedAddress (oak's Connections address)", () => {
     expect(advertisedAddress(null, null)).toBeNull();
   });
 });
+
+describe("noise suppression default (user decision 2026-10-15)", () => {
+  it("DeepFilterNet3 is the default engine — the hint, the hotkey return target and fresh installs all follow it", async () => {
+    const { DEFAULT_CLIENT_SETTINGS } = await import("../src/domain/stores/SettingsStore");
+    expect(DEFAULT_CLIENT_SETTINGS.noiseSuppressionEngine).toBe("deepfilternet3");
+  });
+});

@@ -339,8 +339,8 @@ function AudioSection({ staged }: { staged: StagedSettings }): React.JSX.Element
         </label>
       ) : null}
       <div className="settings-hint">
-        Runs locally on your microphone before it is sent. RNNoise is light and the default;
-        DeepFilterNet3 is heavier and stronger on irregular noise; DTLN is the recurrent
+        Runs locally on your microphone before it is sent. DeepFilterNet3 is the default;
+        RNNoise is the lighter alternative; DTLN is the recurrent
         neural model (heaviest, wideband 16 kHz); Speex is the classic spectral
         suppressor; Gate only mutes pauses (quiet, not clean). Echo cancellation
         and auto gain are always on. While voice or a call is live, switching engines

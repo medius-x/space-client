@@ -435,7 +435,7 @@ NicknameForm переехала из Appearance) и Account — SERVER-related: 
 Connections — CLIENT-related, без суффикса. Гейт 256/256.
 
 **Шумодавы RNNoise + DeepFilterNet3 (задача #476, 2026-09-17).** Юзер-решения: движок
-`off | rnnoise | deepfilternet3` (ДЕФОЛТ rnnoise, ВКЛЮЧЕН); WebRTC built-in NS ИСКЛЮЧЕН совсем
+`off | rnnoise | deepfilternet3` (ДЕФОЛТ rnnoise, ВКЛЮЧЕН; ДЕФОЛТ СМЕНЁН НА deepfilternet3 2026-10-15 — легаси-миграция apmEnabled=true тоже ведёт на DFN3; hint/hotkey-seed/popout-seed синхронны); WebRTC built-in NS ИСКЛЮЧЕН совсем
 (асимметрия «только со следующего захода» отвергнута юзером); AEC/AGC ВСЕГДА on без тумблера
 (эхо мучает других — как Discord); при живом движке констрейнт noiseSuppression=false (двойной NS
 портит речь). Констрейнты захвата: `echoCancellation:true, noiseSuppression:false,

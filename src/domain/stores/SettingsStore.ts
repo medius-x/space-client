@@ -95,7 +95,7 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   toastDismissSeconds: 5,
   maxToasts: 3,
   ringTimeoutSeconds: 120, // oak's default (SettingsStore.java)
-  noiseSuppressionEngine: "rnnoise",
+  noiseSuppressionEngine: "deepfilternet3",
   deepFilterSuppressionLevel: 50, // effectively "no limit" at DFN3's native scale
   microphoneDeviceId: null,
   microphoneLabel: null,
@@ -135,11 +135,12 @@ export class SettingsStore extends Emitter {
       this.settings = { ...DEFAULT_CLIENT_SETTINGS, ...rest };
       // Migration (2026-09-17): the one APM flag used to gate echo+NS+AGC
       // together. AEC/AGC became always-on; the NS slot became an engine.
-      // false meant "Raw (off)"; true (the old default) upgrades to RNNoise.
+      // false meant "Raw (off)"; true (the old default) upgrades to the
+      // current default engine (DFN3 since 2026-10-15, RNNoise before).
       if (apmEnabled !== undefined && rest.noiseSuppressionEngine === undefined) {
         this.settings = {
           ...this.settings,
-          noiseSuppressionEngine: apmEnabled ? "rnnoise" : "off",
+          noiseSuppressionEngine: apmEnabled ? "deepfilternet3" : "off",
         };
       }
       // A stored engine may be gone from the catalog later (dtln was briefly

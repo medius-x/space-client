@@ -3704,7 +3704,7 @@ export function kickVoiceUser(username: string): void {
 // ---------------------------------------------------------------------------
 
 /** The engine to return to when the NS hotkey re-enables suppression. */
-let lastNoiseEngine: ClientSettings["noiseSuppressionEngine"] = "rnnoise";
+let lastNoiseEngine: ClientSettings["noiseSuppressionEngine"] = "deepfilternet3";
 
 /** off ↔ the last real engine. Commits through the settings store — the existing
  *  watchNoiseSettings rebuilds the LIVE pipeline; nothing here touches audio. */

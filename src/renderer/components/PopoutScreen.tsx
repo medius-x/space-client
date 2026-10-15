@@ -63,7 +63,7 @@ export function PopoutScreen(): React.JSX.Element {
   /** The volume icon's 0 ↔ last-positive toggle memory (the VolumeRow idiom). */
   const shareVolumeLastPositiveRef = useRef(1);
   const [fullscreen, setFullscreen] = useState(false);
-  const [voiceState, setVoiceState] = useState<PopoutVoiceState>({ muted: false, deafened: false, nsEngine: "rnnoise" });
+  const [voiceState, setVoiceState] = useState<PopoutVoiceState>({ muted: false, deafened: false, nsEngine: "deepfilternet3" });
   const [nsMenuAt, setNsMenuAt] = useState<{ x: number; y: number } | null>(null);
   // The NS toggle button — its press must not outside-dismiss the menu, or the
   // click-toggle re-opens it (the emoji-picker anchorRef lesson).
