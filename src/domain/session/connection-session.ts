@@ -219,6 +219,11 @@ export class ConnectionSession {
    *  duplicates, and the handlers are messageStore-only (harmless after the view closes). */
   private readonly subscribedDiscussionIds = new Set<number>();
   private disposed = false;
+  /** True once start() ran to completion (stores filled, STOMP started). The
+   *  offline view's half-session — start() died on the network — never reaches
+   *  this; runtime uses it to decide whether a switch may DEMOTE the session to
+   *  the background (keeping its in-memory chats) instead of disposing it. */
+  private started = false;
 
   constructor(options: ConnectionSessionOptions) {
     this.directory = options.directory;
@@ -366,6 +371,7 @@ export class ConnectionSession {
     });
 
     log.info("session", `connection up: ${this.username()} @ ${this.hostUrl()} (${channels.length} channels)`);
+    this.started = true;
   }
 
   /** v1: one active session — deactivate disposes. Kept for the M8 background-session seam. */
@@ -389,6 +395,12 @@ export class ConnectionSession {
 
   isDisposed(): boolean {
     return this.disposed;
+  }
+
+  /** A USABLE session: start() completed and dispose() has not run. Such a
+   *  session survives being switched away from as a live background listener. */
+  isUsable(): boolean {
+    return !this.disposed && this.started;
   }
 
   // ---------------------------------------------------------------------------

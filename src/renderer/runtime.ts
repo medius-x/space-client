@@ -1762,9 +1762,16 @@ async function openSession(recordId: string): Promise<void> {
     unbindLiveBackgroundSession(recordId);
     socialDirectory.drop(recordId);
     if (demoted !== null && demoted !== existing && !demoted.isDisposed()) {
-      sessionMap.set(demoted.recordId, demoted);
-      if (!hasLiveSession(demoted.recordId)) {
-        bindLiveBackgroundSession(demoted, connectionDirectory); // it feeds the directory now
+      // The same usable-test as the fresh path below: an unstarted half-session
+      // (an offline view) must NOT land in the background map — promoting it
+      // later would reconnect a STOMP socket that was never started.
+      if (demoted.isUsable()) {
+        sessionMap.set(demoted.recordId, demoted);
+        if (!hasLiveSession(demoted.recordId)) {
+          bindLiveBackgroundSession(demoted, connectionDirectory); // it feeds the directory now
+        }
+      } else {
+        demoted.dispose();
       }
     }
     sessionBinding.set(existing);
@@ -1789,7 +1796,34 @@ async function openSession(recordId: string): Promise<void> {
     void startBackgroundSessions();
     return;
   }
-  await teardownSession();
+  // DEMOTE the outgoing session instead of dismantling it (user report
+  // 2026-10-15): this fresh path used to dispose the ACTIVE session first — its
+  // in-memory chats died with it, and switching BACK to that record meant a
+  // full re-bootstrap ("reconnects and reloads the chats"). A STARTED session
+  // moves into the background map exactly the way the promote branch demotes
+  // its predecessor (returning to the record then promotes instantly, chats
+  // already in memory); only an unstarted half-session (the offline view —
+  // empty stores, STOMP never started) still tears down.
+  const outgoing = activeSession;
+  teardownCall();
+  await teardownVoice();
+  roomAudio.stopLevelPolling();
+  roomAudio.detachOwnMic();
+  activeSession = null;
+  sessionBinding.set(null);
+  sessionsIndex.bump();
+  if (outgoing !== null && outgoing.isUsable()) {
+    sessionMap.set(outgoing.recordId, outgoing);
+    if (!hasLiveSession(outgoing.recordId)) {
+      bindLiveBackgroundSession(outgoing, connectionDirectory); // it feeds the aggregated directory now
+    }
+  } else {
+    if (outgoing !== null) {
+      sessionMap.delete(outgoing.recordId);
+      outgoing.dispose();
+    }
+  }
+  appStore.patch(activeSessionUiResetPatch());
   const session = new ConnectionSession({ directory: connectionDirectory, recordId, hooks: makeSessionHooks(recordId) });
   activeSession = session;
   sessionBinding.set(session);
@@ -1989,20 +2023,15 @@ function disposeBackgroundSession(recordId: string): void {
   void loadBackgroundSocial(connectionDirectory, activeSession?.recordId ?? "");
 }
 
-export async function teardownSession(): Promise<void> {
-  teardownCall();
-  await teardownVoice();
-  roomAudio.stopLevelPolling();
-  roomAudio.detachOwnMic();
-  const dying = activeSession;
-  activeSession = null;
-  sessionBinding.set(null);
-  sessionsIndex.bump();
-  if (dying !== null) {
-    sessionMap.delete(dying.recordId);
-    dying.dispose();
-  }
-  appStore.patch({
+/** The appStore fields tied to the ACTIVE session — shared by teardownSession and
+ *  the demote path (a switch onto a fresh record): the incoming session re-fills
+ *  them as it boots. pendingOpen* deliberately survive (a switch that lands on
+ *  the login modal should still open the clicked chat after re-login);
+ *  userSettingsOpen is deliberately NOT reset (the username rename restarts the
+ *  session WITH the settings window open — oak keeps it; paths that truly kill
+ *  the session close it explicitly). */
+function activeSessionUiResetPatch(): Partial<AppState> {
+  return {
     stompState: "off",
     stompAttempt: 0,
     stompCountdown: null,
@@ -2029,13 +2058,23 @@ export async function teardownSession(): Promise<void> {
     serverMenu: null,
     ownershipModalOpen: false,
     ownershipPreselect: null,
-    // pendingOpenDm/pendingOpenChannel/pendingOpenDiscussion deliberately survive too — a
-    // switch that lands on the login modal should still open the clicked chat once the
-    // user re-logs in.
-    // userSettingsOpen is deliberately NOT reset here: the username rename
-    // restarts the session WITH the settings window open (oak keeps it). Every
-    // path that truly kills the session closes it explicitly (expired, kicked).
-  });
+  };
+}
+
+export async function teardownSession(): Promise<void> {
+  teardownCall();
+  await teardownVoice();
+  roomAudio.stopLevelPolling();
+  roomAudio.detachOwnMic();
+  const dying = activeSession;
+  activeSession = null;
+  sessionBinding.set(null);
+  sessionsIndex.bump();
+  if (dying !== null) {
+    sessionMap.delete(dying.recordId);
+    dying.dispose();
+  }
+  appStore.patch(activeSessionUiResetPatch());
 }
 
 // ---------------------------------------------------------------------------
