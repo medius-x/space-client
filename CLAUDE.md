@@ -3756,6 +3756,45 @@ settings» скрыт при офлайн-сервере записи** (офл�
 ПКМ-рейл БЕЗ якоря: повторный ПКМ ЗАМЕНЯЕТ меню (oak-поведение), не тогглит.
 Гейты: 687/687 + typecheck + build.
 
+**Оптимистичная отправка текста + capability-скелет сервера (2026-10-15, обе фичи
+обсуждением; ДЕПЛОЙ ПАРНЫЙ — сервер первым: ServerProfile += version/capabilities).**
+**(1) Оптимистик (юзер-решения: Discord-вариант БЕЗ pending-индикатора; текст-only,
+фаза 1; аттачи/стикеры/дискуссионный-draft — прежний await-путь, их рендеру нужны
+серверные URL).** Текст-отправка на загруженном канале: temp-строка (ОТРИЦАТЕЛЬНЫЙ id
+из счётчика стора — серверные id положительные, пересечение невозможно; клиентские
+поля `delivery/idempotencyKey/replyToId` в Message — NEVER on the wire) паркуется в
+хвосте списка СРАЗУ, промис сессии резолвится мгновенно → композер чистится и busy
+падает без ожидания; POST (`idempotencyKey` уже был) доезжает фоном. 201 →
+`resolvePending` (temp изъят + applyLive вставляет серверную копию); СТОМП-эхо может
+опередить 201 → applyLive ПОГЛОЩАЕТ temp по (authorId, content) FIFO (два «ok»
+подряд: каждое эхо ест свой temp по очереди); mergeTail поглощает так же (recon-heal).
+Фейл после ретраев → `delivery:"failed"` → КРАСНЫЙ mdi-alert в meta-строке (temp
+всегда HEAD-строка — правило computeGroupStarts: glyph есть где жить) + ПКМ меню
+ИЗ ДВУХ пунктов Retry/Remove (обычные пункты у temp недоступны: hover-кнопки
+реакций/reply/forward скрыты, селекшн-клики гейтнуты, ПКМ pending-строки не
+открывается вовсе). Retry = ТОТ ЖЕ idempotencyKey (idempotency-кеш сервера отдаёт
+оригинал — дубль невозможен). **Инварианты temp-строк:** applySnapshot/Around
+СОХРАНЯЮТ непоглощённые temps (failed-строка — единственное место, где текст ещё
+жив; in-flight resolve вставит копию сам) + поглощают совпавшие по content;
+appendPage/mergeTail сортируют по `messageOrderKey` (серверные по id, temps —
+после всех в порядке вставки); `lastServerMessageId` (экспорт MessageStore) —
+ЕДИНСТВЕННЫЙ законный способ читать «последний id» (ack/NEW-divider-tail/
+loadNewer-курсор/around-гвард — отрицательный id никогда не уезжает на сервер);
+around-гвард applyLive сравнивает с последним СЕРВЕРНЫМ id (temp в хвосте иначе
+дропал бы каждый live-апдейт). Отправка из around/незагруженного канала — прежний
+await-путь (фейл держит черновик в композере: окно не врёт о смежности). Тесты:
+НОВЫЙ optimistic-send.test.ts (14: парковка/резолв/эхо-гонка/дубль-FIFO/чужой-автор/
+failed-маркировка+remove/pendingMessageById-гейты/mergeTail/снапшот-выживание/
+around-выживание/around-гвард/appendPage/lastServerMessageId/группировка-temp-head).
+Гейты: 701/701 + typecheck + build.
+**(2) Capability-скелет (юзер-решение: флаги ТОЛЬКО для фич ПОСЛЕ релиза 0.1.0 —
+инвентаризации текущего НЕТ: всё до 0.1.0 = безусловная база; отсутствие поля у
+старого сервера = база).** types.ts `ServerProfile` += `version?`/`capabilities?`;
+чистая `hasServerCapability(profile, flag)` (domain/logic/server-capabilities.ts +
+тесты: флаг есть/нет/нет-поля/пустой-массив/null — все = false для НЕ-базовой
+фичи); Diagnostics += строка «Server version: X» (старый сервер → «unknown») —
+первое, что смотрят при «почему кнопки нет». Гейты: 706/706 + typecheck + build.
+
 ## Launch-раунд D: electron-builder установщик + CI/релизы (2026-10-13, код готов; GitHub-переезд D1 — следующим шагом юзера)
 
 Четвёртый под-раунд launch-блока: упаковка клиента в Windows-установщик, CI и релизные

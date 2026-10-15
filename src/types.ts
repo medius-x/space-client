@@ -123,6 +123,20 @@ export interface Message {
   /** The denormalized sticker copy (phase 2, appended — wire append-only); null = none.
    *  A sticker-only message has content null. */
   sticker: StickerRef | null;
+
+  // --- CLIENT-ONLY annotations (the optimistic send, 2026-10-15). Never on the
+  // --- wire: a local temp row exists in the list before the server confirms it;
+  // --- server rows simply never carry these fields.
+  /** Present ONLY on local temp rows (negative id — server ids are positive).
+   *  "pending" = the POST is in flight (no visual marker, Discord-style);
+   *  "failed" = retries exhausted — the row shows the red retry glyph. */
+  delivery?: "pending" | "failed";
+  /** The temp row's idempotency key: RETRY re-sends with it, so the server
+   *  returns the original instead of a duplicate. */
+  idempotencyKey?: string;
+  /** The temp row's ORIGINAL reply target: `reply` is a server-assembled quote
+   *  a temp row cannot have yet, but a retry still needs the raw id. */
+  replyToId?: number | null;
 }
 
 /** GET /api/search/messages — one search page: the cursor-independent total hit count plus
@@ -189,6 +203,13 @@ export interface ServerProfile {
   /** Advertised scheme ("http" | "https"; null = the historical default http) —
    *  wire-appended by the server's TLS round (2026-10-07); old servers omit it. */
   connectionScheme?: string | null;
+  /** The server build's version ("dev" for unpackaged runs) — shown in Diagnostics.
+   *  Wire-appended by the compatibility skeleton (2026-10-15); old servers omit it. */
+  version?: string | null;
+  /** Post-0.1.0 feature flags the server reports (see oak-server's ServerCapabilities
+   *  doctrine: everything in 0.1.0 is the unconditional base; absence of the whole
+   *  field = an old server = the base). Gate UI with hasServerCapability(). */
+  capabilities?: string[] | null;
 }
 
 // ---------------------------------------------------------------------------

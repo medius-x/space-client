@@ -26,6 +26,7 @@ import {
 import { ConnectionSession, type SessionHooks } from "../domain/session/connection-session";
 import { MAX_VOICE_REJOIN_ATTEMPTS, rejoinDelayMs, rejoinExhausted } from "../domain/logic/rejoin-ladder";
 import { dmDisplayName } from "../domain/logic/dm-display";
+import { lastServerMessageId } from "../domain/stores/MessageStore";
 import type { MentionIdentity } from "../domain/logic/notification-decider";
 import type { ConnectionRecord } from "../domain/session/connection-record";
 import { messageHasEveryoneHere, messageMentionsRole, messageMentionsUser } from "../domain/logic/notification-decider";
@@ -2592,7 +2593,9 @@ export function ackActiveChannel(): void {
     return;
   }
   const messages = session.messageStore.listFor(channelId);
-  const lastId = messages.length > 0 ? messages[messages.length - 1]!.id : null;
+  // Server ids only: the optimistic send parks temp rows (negative ids) at the
+  // tail — one must never travel into the ack request.
+  const lastId = lastServerMessageId(messages);
   const readState = session.readStateStore.get(channelId);
   if (lastId === null && readState.unreadCount === 0) {
     return;

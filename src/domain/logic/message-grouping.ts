@@ -19,7 +19,11 @@ export function computeGroupStarts(messages: readonly GroupableMessage[], gapMs:
   const flags: boolean[] = [];
   let previous: GroupableMessage | null = null;
   for (const message of messages) {
-    flags.push(previous === null
+    // A local OPTIMISTIC temp row (negative id — the optimistic send) always
+    // starts a group: its own header is where the failure glyph lives, and the
+    // server row that replaces it re-groups naturally anyway.
+    flags.push(message.id < 0
+      || previous === null
       || previous.authorUsername !== message.authorUsername
       || message.createdAtEpochMs - previous.createdAtEpochMs > gapMs);
     previous = message;

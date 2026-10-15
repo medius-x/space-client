@@ -11,6 +11,7 @@ import { HISTORY_PAGE, NEWER_PAGE } from "../../domain/session/connection-sessio
 import { RestClient } from "../../core/rest";
 import { log } from "../../logging";
 import { computeGroupStarts, continuesGroup, formatHeaderStamp, formatTimeOfDay, toEpochMs, type GroupableMessage } from "../../domain/logic/message-grouping";
+import { lastServerMessageId } from "../../domain/stores/MessageStore";
 import { firstHttpUrl, segmentMessageContent } from "../../domain/logic/mention-segmenter";
 import {
   filterEmojis,
@@ -832,6 +833,29 @@ function messageMenuItems(
 ): ContextMenuItem[] {
   const ownUsername = session.username();
   const canManageMessages = session.permissionStore.can("MANAGE_MESSAGES");
+  // An optimistic temp row (negative id) has no server counterpart — the regular
+  // entries would all 404 or lie. Only the failure actions apply (the row's
+  // right-click is gated to failed rows in MessageRow; this keeps the guard
+  // local in case another path opens a menu later).
+  if (message.id < 0) {
+    return message.delivery === "failed"
+      ? [
+        {
+          label: "Retry",
+          action: () => {
+            void session.retryPendingMessage(message.channelId, message.id);
+          },
+        },
+        {
+          label: "Remove",
+          danger: true,
+          action: () => {
+            session.discardPendingMessage(message.channelId, message.id);
+          },
+        },
+      ]
+      : [];
+  }
   const items: ContextMenuItem[] = [];
   // Gate SYMMETRY with the hover button (canAddReactions): a member without
   // ADD_REACTIONS must not see a context-menu path the server will 403 (live
@@ -1066,7 +1090,9 @@ function MessageList(props: MessageListProps): React.JSX.Element {
     if (grew && previousTailRef.current !== null && !watching && !ownBatch && !belowEndRef.current) {
       setDividerReadId(previousTailRef.current);
     }
-    previousTailRef.current = messages.length > 0 ? messages[messages.length - 1]!.id : null;
+    // Server ids only — the optimistic tail (negative ids) must not become the
+    // unread divider's anchor or the own-batch filter's threshold.
+    previousTailRef.current = lastServerMessageId(messages);
     messageCountRef.current = messages.length;
     if (grew && pinned) {
       listRef.current?.scrollToBottom();
@@ -1151,7 +1177,12 @@ function MessageList(props: MessageListProps): React.JSX.Element {
     loadingNewerRef.current = true;
     void (async () => {
       try {
-        const lastId = messages[messages.length - 1]!.id;
+        // Server id only: a surviving optimistic temp row (negative id) parked at
+        // the tail would send an invalid afterId cursor.
+        const lastId = lastServerMessageId(messages);
+        if (lastId === null) {
+          return;
+        }
         const raw = await session.loadNewer(channel.id, lastId);
         if (raw < NEWER_PAGE) {
           belowEndRef.current = false;
@@ -1614,20 +1645,24 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
         + (highlighted ? " highlighted" : "")
         + (selected ? " selected" : "")}
       onClick={() => {
-        if (actions.selectionMode) {
+        if (actions.selectionMode && message.id >= 0) {
           actions.toggleSelected(message.id);
         }
       }}
       onContextMenu={(event) => {
         event.preventDefault();
-        if (!actions.selectionMode) {
+        // A pending optimistic row has no actions (its POST cannot be cancelled
+        // and the message does not exist server-side); a FAILED one opens the
+        // Retry/Remove menu (messageMenuItems returns exactly those entries).
+        if (!actions.selectionMode && !(message.id < 0 && message.delivery !== "failed")) {
           props.onMenu({ message, x: event.clientX, y: event.clientY });
         }
       }}
     >
       {/* oak's hover cluster, right to left: [react][reply][forward] — the react
-          button hugs the scrollbar clearance, forward sits leftmost (Java-checked). */}
-      {!actions.selectionMode ? (
+          button hugs the scrollbar clearance, forward sits leftmost (Java-checked).
+          Never on an optimistic temp row: react/reply/forward need a real message. */}
+      {!actions.selectionMode && message.id >= 0 ? (
         <div className="message-hover-buttons">
           <button
             className="hover-button"
@@ -1674,6 +1709,14 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
           <div className="message-meta">
             <span className="message-author" style={{ color: props.authorColor(message.authorUsername) ?? undefined }}>{nameOf(message.authorUsername)}</span>
             <span className="message-time">{formatHeaderStamp(toEpochMs(message.createdAt), Date.now(), relativeDates)}</span>
+            {message.delivery === "failed" ? (
+              // The optimistic send's ONLY visible state (user decision: no
+              // "sending" marker) — Discord's red retry glyph on the row.
+              <span
+                className="message-failed-glyph icon mdi-alert"
+                title="Failed to send — right-click to retry or remove"
+              />
+            ) : null}
           </div>
         ) : null}
         {message.forward !== null && !editing ? (

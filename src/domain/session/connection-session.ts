@@ -565,15 +565,80 @@ export class ConnectionSession {
     }
   }
 
-  async sendMessage(channelId: number, content: string, replyToId?: number): Promise<void> {
-    // One key per composer submission: a network retry of THIS send reuses it,
-    // and the server returns the original message instead of a duplicate.
-    const created = await this.rest.sendMessage(channelId, {
+  sendMessage(channelId: number, content: string, replyToId?: number): Promise<void> {
+    // Optimistic send (user decision 2026-10-15, Discord-style, text-only): on a
+    // loaded contiguous channel the text lands as a local temp row IMMEDIATELY
+    // and this promise resolves at once — the composer clears instantly while
+    // the POST continues in the background. No "sending" marker exists; failure
+    // marks the row (red glyph + Retry/Remove). Attachments and stickers keep
+    // the await-the-201 path (their render needs the server's URLs anyway).
+    const ownUserId = this.selfUserId();
+    if (ownUserId !== null
+        && this.messageStore.isLoaded(channelId)
+        && !this.messageStore.isAroundWithoutTail(channelId)) {
+      // An around window must not pretend a temp row sits next to the window's
+      // last message (the gap below is unknown) — those sends fall through to
+      // the await path below, where a failure keeps the composer's draft.
+      const idempotencyKey = crypto.randomUUID();
+      const temp = this.messageStore.appendPending(channelId, {
+        content,
+        authorId: ownUserId,
+        authorUsername: this.username(),
+        replyToId: replyToId ?? null,
+        idempotencyKey,
+      });
+      void this.rest.sendMessage(channelId, {
+        content,
+        replyToId: replyToId ?? null,
+        idempotencyKey,
+      })
+        .then((created) => {
+          this.messageStore.resolvePending(channelId, temp.id, created);
+        })
+        .catch((sendError: unknown) => {
+          log.warn("chat", `optimistic send failed (row marked for retry): ${sendError instanceof Error ? sendError.message : String(sendError)}`);
+          this.messageStore.markPendingDelivery(channelId, temp.id, "failed");
+        });
+      return Promise.resolve();
+    }
+    // The await path (around window, cold channel, unknown self id): one key per
+    // composer submission — a network retry of THIS send reuses it, and the
+    // server returns the original message instead of a duplicate.
+    return this.rest.sendMessage(channelId, {
       content,
       replyToId: replyToId ?? null,
       idempotencyKey: crypto.randomUUID(),
-    });
-    this.messageStore.applyLive(created); // the STOMP echo dedups against this id
+    })
+      .then((created) => {
+        this.messageStore.applyLive(created); // the STOMP echo dedups against this id
+      });
+  }
+
+  /** Retry a failed optimistic row: same content, same reply target, SAME
+   *  idempotency key — the server returns the original if the lost POST had
+   *  actually landed, so a retry can never duplicate the message. */
+  async retryPendingMessage(channelId: number, tempId: number): Promise<void> {
+    const temp = this.messageStore.pendingMessageById(channelId, tempId);
+    if (temp === null || temp.delivery !== "failed") {
+      return;
+    }
+    this.messageStore.markPendingDelivery(channelId, tempId, "pending");
+    try {
+      const created = await this.rest.sendMessage(channelId, {
+        content: temp.content ?? "",
+        replyToId: temp.replyToId ?? null,
+        idempotencyKey: temp.idempotencyKey ?? crypto.randomUUID(),
+      });
+      this.messageStore.resolvePending(channelId, tempId, created);
+    } catch (retryError) {
+      log.warn("chat", `retry failed: ${retryError instanceof Error ? retryError.message : String(retryError)}`);
+      this.messageStore.markPendingDelivery(channelId, tempId, "failed");
+    }
+  }
+
+  /** Remove a failed optimistic row — the user gives up on the text. */
+  discardPendingMessage(channelId: number, tempId: number): void {
+    this.messageStore.removePendingMessage(channelId, tempId);
   }
 
   /**

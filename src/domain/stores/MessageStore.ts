@@ -3,6 +3,29 @@ import { patchReplyTreesForDeleted, patchReplyTreesForEdited } from "../logic/re
 import type { Message, ReactionSummary } from "../../types";
 
 /**
+ * The newest SERVER row of a list, skipping local temp rows (negative ids —
+ * the optimistic send parks its in-flight/failed rows at the list's end). Null
+ * when the list holds nothing server-side. Every "the last id" consumer (ack,
+ * NEW-divider tail, downward pagination, the around guard) means a SERVER id:
+ * a temp id must never travel into a request or a comparison against history.
+ */
+export function lastServerMessageId(messages: readonly Message[]): number | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message !== undefined && message.id >= 0) {
+      return message.id;
+    }
+  }
+  return null;
+}
+
+/** Sort rank: server rows by id ascending, local temp rows (negative id) AFTER
+ *  every server row in insertion order — the optimistic tail. */
+function messageOrderKey(message: Message): number {
+  return message.id < 0 ? Number.MAX_SAFE_INTEGER : message.id;
+}
+
+/**
  * Per-connection message lists, keyed by channel id. The snapshot IS the store
  * (a stable reference); selectors call listFor(channelId), which returns the same
  * array reference until THAT channel's list changes — the useSyncExternalStore
@@ -10,6 +33,7 @@ import type { Message, ReactionSummary } from "../../types";
  *
  * Ordering: server pages arrive OLDEST FIRST; live messages insert by id (ids
  * ascend per channel, so a binary-search insert doubles as the echo-dedup).
+ * Local OPTIMISTIC temp rows (negative ids) live after the newest server row.
  */
 export class MessageStore extends Emitter {
   private static readonly EMPTY: readonly Message[] = [];
@@ -21,6 +45,9 @@ export class MessageStore extends Emitter {
    *  appends below the window are FORBIDDEN (they would pretend the list is contiguous) —
    *  the tail is reached by paginating down or "Jump to present", which clears the flag. */
   private readonly aroundWithoutTail = new Set<number>();
+  /** Temp-row id source — counts down from -1; server ids are positive, so the
+   *  spaces can never collide. */
+  private nextLocalMessageId = -1;
 
   getSnapshot = (): MessageStore => this;
 
@@ -37,9 +64,12 @@ export class MessageStore extends Emitter {
   }
 
   /** Initial history load. Idempotent by caller convention (guarded by isLoaded). Clears any
-   *  around-window state — a plain snapshot IS the contiguous tail by definition. */
+   *  around-window state — a plain snapshot IS the contiguous tail by definition. Local temp
+   *  rows SURVIVE the replace (minus any whose server copy arrived inside the snapshot):
+   *  an in-flight POST still needs its row for resolve, a failed row is the only place the
+   *  text still exists — losing either would eat the user's words. */
   applySnapshot(channelId: number, messages: readonly Message[]): void {
-    this.lists.set(channelId, messages);
+    this.lists.set(channelId, this.withSurvivingTempRows(channelId, messages));
     this.loadedChannels.add(channelId);
     this.aroundWithoutTail.delete(channelId);
     this.emit();
@@ -50,7 +80,8 @@ export class MessageStore extends Emitter {
    *  channel around-without-tail: live appends past the window are dropped until the gap is
    *  paginated through and {@link markTailReached} fires. */
   applySnapshotAround(channelId: number, messages: readonly Message[]): void {
-    this.lists.set(channelId, messages);
+    // Temp rows survive a window replace too (same reasoning as applySnapshot).
+    this.lists.set(channelId, this.withSurvivingTempRows(channelId, messages));
     this.loadedChannels.add(channelId);
     this.aroundWithoutTail.add(channelId);
     this.emit();
@@ -93,18 +124,23 @@ export class MessageStore extends Emitter {
    * A live message (STOMP push or the sender's own REST echo — both carry the same
    * id, the sender just gets them first). Dropped for channels whose history has
    * not been loaded yet: opening the channel refetches a page that includes them.
-   * Returns true when inserted.
+   * A SELF live row whose optimistic temp still sits in the tail ABSORBS it (the
+   * echo-vs-201 race — whichever arrives first eats the temp row). Returns true
+   * when the list changed.
    */
   applyLive(message: Message): boolean {
     if (!this.loadedChannels.has(message.channelId)) {
       return false;
     }
     const current = this.lists.get(message.channelId) ?? MessageStore.EMPTY;
-    // Around window: a message NEWER than the window's last id lives in the unloaded gap
-    // (or the tail) — inserting it would stitch a hole into the "contiguous" list. Messages
-    // landing INSIDE the window (echoes, rare same-id races) insert as usual.
-    if (this.aroundWithoutTail.has(message.channelId) && current.length > 0
-        && message.id > current[current.length - 1]!.id) {
+    // Around window: a message NEWER than the window's last SERVER id lives in the
+    // unloaded gap (or the tail) — inserting it would stitch a hole into the
+    // "contiguous" list. Messages landing INSIDE the window (echoes, rare same-id
+    // races) insert as usual. (A temp row must not widen the guard: its negative
+    // id would classify every server row as "newer".)
+    const tailServerId = lastServerMessageId(current);
+    if (this.aroundWithoutTail.has(message.channelId) && tailServerId !== null
+        && message.id > tailServerId) {
       return false;
     }
     let insertionIndex = current.length;
@@ -123,10 +159,15 @@ export class MessageStore extends Emitter {
     if (after !== undefined && after.id === message.id) {
       return false;
     }
+    // Absorb FIRST, insert second: the temp's server copy may be this very row
+    // (the echo won the race against the 201), and the dedup above already
+    // proved this id is new to the list.
+    const absorbed = this.absorbMatchingTempRow(message.channelId, message);
+    const survivors = absorbed !== null ? absorbed : current;
     this.lists.set(message.channelId, [
-      ...current.slice(0, insertionIndex),
+      ...survivors.slice(0, insertionIndex),
       message,
-      ...current.slice(insertionIndex),
+      ...survivors.slice(insertionIndex),
     ]);
     this.emit();
     return true;
@@ -172,7 +213,7 @@ export class MessageStore extends Emitter {
     if (fresh.length === 0) {
       return 0;
     }
-    this.lists.set(channelId, [...current, ...fresh].sort((left, right) => left.id - right.id));
+    this.lists.set(channelId, [...current, ...fresh].sort((left, right) => messageOrderKey(left) - messageOrderKey(right)));
     this.emit();
     return fresh.length;
   }
@@ -183,6 +224,8 @@ export class MessageStore extends Emitter {
    * applyLive keeps, without N emits for N messages. Returns the messages that
    * were actually NEW: the caller fires the live accounting (unread/mention/
    * preview) for them, because they were missed while the socket was down.
+   * Self rows absorb their optimistic temp tail here too — the heal can deliver
+   * the server copy the sender missed while disconnected.
    */
   mergeTail(channelId: number, page: readonly Message[]): Message[] {
     if (!this.loadedChannels.has(channelId) || page.length === 0) {
@@ -200,8 +243,16 @@ export class MessageStore extends Emitter {
     if (fresh.length === 0) {
       return [];
     }
-    // The list is kept id-ascending (applyLive's invariant) — sorted concat keeps it.
-    this.lists.set(channelId, [...current, ...fresh].sort((left, right) => left.id - right.id));
+    let merged = current;
+    for (const message of fresh) {
+      const absorbed = this.absorbMatchingTempRow(channelId, message, merged);
+      if (absorbed !== null) {
+        merged = absorbed;
+      }
+    }
+    // The list is kept id-ascending (applyLive's invariant), temp rows parked
+    // after the server tail — the order-key sort keeps both.
+    this.lists.set(channelId, [...merged, ...fresh].sort((left, right) => messageOrderKey(left) - messageOrderKey(right)));
     this.emit();
     return fresh;
   }
@@ -256,5 +307,132 @@ export class MessageStore extends Emitter {
     if (hadList || wasLoaded || wasAround) {
       this.emit();
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Optimistic send (user decision 2026-10-15, Discord-style): a TEXT send gets
+  // a local temp row (negative id) parked after the server tail the moment the
+  // composer submits; the POST resolves/fails against that row later.
+  // ---------------------------------------------------------------------------
+
+  /** Park the just-submitted text as a pending temp row at the list's tail and
+   *  return it (the session keeps its id + idempotency key for resolve/retry). */
+  appendPending(channelId: number, draft: {
+    content: string;
+    authorId: number;
+    authorUsername: string;
+    replyToId: number | null;
+    idempotencyKey: string;
+  }): Message {
+    const temp: Message = {
+      id: this.nextLocalMessageId,
+      channelId,
+      authorId: draft.authorId,
+      authorUsername: draft.authorUsername,
+      content: draft.content,
+      createdAt: new Date().toISOString(),
+      attachments: [],
+      mentions: [],
+      editedAt: null,
+      reactions: [],
+      reply: null,
+      forward: null,
+      pinned: false,
+      pinnedBy: null,
+      pinnedAt: null,
+      sticker: null,
+      delivery: "pending",
+      idempotencyKey: draft.idempotencyKey,
+      replyToId: draft.replyToId,
+    };
+    this.nextLocalMessageId -= 1;
+    const current = this.lists.get(channelId) ?? MessageStore.EMPTY;
+    this.lists.set(channelId, [...current, temp]);
+    this.emit();
+    return temp;
+  }
+
+  /** The server's 201 (or a retry's answer): retire the temp row — if it is
+   *  still around; the STOMP echo may have absorbed it already — and insert the
+   *  real row through the normal id-dedup path. Returns true when the list changed. */
+  resolvePending(channelId: number, tempId: number, created: Message): boolean {
+    const current = this.lists.get(channelId);
+    let removedTemp = false;
+    if (current !== undefined && current.some((message) => message.id === tempId)) {
+      this.lists.set(channelId, current.filter((message) => message.id !== tempId));
+      removedTemp = true;
+    }
+    const inserted = this.applyLive(created);
+    return removedTemp || inserted;
+  }
+
+  /** A temp row by id (the retry's source of truth) — null when it is gone. */
+  pendingMessageById(channelId: number, tempId: number): Message | null {
+    const found = this.lists.get(channelId)?.find((message) => message.id === tempId);
+    return found !== undefined && found.id < 0 ? found : null;
+  }
+
+  /** Flip a temp row's delivery marker (failed on send failure, back to pending
+   *  on retry). Server rows (positive ids) are never eligible. */
+  markPendingDelivery(channelId: number, tempId: number, delivery: "pending" | "failed"): boolean {
+    const current = this.lists.get(channelId);
+    if (current === undefined || !current.some((message) => message.id === tempId && message.id < 0)) {
+      return false;
+    }
+    this.lists.set(channelId, current.map((message) =>
+      message.id === tempId ? { ...message, delivery } : message));
+    this.emit();
+    return true;
+  }
+
+  /** Remove a temp row (the failed row's "Remove" action). Server rows ineligible. */
+  removePendingMessage(channelId: number, tempId: number): boolean {
+    const current = this.lists.get(channelId);
+    if (current === undefined || tempId >= 0 || !current.some((message) => message.id === tempId)) {
+      return false;
+    }
+    this.lists.set(channelId, current.filter((message) => message.id !== tempId));
+    this.emit();
+    return true;
+  }
+
+  /** Drop the FIRST temp row matching a server row's (authorId, content) — the
+   *  server copy replaces its own optimistic draft (FIFO keeps duplicate texts
+   *  straight: two "ok" temps, two echoes, each eats one). Returns the shortened
+   *  list, or null when nothing matched. Pure over `listOverride`/the store. */
+  private absorbMatchingTempRow(channelId: number, incoming: Message, listOverride?: readonly Message[]): readonly Message[] | null {
+    const current = listOverride ?? this.lists.get(channelId);
+    if (current === undefined) {
+      return null;
+    }
+    const matchIndex = current.findIndex((candidate) =>
+      candidate.id < 0
+      && candidate.authorId === incoming.authorId
+      && candidate.content === incoming.content);
+    if (matchIndex < 0) {
+      return null;
+    }
+    return [...current.slice(0, matchIndex), ...current.slice(matchIndex + 1)];
+  }
+
+  /** The snapshot replace's temp policy: keep every temp row whose server copy
+   *  did NOT arrive inside the snapshot (in-flight POSTs resolve later; a failed
+   *  row is the only place its text still exists). */
+  private withSurvivingTempRows(channelId: number, messages: readonly Message[]): readonly Message[] {
+    const current = this.lists.get(channelId);
+    const tempRows = current?.filter((message) => message.id < 0) ?? [];
+    if (tempRows.length === 0) {
+      return messages;
+    }
+    const survivors: Message[] = [];
+    let remaining: readonly Message[] = tempRows;
+    for (const serverRow of messages) {
+      const absorbed = this.absorbMatchingTempRow(channelId, serverRow, remaining);
+      if (absorbed !== null) {
+        remaining = absorbed;
+      }
+    }
+    survivors.push(...remaining);
+    return survivors.length > 0 ? [...messages, ...survivors] : messages;
   }
 }

@@ -813,6 +813,12 @@ function DiagnosticsSection({ session }: { session: ConnectionSession }): React.
       <div className="settings-hint">
         Address to enter when connecting: {address ?? (record?.hostUrl ?? session.hostUrl())}
       </div>
+      {/* The compatibility skeleton (2026-10-15): the build the client is talking to —
+          the first thing to check when a button is mysteriously missing. Old servers
+          predate the field; "unknown" is the honest answer there. */}
+      <div className="settings-hint">
+        Server version: {session.serverProfile?.version ?? "unknown"}
+      </div>
       <h3>Saved connections</h3>
       {records.map((entry) => (
         <div key={entry.id} className="settings-hint">

@@ -19,6 +19,7 @@
 }
 .icon.mdi-account-multiple::before { content: "\F000E"; }
 .icon.mdi-account-plus::before { content: "\F0014"; }
+.icon.mdi-alert::before { content: "\F0026"; }
 .icon.mdi-application::before { content: "\F08C6"; }
 .icon.mdi-arrow-left::before { content: "\F004D"; }
 .icon.mdi-cast-connected::before { content: "\F0119"; }

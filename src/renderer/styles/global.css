@@ -802,6 +802,9 @@ button.wide-add { width: 100%; }
 .message-meta { display: flex; gap: 6px; align-items: baseline; }
 .message-author { font-weight: 700; }
 .message-time { color: var(--sp-text-muted); font-size: 11px; }
+/* The optimistic send's failure glyph (Discord's red "!" — the only delivery
+   state ever shown; a send in flight renders as a perfectly normal row). */
+.message-failed-glyph { color: var(--sp-red); font-size: 14px; align-self: center; cursor: default; }
 .message-content { color: var(--sp-text); white-space: pre-wrap; overflow-wrap: break-word; }
 .message-edited { color: #949ba4; font-size: 11px; margin-left: 6px; }
 .message-attachments { color: var(--sp-link); font-size: 13px; margin-top: 2px; }
