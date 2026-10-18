@@ -17,7 +17,6 @@
     "test": "vitest run",
     "watch": "vitest",
     "icons": "node scripts/regen-icons.mjs",
-    "logo": "node scripts/gen-placeholder-logo.mjs",
     "jar:sync": "node scripts/sync-server-jar.mjs",
     "images:sync": "node scripts/sync-server-images.mjs",
     "images:publish": "node scripts/publish-server-images.mjs",
