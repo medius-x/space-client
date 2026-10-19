@@ -60,6 +60,7 @@
 .icon.mdi-phone::before { content: "\F03F2"; }
 .icon.mdi-phone-hangup::before { content: "\F03F5"; }
 .icon.mdi-pin::before { content: "\F0403"; }
+.icon.mdi-pin-off::before { content: "\F0404"; }
 .icon.mdi-play::before { content: "\F040A"; }
 .icon.mdi-plus::before { content: "\F0415"; }
 .icon.mdi-pound::before { content: "\F0423"; }

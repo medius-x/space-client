@@ -1582,6 +1582,9 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
   // oak's canAddReactions: DM participants always may; server channels need ADD_REACTIONS.
   const dmContext = channel.type === "DM" || channel.type === "GROUP_DM";
   const canReact = dmContext || session.permissionStore.can("ADD_REACTIONS");
+  // Discord's pin gate (the context-menu item's mirror): MANAGE_MESSAGES on
+  // server channels, ANY participant in a DM — the server 403s stay the authority.
+  const canPin = dmContext || session.permissionStore.can("MANAGE_MESSAGES");
 
   const body = editing ? (
     <>
@@ -1679,11 +1682,33 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
         }
       }}
     >
-      {/* oak's hover cluster, right to left: [react][reply][forward] — the react
-          button hugs the scrollbar clearance, forward sits leftmost (Java-checked).
-          Never on an optimistic temp row: react/reply/forward need a real message. */}
+      {/* oak's hover cluster, right to left: [react][reply][forward][pin] — the
+          react button hugs the scrollbar clearance; pin sits leftmost (the pin
+          gate mirrors the context-menu item). Never on an optimistic temp row:
+          every action here needs a real message. */}
       {!actions.selectionMode && message.id >= 0 ? (
         <div className="message-hover-buttons">
+          {canPin ? (
+            <button
+              className="hover-button"
+              title={message.pinned ? "Unpin" : "Pin"}
+              onClick={(event) => {
+                event.stopPropagation();
+                const request = message.pinned
+                  ? session.unpinMessage(message.channelId, message.id)
+                  : session.pinMessage(message.channelId, message.id);
+                void request.catch((error: unknown) => {
+                  notifications.showToast({
+                    title: "space",
+                    channelName: "",
+                    body: error instanceof Error ? error.message : String(error),
+                  });
+                });
+              }}
+            >
+              <span className={"icon " + (message.pinned ? "mdi-pin-off" : "mdi-pin")} />
+            </button>
+          ) : null}
           <button
             className="hover-button"
             title="Forward"
