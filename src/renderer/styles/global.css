@@ -118,6 +118,15 @@ body:has(.toast-stack) {
   font-size: 13px;
 }
 
+/* Tile separation (user request 2026-10-19): two adjacent HIGHLIGHTED tiles —
+   the selected text channel right above the joined voice room — painted one
+   background color and merged into a single slab. A 2px gap between ALL tiles
+   (2, not the asked "at least 1": 1px can vanish under display scaling); the
+   first tile of a list resets so headers stay flush. The name row inside a
+   voice block is that block's first child — reset too, the block owns it. */
+.channel-row { margin-top: 2px; }
+.channel-row:first-child { margin-top: 0; }
+
 .channel-row:hover { background: var(--sp-hover); color: var(--sp-text); }
 .channel-row.active { background: var(--sp-selected); color: var(--sp-text); }
 /* oak's locked row keeps its normal look — the ONLY cue is the forbid cursor
@@ -129,7 +138,8 @@ body:has(.toast-stack) {
    member list under it share the hover/active background and form a single
    click target. The state classes live on the wrapper; the inner .channel-row
    carries no state of its own. */
-.voice-channel { border-radius: 4px; cursor: pointer; user-select: none; }
+.voice-channel { border-radius: 4px; cursor: pointer; user-select: none; margin-top: 2px; }
+.voice-channel:first-child { margin-top: 0; }
 .voice-channel:hover { background: var(--sp-hover); }
 .voice-channel:hover .channel-row { color: var(--sp-text); }
 .voice-channel .channel-row:hover { background: transparent; } /* the block owns the hover */
