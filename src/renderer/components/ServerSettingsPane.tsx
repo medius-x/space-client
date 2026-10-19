@@ -61,6 +61,13 @@ import {
   type TriState,
 } from "../../domain/logic/channel-access";
 import { argbIntToCss, canActOn, memberNameColor, topPosition } from "../../domain/logic/roster-grouping";
+import {
+  membershipCandidates,
+  membershipRows,
+  nextRoleIdsFor,
+  reconcileMembershipPending,
+  type MembershipIntent,
+} from "../../domain/logic/role-membership";
 import { downloadClientLogs } from "../logs-export";
 import { ApiError } from "../../core/rest";
 import { useAttachmentImage } from "../hooks/useAttachmentImage";
@@ -638,30 +645,60 @@ function RoleEditor({ session, role, canManageMembers }: {
   const [tab, setTab] = useState<"appearance" | "permissions" | "members">("appearance");
   const builtin = role.kind !== "CUSTOM";
   const roleSnapshot = useStore(session.memberStore, (state) => state.roles.find((entry) => entry.id === role.id) ?? role);
+  const members = useStore(session.memberStore, (state) => state.members);
   const [draft, setDraft] = useState<RoleDraft>(() => draftOf(roleSnapshot));
+  // Staged membership (user decision 2026-10-19): adds/removes park here and
+  // ride the SAME "Save Changes" as the role draft — the Members tab no longer
+  // fires immediate PUTs (their /topic/members echo refetched the store, fresh
+  // Role objects re-seeded this draft, and unsaved edits from the other tabs
+  // were wiped — the live bug this whole rework closes).
+  const [pendingMembership, setPendingMembership] = useState<Map<number, MembershipIntent>>(new Map());
   const [editingName, setEditingName] = useState(false);
   const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
 
-  // Follow the store row — a save of ours refreshes it (the draft then equals the
-  // saved state), and so does any /topic/roles push. This is the same reset the
-  // per-tab local states used to do, now unified above the tabs.
-  useEffect(() => {
-    setDraft(draftOf(roleSnapshot));
-    setEditingName(false);
-  }, [roleSnapshot]);
-
-  const patchDraft = (partial: Partial<RoleDraft>): void => {
-    setDraft((previous) => ({ ...previous, ...partial }));
-  };
-
-  const dirty = builtin
+  const roleDirty = builtin
     ? (!setsEqual(draft.permissions, new Set(roleSnapshot.permissions))
       || draft.mentionable !== roleSnapshot.mentionable)
     : (draft.name.trim() !== roleSnapshot.name || draft.color !== roleSnapshot.color
       || draft.mentionable !== roleSnapshot.mentionable || draft.hoist !== roleSnapshot.hoist
       || !setsEqual(draft.permissions, new Set(roleSnapshot.permissions)));
+  const dirty = roleDirty || pendingMembership.size > 0;
+
+  // Follow the store row — a save of ours refreshes it (the draft then equals
+  // the saved state), and so does any /topic/roles push. BUT never re-seed
+  // while there are unsaved edits: the draft wins until it is saved or the
+  // role is re-selected (the remount re-seeds), so a background refetch can no
+  // longer wipe what the user is typing (the other half of the live bug).
+  useEffect(() => {
+    if (!dirty) {
+      setDraft(draftOf(roleSnapshot));
+      setEditingName(false);
+    }
+  }, [roleSnapshot, dirty]);
+
+  // Pendings reconcile against fresh member rows (another admin may have
+  // applied the same change): satisfied intents drop out by themselves.
+  useEffect(() => {
+    setPendingMembership((current) => reconcileMembershipPending(current, members, role.id));
+  }, [members, role.id]);
+
+  const patchDraft = (partial: Partial<RoleDraft>): void => {
+    setDraft((previous) => ({ ...previous, ...partial }));
+  };
+
+  const stageMembership = (userId: number, intent: MembershipIntent | null): void => {
+    setPendingMembership((current) => {
+      const next = new Map(current);
+      if (intent === null) {
+        next.delete(userId);
+      } else {
+        next.set(userId, intent);
+      }
+      return next;
+    });
+  };
 
   const submit = async (): Promise<void> => {
     if (!dirty || busy) {
@@ -670,27 +707,61 @@ function RoleEditor({ session, role, canManageMembers }: {
     setBusy(true);
     setStatus(null);
     try {
-      await session.updateRole(role.id, builtin
-        ? {
-          // @everyone: only permissions and mentionable are editable — no color
-          // key at all (the server ignores it for the base row anyway).
-          permissions: [...draft.permissions],
-          mentionable: draft.mentionable,
+      if (roleDirty) {
+        await session.updateRole(role.id, builtin
+          ? {
+            // @everyone: only permissions and mentionable are editable — no color
+            // key at all (the server ignores it for the base row anyway).
+            permissions: [...draft.permissions],
+            mentionable: draft.mentionable,
+          }
+          : {
+            // oak's partial-PATCH contract: the name travels ONLY when the user
+            // actually changed it. The server validates names on update, and legacy
+            // roles (created before that rule) can carry spaces — sending their
+            // stored name on every save bounced color-only edits with 400 (live
+            // report). null leaves the stored name untouched.
+            name: draft.name.trim() !== roleSnapshot.name ? draft.name.trim() : null,
+            // color is UNCONDITIONAL on the wire: null resets, so send the picked value.
+            color: draft.color,
+            permissions: [...draft.permissions],
+            mentionable: draft.mentionable,
+            hoist: draft.hoist,
+          });
+      }
+      // The staged membership rides the same save: one PUT per member, bodies
+      // built from the FRESH snapshot rows. Applied intents clear; a failure
+      // keeps the rest staged and reports — the user retries Save.
+      const failed: string[] = [];
+      const applied: number[] = [];
+      for (const [userId, intent] of pendingMembership) {
+        const member = members.find((entry) => entry.userId === userId);
+        if (member === undefined) {
+          continue;
         }
-        : {
-          // oak's partial-PATCH contract: the name travels ONLY when the user
-          // actually changed it. The server validates names on update, and legacy
-          // roles (created before that rule) can carry spaces — sending their
-          // stored name on every save bounced color-only edits with 400 (live
-          // report). null leaves the stored name untouched.
-          name: draft.name.trim() !== roleSnapshot.name ? draft.name.trim() : null,
-          // color is UNCONDITIONAL on the wire: null resets, so send the picked value.
-          color: draft.color,
-          permissions: [...draft.permissions],
-          mentionable: draft.mentionable,
-          hoist: draft.hoist,
+        try {
+          await session.rest.updateMemberRoles(userId, nextRoleIdsFor(member, role.id, intent));
+          applied.push(userId);
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : String(error);
+          log.error("settings", `membership update failed (role=${role.id}, user=${userId}, intent=${intent}): ${message}`);
+          failed.push(`${member.nickname}: ${message}`);
+        }
+      }
+      if (applied.length > 0) {
+        setPendingMembership((current) => {
+          const next = new Map(current);
+          for (const userId of applied) {
+            next.delete(userId);
+          }
+          return next;
         });
-      setSaved(true);
+      }
+      if (failed.length > 0) {
+        setStatus(`${failed.length} membership change${failed.length > 1 ? "s" : ""} failed — ${failed[0]}`);
+      } else {
+        setSaved(true);
+      }
     } catch (error: unknown) {
       // The inline status is momentary — a rejected save must also land in
       // space.log (with what was actually sent) or the failure is undebuggable
@@ -772,12 +843,13 @@ function RoleEditor({ session, role, canManageMembers }: {
         ) : tab === "permissions" ? (
           <RolePermissions key={role.id} session={session} role={role} draft={draft} patchDraft={patchDraft} />
         ) : (
-          <RoleMembers key={role.id} session={session} role={role} />
+          <RoleMembers key={role.id} session={session} role={role}
+            pending={pendingMembership} onStage={stageMembership} />
         )}
       </div>
       {/* ONE cross-tab save — pinned below the scroll body, visible on every tab.
-          Membership (the Members tab) is NOT part of the draft: assignments are
-          immediate per-member PUTs on their own endpoint. */}
+          It commits the WHOLE editor: the role draft (one PATCH) and every staged
+          membership change (one PUT per member) — nothing applies piecemeal. */}
       {role.kind !== "OWNER" ? (
         <div className="modal-actions left role-editor-save">
           <SaveButton label="Save Changes" saved={saved} dirty={dirty} busy={busy} onClick={() => void submit()} />
@@ -944,67 +1016,56 @@ function RolePermissions({ session, role, draft, patchDraft }: {
   );
 }
 
-function RoleMembers({ session, role }: {
+function RoleMembers({ session, role, pending, onStage }: {
   session: ConnectionSession;
   role: Role;
+  /** The editor's staged membership map — the tab is fully controlled. */
+  pending: ReadonlyMap<number, MembershipIntent>;
+  onStage(userId: number, intent: MembershipIntent | null): void;
 }): React.JSX.Element {
   const members = useStore(session.memberStore, (state) => state.members);
   const roles = useStore(session.memberStore, (state) => state.roles);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [picked, setPicked] = useState<ReadonlySet<number>>(new Set());
-  const [busy, setBusy] = useState(false);
-  const holders = members.filter((member) => member.roleIds.includes(role.id));
-  // oak's AddMemberDialog candidates: everyone WITHOUT the role, name-sorted.
-  // The NICKNAME is the display name everywhere (the rename model) — rows keyed
-  // by username underneath, never showing it (live report: logins leaked here).
-  const candidates = [...members]
-    .filter((member) => !member.roleIds.includes(role.id))
-    .sort((left, right) => left.nickname.localeCompare(right.nickname));
-
-  const setHolding = async (member: ServerMember, hold: boolean): Promise<void> => {
-    const next = hold
-      ? [...new Set([...member.roleIds, role.id])]
-      : member.roleIds.filter((id) => id !== role.id);
-    try {
-      await session.rest.updateMemberRoles(member.userId, next);
-    } catch (error: unknown) {
-      window.alert(`Could not update roles: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  };
-
-  // oak assigns each picked member separately (assignRole per selection, Apply).
-  const applyPicked = async (): Promise<void> => {
-    if (busy || picked.size === 0) {
-      return;
-    }
-    setBusy(true);
-    for (const userId of picked) {
-      const member = members.find((entry) => entry.userId === userId);
-      if (member !== undefined) {
-        await setHolding(member, true);
-      }
-    }
-    setBusy(false);
-    setPickerOpen(false);
-    setPicked(new Set());
-  };
+  const rows = membershipRows(members, role.id, pending);
+  // oak's AddMemberDialog candidates: everyone WITHOUT the role (and without a
+  // staged add already sitting in the list), name-sorted. The NICKNAME is the
+  // display name everywhere (the rename model) — rows keyed by username
+  // underneath, never showing it (live report: logins leaked here).
+  const candidates = membershipCandidates(members, role.id, pending);
 
   return (
     <div>
       {/* oak's members tab: just the scrollable holder list with the full-width
-          "Add member" button UNDER it — no explainer paragraph. */}
-      {holders.length === 0 ? (
+          "Add member" button UNDER it — no explainer paragraph. Staged rows
+          carry their highlight; nothing leaves until "Save Changes". */}
+      {rows.length === 0 ? (
         <div className="settings-empty">No members have this role</div>
       ) : (
-        holders.map((member) => (
-          <div key={member.userId} className="list-row">
-            <Avatar session={session} username={member.username} size={28} />
-            <span className="member-name" style={{ color: memberNameColor(member, roles) ?? undefined }}>{member.nickname}</span>
-            {/* oak's removal glyph: the small close icon on the row's right
-                (role-trash-button + Icons.close), not a textual "×". */}
-            <button className="ghost tiny role-remove" title="Remove role" onClick={() => void setHolding(member, false)}>
-              <span className="icon mdi-close" />
-            </button>
+        rows.map((row) => (
+          <div key={row.member.userId} className={"list-row role-member-row " + row.state}>
+            <Avatar session={session} username={row.member.username} size={28} />
+            <span className="member-name" style={{ color: memberNameColor(row.member, roles) ?? undefined }}>{row.member.nickname}</span>
+            {row.state === "pending-remove" ? (
+              /* A staged removal is undoable until Save: the row stays visible,
+                 dimmed and struck, and the button puts it back. */
+              <button className="ghost tiny role-remove" title="Undo removal (staged)"
+                onClick={() => onStage(row.member.userId, null)}>
+                <span className="icon mdi-undo" />
+              </button>
+            ) : row.state === "pending-add" ? (
+              <button className="ghost tiny role-remove" title="Unstage (not saved yet)"
+                onClick={() => onStage(row.member.userId, null)}>
+                <span className="icon mdi-close" />
+              </button>
+            ) : (
+              /* oak's removal glyph: the small close icon on the row's right
+                 (role-trash-button + Icons.close), not a textual "×". */
+              <button className="ghost tiny role-remove" title="Remove role"
+                onClick={() => onStage(row.member.userId, "remove")}>
+                <span className="icon mdi-close" />
+              </button>
+            )}
           </div>
         ))
       )}
@@ -1039,7 +1100,15 @@ function RoleMembers({ session, role }: {
           </div>
           <div className="modal-actions left">
             <button className="ghost" onClick={() => setPickerOpen(false)}>Cancel</button>
-            <button className="primary" disabled={busy || picked.size === 0} onClick={() => void applyPicked()}>
+            <button className="primary" disabled={picked.size === 0} onClick={() => {
+              /* Staging, not sending: the picker's picks join the pending map —
+                 the cross-tab Save applies them with everything else. */
+              for (const userId of picked) {
+                onStage(userId, "add");
+              }
+              setPickerOpen(false);
+              setPicked(new Set());
+            }}>
               Add {picked.size > 0 ? `(${picked.size})` : ""}
             </button>
           </div>

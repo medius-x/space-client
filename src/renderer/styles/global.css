@@ -2097,6 +2097,13 @@ button.wide-add { width: 100%; }
    right edge where the button lives in the connected bar too. */
 .user-bar.empty { justify-content: flex-end; }
 .user-bar-button { padding: 4px 8px; }
+/* Staged membership rows (Roles → Members): a pending add glows green (it
+   appears only after Save), a pending removal dims and strikes through while
+   its ✕ becomes an undo. */
+.list-row.role-member-row.pending-add { background: rgba(88, 101, 242, 0.14); border-radius: 6px; }
+.list-row.role-member-row.pending-add .member-name { color: var(--sp-text) !important; }
+.list-row.role-member-row.pending-remove { opacity: 0.55; }
+.list-row.role-member-row.pending-remove .member-name { text-decoration: line-through; }
 .user-bar-button:hover { background: var(--sp-card-hover); }
 .user-bar-button .icon { font-size: 16px; }
 
