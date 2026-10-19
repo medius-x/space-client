@@ -2563,11 +2563,22 @@ export function openDm(channelId: number): void {
     ackActiveChannel(); // oak acks the chat being LEFT before the switch lands
   }
   appStore.patch({ dmMode: true, activeDmId: channelId, roomViewOpen: false, activeDiscussion: null });
-  void session.loadHistory(channelId)
-    .then(() => ackActiveChannel())
-    .catch((error: unknown) => {
-      log.warn("chat", `history load failed: ${errorMessage(error)}`);
-    });
+  // Same heal as setActiveChannel's plain path: a DM left in the AROUND state
+  // (a search jump earlier) must not stay stuck on its window — loadHistory is
+  // a no-op once isLoaded, so refetch the tail (applySnapshot clears the flag).
+  if (session.messageStore.isAroundWithoutTail(channelId)) {
+    void session.reloadTail(channelId)
+      .then(() => ackActiveChannel())
+      .catch((error: unknown) => {
+        log.warn("chat", `tail reload failed: ${errorMessage(error)}`);
+      });
+  } else {
+    void session.loadHistory(channelId)
+      .then(() => ackActiveChannel())
+      .catch((error: unknown) => {
+        log.warn("chat", `history load failed: ${errorMessage(error)}`);
+      });
+  }
 }
 
 /** Friends "Message": get-or-create the 1:1 DM, then open it. */

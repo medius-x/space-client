@@ -175,4 +175,36 @@ describe("MessageStore", () => {
     expect(store.isAroundWithoutTail(1)).toBe(false);
     expect(store.isLoaded(1)).toBe(false);
   });
+
+  it("around drops are counted; every heal path resets the counter", () => {
+    const store = new MessageStore();
+    store.applySnapshotAround(1, [message(10), message(12)]);
+    expect(store.aroundDropCount(1)).toBe(0);
+
+    store.applyLive(message(50, 1)); // dropped into the gap
+    store.applyLive(message(51, 1));
+    expect(store.aroundDropCount(1)).toBe(2);
+
+    store.markTailReached(1); // the gap was paginated through
+    expect(store.aroundDropCount(1)).toBe(0);
+
+    store.applySnapshotAround(1, [message(10)]); // a fresh window restarts the count
+    store.applyLive(message(60, 1));
+    expect(store.aroundDropCount(1)).toBe(1);
+
+    store.applySnapshot(1, [message(1)]); // "Jump to present"
+    expect(store.aroundDropCount(1)).toBe(0);
+
+    store.applySnapshotAround(1, [message(10)]);
+    store.applyLive(message(70, 1));
+    store.dropChannel(1);
+    expect(store.aroundDropCount(1)).toBe(0);
+
+    // An unrelated channel's drops never leak into this one's counter.
+    store.applySnapshotAround(1, [message(10)]);
+    store.applySnapshotAround(2, [message(5, 2)]);
+    store.applyLive(message(99, 2));
+    expect(store.aroundDropCount(1)).toBe(0);
+    expect(store.aroundDropCount(2)).toBe(1);
+  });
 });

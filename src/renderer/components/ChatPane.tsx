@@ -947,6 +947,9 @@ function MessageList(props: MessageListProps): React.JSX.Element {
   const belowEndRef = useRef(false);
   const loadingNewerRef = useRef(false);
   const [jumpToPresent, setJumpToPresent] = useState(false);
+  // Live rows the around guard has dropped since the window was armed — the
+  // pill's "N new" label, the only visible sign the view sits mid-history.
+  const aroundDropped = useStore(session.messageStore, (store) => store.aroundDropCount(channel.id));
   const [dividerReadId, setDividerReadId] = useState<number | null>(null);
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [beginReached, setBeginReached] = useState(false);
@@ -1008,6 +1011,17 @@ function MessageList(props: MessageListProps): React.JSX.Element {
     belowEndRef.current = false;
     setJumpToPresent(false);
   }, [channel.id, session]);
+
+  // The auto catch-up may heal the window while the user is looking at it (the
+  // gap below is paginated through — the list is contiguous with the tail
+  // again): the "gap" affordance goes away, what remains is ordinary scrolling.
+  const aroundActive = useStore(session.messageStore, (store) => store.isAroundWithoutTail(channel.id));
+  useEffect(() => {
+    if (!aroundActive && belowEndRef.current) {
+      belowEndRef.current = false;
+      setJumpToPresent(false);
+    }
+  }, [aroundActive]);
 
   // The search jump: once the around window ARRIVES (the target id is in the list),
   // center on it, flash it, and consume the appStore field. Declared BEFORE the
@@ -1358,7 +1372,9 @@ function MessageList(props: MessageListProps): React.JSX.Element {
       )}
       />
       {jumpToPresent && messages.length > 0 ? (
-        <button className="jump-to-present" onClick={jumpToPresentNow}>Jump To Present ↓</button>
+        <button className="jump-to-present" onClick={jumpToPresentNow}>
+          Jump To Present{aroundDropped > 0 ? ` · ${aroundDropped} new` : ""} ↓
+        </button>
       ) : null}
     </>
   );

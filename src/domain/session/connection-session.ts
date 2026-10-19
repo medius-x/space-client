@@ -30,7 +30,7 @@ import type {
   VoiceMemberEvent,
 } from "../../types";
 import { ChannelStore } from "../stores/ChannelStore";
-import { MessageStore } from "../stores/MessageStore";
+import { MessageStore, lastServerMessageId } from "../stores/MessageStore";
 import { MemberStore } from "../stores/MemberStore";
 import { PermissionStore } from "../stores/PermissionStore";
 import { PinnedStore } from "../stores/PinnedStore";
@@ -123,6 +123,11 @@ export const HISTORY_PAGE = 50;
 export const AROUND_LIMIT = 50;
 /** Downward page size away from an around window (towards the live tail). */
 export const NEWER_PAGE = 50;
+/** Auto catch-up of an around window: the debounce after the first live drop
+ *  below the window, and the page budget per trigger. A hole deeper than the
+ *  budget keeps the "Jump to present" pill; the next dropped message re-arms. */
+const AROUND_CATCHUP_DEBOUNCE_MILLIS = 750;
+const AROUND_CATCHUP_PAGE_CAP = 6;
 /** Newest-page size a reconnect gap-heal refetches per loaded channel. A gap
  *  wider than this leaves holes in the middle — that is no longer a blip. */
 const RESYNC_TAIL_LIMIT = 100;
@@ -218,6 +223,11 @@ export class ConnectionSession {
    *  unsubscribe, so the wire SUBSCRIBE lives until the socket — the set only guards
    *  duplicates, and the handlers are messageStore-only (harmless after the view closes). */
   private readonly subscribedDiscussionIds = new Set<number>();
+  /** Armed auto catch-up timers (channel id → debounce timer) — live traffic
+   *  fell into an around window's gap and the closure run is about to start. */
+  private readonly aroundCatchUpTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  /** Channels with an auto catch-up run in flight (re-arms only after it ends). */
+  private readonly aroundCatchUpRunning = new Set<number>();
   private disposed = false;
   /** True once start() ran to completion (stores filled, STOMP started). The
    *  offline view's half-session — start() died on the network — never reaches
@@ -390,6 +400,10 @@ export class ConnectionSession {
     this.disposed = true;
     this.playback.stop();
     this.stopPingCycle();
+    for (const timer of this.aroundCatchUpTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.aroundCatchUpTimers.clear();
     this.stomp.disconnect();
   }
 
@@ -623,6 +637,12 @@ export class ConnectionSession {
     })
       .then((created) => {
         this.messageStore.applyLive(created); // the STOMP echo dedups against this id
+        // In an around window BOTH paths drop the row (echo and this REST copy)
+        // — the composer cleared, so the user MUST see the send land: close the
+        // gap so the message appears at the true tail below the window.
+        if (this.messageStore.isAroundWithoutTail(channelId)) {
+          this.scheduleAroundCatchUp(channelId);
+        }
       });
   }
 
@@ -907,6 +927,63 @@ export class ConnectionSession {
       return;
     }
     this.messageStore.applySnapshot(channelId, messages);
+  }
+
+  /**
+   * Live traffic is falling into an around window's gap (live rows dropped above
+   * the window tail — including the READER'S OWN sends, whose STOMP echo drops
+   * the same way). Close the gap from below AUTOMATICALLY: pages of
+   * {@link NEWER_PAGE} until a short raw page latches "tail reached" (live
+   * appends resume), capped per trigger — a deep hole keeps the "Jump to
+   * present" pill and the next drop re-arms. Without this, a channel jumped-to
+   * via search/pin silently ate every new message until the user scrolled to
+   * the window's bottom edge by hand (live bug report 2026-10-16: messages
+   * "sent but never appeared" for hours, healed only by a restart).
+   */
+  scheduleAroundCatchUp(channelId: number): void {
+    if (this.disposed || this.aroundCatchUpRunning.has(channelId) || this.aroundCatchUpTimers.has(channelId)) {
+      return;
+    }
+    this.aroundCatchUpTimers.set(channelId, setTimeout(() => {
+      this.aroundCatchUpTimers.delete(channelId);
+      void this.runAroundCatchUp(channelId);
+    }, AROUND_CATCHUP_DEBOUNCE_MILLIS));
+  }
+
+  private async runAroundCatchUp(channelId: number): Promise<void> {
+    this.aroundCatchUpRunning.add(channelId);
+    try {
+      for (let pageIndex = 0; pageIndex < AROUND_CATCHUP_PAGE_CAP; pageIndex += 1) {
+        if (this.disposed || !this.messageStore.isLoaded(channelId)
+            || !this.messageStore.isAroundWithoutTail(channelId)) {
+          return; // healed by another path (scroll pagination, jump, re-entry)
+        }
+        const afterId = lastServerMessageId(this.messageStore.listFor(channelId));
+        if (afterId === null) {
+          return;
+        }
+        const page = await this.rest.getMessages(channelId, undefined, NEWER_PAGE, { afterId });
+        if (this.disposed) {
+          return;
+        }
+        if (page.length === 0) {
+          // Nothing below — the window IS the tail; live appends may resume.
+          this.messageStore.markTailReached(channelId);
+          return;
+        }
+        this.messageStore.appendPage(channelId, page);
+        if (page.length < NEWER_PAGE) {
+          this.messageStore.markTailReached(channelId);
+          return;
+        }
+      }
+      // Page budget spent: the hole is deeper than the cap. The pill stays (with
+      // the dropped-count), and the next dropped live message re-arms the loop.
+    } catch (error: unknown) {
+      log.warn("chat", `around catch-up failed (channel ${channelId}): ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      this.aroundCatchUpRunning.delete(channelId);
+    }
   }
 
   /** The read-state ack: local counters now, the REST call fire-and-forget. */
@@ -1493,6 +1570,13 @@ export class ConnectionSession {
       // the sender's own REST echo arriving over STOMP.
       if (inserted || !this.messageStore.isLoaded(message.channelId)) {
         this.hooks.onLiveMessage(message);
+      }
+      // A server row an around window refused: the gap below is alive — start
+      // closing it automatically (echo-dedup rows never get here: an id above
+      // the window tail was never inserted, so a false trigger means the
+      // channel is around-mode, where a catch-up attempt is always welcome).
+      if (!inserted && message.id >= 0 && this.messageStore.isAroundWithoutTail(message.channelId)) {
+        this.scheduleAroundCatchUp(message.channelId);
       }
     });
     this.stomp.subscribe(`${destination}.edited`, (raw) => {

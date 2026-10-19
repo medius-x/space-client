@@ -137,6 +137,24 @@ describe("StompClient", () => {
     expect(messages[0]?.body).toContain("JOINED");
   });
 
+  it("a THROWING handler does not abort the dispatch of the frames behind it", async () => {
+    const { client } = makeClient();
+    const received: string[] = [];
+    const connecting = client.connect();
+    connectedSocket();
+    await connecting;
+    const socket = FakeWebSocket.instances[0]!;
+
+    client.subscribe("/topic/broken", () => { throw new Error("handler bug"); });
+    client.subscribe("/topic/healthy", (body) => received.push(body));
+    // Two frames in ONE WS event: the first handler throws, the second must
+    // still be delivered (an aborted loop would lose it silently).
+    socket.serverMessage(
+      `MESSAGE\ndestination:/topic/broken\n\nfirst${TERMINATOR}`
+      + `MESSAGE\ndestination:/topic/healthy\n\nsecond${TERMINATOR}`);
+    expect(received).toEqual(["second"]);
+  });
+
   it("sends SEND frames with a JSON body", async () => {
     const { client } = makeClient();
     const connecting = client.connect();

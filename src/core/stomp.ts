@@ -325,8 +325,17 @@ export class StompClient {
       case "MESSAGE": {
         // Route to the per-destination handler registered via subscribe(); messages
         // for never-subscribed destinations are dropped (they cannot legitimately occur).
+        // One throwing handler must not abort the frame loop: the frames behind it
+        // in this WS event belong to unrelated channels and would be lost silently.
         const destination = frame.headers.destination ?? "";
-        this.subscriptions.get(destination)?.(frame.body);
+        const handler = this.subscriptions.get(destination);
+        if (handler !== undefined) {
+          try {
+            handler(frame.body);
+          } catch (error) {
+            log.error("stomp", `handler for ${destination} threw (frame dropped, dispatch continues): ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
         break;
       }
       case "RECEIPT":
