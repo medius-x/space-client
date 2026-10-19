@@ -126,6 +126,32 @@ describe("DiscussionsStore", () => {
     store.setTracked(999, true); // unknown — no-op
     expect(listener).not.toHaveBeenCalled();
   });
+
+  it("the CREATED broadcast beating the REST answer must not untrack the creator (startDiscussionWithMessage race)", () => {
+    const store = new DiscussionsStore();
+    // The wire order of a create: the server publishes CREATED (tracked=false
+    // for everyone) INSIDE the transaction, so it usually lands BEFORE the
+    // REST answer resolves. The session's merge feeds [created, ...forParent]
+    // to applyParentSnapshot — the stale same-id row must be filtered out or
+    // its tracked=false OVERWRITES the creator's tracked=true answer.
+    const broadcastRow = discussion({ id: 77, tracked: false });
+    store.applyEvent(event("CREATED", 77, { discussion: broadcastRow }));
+    expect(store.byId(77)?.tracked).toBe(false);
+
+    const created = discussion({ id: 77, tracked: true, replyCount: 1 });
+    // The session's exact merge (connection-session.startDiscussionWithMessage):
+    // the stale row with the same id is filtered away.
+    store.applyParentSnapshot(7, [created, ...store.forParent(7).filter((row) => row.id !== created.id)]);
+    expect(store.byId(77)?.tracked).toBe(true);
+    expect(store.mine().map((row) => row.id)).toEqual([77]); // the creator's "mine"
+
+    // The counterfactual (the unfiltered merge this test pins down): feeding
+    // the stale row AFTER the fresh one would have overwritten it.
+    const unfiltered = new DiscussionsStore();
+    unfiltered.applyEvent(event("CREATED", 77, { discussion: broadcastRow }));
+    unfiltered.applyParentSnapshot(7, [created, broadcastRow]);
+    expect(unfiltered.byId(77)?.tracked).toBe(false); // the bug this fix removes
+  });
 });
 
 describe("discussions-view", () => {

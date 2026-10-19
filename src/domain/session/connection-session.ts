@@ -836,8 +836,16 @@ export class ConnectionSession {
     }
     const created = await this.rest.createDiscussion(
       parentChannelId, originMessageId, content, refs, crypto.randomUUID());
+    // Filter the STALE row out: the CREATED broadcast (tracked=false for
+    // everyone) usually beats the REST answer over the wire, so forParent()
+    // here returns the SAME discussion with tracked=false — and upsertAll
+    // applies rows IN ORDER, letting the stale copy overwrite the creator's
+    // tracked=true answer. The thread then never lands in the sidebar's
+    // "mine" list (live bug report 2026-10-16: a thread on someone else's
+    // message was never auto-followed for its creator).
     this.discussionsStore.applyParentSnapshot(parentChannelId,
-      [created, ...this.discussionsStore.forParent(parentChannelId)]);
+      [created, ...this.discussionsStore.forParent(parentChannelId)
+        .filter((row) => row.id !== created.id)]);
     return created;
   }
 
