@@ -370,6 +370,8 @@ function FileCardView({ session, attachment }: {
   attachment: Attachment;
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false);
+  /** Download receipt (user report 2026-10-19: no visible feedback at all). */
+  const [savedFlash, setSavedFlash] = useState(false);
 
   const download = async (): Promise<void> => {
     if (busy) {
@@ -382,7 +384,11 @@ function FileCardView({ session, attachment }: {
       const fresh = await session.rest.freshAttachmentLink(attachment.key);
       if (fresh !== null) {
         const bytes = new Uint8Array(await session.rest.downloadBytes(fresh));
-        await window.spaceMedia?.saveFile(attachment.fileName, bytes);
+        const saved = await window.spaceMedia?.saveFile(attachment.fileName, bytes);
+        if (saved !== null && saved !== undefined) {
+          setSavedFlash(true);
+          window.setTimeout(() => setSavedFlash(false), 2000);
+        }
       }
     } catch (downloadError) {
       // The toast-less surface: the failure must outlive the click in space.log.
@@ -397,14 +403,14 @@ function FileCardView({ session, attachment }: {
       <button
         className="file-download"
         disabled={busy}
-        title="Download file"
+        title={savedFlash ? "Saved to the downloads folder" : "Download file"}
         onClick={() => void download()}
       >
-        <span className={"icon " + (busy ? "mdi-refresh" : "mdi-download")} />
+        <span className={"icon " + (savedFlash ? "mdi-check" : busy ? "mdi-refresh sp-spin" : "mdi-download")} />
       </button>
       <div className="file-card-body">
         <div className="file-name" title={attachment.fileName}>{attachment.fileName}</div>
-        <div className="file-size">{attachment.sizeBytes !== null ? humanByteSize(attachment.sizeBytes) : ""}</div>
+        <div className="file-size">{savedFlash ? "Saved" : attachment.sizeBytes !== null ? humanByteSize(attachment.sizeBytes) : ""}</div>
       </div>
     </div>
   );

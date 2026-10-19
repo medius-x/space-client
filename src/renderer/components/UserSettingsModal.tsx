@@ -61,8 +61,13 @@ const STAGED_SECTIONS: ReadonlySet<Section> = new Set(["audio", "video", "appear
  *  so the scope is visible right in the chrome (user decision). They are also
  *  the ACCOUNT scope's whole section list (user decision 2026-09-21): the
  *  server header's dropdown opens these two as "Account settings", the ⚙
- *  button opens the client-side remainder. */
+ *  button opens the client-side remainder. "general" lives in BOTH scopes
+ *  with different content (2026-10-19): the client scope's front tab carries
+ *  the downloads folder and the disk cache, the account scope keeps the
+ *  server identity (avatar + nickname). */
 const SERVER_SCOPED_SECTIONS: ReadonlySet<Section> = new Set(["general", "account"]);
+/** Sections the ACCOUNT scope shows (the dropdown entry). */
+const ACCOUNT_SCOPE_SECTIONS: ReadonlySet<Section> = new Set(["general", "account"]);
 
 /** oak's pane heading — the same chrome Server Settings sections carry. */
 function SectionHeading({ title }: { title: string }): React.JSX.Element {
@@ -72,7 +77,7 @@ function SectionHeading({ title }: { title: string }): React.JSX.Element {
 export function UserSettingsModal({ session }: { session: ConnectionSession | null }): React.JSX.Element {
   const scope = useStore(appStore, (state) => state.userSettingsScope);
   const visibleSections = SECTIONS.filter((entry) =>
-    scope === "account" ? SERVER_SCOPED_SECTIONS.has(entry.key) : !SERVER_SCOPED_SECTIONS.has(entry.key));
+    scope === "account" ? ACCOUNT_SCOPE_SECTIONS.has(entry.key) : entry.key !== "account");
   const [section, setSection] = useState<Section>(visibleSections[0]!.key);
   // Defensive: a scope switch under a mounted modal would leave an invisible
   // section selected — fall back to the scope's first entry.
@@ -87,7 +92,7 @@ export function UserSettingsModal({ session }: { session: ConnectionSession | nu
       ? records.find((entry) => entry.id === session.recordId)?.cachedServerName ?? session.hostUrl()
       : "");
   const sectionLabel = SECTIONS.find((entry) => entry.key === activeSection)?.label ?? "";
-  const headingTitle = SERVER_SCOPED_SECTIONS.has(activeSection)
+  const headingTitle = scope === "account" && SERVER_SCOPED_SECTIONS.has(activeSection)
     ? `${sectionLabel} — ${serverName}`
     : sectionLabel;
 
@@ -127,7 +132,11 @@ export function UserSettingsModal({ session }: { session: ConnectionSession | nu
           row list scrolls (user request 2026-10-07). */}
       <div className={"settings-body" + (activeSection === "keybinds" ? " keybinds-pinned" : "")}>
         <SectionHeading title={headingTitle} />
-        {activeSection === "general" && session !== null ? <GeneralSection session={session} /> : null}
+        {activeSection === "general"
+          ? (scope === "account"
+            ? (session !== null ? <GeneralSection session={session} /> : null)
+            : <GeneralClientSection session={session} />)
+          : null}
         {activeSection === "account" && session !== null ? <AccountSection session={session} /> : null}
         {activeSection === "audio" ? <AudioSection staged={staged} /> : null}
         {activeSection === "video" ? <VideoSection staged={staged} /> : null}
@@ -455,7 +464,7 @@ function ClientLogsRow(): React.JSX.Element {
     setBusy(true);
     setStatus("Preparing…");
     const outcome = await downloadClientLogs();
-    setStatus(outcome === "saved" ? "Saved." : outcome === "canceled" ? null : "Export failed — see the log.");
+    setStatus(outcome === "saved" ? "Saved." : "Export failed — see the log.");
     setBusy(false);
   };
 
@@ -701,21 +710,6 @@ function AppearanceSection({ staged }: { staged: StagedSettings }): React.JSX.El
         A message made of emojis only renders them at this size.
         Your own view only — other members keep their own setting.
       </div>
-      <h3>Images</h3>
-      <label className="settings-field"><span>Disk cache size</span>
-        <select
-          value={staged.value("imageCacheMegabytes")}
-          onChange={(event) => staged.set("imageCacheMegabytes", Number(event.target.value))}
-        >
-          {DISK_CACHE_CHOICES.map((size) => (
-            <option key={size} value={size}>{diskCacheLabel(size)}</option>
-          ))}
-        </select>
-      </label>
-      <div className="settings-hint">
-        The disk cache stores avatars and attachments by their stable key; Off keeps
-        everything in memory only (nothing is written to disk).
-      </div>
     </div>
   );
 }
@@ -847,10 +841,90 @@ function DiagnosticsSection({ session }: { session: ConnectionSession | null }):
       ))}
       <h3>Client logs</h3>
       <div className="settings-hint">
-        The last 24 hours of this client's log file, zipped and saved through the OS dialog —
+        The last 24 hours of this client's log file, zipped into the downloads folder —
         attach it to a bug report.
       </div>
       <ClientLogsRow />
+    </div>
+  );
+}
+
+/** Diagnostics → Downloads (2026-10-19 user request): the ONE folder every
+ *  client save lands in — <OS Downloads>/SPACE by default or the chosen
+ *  override. Change opens the OS folder picker (an instant quiet write — the
+ *  main process reads the setting at save time), Open reveals the folder. */
+function DownloadsFolderRow(): React.JSX.Element {
+  const [folder, setFolder] = useState<string | null>(null);
+  const [configured, setConfigured] = useState<string | null>(null);
+  const refresh = async (): Promise<void> => {
+    const info = await window.spaceMedia?.downloadsInfo();
+    if (info !== null && info !== undefined) {
+      setFolder(info.folder);
+      setConfigured(info.configured);
+    }
+  };
+  useEffect(() => {
+    void refresh();
+  }, []);
+  const choose = async (): Promise<void> => {
+    const picked = await window.spaceMedia?.chooseDownloadsDir();
+    if (picked !== null && picked !== undefined) {
+      settingsStore.apply({ downloadsFolder: picked });
+      await refresh();
+    }
+  };
+  const reset = async (): Promise<void> => {
+    settingsStore.apply({ downloadsFolder: null });
+    await refresh();
+  };
+  return (
+    <div>
+      <div className="settings-hint downloads-folder-path">
+        {folder ?? "…"}{configured === null ? " (default)" : ""}
+      </div>
+      <div className="modal-actions left">
+        <button onClick={() => void choose()}>Change folder</button>
+        {configured !== null ? (
+          <button className="ghost" onClick={() => void reset()}>Reset to default</button>
+        ) : null}
+        <button className="ghost" onClick={() => void window.spaceMedia?.openDownloadsDir()}>Open folder</button>
+      </div>
+    </div>
+  );
+}
+
+/** General (CLIENT scope) — the ⚙ window's front tab (user request
+ *  2026-10-19): the downloads folder and the disk-cache size moved here from
+ *  Diagnostics and Appearance. Immediate writes, no Apply step — the same
+ *  persistedGain category as Diagnostics. */
+function GeneralClientSection({ session }: { session: ConnectionSession | null }): React.JSX.Element {
+  const cacheMegabytes = useStore(settingsStore, (state) => state.imageCacheMegabytes);
+  const changeCache = (megabytes: number): void => {
+    settingsStore.apply({ imageCacheMegabytes: megabytes });
+    if (session !== null) {
+      session.attachmentCache.setDiskBudget(megabytes * 1024 * 1024); // 0 purges the disk layer
+    }
+  };
+  return (
+    <div>
+      <h3>Downloads</h3>
+      <div className="settings-hint">
+        Everything this client saves — logs, media from chats, pack exports — lands in this
+        folder, without a save dialog. Collisions get a " (N)" suffix.
+      </div>
+      <DownloadsFolderRow />
+      <h3>Images</h3>
+      <label className="settings-field"><span>Disk cache size</span>
+        <select value={cacheMegabytes} onChange={(event) => changeCache(Number(event.target.value))}>
+          {DISK_CACHE_CHOICES.map((size) => (
+            <option key={size} value={size}>{diskCacheLabel(size)}</option>
+          ))}
+        </select>
+      </label>
+      <div className="settings-hint">
+        The disk cache stores avatars and attachments by their stable key; Off keeps
+        everything in memory only (nothing is written to disk).
+      </div>
     </div>
   );
 }

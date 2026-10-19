@@ -83,6 +83,11 @@ export interface ClientSettings {
    *  in the settings window). Dead customs drop out at RENDER, not here — a
    *  re-uploaded emoji revives its place. */
   recentExpressions: string[];
+  /** The downloads folder override (2026-10-19 user request): everything the
+   *  client saves lands in ONE folder — default <OS Downloads>/SPACE, created
+   *  on first use; this holds the chosen absolute path or null for the
+   *  default. Read by the MAIN process at save time. */
+  downloadsFolder: string | null;
 }
 
 export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
@@ -110,6 +115,7 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   emojiJumboSize: 48,
   pickerLastTab: "emoji",
   recentExpressions: [],
+  downloadsFolder: null,
 };
 
 const KV_KEY = "client-settings";
@@ -168,6 +174,14 @@ export class SettingsStore extends Emitter {
       // The Latest MRU is sanitized against the expression grammar (unknown slugs,
       // junk, duplicates) — never trust hand-edited KV arrays.
       this.settings = { ...this.settings, recentExpressions: sanitizeRecentExpressions(rest.recentExpressions) };
+      // The downloads override is a non-empty string or nothing — hand-edited
+      // KV garbage falls back to the default folder.
+      this.settings = {
+        ...this.settings,
+        downloadsFolder: typeof rest.downloadsFolder === "string" && rest.downloadsFolder.length > 0
+          ? rest.downloadsFolder
+          : null,
+      };
     }
     this.loaded = true;
     this.emit();

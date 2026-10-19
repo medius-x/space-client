@@ -63,6 +63,16 @@ contextBridge.exposeInMainWorld("spaceMedia", {
   saveFile(fileName: string, bytes: Uint8Array): Promise<unknown> {
     return ipcRenderer.invoke("space-file:save", fileName, bytes);
   },
+  /** The downloads folder (Diagnostics): effective dir + picker + reveal. */
+  downloadsInfo(): Promise<unknown> {
+    return ipcRenderer.invoke("space-file:downloadsInfo");
+  },
+  chooseDownloadsDir(): Promise<unknown> {
+    return ipcRenderer.invoke("space-file:chooseDownloadsDir");
+  },
+  openDownloadsDir(): Promise<unknown> {
+    return ipcRenderer.invoke("space-file:openDownloadsDir");
+  },
 });
 
 /** Cross-origin fetch bridge for OG link previews (M7, oak's LinkPreviewService):

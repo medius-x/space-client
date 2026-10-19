@@ -317,7 +317,11 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
     // The merged gate (channel bits AND the DM restriction): the drop overlay
     // lights up exactly when staging actually works — the same expression.
     if (permissions?.attachFiles === false) {
-      return; // no ATTACH_FILES — staging stays empty, the gate line explains
+      // No ATTACH_FILES — staging stays empty, the gate line explains. Logged
+      // because a silent return is indistinguishable from "nothing happened"
+      // in a bug report (the dnd diagnostics round, 2026-10-19).
+      log.info("dnd", `drop gated: ATTACH_FILES denied in this channel (${fileList.length} file(s) ignored)`);
+      return;
     }
     const known = new Set(staged.map((entry) => `${entry.file.name}:${entry.file.size}`));
     const fresh: StagedFile[] = [];

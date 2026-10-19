@@ -158,8 +158,9 @@ export async function exportExpressionPack(
 
     const savedPath = await window.spaceMedia?.saveFile(fileName, buildZipArchive(files));
     if (savedPath === undefined || savedPath === null) {
-      // the user closed the OS save dialog — downloads spent, harmless
-      return { status: "canceled", filePath: null, error: null, emojis: manifest.emojis.length, stickers, packs: manifest.packs.length, unavailable, fileName };
+      // No save dialog anymore (the downloads-folder round, 2026-10-19): null
+      // is a WRITE failure — the archive bytes are lost, say so honestly.
+      return { status: "failed", filePath: null, error: "The archive could not be written to the downloads folder.", emojis: manifest.emojis.length, stickers, packs: manifest.packs.length, unavailable, fileName };
     }
     return {
       status: "saved",

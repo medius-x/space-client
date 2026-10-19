@@ -2456,10 +2456,6 @@ function useExpressionExchange(
       onError(result.error ?? "Export failed.");
       return;
     }
-    if (result.status === "canceled") {
-      setExchangeStatus("Export canceled.");
-      return;
-    }
     setExchangeStatus(null);
     setExchangeReport(
       formatExportReport({
@@ -3388,7 +3384,7 @@ function ServerStorageSection({ session }: { session: ConnectionSession }): Reac
     setLogsBusy(true);
     setLogsStatus("Preparing…");
     const outcome = await downloadClientLogs();
-    setLogsStatus(outcome === "saved" ? "Saved." : outcome === "canceled" ? null : "Export failed — see the log.");
+    setLogsStatus(outcome === "saved" ? "Saved." : "Export failed — see the log.");
     setLogsBusy(false);
   };
 

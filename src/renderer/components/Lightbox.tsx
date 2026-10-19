@@ -38,6 +38,8 @@ export function Lightbox({ session, images, startIndex, onForwardBegin, onClose 
   const [transform, setTransform] = useState<ViewerTransform>({ baseScale: 1, scale: 1, offsetX: 0, offsetY: 0 });
   const [imageSize, setImageSize] = useState<{ width: number; height: number } | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Download receipt: the glyph flips to a check for a couple of seconds. */
+  const [savedFlash, setSavedFlash] = useState(false);
   /** The Details card's anchor (the button's top-left) — null = closed; a second
    *  press on the button toggles it back (live report). */
   const [detailsAnchor, setDetailsAnchor] = useState<{ x: number; y: number } | null>(null);
@@ -103,7 +105,11 @@ export function Lightbox({ session, images, startIndex, onForwardBegin, onClose 
         return;
       }
       const bytes = new Uint8Array(await session.rest.downloadBytes(fresh));
-      await window.spaceMedia?.saveFile(attachment.fileName, bytes);
+      const saved = await window.spaceMedia?.saveFile(attachment.fileName, bytes);
+      if (saved !== null && saved !== undefined) {
+        setSavedFlash(true); // the click's only visible receipt (user report 2026-10-19)
+        window.setTimeout(() => setSavedFlash(false), 2000);
+      }
     } catch (error) {
       log.warn("lightbox", `download failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -282,7 +288,9 @@ export function Lightbox({ session, images, startIndex, onForwardBegin, onClose 
             </button>
           </>
         ) : null}
-        <button className="ghost" disabled={busy} onClick={() => void download()} title="Download"><span className="icon mdi-download" /></button>
+        <button className="ghost" disabled={busy} onClick={() => void download()} title="Download">
+          <span className={"icon " + (savedFlash ? "mdi-check" : busy ? "mdi-refresh sp-spin" : "mdi-download")} />
+        </button>
         {onForwardBegin !== undefined ? (
           <button className="ghost" onClick={() => { onForwardBegin(); onClose(); }} title="Forward the image"><span className="icon mdi-forward" /></button>
         ) : null}

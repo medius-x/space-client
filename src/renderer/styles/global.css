@@ -412,6 +412,13 @@ input[type="range"] { flex: 1; accent-color: var(--sp-accent); }
 }
 .volume-mute { width: 24px; height: 24px; flex-shrink: 0; }
 .volume-mute .icon { font-size: 14px; }
+/* Diagnostics → Downloads: the effective folder path (long Windows paths wrap,
+ * they must not stretch the 560px settings column). */
+.downloads-folder-path {
+  font-family: monospace;
+  word-break: break-all;
+  color: var(--sp-text-muted);
+}
 .member-card-separator { border-top: 1px solid var(--sp-control); margin: 2px 0; }
 .member-card-action {
   text-align: left;
@@ -2137,6 +2144,9 @@ button.wide-add { width: 100%; }
 .video-modal-status { color: var(--sp-yellow); font-size: 13px; }
 .video-modal-toolbar { display: flex; gap: 8px; align-items: center; }
 .video-modal-toolbar .file-name { flex: 1; }
+/* The download receipt in the video toolbar (the click's only visible echo). */
+.video-modal-saved { color: var(--sp-green); font-size: 12px; }
+.video-modal-status-inline { color: var(--sp-yellow); font-size: 12px; }
 
 .avatar {
   border-radius: 50%;

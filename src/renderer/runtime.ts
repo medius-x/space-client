@@ -3587,10 +3587,38 @@ function installPopoutClosedListener(): void {
  * will-navigate guard ALLOWED file URLs — a stray drop replaced the whole
  * app). preventDefault on dragover also keeps the OS cursor off the raw
  * "forbidden" state while a drag sweeps non-pane areas.
+ *
+ * Diagnostics (2026-10-19, the "drops silently stopped for one tester" report
+ * — the logs showed NOT ONE marker): dragenter/drag-leave are now logged at
+ * the document level with pacing. If the wedged-drag class ever returns, the
+ * log separates "events never reach the window" (no dragenter lines) from
+ * "events arrive but the pane misses them" (dragenter without the pane's
+ * enter marker).
  */
+let lastDragMarkerAt = 0;
+
 function installFileDropGuard(): void {
   const isFileDrag = (event: DragEvent): boolean =>
     event.dataTransfer !== null && [...event.dataTransfer.types].includes("Files");
+  const paceMarker = (message: string): void => {
+    const now = Date.now();
+    if (now - lastDragMarkerAt >= 2000) {
+      lastDragMarkerAt = now;
+      log.info("dnd", message);
+    }
+  };
+  document.addEventListener("dragenter", (event) => {
+    if (isFileDrag(event)) {
+      paceMarker(`document dragenter (files, target ${event.target instanceof Element ? event.target.tagName : "?"})`);
+    }
+  }, true);
+  document.addEventListener("dragleave", (event) => {
+    // relatedTarget null = the drag left the WINDOW entirely — the natural
+    // end of a cancelled sweep, and the marker that bracketed a full session.
+    if (isFileDrag(event) && event.relatedTarget === null) {
+      paceMarker("drag left the window");
+    }
+  }, true);
   document.addEventListener("dragover", (event) => {
     if (isFileDrag(event)) {
       event.preventDefault(); // marks the drop ALLOWED; staging stays the pane's job

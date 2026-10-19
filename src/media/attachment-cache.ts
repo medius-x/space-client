@@ -16,6 +16,10 @@ interface MediaBridge {
   cacheTrim(maxBytes: number): Promise<unknown>;
   openExternal(url: string): Promise<unknown>;
   saveFile(fileName: string, bytes: Uint8Array): Promise<unknown>;
+  /** Downloads-folder controls (Diagnostics → Downloads). */
+  downloadsInfo(): Promise<{ folder: string; configured: string | null } | null>;
+  chooseDownloadsDir(): Promise<string | null>;
+  openDownloadsDir(): Promise<string | null>;
 }
 
 declare global {

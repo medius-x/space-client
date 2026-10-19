@@ -542,26 +542,91 @@ ipcMain.handle("space-net:fetch", async (_event, url: unknown, kind: unknown) =>
   }
 });
 
-// Save dialog for downloads (lightbox "Save").
+// ---------------------------------------------------------------------------
+// Downloads folder (user request 2026-10-19): everything the client saves —
+// log archives, media from the lightbox and file cards, expression-pack
+// exports — lands in ONE folder, no save dialog. Default <OS Downloads>/SPACE,
+// created on first use (installer-independent); the folder is a client
+// setting (Diagnostics → Downloads) changeable at any time.
+// ---------------------------------------------------------------------------
+const DOWNLOADS_FOLDER_NAME = "SPACE";
+
+function sanitizeDownloadsSetting(raw: unknown): string | null {
+  if (typeof raw !== "string" || raw.length === 0 || !path.isAbsolute(raw)) {
+    return null;
+  }
+  return path.normalize(raw);
+}
+
+function configuredDownloadsDir(): string | null {
+  const settings = kvRead("client-settings");
+  if (settings === null || typeof settings !== "object") {
+    return null;
+  }
+  return sanitizeDownloadsSetting((settings as Record<string, unknown>).downloadsFolder);
+}
+
+function resolveDownloadsDir(): string {
+  const dir = configuredDownloadsDir() ?? path.join(app.getPath("downloads"), DOWNLOADS_FOLDER_NAME);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (error) {
+    appendLog(`[file] downloads dir "${dir}" create failed: ${error instanceof Error ? error.message : String(error)} — falling back to the OS Downloads root`);
+    return app.getPath("downloads");
+  }
+  return dir;
+}
+
+/** Collisions get " (N)" suffixes — a save never overwrites silently. */
+function uniqueDownloadPath(dir: string, fileName: string): string {
+  const extension = path.extname(fileName);
+  const base = extension.length > 0 ? fileName.slice(0, -extension.length) : fileName;
+  let candidate = path.join(dir, fileName);
+  for (let copy = 1; copy < 100; copy += 1) {
+    try {
+      fs.accessSync(candidate);
+    } catch {
+      return candidate;
+    }
+    candidate = path.join(dir, `${base} (${copy})${extension}`);
+  }
+  return path.join(dir, `${base} (${Date.now()})${extension}`);
+}
+
 ipcMain.handle("space-file:save", async (_event, fileName: unknown, bytes: unknown) => {
   if (typeof fileName !== "string" || !(bytes instanceof Uint8Array)) {
     return null;
   }
-  const chosen = await dialog.showSaveDialog({
-    defaultPath: fileName,
-  });
-  if (chosen.canceled || chosen.filePath === undefined) {
-    return null;
-  }
+  // A bare NAME only: the save target is ALWAYS the downloads folder — the
+  // basename call keeps a hostile renderer from steering the write elsewhere.
+  const safeName = path.basename(fileName).trim() || "download.bin";
+  const dir = resolveDownloadsDir();
+  const target = uniqueDownloadPath(dir, safeName);
   try {
-    fs.writeFileSync(chosen.filePath, bytes);
-    return chosen.filePath;
+    fs.writeFileSync(target, bytes);
+    appendLog(`[file] saved "${safeName}" (${bytes.byteLength} bytes) → ${target}`);
+    return target;
   } catch (error) {
-    // The user picked a destination and the write still failed — without this line
-    // the failure is indistinguishable from "canceled" everywhere (logging round).
-    appendLog(`[file] save to "${chosen.filePath}" failed: ${error instanceof Error ? error.message : String(error)}`);
+    appendLog(`[file] save to "${target}" failed: ${error instanceof Error ? error.message : String(error)}`);
     return null;
   }
+});
+
+/** The Diagnostics panel: the EFFECTIVE folder plus whether it is configured. */
+ipcMain.handle("space-file:downloadsInfo", () => ({
+  folder: resolveDownloadsDir(),
+  configured: configuredDownloadsDir(),
+}));
+
+ipcMain.handle("space-file:chooseDownloadsDir", async () => {
+  const chosen = await dialog.showOpenDialog({ properties: ["openDirectory"] });
+  return chosen.canceled || chosen.filePaths.length === 0 ? null : chosen.filePaths[0] ?? null;
+});
+
+ipcMain.handle("space-file:openDownloadsDir", () => {
+  const dir = resolveDownloadsDir();
+  void shell.openPath(dir);
+  return dir;
 });
 
 ipcMain.handle("space-kv:merge", (_event, key: unknown, partial: unknown) => {
@@ -1202,6 +1267,13 @@ ipcMain.on("space-toast:show", (_event, payload: unknown) => {
   // app covers it (live 2026-10-15: the call card surfaced UNDER a maximized
   // browser). moveTop then forces the z-order above the previously-active app.
   toast.setAlwaysOnTop(true, "screen-saver");
+  // Re-arm the click-through forward hook too: the empty-stack hide() below
+  // DROPS it (a standing low-level mouse hook breaks OS drag-and-drop into
+  // the windows underneath — the "forbidden" cursor over the whole client,
+  // live report 2026-10-19; a hidden window has nothing to forward anyway).
+  if (!toastInteractive) {
+    toast.setIgnoreMouseEvents(true, { forward: true });
+  }
   toast.showInactive(); // visible, never stealing focus
   toast.moveTop();
   toast.webContents.send("toast:show", payload);
@@ -1215,6 +1287,9 @@ ipcMain.on("space-toast:ready", () => {
   toastWindowReady = true;
   if (pendingToastPayloads.length > 0) {
     toast.setAlwaysOnTop(true, "screen-saver");
+    if (!toastInteractive) {
+      toast.setIgnoreMouseEvents(true, { forward: true }); // re-arm (see empty-handler)
+    }
     toast.showInactive();
     toast.moveTop();
     for (const payload of pendingToastPayloads) {
@@ -1259,7 +1334,14 @@ ipcMain.on("space-toast:geometry", (_event, contentHeight: unknown) => {
 
 ipcMain.on("space-toast:empty", () => {
   // No cards left — hide (kept alive for the next toast; it is click-through).
+  // The forward hook is DROPPED with the visibility: a standing
+  // setIgnoreMouseEvents(forward) hook on a hidden window keeps the OS-level
+  // mouse interception alive and BREAKS drag-and-drop into the main window —
+  // the "forbidden circle" cursor over the whole client, misread for months
+  // as a wedged drag controller (live reports 2026-10-16..19; restart "fixed"
+  // it because a fresh process starts without toasts). show() re-arms it.
   if (toastWindow && !toastWindow.isDestroyed()) {
+    toastWindow.setIgnoreMouseEvents(false);
     toastWindow.hide();
   }
 });

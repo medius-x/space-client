@@ -26,7 +26,7 @@ declare global {
   }
 }
 
-export type ClientLogsDownloadResult = "saved" | "canceled" | "failed";
+export type ClientLogsDownloadResult = "saved" | "failed";
 
 export async function downloadClientLogs(): Promise<ClientLogsDownloadResult> {
   try {
@@ -41,9 +41,11 @@ export async function downloadClientLogs(): Promise<ClientLogsDownloadResult> {
     }
     const archive = zipSync(entries, { level: 6 });
     const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
+    // No dialog anymore (the downloads-folder round, 2026-10-19): null is a
+    // WRITE failure, nothing else.
     const savedPath = await window.spaceMedia?.saveFile(`client-logs-${stamp}.zip`, archive);
     if (savedPath == null || savedPath === undefined) {
-      return "canceled";
+      return "failed";
     }
     log.info("logs", `client logs exported: ${files.length} file(s), ${archive.byteLength} bytes → ${String(savedPath)}`);
     return "saved";
