@@ -18,6 +18,10 @@ export interface ProvisioningParams {
   sshPassword: string | null;
   /** Path to an SSH private key on THIS machine (optional). */
   sshKeyPath: string | null;
+  /** Passphrase of that key — null/empty for an unencrypted key. An encrypted
+   *  OpenSSH key without it fails the connect step with "no passphrase given"
+   *  (live log 2026-10-16), so the form carries the field (user report #2). */
+  sshKeyPassphrase: string | null;
   /** A domain pointing at the host — switches TLS to Let's Encrypt. Null =
    *  self-signed certificate + client TOFU pin. */
   domain: string | null;

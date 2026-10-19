@@ -39,6 +39,7 @@ describe("provisioning params validation", () => {
       sshLogin: "root",
       sshPassword: "pw",
       sshKeyPath: null,
+      sshKeyPassphrase: null,
       domain: null,
       firewall: true,
       adminLogin: "admin",
@@ -51,6 +52,20 @@ describe("provisioning params validation", () => {
     expect(validateProvisioningParams({ ...params, sshPort: 0 })).toContain("port");
     expect(validateProvisioningParams({ ...params, sshLogin: "  " })).toContain("SSH user");
     expect(validateProvisioningParams({ ...params, sshPassword: null })).toContain("password");
+    // An ENCRYPTED key is a complete auth: key path + passphrase passes, and a
+    // passphrase alone (no key, no password) is not an auth at all.
+    expect(validateProvisioningParams({
+      ...params,
+      sshPassword: null,
+      sshKeyPath: "C:\\keys\\id_ed25519",
+      sshKeyPassphrase: "open sesame",
+    })).toBeNull();
+    expect(validateProvisioningParams({
+      ...params,
+      sshPassword: null,
+      sshKeyPath: null,
+      sshKeyPassphrase: "open sesame",
+    })).toContain("password");
     expect(validateProvisioningParams({ ...params, domain: "not a domain" })).toContain("domain");
     expect(validateProvisioningParams({ ...params, adminPassword: "short" })).toContain("8 characters");
     // The Space account grammars: ASCII login, unicode no-space nickname.
@@ -67,6 +82,7 @@ describe("provisioning params validation", () => {
       sshLogin: "root",
       sshPassword: "pw",
       sshKeyPath: null,
+      sshKeyPassphrase: null,
       domain: "oak.example.com",
       firewall: false,
       adminLogin: "admin",

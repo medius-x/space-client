@@ -253,6 +253,7 @@ export interface ProvisioningFormParams {
   sshLogin: string;
   sshPassword: string | null;
   sshKeyPath: string | null;
+  sshKeyPassphrase: string | null;
   domain: string | null;
   firewall: boolean;
   /** The Space account (OWNER): the panel resolves empty fields to the

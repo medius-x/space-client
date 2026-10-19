@@ -76,6 +76,7 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange }: {
   const [accountPassword, setAccountPassword] = useState("");
   const [sshPort, setSshPort] = useState("22");
   const [sshKeyPath, setSshKeyPath] = useState("");
+  const [sshKeyPassphrase, setSshKeyPassphrase] = useState("");
   const [domain, setDomain] = useState("");
   const [firewall, setFirewall] = useState(true);
   const [jarPath, setJarPath] = useState("");
@@ -153,6 +154,7 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange }: {
       sshLogin,
       sshPassword: sshPassword.length > 0 ? sshPassword : null,
       sshKeyPath: sshKeyPath.trim().length > 0 ? sshKeyPath.trim() : null,
+      sshKeyPassphrase: sshKeyPassphrase.length > 0 ? sshKeyPassphrase : null,
       domain: domain.trim().length > 0 ? domain.trim() : null,
       firewall,
       adminLogin: effectiveAdminLogin,
@@ -302,6 +304,12 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange }: {
           <span>Private key file (instead of the password)</span>
           <input type="text" value={sshKeyPath} onChange={(event) => setSshKeyPath(event.target.value)} placeholder="C:\Users\you\.ssh\id_ed25519" />
         </label>
+        {sshKeyPath.trim().length > 0 ? (
+          <label className="settings-field">
+            <span>Key passphrase (leave empty if the key is not encrypted)</span>
+            <PasswordInput value={sshKeyPassphrase} onChange={setSshKeyPassphrase} placeholder="Passphrase of the private key" autoComplete="off" />
+          </label>
+        ) : null}
         <label className="settings-field">
           <span>Domain (optional — a Let's Encrypt certificate instead of a pinned self-signed one)</span>
           <input type="text" value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="oak.example.com" />

@@ -147,6 +147,9 @@ export class Ssh2Transport implements ProvisioningTransport {
       }
       if (params.sshKeyPath !== null && params.sshKeyPath.trim().length > 0) {
         connectOptions.privateKey = fs.readFileSync(params.sshKeyPath.trim());
+        if (params.sshKeyPassphrase !== null && params.sshKeyPassphrase.length > 0) {
+          connectOptions.passphrase = params.sshKeyPassphrase;
+        }
       }
       this.connection.connect(connectOptions);
     });

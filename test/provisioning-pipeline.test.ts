@@ -20,6 +20,7 @@ function baseParams(overrides: Partial<ProvisioningParams> = {}): ProvisioningPa
     sshLogin: "root",
     sshPassword: "ssh-secret",
     sshKeyPath: null,
+    sshKeyPassphrase: null,
     domain: null,
     firewall: false,
     adminLogin: "admin",
