@@ -2,6 +2,8 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../hooks/useStore";
 import { useAttachmentImage } from "../hooks/useAttachmentImage";
 import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
+import { warmLegacyAttachmentDims } from "../media-dims-warmup";
+import { bodyGlyphWidthPx } from "../glyph-metrics";
 import { ackActiveChannel, appStore, forwardCrossInstance, forwardRequestUpload, forwardUploadBytes } from "../runtime";
 import { closeDiscussionForEveryone, closeDiscussionView, openDiscussion, openDraftDiscussion } from "../runtime";
 import { connectionDirectory, settingsStore } from "../runtime";
@@ -1103,6 +1105,7 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
   // scroll-proximity flag flipped false for a frame during the re-layout).
   const messageCountRef = useRef(messages.length);
   const previousTailRef = useRef<number | null>(null);
+  const lastStickLogAtRef = useRef(0);
   useEffect(() => {
     const grew = messages.length > messageCountRef.current;
     const pinned = nearBottomRef.current;
@@ -1121,12 +1124,42 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
     previousTailRef.current = lastServerMessageId(messages);
     messageCountRef.current = messages.length;
     if (grew && pinned) {
+      // Diagnostics marker (paced): if the thumb bounce is THIS call fighting
+      // the departing reader, space.log shows it next to the drift lines —
+      // one log, both suspects, no guessing.
+      const now = performance.now();
+      if (now - lastStickLogAtRef.current > 2000) {
+        lastStickLogAtRef.current = now;
+        log.info("vscroll", "stick-to-bottom: scrollToBottom on batch arrival (reader pinned)");
+      }
       listRef.current?.scrollToBottom();
     }
     if (grew && (watching || ownBatch) && !belowEndRef.current) {
       ackActiveChannel();
     }
   }, [messages]);
+
+  // Warm the learned-dimensions cache for legacy (no-wire-dims) media BEFORE
+  // the reader scrolls into those rows: a cold legacy image mounts with a
+  // fallback box and re-measures after the decode — the virtualizer's
+  // first-measure compensation then nudges scrollTop on every such row,
+  // which the user feels as the thumb bouncing through image-heavy history
+  // (live report 2026-10-19). Armed on channel open and on every history
+  // prepend (the fresh cold rows arrive ABOVE); tail growth never re-arms.
+  const dimsWarmupArmRef = useRef<{ channelKey: string; firstId: number } | null>(null);
+  useEffect(() => {
+    const first = messages[0];
+    if (first === undefined) {
+      return;
+    }
+    const channelKey = `${session.recordId}:${channel.id}`;
+    const arm = dimsWarmupArmRef.current;
+    if (arm !== null && arm.channelKey === channelKey && first.id >= arm.firstId) {
+      return;
+    }
+    dimsWarmupArmRef.current = { channelKey, firstId: first.id };
+    warmLegacyAttachmentDims(messages, session.attachmentCache);
+  }, [messages, channel.id, session.recordId, session.attachmentCache]);
 
   useEffect(() => {
     const onFocus = () => {
@@ -1249,7 +1282,7 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
   const jumpTo = useCallback((messageId: number) => {
     if (session.messageStore.listFor(channel.id).some((message) => message.id === messageId)) {
       settlingJumpCancelRef.current?.();
-      settlingJumpCancelRef.current = scheduleSettlingJump(listRef, String(messageId), () => {
+      settlingJumpCancelRef.current = scheduleSettlingJump(listRef, rowKeyOf(messageId), () => {
         setHighlightId(messageId);
         window.setTimeout(() => setHighlightId(null), HIGHLIGHT_TTL_MS);
       });
@@ -1319,6 +1352,9 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
       // the first paint or the measurement shifts everything below (the
       // bounce-through-images report, 2026-10-19).
       usableWidth: attachmentUsableWidth(),
+      // The MEASURED glyph width of the actual font (canvas metric, cached in
+      // glyph-metrics.ts) — the wrap lines stop depending on the 7px guess.
+      glyphWidthPx: bodyGlyphWidthPx(),
       knownDimsOf: learnedDims,
     }),
     [startById, discussionOriginIds, emojiJumboSize],
@@ -1342,6 +1378,16 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
       itemKey={(message) => rowKeyOf(message.id)}
       estimateHeight={groupedEstimateHeight}
       onNearTop={loadOlder}
+      onUserScrollIntent={(direction) => {
+        // The gate below reports one rAF later (paced 250 ms); a batch landing
+        // inside that window must not yank the departing reader back to the
+        // bottom — un-pin on the very first upward notch (live report 2026-10-19:
+        // "scroll to the very bottom, then wheel up — the thumb kept snapping
+        // back"; mid-list reading was always smooth).
+        if (direction === "up") {
+          nearBottomRef.current = false;
+        }
+      }}
       onBottomProximity={(nearBottom) => {
         nearBottomRef.current = nearBottom;
         if (nearBottom) {

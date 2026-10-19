@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { PopoutViewer } from "../../core/popout-viewer";
-import { NsEngineMenu } from "./VoiceRoom";
+import { NsEngineMenu, VolumeSliderInput } from "./VoiceRoom";
 import { CaptionBar } from "./CaptionBar";
 import type { NoiseEngineKind } from "../../media/noise-suppression";
 import type { PopoutTarget, PopoutVoiceState } from "../bridges";
@@ -335,13 +335,11 @@ export function PopoutScreen(): React.JSX.Element {
                   >
                     <span className={"icon " + (voiceVolume > 0 ? "mdi-volume-high" : "mdi-volume-off")} />
                   </button>
-                  <input
+                  <VolumeSliderInput
                     className="popout-volume"
-                    type="range" min={0} max={2} step={0.01}
                     value={voiceVolume}
                     title={`Voice volume — ${Math.round(voiceVolume * 100)}%`}
-                    onChange={(event) => {
-                      const next = event.currentTarget.valueAsNumber;
+                    onValueChange={(next) => {
                       lastLocalVolumeEditRef.current = Date.now();
                       setVoiceVolumeState(next);
                       if (next > 0) {
@@ -377,14 +375,12 @@ export function PopoutScreen(): React.JSX.Element {
                   >
                     <span className={"icon " + (volumeInteractive && shareVolume > 0 ? "mdi-volume-high" : "mdi-volume-off")} />
                   </button>
-                  <input
+                  <VolumeSliderInput
                     className="popout-volume"
-                    type="range" min={0} max={2} step={0.01}
                     value={shareVolume}
                     disabled={!volumeInteractive}
                     title={volumeInteractive ? "Share volume" : "This share has no audio"}
-                    onChange={(event) => {
-                      const next = event.currentTarget.valueAsNumber;
+                    onValueChange={(next) => {
                       lastLocalVolumeEditRef.current = Date.now();
                       setShareVolume(next);
                       if (shareUsername !== null) {

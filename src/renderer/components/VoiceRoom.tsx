@@ -908,16 +908,11 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
                         >
                           <span className={"icon " + (callVoiceGain > 0 ? "mdi-volume-high" : "mdi-volume-off")} />
                         </button>
-                        <input
-                          type="range"
+                        <VolumeSliderInput
                           className="popout-volume"
-                          min={0}
-                          max={2}
-                          step={0.01}
                           value={callVoiceGain}
                           title={`Voice volume — ${Math.round(callVoiceGain * 100)}%`}
-                          onChange={(event) => {
-                            const nextGain = Number(event.target.value);
+                          onValueChange={(nextGain) => {
                             if (nextGain > 0) {
                               callVoiceGainLastPositiveRef.current = nextGain;
                             }
@@ -950,16 +945,11 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
                         >
                           <span className={"icon " + (callShareGain > 0 ? "mdi-volume-high" : "mdi-volume-off")} />
                         </button>
-                        <input
-                          type="range"
+                        <VolumeSliderInput
                           className="popout-volume"
-                          min={0}
-                          max={2}
-                          step={0.01}
                           value={callShareGain}
                           title={`Share volume — ${Math.round(callShareGain * 100)}%`}
-                          onChange={(event) => {
-                            const nextGain = Number(event.target.value);
+                          onValueChange={(nextGain) => {
                             if (nextGain > 0) {
                               callShareGainLastPositiveRef.current = nextGain;
                             }
@@ -1073,6 +1063,53 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
 // The member card (right-click a room tile): personal volumes + moderation
 // ---------------------------------------------------------------------------
 
+/** The 0–200% volume slider with a value pill riding above the thumb while it
+ *  moves (user request 2026-10-19: the level was checkable only visually). The
+ *  pill re-arms on every change and hides 700 ms after the last one. */
+export function VolumeSliderInput({ value, className, disabled, title, onValueChange }: {
+  value: number;
+  className?: string;
+  disabled?: boolean;
+  title?: string;
+  onValueChange(value: number): void;
+}): React.JSX.Element {
+  const [tooltipValue, setTooltipValue] = useState<number | null>(null);
+  const hideTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (hideTimerRef.current !== null) {
+      window.clearTimeout(hideTimerRef.current);
+    }
+  }, []);
+  return (
+    <div className="volume-slider-wrap">
+      <input
+        type="range" min={0} max={2} step={0.01}
+        className={className}
+        disabled={disabled}
+        value={value}
+        title={title}
+        onChange={(event) => {
+          const next = event.currentTarget.valueAsNumber;
+          setTooltipValue(next);
+          if (hideTimerRef.current !== null) {
+            window.clearTimeout(hideTimerRef.current);
+          }
+          hideTimerRef.current = window.setTimeout(() => setTooltipValue(null), 700);
+          onValueChange(next);
+        }}
+      />
+      {tooltipValue !== null ? (
+        <span
+          className="volume-tooltip"
+          style={{ left: `${Math.min(92, Math.max(8, Math.round((tooltipValue / 2) * 100)))}%` }}
+        >
+          {Math.round(tooltipValue * 100)}%
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 /** One 0–200% volume row with a 0 ↔ last-positive mute toggle (oak's volume rows).
  *  The caption appears ONLY when both rows are visible (oak shows no caption on
  *  the lone voice slider) — label=null renders the row uncaptioned. */
@@ -1097,11 +1134,9 @@ function VolumeRow({ label, initialGain, remoteGain, onChange }: {
   return (
     <div className="volume-row">
       {label !== null ? <span className="volume-row-label">{label}</span> : null}
-      <input
-        type="range" min={0} max={200}
-        value={Math.round(gain * 100)}
-        onChange={(event) => {
-          const next = event.currentTarget.valueAsNumber / 100;
+      <VolumeSliderInput
+        value={gain}
+        onValueChange={(next) => {
           if (next > 0) {
             lastPositiveRef.current = next;
           }

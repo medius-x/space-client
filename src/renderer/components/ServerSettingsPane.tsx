@@ -593,7 +593,12 @@ function RolesSection({ session }: { session: ConnectionSession }): React.JSX.El
         {selected === null ? (
           <div className="settings-empty">Select a role</div>
         ) : (
-          <RoleEditor session={session} role={selected} canManageMembers={canManageMembers} />
+          // The draft is per-ROLE: switching the selection must re-seed it. Without
+          // the key the editor instance survives the switch and an unsaved draft
+          // (name/toggles/membership) carries into the NEXT role's PATCH — the
+          // "settings travel between roles" live report (2026-10-19): the same
+          // renamed value left the client as PATCHes of other role ids with 409s.
+          <RoleEditor key={selected.id} session={session} role={selected} canManageMembers={canManageMembers} />
         )}
       </div>
       {deleteTarget !== null ? (
@@ -1456,6 +1461,15 @@ function InvitesSection({ session }: { session: ConnectionSession }): React.JSX.
   const [expireAllOpen, setExpireAllOpen] = useState(false);
   /** The invite whose link was just copied — the Copy glyph flips to a check briefly. */
   const [copiedId, setCopiedId] = useState<number | null>(null);
+  /** The "Copied to clipboard" popover by the Create button (create copies
+   *  silently into the clipboard — the popover is the only confirmation). */
+  const [copiedFlash, setCopiedFlash] = useState(false);
+  const copiedFlashTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (copiedFlashTimerRef.current !== null) {
+      window.clearTimeout(copiedFlashTimerRef.current);
+    }
+  }, []);
   /** Ticks every 15 s so the "expires in …" labels stay honest — they render from
    *  Date.now() and nothing else re-renders the section, so a label could sit frozen at
    *  "1m" forever while the link is long dead (only a Copy click happened to refresh
@@ -1508,7 +1522,17 @@ function InvitesSection({ session }: { session: ConnectionSession }): React.JSX.
     setBusy(true);
     setError(null);
     try {
-      await session.rest.createInvite();
+      // The fresh link goes to the clipboard IMMEDIATELY (user request
+      // 2026-10-19): creating an invite exists to hand it to someone, the
+      // per-row Copy button stays for later re-copies. A two-second popover
+      // by the Create button confirms the copy (second-pass user request —
+      // NOT a toast in the corner).
+      copyLink(await session.rest.createInvite());
+      setCopiedFlash(true);
+      if (copiedFlashTimerRef.current !== null) {
+        window.clearTimeout(copiedFlashTimerRef.current);
+      }
+      copiedFlashTimerRef.current = window.setTimeout(() => setCopiedFlash(false), 2000);
       session.refreshInvites();
     } catch (createError: unknown) {
       setError(createError instanceof Error ? createError.message : String(createError));
@@ -1567,7 +1591,13 @@ function InvitesSection({ session }: { session: ConnectionSession }): React.JSX.
       </div>
       <div className="settings-hint">Changing the TTL reschedules every active link (lowering it may expire some immediately).</div>
       <div className="modal-actions left">
-        <button className="primary" disabled={busy} onClick={() => void createInvite()}>Create invite</button>
+        {/* The copy confirmation rides NEXT TO THE BUTTON (user request
+            2026-10-19, second pass: a toast in the far corner is easy to miss
+            and the action happened HERE). */}
+        <span className="invite-create-wrap">
+          {copiedFlash ? <span className="copied-popover">Copied to clipboard</span> : null}
+          <button className="primary" disabled={busy} onClick={() => void createInvite()}>Create invite</button>
+        </span>
         <button className="ghost" disabled={busy || invitesState.invites.length === 0} onClick={() => setExpireAllOpen(true)}>
           Expire all
         </button>

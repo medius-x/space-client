@@ -93,9 +93,10 @@ describe("estimateRowHeight — the estimate IS the first paint (render-math mir
       const height = estimateRowHeight(messageOf({ attachments }), inputs({ usableWidth: 700 }));
       expect(height - textOnlyHeight(null)).toBe(mosaicHeight(computeMosaicTiles(count, 700)));
     }
-    // concrete: at 700px two tiles are (700-4)/2 = 348 tall — the old flat
-    // estimate said 210, the 138px gap per row is what bounced the scrollbar.
-    expect(mosaicHeight(computeMosaicTiles(2, 700))).toBe(348);
+    // concrete: at 700px two raw tiles would be (700-4)/2 = 348 tall — the old
+    // flat estimate said 210 (the 138px gap bounced the scrollbar); the tile
+    // cap now holds the render at 320, and the estimate follows the SAME math.
+    expect(mosaicHeight(computeMosaicTiles(2, 700))).toBe(320);
   });
 
   it("4+ image rows estimate the 2-column grid math including gaps", () => {

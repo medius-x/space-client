@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
 import { useStore } from "../hooks/useStore";
-import { appStore, callUser } from "../runtime";
+import { appStore, callUser, openDmWithUser } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
-import type { Role, ServerMember } from "../../types";
+import type { Relationship, Role, ServerMember } from "../../types";
 import { BAN_MEMBERS_PERMISSION, KICK_MEMBERS_PERMISSION } from "../../types";
 import { buildRosterGroups, canActOn, topPosition, type HierarchyView } from "../../domain/logic/roster-grouping";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
@@ -20,6 +20,17 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
   const myPermissions = useStore(session.permissionStore, (state) => state.my);
   const ownUsername = useStore(appStore, (state) => state.ownUsername);
   const activeVoiceChannelId = useStore(appStore, (state) => state.activeVoiceChannelId);
+  const relationships = useStore(session.socialStore, (state) => state.relationships);
+  // userId → the social-layer row (friend / pending / block) — the roster menu
+  // gates Add friend & Send message by it (user request 2026-10-19: DM access
+  // straight from the roster).
+  const relationshipByUserId = useMemo(() => {
+    const index = new Map<number, Relationship>();
+    for (const relationship of relationships) {
+      index.set(relationship.userId, relationship);
+    }
+    return index;
+  }, [relationships]);
   const [memberMenu, setMemberMenu] = useState<{ member: ServerMember; x: number; y: number } | null>(null);
   const [removeTarget, setRemoveTarget] = useState<ServerMember | null>(null);
   const [banTarget, setBanTarget] = useState<ServerMember | null>(null);
@@ -47,31 +58,69 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
     myPermissions?.permissions ?? [],
     memberRoster.roles,
   );
-  const memberMenuItems: ContextMenuItem[] = memberMenu === null ? [] : [
+  // Personal actions live ABOVE the rule, destructive moderation below it
+  // (user request 2026-10-19 — the server-menu pattern; Delete server in the
+  // rail is red, so are Remove/Ban here).
+  const personalMenuItems: ContextMenuItem[] = memberMenu === null ? [] : [
     ...(roster.presence.has(memberMenu.member.username)
       ? [{ label: "Call", action: () => callUser(memberMenu.member.username) }]
       : []),
+    // Personal actions (user request 2026-10-19): jump into a DM straight from
+    // the roster, and befriend strangers without the Friends pane round-trip.
+    // A block in either direction removes BOTH (the server would 403 the DM
+    // and swallow the request); a pending row hides Add friend but keeps the
+    // DM entry — pending does not gate messaging.
+    ...(relationshipByUserId.get(memberMenu.member.userId)?.type !== "BLOCKED"
+      ? [{
+          label: "Send message",
+          action: () => {
+            openDmWithUser(memberMenu.member.userId)
+              .catch((error: unknown) => {
+                window.alert(error instanceof Error ? error.message : "Could not open the direct message.");
+              });
+          },
+        }]
+      : []),
+    ...(relationshipByUserId.has(memberMenu.member.userId)
+      ? []
+      : [{
+          label: "Add friend",
+          action: () => {
+            session.sendFriendRequest(memberMenu.member.username).catch((error: unknown) => {
+              window.alert(error instanceof Error ? error.message : "Could not send the friend request.");
+            });
+          },
+        }]),
     // The roster twin of the voice channel's hover button: sitting in a room,
     // right-click a member → invite them THERE (the same live card; an offline
     // target is not offered the entry for the same reason Call hides itself).
     ...(roster.presence.has(memberMenu.member.username) && activeVoiceChannelId !== null
       ? [{ label: "Voice invite", action: () => session.sendVoiceInvite(activeVoiceChannelId, memberMenu.member.username) }]
       : []),
-    // oak's member card: a separator rule between the personal action and the
-    // moderation block (showMemberMenu).
-    ...(roster.presence.has(memberMenu.member.username) && moderationMenuItems.length > 0
+  ];
+  const memberMenuItems: ContextMenuItem[] = memberMenu === null ? [] : [
+    ...personalMenuItems,
+    // oak's member card: a separator rule between the personal actions and
+    // the moderation block (showMemberMenu) — now regardless of presence.
+    ...(personalMenuItems.length > 0 && moderationMenuItems.length > 0
       ? [{ label: "", separator: true, action: () => undefined }]
       : []),
-    ...moderationMenuItems.map((entry) => ({
-      ...entry,
-      action: () => {
-        if (entry.kind === "remove") {
-          setRemoveTarget(memberMenu.member);
-        } else {
-          setBanTarget(memberMenu.member);
-        }
-      },
-    })),
+    // Ban above, Remove from server LAST and red (user layout, 2026-10-19):
+    // the irreversible eviction is the terminal action of the menu.
+    ...moderationMenuItems
+      .slice()
+      .sort((left, right) => (left.kind === "remove" ? 1 : 0) - (right.kind === "remove" ? 1 : 0))
+      .map((entry) => ({
+        ...entry,
+        danger: entry.kind === "remove",
+        action: () => {
+          if (entry.kind === "remove") {
+            setRemoveTarget(memberMenu.member);
+          } else {
+            setBanTarget(memberMenu.member);
+          }
+        },
+      })),
   ];
 
   return (

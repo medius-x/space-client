@@ -1,8 +1,9 @@
 /**
  * oak's image mosaic (AttachmentLayout.java), pure math, unit-tested:
- * 1 image renders as a SQUARE bounded by the row's usable width and its OWN
- * smaller natural side — NEVER upscaled past its natural size (64×64 stays
- * 64×64); 2–3 images render in ONE row of square, center-cropped tiles; 4–10
+ * 1 image renders as a SQUARE bounded by the row's usable width, its OWN
+ * smaller natural side and MAX_IMAGE_TILE_SIDE — NEVER upscaled past its
+ * natural size (64×64 stays 64×64); 2–3 images render in ONE row of square,
+ * center-cropped tiles; 4–10
  * render in a 2-column grid of square, center-cropped tiles (a crop — not a
  * fit — is what keeps the grid compact; the Discord way). The caller caps the
  * count at MAX_ATTACHMENTS (the server's limit).
@@ -16,6 +17,12 @@ export interface MosaicTile {
 export const MAX_ATTACHMENTS = 10;
 /** oak's TILE_GAP = 4 (we had 8 — this is a straight port). */
 export const TILE_GAP = 4;
+/** The ceiling for EVERY image tile side (single AND mosaic), the video thumb's
+ *  max-height precedent. Without it a large image scales with the chat pane's
+ *  width — the row usable width was the ONLY cap, so stretching the window
+ *  grew the picture without bound (live report 2026-10-19). The lightbox
+ *  remains the full-size view. */
+export const MAX_IMAGE_TILE_SIDE = 320;
 
 /** oak's columnsFor: 1 → 1, 2–3 → count, 4+ → 2. */
 export function mosaicColumns(count: number): number {
@@ -30,7 +37,7 @@ export function mosaicColumns(count: number): number {
 
 /** The square side of a grid/row tile: the gap is only BETWEEN columns. */
 export function gridTileSide(usableWidth: number, columns: number): number {
-  return Math.floor((usableWidth - TILE_GAP * (columns - 1)) / columns);
+  return Math.min(MAX_IMAGE_TILE_SIDE, Math.floor((usableWidth - TILE_GAP * (columns - 1)) / columns));
 }
 
 /** The SINGLE image's square side: the row width capped by the image's own
@@ -39,7 +46,7 @@ export function gridTileSide(usableWidth: number, columns: number): number {
  *  inside the square (contain, not cover — the caller's CSS). */
 export function singleTileSide(usableWidth: number, naturalWidth: number, naturalHeight: number): number {
   const naturalSide = naturalWidth > 0 && naturalHeight > 0 ? Math.min(naturalWidth, naturalHeight) : usableWidth;
-  return Math.min(usableWidth, naturalSide);
+  return Math.min(usableWidth, MAX_IMAGE_TILE_SIDE, naturalSide);
 }
 
 /** The single image's actual BOX (user decision, 2026-09-15): the image as it

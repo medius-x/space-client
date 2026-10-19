@@ -25,31 +25,41 @@ describe("mosaicColumns", () => {
 });
 
 describe("gridTileSide", () => {
-  it("subtracts only the BETWEEN-column gaps (oak's pinned 164/248/500)", () => {
+  it("subtracts only the BETWEEN-column gaps (oak's pinned 164/248)", () => {
     expect(gridTileSide(500, 3)).toBe(164); // (500 - 4*2) / 3
     expect(gridTileSide(500, 2)).toBe(248); // (500 - 4) / 2
-    expect(gridTileSide(500, 1)).toBe(500); // no gap for a lone column
+  });
+
+  it("the side is capped — stretching the window never grows tiles past 320", () => {
+    expect(gridTileSide(500, 1)).toBe(320); // a lone column would be the full row
+    expect(gridTileSide(1600, 2)).toBe(320);
+    expect(gridTileSide(200, 2)).toBe(98); // narrow rows stay narrow — the cap never upscales
   });
 });
 
 describe("singleTileSide", () => {
   it("is bounded by the image's OWN smaller natural side — never upscaled (oak)", () => {
     expect(singleTileSide(918, 64, 64)).toBe(64);
-    expect(singleTileSide(918, 4000, 3000)).toBe(918); // landscape larger than the row
     expect(singleTileSide(918, 400, 300)).toBe(300);
     expect(singleTileSide(918, 240, 900)).toBe(240); // portrait: the width wins
   });
 
-  it("unknown natural size → the full usable width (the decode replaces it)", () => {
-    expect(singleTileSide(600, 0, 0)).toBe(600);
-    expect(singleTileSide(600, -1, -1)).toBe(600);
+  it("a huge image is capped, not row-wide — the window can no longer grow it", () => {
+    expect(singleTileSide(918, 4000, 3000)).toBe(320);
+    expect(singleTileSide(1600, 4000, 3000)).toBe(320);
+  });
+
+  it("unknown natural size → the usable width capped by the tile ceiling (the decode replaces it)", () => {
+    expect(singleTileSide(600, 0, 0)).toBe(320);
+    expect(singleTileSide(600, -1, -1)).toBe(320);
+    expect(singleTileSide(240, 0, 0)).toBe(240);
   });
 });
 
 describe("singleTileBox", () => {
   it("the fitted image with the letterbox trimmed — never a padded square (user decision)", () => {
-    expect(singleTileBox(918, 1920, 1080)).toEqual({ width: 918, height: 516 }); // landscape: fills the row width
-    expect(singleTileBox(918, 400, 900)).toEqual({ width: 178, height: 400 }); // portrait: height = the square side
+    expect(singleTileBox(918, 1920, 1080)).toEqual({ width: 320, height: 180 }); // landscape at the cap
+    expect(singleTileBox(918, 400, 900)).toEqual({ width: 142, height: 320 }); // portrait: height = the square side
   });
 
   it("no upscale: a small image stays its own size", () => {
@@ -57,8 +67,9 @@ describe("singleTileBox", () => {
     expect(singleTileBox(918, 240, 900)).toEqual({ width: 64, height: 240 });
   });
 
-  it("unknown natural size → the square placeholder", () => {
-    expect(singleTileBox(600, 0, 0)).toEqual({ width: 600, height: 600 });
+  it("unknown natural size → the square placeholder (capped)", () => {
+    expect(singleTileBox(600, 0, 0)).toEqual({ width: 320, height: 320 });
+    expect(singleTileBox(240, 0, 0)).toEqual({ width: 240, height: 240 });
   });
 });
 

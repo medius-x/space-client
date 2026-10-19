@@ -12,8 +12,8 @@ import {
 } from "../../domain/logic/attachment-layout";
 import { learnedDims, rememberDims } from "../media-dims";
 import { humanByteSize } from "../../domain/logic/file-size";
-import type { Attachment, Message } from "../../types";
 import { log } from "../../logging";
+import type { Attachment, Message } from "../../types";
 import { Lightbox } from "./Lightbox";
 import { VideoModal } from "./VideoModal";
 
@@ -187,6 +187,11 @@ function TileRemoveButton({ attachment, removal }: {
  *  only pre-field rows with no cache left fall back to the full usable-width
  *  square until the decode lands. The decode itself remembers the measured
  *  size for the next render. */
+/** Paced log for tile-box transitions ("images appearing out of nowhere",
+ * live report 2026-10-19): every reserved-box change on a single tile is a
+ * layout shift the scrollbar felt — this names them. */
+let lastTileBoxLogAt = 0;
+
 function SingleTileView({ session, attachment, usableWidth, removal, onClick }: {
   session: ConnectionSession;
   attachment: Attachment;
@@ -218,7 +223,13 @@ function SingleTileView({ session, attachment, usableWidth, removal, onClick }: 
             const naturalWidth = event.currentTarget.naturalWidth;
             const naturalHeight = event.currentTarget.naturalHeight;
             rememberDims(attachment.key, naturalWidth, naturalHeight);
-            setBox(singleTileBox(usableWidth, naturalWidth, naturalHeight));
+            const nextBox = singleTileBox(usableWidth, naturalWidth, naturalHeight);
+            const now = performance.now();
+            if ((nextBox.width !== box.width || nextBox.height !== box.height) && now - lastTileBoxLogAt > 2000) {
+              lastTileBoxLogAt = now;
+              log.info("media", `image tile box ${box.width}x${box.height} → ${nextBox.width}x${nextBox.height} (${attachment.fileName})`);
+            }
+            setBox(nextBox);
           }}
         />
       ) : (
@@ -278,8 +289,13 @@ function VideoCardView({ session, attachment, usableWidth, onOpen }: {
     <div className="video-card" onClick={onOpen} title={attachment.fileName}>
       {thumbUrl !== null ? (
         /* The thumb box HUGS the frame's own aspect ratio (vertical phone videos
-           are narrow — a minimum width lefted a black bar on the right, live report). */
-        <div className="video-thumb">
+           are narrow — a minimum width lefted a black bar on the right, live report).
+           The box is RESERVED from the wire/learned aspect even with the preview
+           in hand: a cached-but-not-yet-decoded <img> is 0px tall, the row then
+           grew on decode and the virtualizer's first-measure compensation jerked
+           the scrollbar ("images appear out of nowhere", live report 2026-10-19:
+           drift −301px = reserved 374 vs first paint 73 on a 720×1280 video). */
+        <div className="video-thumb" style={{ width: reserved.width, height: reserved.height }}>
           <img
             src={thumbUrl}
             alt={attachment.fileName}

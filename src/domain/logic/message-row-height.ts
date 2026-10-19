@@ -35,6 +35,12 @@ export interface RowHeightInputs {
   hasDiscussionTile: boolean;
   jumboEmojiPx: number;
   usableWidth: number;
+  /** The MEASURED average body-glyph width in px (renderer's canvas metric of
+   *  the actual 13px font) — the wrap estimate divides by it. Absent → the
+   *  historical ~7px assumption, which is font/DPI-machinery dependent and was
+   *  the remaining systematic first-measure drift on some machines (the
+   *  thumb-bounce report's second pass, 2026-10-19). */
+  glyphWidthPx?: number;
   /** Intrinsic dims for LEGACY attachments (sent before the wire carried
    *  width/height) by stable key — the renderer's learned cache, injected so
    *  this module stays renderer-free. Null → the placeholder square, exactly
@@ -42,11 +48,11 @@ export interface RowHeightInputs {
   knownDimsOf(key: string | null): { width: number; height: number } | null;
 }
 
-/** ~7px average glyph at the 13px body font; floored so a narrow window never
+/** Average glyph width of the 13px body font; floored so a narrow window never
  *  spirals into absurd line counts. Width-derived — the old flat 72 fit the
  *  480px assumption, not the reader's window. */
-function charsPerLine(usableWidth: number): number {
-  return Math.max(40, Math.floor(usableWidth / 7));
+function charsPerLine(usableWidth: number, glyphWidthPx: number): number {
+  return Math.max(40, Math.floor(usableWidth / glyphWidthPx));
 }
 
 /** The renderer's quote-stack cutoff (QuoteCard renders depth 0..5 — a card at
@@ -80,7 +86,7 @@ function quoteStackHeight(level: ReplyInfo, depth: number): number {
 }
 
 export function estimateRowHeight(message: Message, inputs: RowHeightInputs): number {
-  const lines = message.content === null ? 0 : Math.max(1, Math.ceil(message.content.length / charsPerLine(inputs.usableWidth)));
+  const lines = message.content === null ? 0 : Math.max(1, Math.ceil(message.content.length / charsPerLine(inputs.usableWidth, inputs.glyphWidthPx ?? 7)));
   let height = (inputs.startsGroup ? 30 : 24) + lines * 21;
   // A potentially-jumbo row (emoji-only content) grows with the reader's size
   // setting — prepaid here so measurement does not shift rows below it.
