@@ -1,6 +1,7 @@
 import { log } from "../logging";
 import type { CallIceCandidate, CallSignal, IncomingCallSignal } from "../types";
 import { iceRestartDelayMs, planIceRestart } from "../domain/logic/ice-restart";
+import { UplinkStallDetector } from "../domain/logic/uplink-watchdog";
 import { mungeStereoIntoAnswerIfOfferHasIt, mungeStereoIntoOffer, sectionMids } from "./sdp";
 
 /**
@@ -44,6 +45,11 @@ export interface PeerCallOptions {
     onConnectionHealth(healthy: boolean): void;
     onNegotiated(): void;
     onError(message: string): void;
+    /** The publish-side watchdog fired: the mic sender's RTP counters froze
+     *  while the track is enabled (no error path reports a dead chain — the
+     *  room-side mirror lives in SfuSession). The runtime rebuilds the NS
+     *  pipeline; transport trouble keeps belonging to ICE-restart. */
+    onOwnUplinkStalled?(): void;
   };
 }
 
@@ -83,6 +89,9 @@ export class PeerCallSession {
   private slotMids: [string | null, string | null, string | null] = [null, null, null];
   private iceRestartTimer: ReturnType<typeof setTimeout> | null = null;
   private iceRestartAttempt = 0;
+  /** Own-uplink watchdog (see UplinkStallDetector): poll timer + detector. */
+  private uplinkWatchTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly uplinkDetector = new UplinkStallDetector();
 
   constructor(options: PeerCallOptions) {
     this.isCaller = options.isCaller;
@@ -152,6 +161,50 @@ export class PeerCallSession {
       }
     }
     return slot === MLINE_VIDEO ? this.videoSender : this.shareAudioSender;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Own-uplink watchdog (see UplinkStallDetector; the room-side twin in SfuSession)
+  // ---------------------------------------------------------------------------
+
+  private static readonly OWNUPLINK_POLL_MILLIS = 5_000;
+
+  private startUplinkWatchdog(): void {
+    if (this.uplinkWatchTimer !== null || this.closed) {
+      return;
+    }
+    const tick = async () => {
+      if (this.closed) {
+        return;
+      }
+      const micTrack = this.micTrack;
+      const micSender = this.senderForSlot(MLINE_VOICE);
+      if (micTrack !== null && micSender !== null) {
+        let bytesSent: number | null = null;
+        try {
+          const report = await micSender.getStats();
+          report.forEach((entry) => {
+            const stat = entry as { type?: string; kind?: string; bytesSent?: number };
+            if (stat.type === "outbound-rtp" && (stat.kind === undefined || stat.kind === "audio")
+                && typeof stat.bytesSent === "number") {
+              bytesSent = stat.bytesSent;
+            }
+          });
+        } catch {
+          bytesSent = null; // stats unavailable this tick — an inert sample
+        }
+        if (this.uplinkDetector.sample(bytesSent, micTrack.enabled)) {
+          log.warn("call", "own mic uplink stalled — RTP counters frozen while the mic is enabled");
+          this.callbacks.onOwnUplinkStalled?.();
+        }
+      } else {
+        this.uplinkDetector.reset();
+      }
+      if (!this.closed) {
+        this.uplinkWatchTimer = setTimeout(tick, PeerCallSession.OWNUPLINK_POLL_MILLIS);
+      }
+    };
+    this.uplinkWatchTimer = setTimeout(tick, PeerCallSession.OWNUPLINK_POLL_MILLIS);
   }
 
   /** Adopt the mids of the negotiated description; log the transceiver layout. */
@@ -242,6 +295,7 @@ export class PeerCallSession {
     await this.senderForSlot(MLINE_VOICE)?.replaceTrack(track);
     track.enabled = this.micEnabled;
     this.micTrack = track;
+    this.uplinkDetector.reset(); // a new track starts a fresh RTP baseline
   }
 
   isMicEnabled(): boolean {
@@ -323,6 +377,10 @@ export class PeerCallSession {
     if (this.iceRestartTimer !== null) {
       clearTimeout(this.iceRestartTimer);
       this.iceRestartTimer = null;
+    }
+    if (this.uplinkWatchTimer !== null) {
+      clearTimeout(this.uplinkWatchTimer);
+      this.uplinkWatchTimer = null;
     }
     try {
       this.peerConnection.close();
@@ -489,6 +547,7 @@ export class PeerCallSession {
     if (state === "connected" && !this.negotiated) {
       this.negotiated = true;
       this.iceRestartAttempt = 0;
+      this.startUplinkWatchdog();
       this.callbacks.onNegotiated();
     }
     switch (plan) {

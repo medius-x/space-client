@@ -356,4 +356,53 @@ describe("SfuSession", () => {
     session.setShareAudioEnabled(true);
     expect(shareAudio.enabled).toBe(true);
   });
+
+  it("own-uplink watchdog: frozen RTP counters while unmuted fire onOwnUplinkStalled; growth stays silent", async () => {
+    vi.useFakeTimers();
+    try {
+      const { janus } = makeJanus();
+      const stalled: number[] = [];
+      const session = new SfuSession({
+        room: { janusUrl: "http://x", roomId: 5, token: null, pin: null },
+        username: "alice",
+        janus,
+        publisherHandleId: 42,
+        mediaSource: mediaSourceWithMic(),
+        peerConnectionImpl: FakePeerConnection as unknown as typeof RTCPeerConnection,
+        callbacks: {
+          ...makeCallbacks().callbacks,
+          onOwnUplinkStalled: () => stalled.push(Date.now()),
+        },
+      });
+      await session.start();
+
+      const micSender = FakePeerConnection.instances[0]!.senders[0]!;
+      let bytesSent = 10_000;
+      micSender.getStats = () => Promise.resolve(new Map<string, unknown>([
+        ["r", { type: "outbound-rtp", kind: "audio", bytesSent }],
+      ]));
+
+      // Growing counters (even in total silence an enabled track sends frames).
+      for (let pollIndex = 0; pollIndex < 4; pollIndex += 1) {
+        bytesSent += 480;
+        await vi.advanceTimersByTimeAsync(5_100);
+      }
+      expect(stalled).toHaveLength(0);
+
+      // Frozen counters: baseline, streak 1, streak 2 → the callback fires ONCE.
+      await vi.advanceTimersByTimeAsync(5_100);
+      await vi.advanceTimersByTimeAsync(5_100);
+      await vi.advanceTimersByTimeAsync(5_100);
+      expect(stalled).toHaveLength(1);
+
+      // A muted track never trips the watchdog even with dead counters.
+      session.setMicEnabled(false);
+      await vi.advanceTimersByTimeAsync(11_000);
+      expect(stalled).toHaveLength(1);
+
+      await session.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

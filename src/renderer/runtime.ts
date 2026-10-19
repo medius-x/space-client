@@ -353,6 +353,11 @@ let shareAudioElementActive = false;
  *  rebuild the detour and swap the published track without a re-capture. */
 let activeNoisePipeline: NoisePipeline | null = null;
 let noiseSourceTrack: MediaStreamTrack | null = null;
+/** Monotonic boot generation: incremented by every NS boot start (enhance or
+ *  rebuild). A boot that completes on a stale generation gets discarded — the
+ *  newer boot owns the publish (races between a capture-time enhance and an
+ *  engine-switch rebuild leaked pipelines before this existed). */
+let noiseBootGeneration = 0;
 /** The DFN3 level the live pipeline was built with (only re-sends on change). */
 let appliedDeepFilterLevel = -1;
 
@@ -2922,6 +2927,7 @@ async function connectVoiceRoom(channel: Channel): Promise<void> {
             ].filter((reason) => reason !== null);
             return reasons.join(", ");
           },
+          onOwnUplinkStalled: handleOwnUplinkStalled,
           onError: (error) => {
             if (error instanceof RoomVanishedError) {
               // The room died under a LIVE session — the rejoin ladder owns it now.
@@ -3006,6 +3012,35 @@ function startVoiceRttPolling(): void {
  * room vanished. Either the channel still exists — climb the rejoin ladder — or it
  * does not and the member is detached for good.
  */
+/** Publish-side uplink watchdog escalation state (rooms). Reset per voice session. */
+let uplinkStallStrikes = 0;
+let uplinkStallRejoins = 0;
+
+/**
+ * The SfuSession watchdog fired: RTP stopped leaving the mic while it is
+ * enabled — a dead publish chain that no error path reports. Escalation: the
+ * first strike rebuilds the NS pipeline (the most common root — a stranded
+ * detour or a worklet that never runs), a second consecutive strike rejoins
+ * the room (the manual cure of the 2026-10-16 live bug, automated), capped at
+ * two automatic rejoins per voice session.
+ */
+function handleOwnUplinkStalled(): void {
+  uplinkStallStrikes += 1;
+  if (uplinkStallStrikes === 1) {
+    log.warn("voice", "own uplink stalled — rebuilding the noise pipeline");
+    enqueueNoiseRebuild(settingsStore.getSnapshot().noiseSuppressionEngine);
+    return;
+  }
+  uplinkStallStrikes = 0;
+  if (uplinkStallRejoins >= 2) {
+    log.warn("voice", "own uplink still stalled — automatic rejoins exhausted, rejoin the room manually");
+    return;
+  }
+  uplinkStallRejoins += 1;
+  log.warn("voice", `own uplink stalled ${uplinkStallRejoins === 1 ? "twice" : "again"} — rejoining the room`);
+  handleVoiceSessionLost("own uplink stalled");
+}
+
 function handleVoiceSessionLost(reason: string): void {
   const state = appStore.getSnapshot();
   if (state.activeVoiceChannelId === null) {
@@ -3104,6 +3139,7 @@ let callMicBootInFlight = false;
 
 /** The SfuSession/PeerCallSession mic hook: raw in, published track out. */
 async function enhanceMicTrack(rawTrack: MediaStreamTrack): Promise<MediaStreamTrack> {
+  const generation = ++noiseBootGeneration;
   disposeNoisePipeline();
   noiseSourceTrack = rawTrack;
   const settings = settingsStore.getSnapshot();
@@ -3115,6 +3151,13 @@ async function enhanceMicTrack(rawTrack: MediaStreamTrack): Promise<MediaStreamT
     rawTrack,
     settings.deepFilterSuppressionLevel,
   );
+  // A newer boot (an engine switch enqueued while this one loaded) owns the
+  // publish now — discarding ours is the only leak-free exit.
+  if (generation !== noiseBootGeneration) {
+    pipeline.dispose();
+    log.info("ns", `engine ${pipeline.engine} boot superseded — discarded`);
+    return rawTrack;
+  }
   // The voice/call may have died while the engine booted — never resurrect it.
   // (A call still PREPARING its mic is alive for this purpose: the session
   // object is created only after the wrap, live 2026-10-15.)
@@ -3143,7 +3186,10 @@ function disposeNoisePipeline(): void {
 }
 
 /** Point the live room/call at a mic track (an engine switch): sender swap +
- *  re-bind the speaking analysis, both in place. */
+ *  re-bind the speaking analysis, both in place. The room path re-applies the
+ *  mute compliance right after the swap — a fresh processed track arrives
+ *  enabled=true, and the next server echo would otherwise unmute a muted mic
+ *  for seconds (the call path carries the state inside replaceMicTrack). */
 async function publishMicTrack(track: MediaStreamTrack): Promise<void> {
   if (callSession !== null) {
     await callSession.replaceMicTrack(track);
@@ -3152,13 +3198,18 @@ async function publishMicTrack(track: MediaStreamTrack): Promise<void> {
   }
   if (sfuSession !== null) {
     await sfuSession.replaceMicTrack(track);
+    sfuSession.setMicEnabled(!voiceCompliance.micMuted);
     roomAudio.attachOwnMic(appStore.getSnapshot().ownUsername ?? "you", track);
   }
 }
 
 /** Engine switch while voice/call is live: rebuild the detour from the raw
- *  track (kept from enhanceMicTrack) and swap the published track in place. */
-async function rebuildNoisePipeline(engine: NoiseEngineKind): Promise<void> {
+ *  track (kept from enhanceMicTrack) and swap the published track in place.
+ *  Runs SERIALIZED through {@link enqueueNoiseRebuild} — two overlapping boots
+ *  used to race (the slow one overwrote activeNoisePipeline without disposing
+ *  the fast one, leaking its AudioContext; live 2026-10-16: cycling engines
+ *  exhausted the context slots and left the uplink dead until a re-join). */
+async function rebuildNoisePipeline(engine: NoiseEngineKind, generation: number): Promise<void> {
   const rawTrack = noiseSourceTrack;
   if (rawTrack === null || rawTrack.readyState !== "live") {
     return;
@@ -3179,8 +3230,19 @@ async function rebuildNoisePipeline(engine: NoiseEngineKind): Promise<void> {
       await publishMicTrack(rawTrack);
       return;
     }
-    if (rawTrack.readyState !== "live" || (sfuSession === null && callSession === null)) {
+    if (generation !== noiseBootGeneration) {
       pipeline.dispose();
+      log.info("ns", `engine ${engine} boot superseded — discarded`);
+      return;
+    }
+    if (rawTrack.readyState !== "live"
+        || (sfuSession === null && callSession === null && !callMicBootInFlight)) {
+      // Stranded boot: log it, and hand the sender the raw track as a
+      // failsafe — the OLD detour is already disposed, so returning silently
+      // would leave a dead published track with no trace in the log.
+      log.warn("ns", `engine ${engine} boot stranded — no live consumer, publishing the raw mic`);
+      pipeline.dispose();
+      await publishMicTrack(rawTrack);
       return;
     }
     activeNoisePipeline = pipeline;
@@ -3189,6 +3251,17 @@ async function rebuildNoisePipeline(engine: NoiseEngineKind): Promise<void> {
     log.info("ns", `engine ${engine} live`);
   }
   await publishMicTrack(track);
+}
+
+/** Serialize NS rebuilds: every engine pick enqueues ONE run on the chain, so
+ *  boots never overlap and the generations strictly increase. */
+let noiseRebuildChain: Promise<void> = Promise.resolve();
+
+function enqueueNoiseRebuild(engine: NoiseEngineKind): void {
+  const generation = ++noiseBootGeneration;
+  noiseRebuildChain = noiseRebuildChain
+    .then(() => rebuildNoisePipeline(engine, generation))
+    .catch(() => undefined); // rebuildNoisePipeline never throws — belt only
 }
 
 /** Live settings follow: an engine pick rebuilds the detour in place. The
@@ -3207,16 +3280,18 @@ function watchNoiseSettings(): void {
       }
       return;
     }
-    if (sfuSession === null && callSession === null) {
+    if (sfuSession === null && callSession === null && !callMicBootInFlight) {
       return; // nothing live — the next capture builds whatever is selected
     }
-    void rebuildNoisePipeline(noiseSuppressionEngine);
+    enqueueNoiseRebuild(noiseSuppressionEngine);
   });
 }
 
 export async function teardownVoice(): Promise<void> {
   stopAfkReporting();
   stopVoiceRttPolling();
+  uplinkStallStrikes = 0;
+  uplinkStallRejoins = 0;
   feedShareAudioTracks.clear();
   releaseNativeShareAudio();
   watchShareSource(null);
@@ -4085,6 +4160,21 @@ function attachOwnCallMic(micStream: MediaStream): void {
   }
 }
 
+/** Call-side uplink stall: rebuild the NS pipeline, throttled — the watchdog
+ *  re-fires every few seconds while the stall persists, and one rebuild per
+ *  30 s is all it can meaningfully do (transport trouble belongs to ICE). */
+let callUplinkRebuildAt = 0;
+
+function handleCallUplinkStalled(): void {
+  const now = Date.now();
+  if (now - callUplinkRebuildAt < 30_000) {
+    return;
+  }
+  callUplinkRebuildAt = now;
+  log.warn("call", "own uplink stalled — rebuilding the noise pipeline");
+  enqueueNoiseRebuild(settingsStore.getSnapshot().noiseSuppressionEngine);
+}
+
 function callCallbacks(peer: string): PeerCallOptions["callbacks"] {
   return {
     onRemoteTrack: (kind: PeerTrackKind, track: MediaStreamTrack) => {
@@ -4111,6 +4201,7 @@ function callCallbacks(peer: string): PeerCallOptions["callbacks"] {
     onPeerDeafened: (enabled) => appStore.patch({ peerDeafenedOn: enabled }),
     onPeerCamera: (enabled) => appStore.patch({ peerCameraOn: enabled }),
     onPeerScreen: (enabled) => appStore.patch({ peerScreenOn: enabled }),
+    onOwnUplinkStalled: handleCallUplinkStalled,
     onConnectionHealth: (healthy) => appStore.patch({ callHealthy: healthy }),
     onNegotiated: () => {
       clearRingTimeout(); // the re-armed callee gap (accept→offer) is closed

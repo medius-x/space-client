@@ -3,6 +3,7 @@ import type { FeedInfo, RemoteTrackKind, RoomInfo } from "../types";
 import type { JanusClient, JanusJsep } from "./janus";
 import { isBadPin, isRoomVanished, type VideoroomEvent } from "./janus-events";
 import { voiceRttMillis, type CandidatePairEntry } from "../domain/logic/voice-rtt";
+import { UplinkStallDetector } from "../domain/logic/uplink-watchdog";
 import {
   classifyFeed,
   diffSubscriptions,
@@ -44,6 +45,11 @@ export interface SfuCallbacks {
    *  not a fault). Returns null when the member carries no marks. Used to keep
    *  the still-muted watchdog from crying wolf on a muted publisher. */
   describeMuteState?(username: string): string | null;
+  /** The publish-side watchdog fired: no RTP has left the mic sender for two
+   *  consecutive polls while the track is enabled. The runtime escalates —
+   *  an NS pipeline rebuild first, a room re-join after (the manual cure of
+   *  the 2026-10-16 live bug, automated). */
+  onOwnUplinkStalled?(): void;
 }
 
 export class RoomVanishedError extends Error {
@@ -219,6 +225,9 @@ export class SfuSession {
    *  the same feed does not double-deliver. */
   private readonly deliveredTrackKeys = new Set<string>();
   private lastSubscriberOfferSdp: string | null = null;
+  /** Own-uplink watchdog state (see UplinkStallDetector): poll timer + detector. */
+  private uplinkWatchTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly uplinkDetector = new UplinkStallDetector();
 
   constructor(options: SfuSessionOptions) {
     this.room = options.room;
@@ -340,6 +349,7 @@ export class SfuSession {
 
     await this.renegotiatePublisher();
     log.info("sfu", `publisher live (mic=${this.micTrack ? "on" : "NONE"})`);
+    this.startUplinkWatchdog();
   }
 
   /** A/B APM probe (phase 9): swap the mic track without touching m-lines. */
@@ -348,6 +358,7 @@ export class SfuSession {
       await this.micSender.replaceTrack(track);
     }
     this.micTrack = track;
+    this.uplinkDetector.reset(); // a new track starts a fresh RTP baseline
   }
 
   getMicTrack(): MediaStreamTrack | null {
@@ -606,6 +617,7 @@ export class SfuSession {
     }
     this.closed = true;
     this.callbacks.onState("reconnecting", "leaving");
+    this.stopUplinkWatchdog();
     this.cameraTrack?.stop();
     this.cameraTrack = null;
     this.cameraVideoSender = null;
@@ -1092,6 +1104,62 @@ export class SfuSession {
     } catch {
       return null;
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Own-uplink watchdog (publish-side mirror of the still-muted check)
+  // ---------------------------------------------------------------------------
+
+  private static readonly OWNUPLINK_POLL_MILLIS = 5_000;
+
+  /**
+   * While the mic is published and ENABLED, its sender's outbound-rtp bytes
+   * must keep growing — an enabled track sends frames even in silence. Two
+   * frozen polls mean no RTP is leaving at all: a dead publish chain that no
+   * error path anywhere reports (the 2026-10-16 live bug). The callback lets
+   * the runtime rebuild the pipeline / re-join the room automatically.
+   */
+  private startUplinkWatchdog(): void {
+    this.stopUplinkWatchdog();
+    const tick = async () => {
+      if (this.closed) {
+        return;
+      }
+      const micTrack = this.micTrack;
+      if (this.micSender !== null && micTrack !== null) {
+        let bytesSent: number | null = null;
+        try {
+          const report = await this.micSender.getStats();
+          report.forEach((entry) => {
+            const stat = entry as { type?: string; kind?: string; bytesSent?: number };
+            if (stat.type === "outbound-rtp" && (stat.kind === undefined || stat.kind === "audio")
+                && typeof stat.bytesSent === "number") {
+              bytesSent = stat.bytesSent;
+            }
+          });
+        } catch {
+          bytesSent = null; // stats unavailable this tick — an inert sample
+        }
+        if (this.uplinkDetector.sample(bytesSent, micTrack.enabled)) {
+          log.warn("sfu", "own mic uplink stalled — RTP counters frozen while the mic is enabled");
+          this.callbacks.onOwnUplinkStalled?.();
+        }
+      } else {
+        this.uplinkDetector.reset();
+      }
+      if (!this.closed) {
+        this.uplinkWatchTimer = setTimeout(tick, SfuSession.OWNUPLINK_POLL_MILLIS);
+      }
+    };
+    this.uplinkWatchTimer = setTimeout(tick, SfuSession.OWNUPLINK_POLL_MILLIS);
+  }
+
+  private stopUplinkWatchdog(): void {
+    if (this.uplinkWatchTimer !== null) {
+      clearTimeout(this.uplinkWatchTimer);
+      this.uplinkWatchTimer = null;
+    }
+    this.uplinkDetector.reset();
   }
 
   getSubscribedCount(): number {

@@ -7,6 +7,9 @@
 export interface FakeSender {
   track: unknown;
   replaceTrack(track: unknown): Promise<void>;
+  /** Optional scripted stats source for the uplink-watchdog tests
+   *  (outbound-rtp entries with bytesSent). */
+  getStats?(): Promise<Map<string, unknown>>;
 }
 
 export interface FakeTransceiver {

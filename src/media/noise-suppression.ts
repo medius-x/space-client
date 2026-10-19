@@ -55,6 +55,42 @@ export interface NoisePipeline {
  *  allowed attenuation is effectively "no limit" for it. */
 export const DEFAULT_DEEP_FILTER_LEVEL = 50;
 
+/**
+ * Boot an AudioContext and REFUSE to hand back one that cannot run. A context
+ * stuck "suspended" still loads the worklet module and runs its constructor
+ * (the dfn3/dtln ready-handshake fires from there), so the logs read "engine
+ * live" while process() is never called and the published track delivers
+ * silence forever — no error anywhere (live bug 2026-10-16: cycling engines
+ * exhausted the browser's context slots; every later boot came up suspended
+ * and the uplink died until a room re-join). Throwing here makes the caller's
+ * existing catch publish the RAW mic instead — degraded, but audible.
+ */
+async function bootPipelineContext(sampleRate: number): Promise<AudioContext> {
+  const context = new AudioContext({ sampleRate, latencyHint: "interactive" });
+  if (context.state === "suspended") {
+    let resumeTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        context.resume(),
+        new Promise<void>((resolve) => {
+          resumeTimer = setTimeout(resolve, 3_000);
+        }),
+      ]);
+    } catch {
+      // resume() rejected — the state check below decides
+    } finally {
+      if (resumeTimer !== undefined) {
+        clearTimeout(resumeTimer);
+      }
+    }
+  }
+  if (context.state !== "running") {
+    void context.close();
+    throw new Error(`AudioContext stayed "${context.state}" — the engine cannot run in this window`);
+  }
+  return context;
+}
+
 export async function createNoisePipeline(
   engine: NoiseEngineKind,
   rawTrack: MediaStreamTrack,
@@ -165,8 +201,7 @@ registerProcessor("space-rnnoise", SpaceRnnoiseProcessor);
 `;
 
 async function createRnnoisePipeline(rawTrack: MediaStreamTrack): Promise<NoisePipeline> {
-  const context = new AudioContext({ sampleRate: NOISE_PIPELINE_SAMPLE_RATE, latencyHint: "interactive" });
-  void context.resume();
+  const context = await bootPipelineContext(NOISE_PIPELINE_SAMPLE_RATE);
   // The emscripten glue is an ES module exporting the sync factory; the
   // processor source rides behind it in ONE blob — addModule needs a URL and
   // the ?raw dynamic import keeps the base64-wasm payload off the main bundle.
@@ -356,8 +391,7 @@ async function createDeepFilterPipeline(rawTrack: MediaStreamTrack, suppressionL
     fetchAsset("df3/v3/models/DeepFilterNet3_onnx.bin"),
   ]);
   const wasmModule = await WebAssembly.compile(wasmBytes);
-  const context = new AudioContext({ sampleRate: NOISE_PIPELINE_SAMPLE_RATE, latencyHint: "interactive" });
-  void context.resume();
+  const context = await bootPipelineContext(NOISE_PIPELINE_SAMPLE_RATE);
   const workletUrl = URL.createObjectURL(new Blob([moduleSource], { type: "text/javascript" }));
   try {
     await context.audioWorklet.addModule(workletUrl);
@@ -464,8 +498,7 @@ async function addWorkletModule(context: AudioContext, relative: string): Promis
 
 async function createSpeexPipeline(rawTrack: MediaStreamTrack): Promise<NoisePipeline> {
   const { SpeexWorkletNode, loadSpeex } = await import("@sapphi-red/web-noise-suppressor");
-  const context = new AudioContext({ sampleRate: NOISE_PIPELINE_SAMPLE_RATE, latencyHint: "interactive" });
-  void context.resume();
+  const context = await bootPipelineContext(NOISE_PIPELINE_SAMPLE_RATE);
   // addModule ON THE PIPELINE'S OWN CONTEXT: Chromium keeps the worklet module
   // map PER CONTEXT — registering on a throwaway carrier (the earlier cache)
   // left this context without the processor ("no valid AudioWorkletGlobalScope",
@@ -491,8 +524,7 @@ async function createSpeexPipeline(rawTrack: MediaStreamTrack): Promise<NoisePip
 
 async function createGatePipeline(rawTrack: MediaStreamTrack): Promise<NoisePipeline> {
   const { NoiseGateWorkletNode } = await import("@sapphi-red/web-noise-suppressor");
-  const context = new AudioContext({ sampleRate: NOISE_PIPELINE_SAMPLE_RATE, latencyHint: "interactive" });
-  void context.resume();
+  const context = await bootPipelineContext(NOISE_PIPELINE_SAMPLE_RATE);
   await addWorkletModule(context, "ns/noiseGateWorklet.js"); // per-context, see createSpeexPipeline
   // Speech-level defaults: open at −45 dBFS, close at −60, hold 250 ms — quiet
   // background stays out, normal talking keeps the gate open.
@@ -560,8 +592,7 @@ async function loadDtlnAssets(): Promise<{ processorText: string; wasmBinary: Ar
 async function createDtlnPipeline(rawTrack: MediaStreamTrack): Promise<NoisePipeline> {
   const { processorText, wasmBinary } = await loadDtlnAssets();
   log.info("ns", `dtln boot assets: processor=${processorText.length} chars wasm=${wasmBinary.byteLength}`);
-  const context = new AudioContext({ sampleRate: DTLN_PIPELINE_SAMPLE_RATE, latencyHint: "interactive" });
-  void context.resume();
+  const context = await bootPipelineContext(DTLN_PIPELINE_SAMPLE_RATE);
   const workletUrl = URL.createObjectURL(new Blob([processorText], { type: "text/javascript" }));
   try {
     // Per-context module map (see createSpeexPipeline): addModule on the
