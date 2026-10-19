@@ -275,25 +275,25 @@ contextBridge.exposeInMainWorld("spaceWindow", {
     ipcRenderer.removeAllListeners("app:closing");
     ipcRenderer.on("app:closing", () => callback());
   },
-  popoutVolume(username: string, volume: number): void {
-    ipcRenderer.send("space-window:popoutVolume", username, volume);
+  popoutVolume(username: string, volume: number, kind: "voice" | "share"): void {
+    ipcRenderer.send("space-window:popoutVolume", username, volume, kind);
   },
-  onPopoutVolume(callback: (username: string, volume: number) => void): void {
+  onPopoutVolume(callback: (username: string, volume: number, kind: "voice" | "share") => void): void {
     ipcRenderer.removeAllListeners("popout:volume");
-    ipcRenderer.on("popout:volume", (_event, username: unknown, volume: unknown) => {
-      if (typeof username === "string" && typeof volume === "number") {
-        callback(username, volume);
+    ipcRenderer.on("popout:volume", (_event, username: unknown, volume: unknown, kind: unknown) => {
+      if (typeof username === "string" && typeof volume === "number" && (kind === "voice" || kind === "share")) {
+        callback(username, volume, kind);
       }
     });
   },
-  pushPopoutVolume(username: string, gain: number): void {
-    ipcRenderer.send("space-window:pushPopoutVolume", username, gain);
+  pushPopoutVolume(username: string, gain: number, kind: "voice" | "share"): void {
+    ipcRenderer.send("space-window:pushPopoutVolume", username, gain, kind);
   },
-  onPopoutVolumeSync(callback: (username: string, gain: number) => void): void {
+  onPopoutVolumeSync(callback: (username: string, gain: number, kind: "voice" | "share") => void): void {
     ipcRenderer.removeAllListeners("popout:volumeSync");
-    ipcRenderer.on("popout:volumeSync", (_event, username: unknown, gain: unknown) => {
-      if (typeof username === "string" && typeof gain === "number") {
-        callback(username, gain);
+    ipcRenderer.on("popout:volumeSync", (_event, username: unknown, gain: unknown, kind: unknown) => {
+      if (typeof username === "string" && typeof gain === "number" && (kind === "voice" || kind === "share")) {
+        callback(username, gain, kind);
       }
     });
   },

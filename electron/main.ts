@@ -845,21 +845,24 @@ ipcMain.on("space-window:maximize", (event) => {
 ipcMain.on("space-window:close", (event) => {
   BrowserWindow.fromWebContents(event.sender)?.close();
 });
-// The pop-out's volume slider: the AUDIO plays in the main window (the pop-out
-// subscribes video-only), so the value forwards there and applies to the share
-// chain / persists per username.
-ipcMain.on("space-window:popoutVolume", (_event, username: unknown, volume: unknown) => {
-  if (typeof username !== "string" || typeof volume !== "number" || !Number.isFinite(volume)) {
+// The pop-out's volume sliders: the AUDIO plays in the main window (the pop-out
+// subscribes video-only), so the value forwards there and applies to the picked
+// chain (share or the peer's voice) / persists per username. The kind is
+// validated — a malformed channel name must never reach the renderer.
+ipcMain.on("space-window:popoutVolume", (_event, username: unknown, volume: unknown, kind: unknown) => {
+  if (typeof username !== "string" || typeof volume !== "number" || !Number.isFinite(volume)
+    || (kind !== "voice" && kind !== "share")) {
     return;
   }
-  sendToMainWindow("popout:volume", username, Math.min(2, Math.max(0, volume)));
+  sendToMainWindow("popout:volume", username, Math.min(2, Math.max(0, volume)), kind);
 });
-// MAIN → pop-out: the share gain changed in the main window (slider sync).
-ipcMain.on("space-window:pushPopoutVolume", (_event, username: unknown, gain: unknown) => {
-  if (typeof username !== "string" || typeof gain !== "number" || !Number.isFinite(gain)) {
+// MAIN → pop-out: a gain changed in the main window (slider sync).
+ipcMain.on("space-window:pushPopoutVolume", (_event, username: unknown, gain: unknown, kind: unknown) => {
+  if (typeof username !== "string" || typeof gain !== "number" || !Number.isFinite(gain)
+    || (kind !== "voice" && kind !== "share")) {
     return;
   }
-  sendToPopoutWindow("popout:volumeSync", username, gain);
+  sendToPopoutWindow("popout:volumeSync", username, gain, kind);
 });
 // MAIN → pop-out: the voice-panel mirror (mute/deafen/NS) — kept for the
 // pop-out's initial state, forwarded live while it is open.

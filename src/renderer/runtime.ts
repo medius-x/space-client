@@ -3483,10 +3483,16 @@ function installTlsPromptListener(): void {
 
 /** The pop-out window's volume slider remote-controls THIS window's share
  *  playout (the pop-out subscribes video-only — one audible stream). The same
- *  path the roster's member card slider takes: live chain + persisted gain. */
+ *  path the roster's member card sliders take: live chain + persisted gain.
+ *  The twin regulation (2026-10-19): "share" drives the watched share's chain,
+ *  "voice" the peer's voice chain — both are the member card's two sliders. */
 function installPopoutVolumeListener(): void {
-  window.spaceWindow?.onPopoutVolume((username, volume) => {
-    setShareVolume(username, volume);
+  window.spaceWindow?.onPopoutVolume((username, volume, kind) => {
+    if (kind === "voice") {
+      setVoiceVolume(username, volume);
+    } else {
+      setShareVolume(username, volume);
+    }
   });
 }
 
@@ -4014,6 +4020,7 @@ export function buildPopoutTarget(feedId: number): import("./bridges").PopoutTar
     shareUsername: feed.display,
     shareAudio: feedHasShareAudio(feed),
     shareVolume: persistedGain("share", feed.display),
+    voiceVolume: persistedGain("voice", feed.display),
   };
 }
 
@@ -4978,6 +4985,7 @@ export function setVoiceVolume(username: string, gain: number): void {
     connectionDirectory.setVolume(activeSession.recordId, "voice", username, gain);
   }
   volumeChanges.publish({ kind: "voice", username, gain, nonce: volumeChangeNonce++ });
+  window.spaceWindow?.pushPopoutVolume(username, gain, "voice"); // the pop-out slider follows
 }
 
 export function setShareVolume(username: string, gain: number): void {
@@ -4986,7 +4994,7 @@ export function setShareVolume(username: string, gain: number): void {
     connectionDirectory.setVolume(activeSession.recordId, "share", username, gain);
   }
   volumeChanges.publish({ kind: "share", username, gain, nonce: volumeChangeNonce++ });
-  window.spaceWindow?.pushPopoutVolume(username, gain); // the pop-out slider follows
+  window.spaceWindow?.pushPopoutVolume(username, gain, "share"); // the pop-out slider follows
 }
 
 /** Live volume-change feed: an open member card's sliders follow changes made

@@ -2544,10 +2544,41 @@ button.wide-add { width: 100%; }
    (video-player semantics; user request 2026-09-25) — any movement brings
    both back. */
 .popout-root.hide-cursor { cursor: none; }
-.popout-toolbar .icon { font-size: 18px; color: #fff; }
-/* The mirrored voice-panel buttons (mute/deafen/NS): transparent 26×26, the
-   "on" tint follows the panel's semantics (yellow self-state; NS green). */
+/* The twin volume regulation (user request 2026-10-19, reshaped same day):
+   peer VOICE + peer SHARE gains as TWO LABELLED CELLS IN ONE ROW — a small
+   caption over each slider ("Voice" / "Video") says what it drives, the pill
+   stays one row tall. The mirrored buttons are SQUARE 40×40 with bigger
+   glyphs (the cell = caption 12 + row 26 ≈ 40, so everything lines up). */
+.popout-toolbar .icon { font-size: 24px; color: #fff; }
+/* The mirrored voice-panel buttons (mute/deafen/NS): transparent 40×40
+   squares; the "on" tint follows the panel's semantics (mute/deafen red, an
+   NS engine running green). */
 .popout-voice-toggle {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.popout-voice-toggle:hover { background: rgba(255, 255, 255, 0.18); }
+/* The volume icon of a share with no audio (a disabled toggle reads dim). */
+.popout-voice-toggle:disabled { opacity: 0.55; cursor: default; }
+/* The panel's on-semantics, mirrored: mute/deafen RED, an NS engine running GREEN. */
+.popout-voice-toggle.on { background: var(--sp-red); color: #fff; }
+.popout-voice-toggle.ns.on { background: var(--sp-green); color: #fff; }
+/* The twin cells: caption over [mute-toggle 0↔last-positive][slider] (the
+   VolumeRow idiom at the pill's own look), both cells on one line. */
+.popout-volume-group { display: flex; align-items: stretch; gap: 10px; }
+.popout-volume-cell { display: flex; flex-direction: column; gap: 2px; justify-content: center; }
+.popout-volume-label { font-size: 10px; line-height: 12px; color: rgba(255, 255, 255, 0.7); user-select: none; }
+.popout-volume-row { display: flex; align-items: center; gap: 6px; }
+.popout-volume-toggle {
   width: 26px;
   height: 26px;
   padding: 0;
@@ -2558,27 +2589,30 @@ button.wide-add { width: 100%; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
 }
-.popout-voice-toggle .icon { font-size: 17px; }
-.popout-voice-toggle:hover { background: rgba(255, 255, 255, 0.18); }
-/* The volume icon of a share with no audio (a disabled toggle reads dim). */
-.popout-voice-toggle:disabled { opacity: 0.55; cursor: default; }
-/* The panel's on-semantics, mirrored: mute/deafen RED, an NS engine running GREEN. */
-.popout-voice-toggle.on { background: var(--sp-red); color: #fff; }
-.popout-voice-toggle.ns.on { background: var(--sp-green); color: #fff; }
-.popout-toolbar-sep { width: 1px; height: 18px; background: rgba(255, 255, 255, 0.35); }
+.popout-volume-toggle .icon { font-size: 18px; }
+.popout-volume-toggle:hover { background: rgba(255, 255, 255, 0.18); }
+.popout-volume-toggle:disabled { opacity: 0.55; cursor: default; }
+.popout-toolbar-sep { width: 1px; height: 24px; align-self: center; background: rgba(255, 255, 255, 0.35); }
 .popout-volume { width: 90px; flex: none; margin: 0; }
 .popout-volume:disabled { opacity: 0.45; }
+/* Fullscreen matches the toggle squares (user report: it stayed icon-sized
+   while its neighbours grew to 40×40). */
 .popout-fullscreen {
+  width: 40px;
+  height: 40px;
   padding: 0;
   border: none;
+  border-radius: 6px;
   background: transparent;
   color: #fff;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
 }
-.popout-fullscreen:hover { color: var(--sp-text); }
+.popout-fullscreen:hover { background: rgba(255, 255, 255, 0.18); color: var(--sp-text); }
 
 /* ===== M5: 1:1 P2P calls ===== */
 /* Round 8 (oak parity): a call does NOT take the chat pane — it renders through

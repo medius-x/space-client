@@ -42,13 +42,16 @@ export interface PopoutTarget {
   /** The feed's VIDEO stream mid (video-only: the main window owns the audio). */
   videoMid: string;
   /** The sharing publisher's USERNAME (feed display) — the pop-out's volume
-   *  slider is a REMOTE control for the main window's share playout, whose
-   *  gain persists per username. */
+   *  sliders are a REMOTE control for the main window's playout chains, whose
+   *  gains persist per username. */
   shareUsername: string | null;
-  /** False on a video-only share — the pop-out's volume slider disables. */
+  /** False on a video-only share — the pop-out's share-volume slider disables. */
   shareAudio: boolean;
-  /** The persisted share gain 0..1 at retarget time. */
+  /** The persisted SHARE gain 0..2 at retarget time. */
   shareVolume: number;
+  /** The persisted VOICE gain 0..2 at retarget time (the twin regulation,
+   *  user request 2026-10-19 — the pill carries the member card's two sliders). */
+  voiceVolume: number;
 }
 
 /** The voice-panel mirror the main window pushes into the share pop-out: its
@@ -74,16 +77,18 @@ export interface WindowBridge {
   onClosed(callback: () => void): void;
   /** The main window's close was FORESTALLED ~900ms: leave voice/call now. */
   onClosing(callback: () => void): void;
-  /** The POP-OUT's volume slider → the main window's share playout (the audio
-   *  lives there; the pop-out subscribes video-only — one audible stream). */
-  popoutVolume(username: string, volume: number): void;
-  /** The MAIN window's sink for the pop-out slider above. */
-  onPopoutVolume(callback: (username: string, volume: number) => void): void;
-  /** MAIN → pop-out: the share gain changed in the main window — the pop-out's
+  /** The POP-OUT's volume sliders → the main window's playout chains (the audio
+   *  lives there; the pop-out subscribes video-only — one audible stream). The
+   *  kind picks the chain: "share" = the watched share, "voice" = the peer's
+   *  voice (the twin regulation, 2026-10-19). */
+  popoutVolume(username: string, volume: number, kind: "voice" | "share"): void;
+  /** The MAIN window's sink for the pop-out sliders above. */
+  onPopoutVolume(callback: (username: string, volume: number, kind: "voice" | "share") => void): void;
+  /** MAIN → pop-out: a gain changed in the main window — the pop-out's matching
    *  slider follows (two-way sync). */
-  pushPopoutVolume(username: string, gain: number): void;
+  pushPopoutVolume(username: string, gain: number, kind: "voice" | "share"): void;
   /** The POP-OUT's sink for the push above. */
-  onPopoutVolumeSync(callback: (username: string, gain: number) => void): void;
+  onPopoutVolumeSync(callback: (username: string, gain: number, kind: "voice" | "share") => void): void;
   /** The voice-panel state mirrored into the pop-out (mute/deafen/NS buttons). */
   pushPopoutVoiceState(state: PopoutVoiceState): void;
   /** The pop-out's initial voice-panel state (main keeps the last pushed). */

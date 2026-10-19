@@ -21,12 +21,13 @@ function isPopoutTarget(value: unknown): value is PopoutTarget {
 
 /** The target's optional share-audio fields, with safe defaults (a target from
  *  an older retarget predates them). */
-function shareStateOf(target: PopoutTarget): { username: string | null; audio: boolean; volume: number } {
+function shareStateOf(target: PopoutTarget): { username: string | null; audio: boolean; volume: number; voiceVolume: number } {
   const record = target as unknown as Record<string, unknown>;
   return {
     username: typeof record.shareUsername === "string" ? record.shareUsername : null,
     audio: record.shareAudio === true,
     volume: typeof record.shareVolume === "number" && Number.isFinite(record.shareVolume) ? record.shareVolume : 1,
+    voiceVolume: typeof record.voiceVolume === "number" && Number.isFinite(record.voiceVolume) ? record.voiceVolume : 1,
   };
 }
 
@@ -62,6 +63,10 @@ export function PopoutScreen(): React.JSX.Element {
   const [shareVolume, setShareVolume] = useState(1);
   /** The volume icon's 0 ↔ last-positive toggle memory (the VolumeRow idiom). */
   const shareVolumeLastPositiveRef = useRef(1);
+  // The twin regulation's VOICE row (user request 2026-10-19): the watched
+  // peer's VOICE gain — the same slider the member card carries, remote-driven.
+  const [voiceVolume, setVoiceVolumeState] = useState(1);
+  const voiceVolumeLastPositiveRef = useRef(1);
   const [fullscreen, setFullscreen] = useState(false);
   const [voiceState, setVoiceState] = useState<PopoutVoiceState>({ muted: false, deafened: false, nsEngine: "deepfilternet3" });
   const [nsMenuAt, setNsMenuAt] = useState<{ x: number; y: number } | null>(null);
@@ -90,6 +95,10 @@ export function PopoutScreen(): React.JSX.Element {
     setShareVolume(share.volume);
     if (share.volume > 0) {
       shareVolumeLastPositiveRef.current = share.volume;
+    }
+    setVoiceVolumeState(share.voiceVolume);
+    if (share.voiceVolume > 0) {
+      voiceVolumeLastPositiveRef.current = share.voiceVolume;
     }
     const viewer = new PopoutViewer({
       room: { janusUrl: target.janusUrl, roomId: target.roomId, token: target.token, pin: target.pin },
@@ -158,15 +167,23 @@ export function PopoutScreen(): React.JSX.Element {
   }, []);
 
   // The volume-sync listener must see the CURRENT shareUsername without
-  // re-subscribing: the ref is read at event time, not closure time.
+  // re-subscribing: the ref is read at event time, not closure time. The kind
+  // routes the push to its own slider (the twin regulation's two rows).
   const shareUsernameRef = useRef<string | null>(null);
   shareUsernameRef.current = shareUsername;
   useEffect(() => {
-    window.spaceWindow?.onPopoutVolumeSync((username, gain) => {
+    window.spaceWindow?.onPopoutVolumeSync((username, gain, kind) => {
       if (username === shareUsernameRef.current && Date.now() - lastLocalVolumeEditRef.current > VOLUME_SYNC_GRACE_MS) {
-        setShareVolume(gain);
-        if (gain > 0) {
-          shareVolumeLastPositiveRef.current = gain;
+        if (kind === "voice") {
+          setVoiceVolumeState(gain);
+          if (gain > 0) {
+            voiceVolumeLastPositiveRef.current = gain;
+          }
+        } else {
+          setShareVolume(gain);
+          if (gain > 0) {
+            shareVolumeLastPositiveRef.current = gain;
+          }
         }
       }
     });
@@ -290,43 +307,94 @@ export function PopoutScreen(): React.JSX.Element {
               <span className="icon mdi-triangle-wave" />
             </button>
             <span className="popout-toolbar-sep" />
-            {/* The volume ICON is a 0 ↔ last-positive mute toggle (the VolumeRow
-                idiom); disabled when this share carries no audio at all. */}
-            <button
-              className="popout-voice-toggle"
-              disabled={!volumeInteractive}
-              title={volumeInteractive ? (shareVolume > 0 ? "Mute share audio" : "Unmute share audio") : "This share has no audio"}
-              onClick={() => {
-                const nextGain = shareVolume > 0
-                  ? 0
-                  : (shareVolumeLastPositiveRef.current > 0 ? shareVolumeLastPositiveRef.current : 1);
-                if (shareVolume > 0) {
-                  shareVolumeLastPositiveRef.current = shareVolume;
-                }
-                lastLocalVolumeEditRef.current = Date.now();
-                setShareVolume(nextGain);
-                if (shareUsername !== null) {
-                  window.spaceWindow?.popoutVolume(shareUsername, nextGain);
-                }
-              }}
-            >
-              <span className={"icon " + (volumeInteractive && shareVolume > 0 ? "mdi-volume-high" : "mdi-volume-off")} />
-            </button>
-            <input
-              className="popout-volume"
-              type="range" min={0} max={2} step={0.01}
-              value={shareVolume}
-              disabled={!volumeInteractive}
-              title={volumeInteractive ? "Share volume" : "This share has no audio"}
-              onChange={(event) => {
-                const next = event.currentTarget.valueAsNumber;
-                lastLocalVolumeEditRef.current = Date.now();
-                setShareVolume(next);
-                if (shareUsername !== null) {
-                  window.spaceWindow?.popoutVolume(shareUsername, next);
-                }
-              }}
-            />
+            {/* The twin volume regulation (user request 2026-10-19): the member
+                card's TWO sliders carried onto the pill — the peer's VOICE and
+                his SHARE gains as LABELLED CELLS IN ONE ROW (reshaped same day:
+                the pill stays one line tall). The share cell disables on a
+                video-only share. */}
+            <div className="popout-volume-group">
+              <div className="popout-volume-cell">
+                <span className="popout-volume-label">Voice</span>
+                <div className="popout-volume-row">
+                  <button
+                    className="popout-volume-toggle"
+                    title={voiceVolume > 0 ? "Mute voice" : "Unmute voice"}
+                    onClick={() => {
+                      const nextGain = voiceVolume > 0
+                        ? 0
+                        : (voiceVolumeLastPositiveRef.current > 0 ? voiceVolumeLastPositiveRef.current : 1);
+                      if (voiceVolume > 0) {
+                        voiceVolumeLastPositiveRef.current = voiceVolume;
+                      }
+                      lastLocalVolumeEditRef.current = Date.now();
+                      setVoiceVolumeState(nextGain);
+                      if (shareUsername !== null) {
+                        window.spaceWindow?.popoutVolume(shareUsername, nextGain, "voice");
+                      }
+                    }}
+                  >
+                    <span className={"icon " + (voiceVolume > 0 ? "mdi-volume-high" : "mdi-volume-off")} />
+                  </button>
+                  <input
+                    className="popout-volume"
+                    type="range" min={0} max={2} step={0.01}
+                    value={voiceVolume}
+                    title={`Voice volume — ${Math.round(voiceVolume * 100)}%`}
+                    onChange={(event) => {
+                      const next = event.currentTarget.valueAsNumber;
+                      lastLocalVolumeEditRef.current = Date.now();
+                      setVoiceVolumeState(next);
+                      if (next > 0) {
+                        voiceVolumeLastPositiveRef.current = next;
+                      }
+                      if (shareUsername !== null) {
+                        window.spaceWindow?.popoutVolume(shareUsername, next, "voice");
+                      }
+                    }}
+                  />
+                </div>
+              </div>
+              <div className="popout-volume-cell">
+                <span className="popout-volume-label">Video</span>
+                <div className="popout-volume-row">
+                  <button
+                    className="popout-volume-toggle"
+                    disabled={!volumeInteractive}
+                    title={volumeInteractive ? (shareVolume > 0 ? "Mute share audio" : "Unmute share audio") : "This share has no audio"}
+                    onClick={() => {
+                      const nextGain = shareVolume > 0
+                        ? 0
+                        : (shareVolumeLastPositiveRef.current > 0 ? shareVolumeLastPositiveRef.current : 1);
+                      if (shareVolume > 0) {
+                        shareVolumeLastPositiveRef.current = shareVolume;
+                      }
+                      lastLocalVolumeEditRef.current = Date.now();
+                      setShareVolume(nextGain);
+                      if (shareUsername !== null) {
+                        window.spaceWindow?.popoutVolume(shareUsername, nextGain, "share");
+                      }
+                    }}
+                  >
+                    <span className={"icon " + (volumeInteractive && shareVolume > 0 ? "mdi-volume-high" : "mdi-volume-off")} />
+                  </button>
+                  <input
+                    className="popout-volume"
+                    type="range" min={0} max={2} step={0.01}
+                    value={shareVolume}
+                    disabled={!volumeInteractive}
+                    title={volumeInteractive ? "Share volume" : "This share has no audio"}
+                    onChange={(event) => {
+                      const next = event.currentTarget.valueAsNumber;
+                      lastLocalVolumeEditRef.current = Date.now();
+                      setShareVolume(next);
+                      if (shareUsername !== null) {
+                        window.spaceWindow?.popoutVolume(shareUsername, next, "share");
+                      }
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
             <button
               className="popout-fullscreen"
               title={fullscreen ? "Exit full screen" : "Full screen"}

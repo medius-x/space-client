@@ -561,11 +561,14 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
   const [callNsMenuAt, setCallNsMenuAt] = useState<{ x: number; y: number } | null>(null);
   // The pill's NS toggle — same anchorRef lesson as the voice bar's button.
   const callNsButtonRef = useRef<HTMLButtonElement | null>(null);
-  /** The pill's peer-volume slider value (seeded from the record on peer
-   *  change; the slider IS the source afterwards — drags go to the runtime). */
-  const [callPeerGain, setCallPeerGain] = useState(1);
-  /** The volume icon's 0 ↔ last-positive toggle memory (the VolumeRow idiom). */
-  const callPeerGainLastPositiveRef = useRef(1);
+  /** The pill's twin peer-volume sliders (seeded from the record on peer
+   *  change; the sliders ARE the source afterwards — drags go to the runtime).
+   *  The twin regulation (2026-10-19): the member card's voice/share rows. */
+  const [callVoiceGain, setCallVoiceGain] = useState(1);
+  const [callShareGain, setCallShareGain] = useState(1);
+  /** The volume icons' 0 ↔ last-positive toggle memory (the VolumeRow idiom). */
+  const callVoiceGainLastPositiveRef = useRef(1);
+  const callShareGainLastPositiveRef = useRef(1);
 
   const callMode = callState === "connecting" || callState === "in-call";
   const callPeerMedia = peerScreenOn || peerCameraOn;
@@ -735,14 +738,19 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
     };
   }, [callWatchFullscreen]);
 
-  // The pill's volume seed — one read per peer; the slider is the source after.
+  // The pill's volume seeds — one read per peer; the sliders are the source after.
   useEffect(() => {
     if (callPeer !== null) {
       const record = connectionDirectory.getSnapshot().find((entry) => entry.username === callPeer);
-      const seededGain = record?.voiceVolumes[callPeer] ?? 1;
-      setCallPeerGain(seededGain);
-      if (seededGain > 0) {
-        callPeerGainLastPositiveRef.current = seededGain;
+      const seededVoice = record?.voiceVolumes[callPeer] ?? 1;
+      const seededShare = record?.shareVolumes[callPeer] ?? 1;
+      setCallVoiceGain(seededVoice);
+      setCallShareGain(seededShare);
+      if (seededVoice > 0) {
+        callVoiceGainLastPositiveRef.current = seededVoice;
+      }
+      if (seededShare > 0) {
+        callShareGainLastPositiveRef.current = seededShare;
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -874,47 +882,96 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
                     <span className="icon mdi-triangle-wave" />
                   </button>
                   <span className="popout-toolbar-sep" />
-                  {/* The volume ICON is a 0 ↔ last-positive mute toggle (the
-                      VolumeRow idiom) — "peer volume" is BOTH peer streams. */}
-                  <button
-                    className="popout-voice-toggle"
-                    title={callPeerGain > 0 ? "Mute peer" : "Unmute peer"}
-                    onClick={() => {
-                      const nextGain = callPeerGain > 0
-                        ? 0
-                        : (callPeerGainLastPositiveRef.current > 0 ? callPeerGainLastPositiveRef.current : 1);
-                      if (callPeerGain > 0) {
-                        callPeerGainLastPositiveRef.current = callPeerGain;
-                      }
-                      setCallPeerGain(nextGain);
-                      if (callPeer !== null) {
-                        setVoiceVolume(callPeer, nextGain);
-                        setShareVolume(callPeer, nextGain);
-                      }
-                    }}
-                  >
-                    <span className={"icon " + (callPeerGain > 0 ? "mdi-volume-high" : "mdi-volume-off")} />
-                  </button>
-                  <input
-                    type="range"
-                    className="popout-volume"
-                    min={0}
-                    max={2}
-                    step={0.01}
-                    value={callPeerGain}
-                    title={`Peer volume — ${Math.round(callPeerGain * 100)}%`}
-                    onChange={(event) => {
-                      const nextGain = Number(event.target.value);
-                      if (nextGain > 0) {
-                        callPeerGainLastPositiveRef.current = nextGain;
-                      }
-                      setCallPeerGain(nextGain);
-                      if (callPeer !== null) {
-                        setVoiceVolume(callPeer, nextGain);
-                        setShareVolume(callPeer, nextGain);
-                      }
-                    }}
-                  />
+                  {/* The twin regulation (2026-10-19): the peer's VOICE and SHARE
+                      gains as LABELLED CELLS IN ONE ROW — parity with the member
+                      card and the share pop-out's pill (the old single "peer
+                      volume" slider dragged both chains at once). */}
+                  <div className="popout-volume-group">
+                    <div className="popout-volume-cell">
+                      <span className="popout-volume-label">Voice</span>
+                      <div className="popout-volume-row">
+                        <button
+                          className="popout-volume-toggle"
+                          title={callVoiceGain > 0 ? "Mute voice" : "Unmute voice"}
+                          onClick={() => {
+                            const nextGain = callVoiceGain > 0
+                              ? 0
+                              : (callVoiceGainLastPositiveRef.current > 0 ? callVoiceGainLastPositiveRef.current : 1);
+                            if (callVoiceGain > 0) {
+                              callVoiceGainLastPositiveRef.current = callVoiceGain;
+                            }
+                            setCallVoiceGain(nextGain);
+                            if (callPeer !== null) {
+                              setVoiceVolume(callPeer, nextGain);
+                            }
+                          }}
+                        >
+                          <span className={"icon " + (callVoiceGain > 0 ? "mdi-volume-high" : "mdi-volume-off")} />
+                        </button>
+                        <input
+                          type="range"
+                          className="popout-volume"
+                          min={0}
+                          max={2}
+                          step={0.01}
+                          value={callVoiceGain}
+                          title={`Voice volume — ${Math.round(callVoiceGain * 100)}%`}
+                          onChange={(event) => {
+                            const nextGain = Number(event.target.value);
+                            if (nextGain > 0) {
+                              callVoiceGainLastPositiveRef.current = nextGain;
+                            }
+                            setCallVoiceGain(nextGain);
+                            if (callPeer !== null) {
+                              setVoiceVolume(callPeer, nextGain);
+                            }
+                          }}
+                        />
+                      </div>
+                    </div>
+                    <div className="popout-volume-cell">
+                      <span className="popout-volume-label">Video</span>
+                      <div className="popout-volume-row">
+                        <button
+                          className="popout-volume-toggle"
+                          title={callShareGain > 0 ? "Mute share audio" : "Unmute share audio"}
+                          onClick={() => {
+                            const nextGain = callShareGain > 0
+                              ? 0
+                              : (callShareGainLastPositiveRef.current > 0 ? callShareGainLastPositiveRef.current : 1);
+                            if (callShareGain > 0) {
+                              callShareGainLastPositiveRef.current = callShareGain;
+                            }
+                            setCallShareGain(nextGain);
+                            if (callPeer !== null) {
+                              setShareVolume(callPeer, nextGain);
+                            }
+                          }}
+                        >
+                          <span className={"icon " + (callShareGain > 0 ? "mdi-volume-high" : "mdi-volume-off")} />
+                        </button>
+                        <input
+                          type="range"
+                          className="popout-volume"
+                          min={0}
+                          max={2}
+                          step={0.01}
+                          value={callShareGain}
+                          title={`Share volume — ${Math.round(callShareGain * 100)}%`}
+                          onChange={(event) => {
+                            const nextGain = Number(event.target.value);
+                            if (nextGain > 0) {
+                              callShareGainLastPositiveRef.current = nextGain;
+                            }
+                            setCallShareGain(nextGain);
+                            if (callPeer !== null) {
+                              setShareVolume(callPeer, nextGain);
+                            }
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
                   <span className="popout-toolbar-sep" />
                   <button className="popout-fullscreen" title="Exit fullscreen (Esc)" onClick={toggleCallWatchFullscreen}>
                     <span className="icon mdi-fullscreen-exit" />
