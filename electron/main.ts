@@ -629,7 +629,7 @@ function withSessionCertificatePin(next: unknown): unknown {
 
 /** Surfaces a rejected certificate to the login UI — the user decides. */
 function notifyUntrustedCertificate(hostname: string, fingerprint: string, subjectName: string, changedPinned: boolean): void {
-  mainWindowRef?.webContents.send("tls:untrusted", {
+  sendToMainWindow("tls:untrusted", {
     hostname,
     fingerprint,
     displayFingerprint: formatCertFingerprint(fingerprint),
@@ -759,7 +759,7 @@ ipcMain.handle("provisioning:start", (_event, params: unknown): boolean => {
   }
   void startProvisioningRun(params as never, {
     sendEvent: (event) => {
-      mainWindowRef?.webContents.send("provisioning:event", event);
+      sendToMainWindow("provisioning:event", event);
     },
     onSucceeded: (outcome) => {
       // The certificate fingerprint arrived over the TRUSTED SSH channel —
@@ -852,14 +852,14 @@ ipcMain.on("space-window:popoutVolume", (_event, username: unknown, volume: unkn
   if (typeof username !== "string" || typeof volume !== "number" || !Number.isFinite(volume)) {
     return;
   }
-  mainWindowRef?.webContents.send("popout:volume", username, Math.min(2, Math.max(0, volume)));
+  sendToMainWindow("popout:volume", username, Math.min(2, Math.max(0, volume)));
 });
 // MAIN → pop-out: the share gain changed in the main window (slider sync).
 ipcMain.on("space-window:pushPopoutVolume", (_event, username: unknown, gain: unknown) => {
   if (typeof username !== "string" || typeof gain !== "number" || !Number.isFinite(gain)) {
     return;
   }
-  popoutWindow?.webContents.send("popout:volumeSync", username, gain);
+  sendToPopoutWindow("popout:volumeSync", username, gain);
 });
 // MAIN → pop-out: the voice-panel mirror (mute/deafen/NS) — kept for the
 // pop-out's initial state, forwarded live while it is open.
@@ -869,7 +869,7 @@ ipcMain.on("space-window:pushPopoutVoiceState", (_event, state: unknown) => {
     return;
   }
   lastPopoutVoiceState = state as Record<string, unknown>;
-  popoutWindow?.webContents.send("popout:voiceState", state);
+  sendToPopoutWindow("popout:voiceState", state);
 });
 ipcMain.handle("space-window:popoutVoiceState", () => lastPopoutVoiceState);
 // POP-OUT → main: voice-panel button presses run in the MAIN window's runtime.
@@ -877,7 +877,7 @@ ipcMain.on("space-window:popoutVoiceAction", (_event, action: unknown, engine: u
   if (action !== "toggle-mute" && action !== "toggle-deafen" && action !== "ns-engine") {
     return;
   }
-  mainWindowRef?.webContents.send("popout:voiceAction", action, typeof engine === "string" ? engine : null);
+  sendToMainWindow("popout:voiceAction", action, typeof engine === "string" ? engine : null);
 });
 ipcMain.on("space-window:toggleFullscreen", (event) => {
   const window = BrowserWindow.fromWebContents(event.sender);
@@ -952,7 +952,7 @@ ipcMain.handle("space-capture:watchSource", (_event, sourceId: unknown) => {
   }
   return watchSourceLiveness(sourceId, (deadSourceId) => {
     appendLog(`[share] watched window died (${deadSourceId})`);
-    mainWindowRef?.webContents.send("space-capture:sourceDead", deadSourceId);
+    sendToMainWindow("space-capture:sourceDead", deadSourceId);
   });
 });
 
@@ -973,7 +973,7 @@ ipcMain.handle("space-sysaudio:start", async (_event, sourceId: unknown) => {
   const options = typeof sourceId === "string" && sourceId.length > 0 ? { sourceId } : {};
   const result = await startSystemAudio(
     (frame) => {
-      mainWindowRef?.webContents.send("space-sysaudio:frame", frame.pcm, frame.silent);
+      sendToMainWindow("space-sysaudio:frame", frame.pcm, frame.silent);
     },
     (reason) => appendLog(`[sysaudio] native capture DIED (${reason})`),
     options,
@@ -1000,6 +1000,22 @@ let mainWindowRef: BrowserWindow | null = null;
 /** The last target the main window pushed — the pop-out's initial state (its
  *  listener may mount after the retarget event was forwarded). */
 let popoutTarget: Record<string, unknown> | null = null;
+
+/** Fire-and-forget sends that can NEVER throw on a destroyed window. The
+ *  2026-10-16 crash (TypeError "Object has been destroyed" inside a
+ *  BrowserWindow event handler, main.js:2270) was a toast hover IPC racing
+ *  the window's destruction during quit — `?.` checks null, not death. */
+function sendToMainWindow(channel: string, ...args: unknown[]): void {
+  if (mainWindowRef !== null && !mainWindowRef.isDestroyed()) {
+    mainWindowRef.webContents.send(channel, ...args);
+  }
+}
+
+function sendToPopoutWindow(channel: string, ...args: unknown[]): void {
+  if (popoutWindow !== null && !popoutWindow.isDestroyed()) {
+    popoutWindow.webContents.send(channel, ...args);
+  }
+}
 
 function loadRendererTarget(window: BrowserWindow, hash: string): Promise<void> {
   const devServerUrl = process.env.ELECTRON_RENDERER_URL;
@@ -1056,7 +1072,7 @@ ipcMain.handle("space-window:popout", () => {
   popout.on("closed", () => {
     popoutWindow = null;
     popoutTarget = null;
-    mainWindowRef?.webContents.send("popout:closed");
+    sendToMainWindow("popout:closed");
   });
   void loadRendererTarget(popout, "popout").catch((error: unknown) => {
     appendLog(`[main] popout load failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -1198,7 +1214,11 @@ ipcMain.on("space-toast:hover", (_event, interactive: unknown) => {
     toastInteractive = next;
     appendLog(`[main] toast interactive=${next}`);
   }
-  toastWindow?.setIgnoreMouseEvents(!next, { forward: true });
+  // isDestroyed guard (the crash of 2026-10-16): the hover IPC can land while
+  // the toast window is being torn down during quit — `?.` checks null only.
+  if (toastWindow !== null && !toastWindow.isDestroyed()) {
+    toastWindow.setIgnoreMouseEvents(!next, { forward: true });
+  }
 });
 
 ipcMain.on("space-toast:geometry", (_event, contentHeight: unknown) => {
@@ -1225,7 +1245,7 @@ ipcMain.on("space-toast:empty", () => {
 
 ipcMain.on("space-toast:clicked", (_event, id: unknown) => {
   if (typeof id === "number") {
-    mainWindowRef?.webContents.send("toast:clicked", id);
+    sendToMainWindow("toast:clicked", id);
   }
 });
 
@@ -1236,14 +1256,14 @@ ipcMain.on("space-toast:callAction", (_event, action: unknown) => {
     // Diagnostic (live 2026-10-15): clicks on a live call card once vanished
     // between the toast window and the runtime — every hop logs now.
     appendLog(`[main] toast call action ${action}`);
-    mainWindowRef?.webContents.send("toast:callAction", action);
+    sendToMainWindow("toast:callAction", action);
   }
 });
 
 // A voice-invite card's Join/Dismiss — the same main-window relay by card id.
 ipcMain.on("space-toast:voiceInviteAction", (_event, action: unknown, id: unknown) => {
   if ((action === "join" || action === "dismiss") && typeof id === "number") {
-    mainWindowRef?.webContents.send("toast:voiceInviteAction", action, id);
+    sendToMainWindow("toast:voiceInviteAction", action, id);
   }
 });
 
@@ -1310,8 +1330,13 @@ async function createWindow(): Promise<void> {
   // The auxiliary windows die with the main one — otherwise the app lingers
   // with an invisible toast overlay / a pop-out viewer.
   mainWindow.on("closed", () => {
-    toastWindow?.close();
-    popoutWindow?.close();
+    mainWindowRef = null; // guarded senders read null instead of a dead object
+    if (toastWindow !== null && !toastWindow.isDestroyed()) {
+      toastWindow.close();
+    }
+    if (popoutWindow !== null && !popoutWindow.isDestroyed()) {
+      popoutWindow.close();
+    }
   });
 
   // Close-to-tray (user request 2026-10-07): the X button HIDES the window
