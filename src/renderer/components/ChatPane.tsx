@@ -288,6 +288,17 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
   const nameOf = useCallback((username: string): string => displayNameOf(rosterUsers, username), [rosterUsers]);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
+  // Composer focus signal: bumped by reply-arming and file staging so the
+  // user can keep typing immediately (user rule 2026-10-19: after Reply or
+  // an attach the caret belongs in the composer, at the END of any draft).
+  const [composerFocusSignal, setComposerFocusSignal] = useState(0);
+  const focusComposer = () => setComposerFocusSignal((value) => value + 1);
+  const armReply = (message: Message | null) => {
+    setReplyTo(message);
+    if (message !== null) {
+      focusComposer();
+    }
+  };
   const [editing, setEditing] = useState<Message | null>(null);
   const [menu, setMenu] = useState<{ message: Message; x: number; y: number } | null>(null);
   const [picker, setPicker] = useState<{ message: Message; x: number; y: number } | null>(null);
@@ -389,6 +400,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
     setCapNote(skippedByCap > 0 ? `${skippedByCap} more skipped — max ${MAX_STAGED_FILES}` : null);
     if (fresh.length > 0) {
       setStaged([...staged, ...fresh]);
+      focusComposer(); // files landed — typing continues right away (user rule 2026-10-19)
     }
   };
 
@@ -492,7 +504,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
 
   const actions: ChatActions = {
     replyTo,
-    setReplyTo,
+    setReplyTo: armReply,
     beginEdit: (message) => setEditing(message),
     beginForward: (list) => setForwardQueue(list),
     jumpTo: () => undefined, // MessageList replaces this with its scroll/backfill wiring
@@ -651,6 +663,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
           placeholder={`Message ${chatTitlePrefix}${viewChannel.name}${permissions.attachFiles ? " — paste or drop files to attach" : ""}`}
           attachEnabled={permissions.attachFiles}
           allowEmptySend={staged.length > 0}
+          focusSignal={composerFocusSignal}
           onCancelReply={replyTo !== null ? () => setReplyTo(null) : null}
           onPaste={(files) => addStagedFiles(files)}
           onSendSticker={(sticker) => session.sendMessageWithSticker(chatChannel.id, sticker, replyTo?.id)}
@@ -2120,11 +2133,14 @@ function StickerTile({ session, sticker, disabled, onPick }: {
   );
 }
 
-function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCancelReply, onPaste, onSend, onSendSticker }: {
+function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSignal, onCancelReply, onPaste, onSend, onSendSticker }: {
   session: ConnectionSession;
   placeholder: string;
   attachEnabled: boolean;
   allowEmptySend: boolean;
+  /** Bumped by the parent whenever the caret belongs here (a reply armed, files
+   *  staged) — the effect focuses the field at the END of the current draft. */
+  focusSignal: number;
   /** oak: ESC in the field cancels an armed reply (consumed so the field keeps focus); null = nothing armed. */
   onCancelReply: (() => void) | null;
   onPaste(files: readonly File[]): void;
@@ -2144,6 +2160,22 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, onCance
   const pickerButtonRef = useRef<HTMLButtonElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
+  // A reply armed or files staged want the caret HERE, after any existing
+  // draft text (the mention-popup rAF refocus idiom, reused).
+  useEffect(() => {
+    if (focusSignal === 0) {
+      return; // the initial value — nothing to focus yet
+    }
+    requestAnimationFrame(() => {
+      const node = composerInputRef.current;
+      if (node === null) {
+        return;
+      }
+      node.focus();
+      const end = node.value.length;
+      node.setSelectionRange(end, end);
+    });
+  }, [focusSignal]);
   const users = useStore(session.rosterStore, (state) => state.users);
   const roles = useStore(session.memberStore, (state) => state.roles);
   const ownUsername = useStore(appStore, (state) => state.ownUsername);
