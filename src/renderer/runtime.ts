@@ -1503,7 +1503,9 @@ export async function bootstrapApp(): Promise<void> {
     maxToasts: () => settingsStore.getSnapshot().maxToasts,
   });
   await connectionDirectory.loadAll();
-  const newest = connectionDirectory.getSnapshot()[0];
+  // Recency, NOT rail position: the boot resume returns to the last-used server
+  // even after the user drags another one to the top of the rail.
+  const newest = connectionDirectory.mostRecentlyUsed();
   if (newest && newest.refreshToken !== "" && newest.token !== EXPIRED_MARKER) {
     try {
       await openSession(newest.id);
@@ -1651,8 +1653,8 @@ export async function removeConnection(recordId: string): Promise<void> {
     // connected" screen while other saved servers remain (user report): switch onto
     // the most recently used survivor. switchConnection promotes a live background
     // session instantly; a dead token family opens the re-login modal prefilled.
-    const survivor = connectionDirectory.getSnapshot()[0];
-    if (survivor !== undefined) {
+    const survivor = connectionDirectory.mostRecentlyUsed();
+    if (survivor !== null) {
       await switchConnection(survivor.id);
     }
     // No survivor left — the empty screen with the rail's "+" is the honest state.

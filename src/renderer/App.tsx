@@ -107,11 +107,14 @@ export function App(): React.JSX.Element {
  *  (an eternal "Connecting…" reads as a freeze — user report 2026-10-08)
  *  while the ladder keeps trying silently in the background. */
 function EmptyMainScreen(): React.JSX.Element {
-  const records = useStore(connectionDirectory, (allRecords) => allRecords);
+  // The subscription above only re-renders this screen on directory changes; the
+  // target is the record the boot ladder ACTUALLY resumes — the last-used one,
+  // not rail position [0] (the rail order is manual now, user round 2026-10-19).
+  useStore(connectionDirectory, (allRecords) => allRecords);
   const stompState = useStore(appStore, (state) => state.stompState);
   const bootRetryNotice = useStore(appStore, (state) => state.bootRetryNotice);
   const bootConnecting = stompState === "connecting";
-  const target = records[0];
+  const target = connectionDirectory.mostRecentlyUsed();
   return (
     <div className="main-shell">
       <div className="left-section">

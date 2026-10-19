@@ -92,7 +92,7 @@ describe("ConnectionDirectory", () => {
     expect(directory.get(record.id)).toBeNull();
   });
 
-  it("loadAll restores what disk holds, newest-used first", async () => {
+  it("loadAll restores what disk holds", async () => {
     const first = new ConnectionDirectory();
     const older = await first.create({ hostUrl: "http://a", username: "a", tokens: tokens("a") });
     const newer = await first.create({ hostUrl: "http://b", username: "b", tokens: tokens("b") });
@@ -104,6 +104,66 @@ describe("ConnectionDirectory", () => {
     expect(restored).toHaveLength(1);
     expect(restored[0]?.id).toBe(newer.id);
     expect(second.getSnapshot()[0]?.username).toBe("b");
+  });
+
+  it("the rail order is join order — touch() (a session start) no longer reshuffles it", async () => {
+    const directory = new ConnectionDirectory();
+    const first = await directory.create({ hostUrl: "http://a", username: "a", tokens: tokens("a") });
+    const second = await directory.create({ hostUrl: "http://b", username: "b", tokens: tokens("b") });
+    // Pin createdAt: two creates can land in the same millisecond.
+    await directory.update(first.id, { createdAt: 1_000, lastUsedAt: 9_000 });
+    await directory.update(second.id, { createdAt: 2_000, lastUsedAt: 1_000 });
+
+    expect(directory.getSnapshot().map((record) => record.id)).toEqual([first.id, second.id]);
+
+    await directory.touch(second.id); // recency bumps — the boot shuffle's root cause
+    expect(directory.getSnapshot().map((record) => record.id)).toEqual([first.id, second.id]); // rail intact
+    expect(directory.mostRecentlyUsed()?.id).toBe(second.id); // recency lives HERE now
+  });
+
+  it("reorder() sets the manual order, persists it, and loadAll restores it", async () => {
+    const calls = installFakeBridge();
+    const directory = new ConnectionDirectory();
+    const first = await directory.create({ hostUrl: "http://a", username: "a", tokens: tokens("a") });
+    const second = await directory.create({ hostUrl: "http://b", username: "b", tokens: tokens("b") });
+    await directory.update(first.id, { createdAt: 1_000 });
+    await directory.update(second.id, { createdAt: 2_000 });
+    expect(directory.getSnapshot().map((record) => record.id)).toEqual([first.id, second.id]);
+
+    await directory.reorder([second.id, first.id]);
+    expect(directory.getSnapshot().map((record) => record.id)).toEqual([second.id, first.id]);
+    expect(calls.stored.get("connection-order")).toEqual([second.id, first.id]);
+
+    const reopened = new ConnectionDirectory();
+    await reopened.loadAll();
+    expect(reopened.getSnapshot().map((record) => record.id)).toEqual([second.id, first.id]);
+  });
+
+  it("reorder() rejects an input that is not exactly the current record set", async () => {
+    const directory = new ConnectionDirectory();
+    const first = await directory.create({ hostUrl: "http://a", username: "a", tokens: tokens("a") });
+    const second = await directory.create({ hostUrl: "http://b", username: "b", tokens: tokens("b") });
+    await directory.update(first.id, { createdAt: 1_000 });
+    await directory.update(second.id, { createdAt: 2_000 });
+
+    await expect(directory.reorder([first.id])).rejects.toThrow(); // missing a record
+    await expect(directory.reorder([first.id, second.id, "ghost"])).rejects.toThrow(); // unknown id
+    await expect(directory.reorder([first.id, first.id])).rejects.toThrow(); // duplicate
+    expect(directory.getSnapshot().map((record) => record.id)).toEqual([first.id, second.id]); // untouched
+  });
+
+  it("mostRecentlyUsed() picks the max lastUsedAt, ties broken by id", async () => {
+    const directory = new ConnectionDirectory();
+    expect(directory.mostRecentlyUsed()).toBeNull();
+
+    const first = await directory.create({ hostUrl: "http://a", username: "a", tokens: tokens("a") });
+    const second = await directory.create({ hostUrl: "http://b", username: "b", tokens: tokens("b") });
+    await directory.update(first.id, { lastUsedAt: 5_000 });
+    await directory.update(second.id, { lastUsedAt: 5_000 });
+    expect(directory.mostRecentlyUsed()?.id).toBe(first.id > second.id ? first.id : second.id);
+
+    await directory.update(first.id, { lastUsedAt: 6_000 });
+    expect(directory.mostRecentlyUsed()?.id).toBe(first.id);
   });
 
   it("markExpired wipes tokens but keeps the rail entry", async () => {

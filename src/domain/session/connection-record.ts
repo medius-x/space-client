@@ -1,5 +1,6 @@
 import { Emitter } from "../lib/store";
 import { kv } from "../persistence/kv-client";
+import { sanitizeRailOrder, sortRecordsForRail } from "../logic/rail-drag";
 import type { TokenStorage } from "../../core/auth";
 import type { AuthTokens, NotificationPrefs } from "../../types";
 import { log } from "../../logging";
@@ -56,6 +57,10 @@ export interface NewConnection {
 const KEY_PREFIX = "connection:";
 /** The sanitized form of KEY_PREFIX — what kv.keys() returns on the wire. */
 const SANITIZED_KEY_PREFIX = "connection_";
+/** The manually set rail order (a plain array of record ids). Deliberately NOT
+ *  `connection:…` — the M7 encryption gate only covers record files (tokens);
+ *  ids carry no secrets, and the hyphen keeps it out of kv.keys("connection_"). */
+const ORDER_KEY = "connection-order";
 
 export function recordKey(recordId: string): string {
   return `${KEY_PREFIX}${recordId}`;
@@ -120,6 +125,9 @@ export const EXPIRED_MARKER = "expired";
 export class ConnectionDirectory extends Emitter {
   private readonly records = new Map<string, ConnectionRecord>();
   private snapshot: readonly ConnectionRecord[] = [];
+  /** The manually dragged rail order (persisted as ORDER_KEY); records missing
+   *  from it fall back to join order — see sortRecordsForRail. */
+  private railOrder: string[] = [];
   private loaded = false;
 
   getSnapshot = (): readonly ConnectionRecord[] => this.snapshot;
@@ -132,7 +140,13 @@ export class ConnectionDirectory extends Emitter {
     return this.records.get(recordId) ?? null;
   }
 
-  /** Sorted by lastUsedAt, newest first — the rail order. */
+  /**
+   * The rail order: the persisted manual order first, then records never
+   * manually positioned, by join order (createdAt asc). Deterministic by
+   * construction — lastUsedAt plays no part (it used to, and parallel session
+   * starts at boot reshuffled the rail in completion order; user report
+   * 2026-10-19).
+   */
   async loadAll(): Promise<readonly ConnectionRecord[]> {
     const sanitizedKeys = await kv.keys(SANITIZED_KEY_PREFIX);
     for (const sanitizedKey of sanitizedKeys) {
@@ -147,9 +161,49 @@ export class ConnectionDirectory extends Emitter {
         });
       }
     }
+    this.railOrder = sanitizeRailOrder(await kv.get<unknown>(ORDER_KEY));
     this.loaded = true;
     this.rebuildSnapshot();
     return this.snapshot;
+  }
+
+  /**
+   * The manual reorder's persist: memory first (the rail repaints instantly),
+   * the durable write fire-and-forget like SettingsStore.apply — a local KV
+   * file, no server round-trip to roll back from. The input must list every
+   * record exactly once; anything else throws BEFORE any mutation.
+   */
+  async reorder(nextIds: readonly string[]): Promise<void> {
+    const nextSet = new Set(nextIds);
+    if (nextSet.size !== nextIds.length || nextSet.size !== this.records.size) {
+      throw new Error("rail order must list every record exactly once");
+    }
+    for (const recordId of nextSet) {
+      if (!this.records.has(recordId)) {
+        throw new Error("rail order must list every record exactly once");
+      }
+    }
+    this.railOrder = [...nextIds];
+    this.rebuildSnapshot();
+    this.emit();
+    void kv.set(ORDER_KEY, this.railOrder);
+  }
+
+  /**
+   * The boot auto-resume / delete-survivor pick — the ONE legitimate consumer of
+   * "recency" (the rail itself no longer sorts by it). Ties broken by id so the
+   * choice is deterministic.
+   */
+  mostRecentlyUsed(): ConnectionRecord | null {
+    let newest: ConnectionRecord | null = null;
+    for (const record of this.records.values()) {
+      if (newest === null
+        || record.lastUsedAt > newest.lastUsedAt
+        || (record.lastUsedAt === newest.lastUsedAt && record.id > newest.id)) {
+        newest = record;
+      }
+    }
+    return newest;
   }
 
   async create(input: NewConnection): Promise<ConnectionRecord> {
@@ -275,7 +329,7 @@ export class ConnectionDirectory extends Emitter {
   }
 
   private rebuildSnapshot(): void {
-    this.snapshot = [...this.records.values()].sort((left, right) => right.lastUsedAt - left.lastUsedAt);
+    this.snapshot = sortRecordsForRail([...this.records.values()], this.railOrder);
   }
 }
 
