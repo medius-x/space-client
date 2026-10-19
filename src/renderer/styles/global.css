@@ -4181,9 +4181,22 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
    row and the tiles read as one line — user-tuned iteratively). */
 .sidebar-server-chevron { font-size: 16px; flex-shrink: 0; margin-right: 11px; }
 
-/* oak's message hover cluster: [forward][react][reply] 20×20 buttons sit
-   DIRECTLY on the message tile's top-right (unmanaged nodes in oak, no card
-   chrome around them) — each button is bare until its own hover fills it. */
+/* The hover toolbar "hump" (user request 2026-10-19): the action buttons sit
+   in a strip straddling the row's top edge — HALF above it, half on the row
+   (user-tuned: the row's border crosses the strip's middle), painted the
+   row's hover color, Discord's toolbar idiom. The buttons grew 20→30px
+   (~1.5×) WITHOUT growing the row: the strip is out of flow (absolute), so
+   the virtualizer's measured row heights and the estimates never change.
+   bottom:100% anchors the strip's bottom at the row's top; the -18px margin
+   drops it half the strip's 36px height into the row. ALL FOUR corners are
+   rounded — the lower half rides over row CONTENT (photos, quote cards)
+   whose colors differ from the strip, and square bottom corners read as a
+   glitch there (live report 2026-10-19). Row N's strip paints OVER row N-1 (later
+   DOM sibling inside the translateY stacking contexts of the virtualized
+   rows). Hovering the strip itself keeps the row's :hover (an absolutely
+   positioned child triggers its parent's hover even outside the parent's
+   box). Known edge: the first row's strip clips at the scroller top when
+   scrolled to the exact top — same as Discord. */
 /* contain: layout+style isolates each row — a row's own hover/mount mutations
    (background, buttons, quotes) never invalidate its siblings' layout, and the
    40+ rows of a virtualized window stay cheap to reflow (perf-traced jank
@@ -4192,8 +4205,12 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 .message-row { position: relative; contain: layout style; }
 .message-hover-buttons {
   position: absolute;
-  top: 0;
+  bottom: 100%;
+  margin-bottom: -18px;
   right: 8px; /* scrollbar clearance — the bar paints over the row's right edge */
+  background: var(--sp-hover);
+  border-radius: 8px;
+  padding: 3px;
   /* visibility/opacity, NEVER display:none↔flex: rows sweep under the cursor
      while scrolling and a layout-flipping hover made each sweep a 100-170ms
      jank frame (perf-traced, live report). This pair skips layout entirely. */
@@ -4205,10 +4222,10 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 }
 .message-row:hover .message-hover-buttons { opacity: 1; visibility: visible; }
 .hover-button {
-  width: 20px;
-  height: 20px;
+  width: 30px;
+  height: 30px;
   padding: 0;
-  border-radius: 4px;
+  border-radius: 5px;
   background: transparent;
   color: var(--sp-text-muted);
   display: inline-flex;
@@ -4216,7 +4233,7 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
   justify-content: center;
 }
 .hover-button:hover { background: var(--sp-control); color: var(--sp-text); }
-.hover-button .icon { font-size: 13px; }
+.hover-button .icon { font-size: 20px; }
 
 /* ===== Icon sizes (own the font-size in CSS, never inline in JSX) ===== */
 
