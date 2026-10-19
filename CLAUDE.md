@@ -3935,3 +3935,92 @@ alice/bob/charlie/dana (пароль «password»), категории Welcome/C
 q85; прежнее Wikimedia-фото Pesterev убрано вместе с атрибуцией в README), тред/пин/
 реакции, #introductions, переименование легаси-ников/каналов; имя сервера «Alpenglow»
 (PATCH /api/server). Скрипт умеет удалять посты ОБЕИХ подписей (sunset- и valley-эпохи).
+
+## Раунд фиксов первого живого теста (2026-10-19, 10 багов; КЛИЕНТ-ONLY — сервер/wire не тронуты)
+
+Первое тестирование с реальным пользователем (kyodzo Win11 + Medius Win10, логи
+2026-10-16 в Desktop/Баги/{1,2,3 крит}). 11 коммитов, каждый = фикс + гейты
+(test/typecheck/build) + regression-тесты где логика чистая. Корни установлены
+по логам + коду (три развед-агента):
+
+- **№10 (крит) — сообщения «отправляются, но не появляются»**: корень = around-окно
+  (`?around=`, прыжок поиском/пином) с флагом `aroundWithoutTail` — `applyLive`
+  МОЛЧА дропал все live-сообщения с id > хвоста окна (свои и чужие), `mergeTail`
+  скипал around-каналы, а выходы из режима были только пользовательскими (скролл
+  к нижней грани / Jump to present / повторный вход; `openDm` вообще не лечил).
+  Собеседник «починился сам» = был у нижней грани → loadNewer → markTailReached.
+  Фикс `8dfe43e`: счётчик дропов `aroundDropCount` (кормит пилюлю «Jump To Present
+  · N new»), автодогрузка `scheduleAroundCatchUp` (дебаунс 750 мс, страницы по 50
+  вниз до короткой raw-страницы → markTailReached, кап 6 страниц/триггер — глубокие
+  дыры остаются с пилюлей, следующий дроп перевооружает), тот же вызов после
+  await-ветки sendMessage, heal в openDm, try/catch вокруг dispatch MESSAGE-кадров
+  StompClient (бросающий хендлер больше не рвёт цикл кадров). Тесты: around-catchup
+  (4, сессионный цикл на фейк-fetch), message-store (счётчик), stomp (throw-изоляция).
+- **№8 — шумодав лагал → умер аплинк (лечилось перезаходом)**: корень = НЕсериализованный
+  `rebuildNoisePipeline` при живом переключении движков: (M1) каждый движок = новый
+  AudioContext c `void context.resume()` без ожидания — при исчерпании слотов контекст
+  висел suspended, worklet бутается и «engine live» пишется, но `process()` не зовётся =
+  тишина навсегда без ошибок; (M2) guard-выход после медленного бута возвращался БЕЗ лога
+  и без republish, оставляя sender на треке закрытого контекста; (M3) перекрывающиеся
+  rebuild'ы перезаписывали activeNoisePipeline без dispose (утечки контекстов → M1).
+  Фикс `0519a99`: очередь rebuild'ов + поколенческий discard (в enhanceMicTrack тоже),
+  все guard-выходы публикуют raw + WARN, `bootPipelineContext` (await resume 3 с, не
+  running → THROW → существующий catch публикует raw), комплаенс мьюта переприменяется
+  после replaceTrack комнатного пути, СТОРОЖ АПЛИНКА: чистый `UplinkStallDetector`
+  (два подряд нулевых прироста bytesSent при enabled-треке; тишина не даёт ложных —
+  enabled-трек шлёт кадры даже в молчании) + поллер 5 с в SfuSession (start/close,
+  sender.getStats → outbound-rtp audio) → runtime-эскалация: первый stall = rebuild
+  пайплайна, второй = handleVoiceSessionLost (автоматический «перезаход»), кап 2
+  автореджойна на голосовую сессию; в PeerCallSession зеркальный поллер с 30-с
+  троттлом на rebuild. Тесты: uplink-watchdog (5), sfu (интеграционный на FakePC со
+  скриптованным getStats; FakeSender += getStats).
+- **8b — краш Medius «Object has been destroyed» (main.js:2270)**: хендлер
+  `space-toast:hover` звал `toastWindow?.setIgnoreMouseEvents` без isDestroyed
+  (соседние имели), `mainWindowRef` не занулялся, ~12 сайтов webContents.send без
+  гварда. Фикс `7d5de72`: `sendToMainWindow`/`sendToPopoutWindow` (null+isDestroyed)
+  везде, hover-гвард, 'closed' главного зануляет ref и гвардит aux-закрытия.
+- **№9 — драг-н-дроп умирал со временем**: счётчик enter/leave (вместо булева
+  dragLeave), источники нативных драгов убиты (ссылки draggable={false} +
+  `-webkit-user-drag: none` на .message-body — прецедент «uncureable wedge» ролей),
+  `installFileDropGuard` (document-capture dragover+drop preventDefault на Files —
+  заодно закрыта ДЫРА навигации на file:// при дропе мимо панели), диагностика `[dnd]`
+  (первый enter после 30 с простоя + дроп). Остаточный риск wedge'а Chromium честно
+  задокументирован — диагностика поймает живьём. `1ba6e0d`.
+- **№4 — дискуссия на чужом сообщении не в «моих»**: ГОНКА — STOMP-broadcast CREATED
+  (tracked=false) прилетал РАНЬШЕ REST-ответа, `forParent()` в merge возвращал устаревшую
+  строку того же id, upsertAll по порядку перезаписывал tracked=true создателя. Фикс
+  `d90b5d9`: фильтр same-id строки в startDiscussionWithMessage + контрфактивный
+  regression-тест в discussions-store.
+- **№6 — овнер не под своей hoist-ролью**: `topHoistRole` без раннего
+  `if (member.owner) return null` (фильтр kind OWNER остаётся) — ростер-бакет теперь
+  определяется высшей «Display separately»-ролью для ВСЕХ, овнер без hoist-ролей падает
+  в общий Online. `b06a7ef`.
+- **№7 — фокус композера на reply/аттаче**: `focusSignal`-проп Composer (rAF +
+  setSelectionRange в конец черновика, идioms applyMention); инкременты: armReply
+  (hover + ПКМ), стейджинг файлов (пикер/paste/drop). `746249d`.
+- **№3 — лайтбокс**: закрытие кликом по фону (target===currentTarget + дистанция <6px,
+  не конфликтует с пан-жестом) и по blur окна (клик вне приложения). `a687617`.
+- **№2 — passphrase SSH-ключа**: `sshKeyPassphrase` через весь стек (params → bridges →
+  ProvisioningPanel Advanced (поле видно только при заполненном ключе) →
+  connectOptions.passphrase в ssh2). Не логируется, не персистится. `d1517f1`.
+- **№1 — user panel без сервера**: `UserBar` принимает session|null — пустая карта
+  ТОЛЬКО с шестерёнкой в EmptyMainScreen; модалку клиент-скоупа пускает без сессии
+  (scope==="client"), UserSettingsModal session-nullable (сервер-скоуп секции
+  отфильтрованы, Apply-эффекты no-op) — звук/хоткеи/Diagnostics с выгрузкой логов
+  доступны до первого сервера (кейс «провалившийся provisioning без логов»). `f9d371d`.
+- **№5 — Members-таб сбрасывал черновики других вкладок**: автосейв PUT
+  /members/{id}/roles пинговал /topic/members → рефеч ставил свежие Role-объекты →
+  useEffect [roleSnapshot] пересеивал RoleDraft. Фикс `dc08357` (юзер-спека):
+  membership теперь СТЕЙДЖИНГ — `pendingMembership: Map<userId, add|remove>` в
+  RoleEditor, добавленные подсвечены (blurple `.role-member-row.pending-add`),
+  снятые dim+strike с undo (mdi-undo, icons.css 58 глифов), dirty = роль ∨ pending,
+  ЕДИНАЯ Save Changes (PATCH роли + последовательные PUT из свежего снапшота; частичный
+  провал — статус, отработанное снимается). Пересев draft только при !dirty (любой
+  /topic/пуш больше не стирает правки) + reconcile pending против свежих строк
+  (чистая logic/role-membership.ts + 6 тестов).
+
+Security-проход раунда: новых эндпоинтов/IPC-каналов/гейтов нет; passphrase едет
+существующим provisioning:start, не логируется; drop-guard только СУЖАЕТ поверхность
+(запрет file://-навигации); сторож аплинка — локальный getStats; ролевые PUT прежние
+(серверный authz нетронут). Гейт: 726 тестов + typecheck + build. Смоук-батчи в плане
+(goofy-leaping-sutton.md) — юзер гоняет dev-инстансами A/B.
