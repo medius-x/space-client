@@ -53,11 +53,15 @@ describe("memberNameColor / topHoistRole / topPosition", () => {
     expect(memberNameColor(member(3, "carol"), rolesById)).toBeNull(); // no roles at all
   });
 
-  it("hoist = the highest hoist role; the OWNER member never hoists", () => {
+  it("hoist = the highest hoist role; the OWNER member hoists like anyone (user decision 2026-10-19)", () => {
     expect(topHoistRole(member(1, "alice", { roleIds: [2] }), rolesById)?.id).toBe(2);
     expect(topHoistRole(member(1, "alice", { roleIds: [2, 3] }), rolesById)?.id).toBe(2);
     expect(topHoistRole(member(1, "alice", { roleIds: [3] }), rolesById)).toBeNull(); // not hoisted
-    expect(topHoistRole(member(1, "alice", { roleIds: [2], owner: true }), rolesById)).toBeNull();
+    // The owner with a hoisted role sits UNDER that role — the crown badge
+    // stays on the row, the bucket follows the highest visible role.
+    expect(topHoistRole(member(1, "alice", { roleIds: [2], owner: true }), rolesById)?.id).toBe(2);
+    // An owner without any hoisted role falls to the plain Online bucket.
+    expect(topHoistRole(member(1, "alice", { roleIds: [3], owner: true }), rolesById)).toBeNull();
   });
 
   it("OWNER-kind roles never hoist", () => {

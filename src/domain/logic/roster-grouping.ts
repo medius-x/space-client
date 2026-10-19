@@ -4,7 +4,8 @@ import type { Role, ServerMember } from "../../types";
  * Pure roster grouping math (oak's rebuildMemberNodes rules):
  *  - online members whose HIGHEST hoist-role (hoist=true, kind != OWNER) bucket
  *    under that role, group order = role position DESC;
- *  - the OWNER member always sits in the plain Online bucket (oak parity);
+ *  - the OWNER member follows the same rule (user decision 2026-10-19): a
+ *    hoisted role the owner holds seats them under it, no special case;
  *  - remaining online members under "Online — N", offline under "Offline — M"
  *    (hoist does NOT apply offline);
  *  - inside a group: self first, then username alphabetical.
@@ -52,11 +53,13 @@ export function memberNameColor(member: ServerMember, roles: readonly Role[]): s
   return colored?.color != null ? argbIntToCss(colored.color) : null;
 }
 
-/** The member's highest hoist-role: kind OWNER never hoists; the owner member never hoists either. */
+/** The member's highest hoist-role — the roster bucket is decided by the
+ *  HIGHEST "Display separately" role the member holds (user decision
+ *  2026-10-19: the owner is no exception — giving the owner a hoisted role
+ *  must seat them under it, exactly like any member). The built-in OWNER
+ *  role itself still never hoists (it has no header of its own); an owner
+ *  without any hoisted custom role stays in the plain Online bucket. */
 export function topHoistRole(member: ServerMember, roles: readonly Role[]): Role | null {
-  if (member.owner) {
-    return null;
-  }
   const rolesById = new Map(roles.map((role) => [role.id, role]));
   return memberRolesSorted(member, rolesById).find((role) => role.hoist && role.kind !== "OWNER") ?? null;
 }
