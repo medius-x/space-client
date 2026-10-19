@@ -44,6 +44,9 @@ export function Lightbox({ session, images, startIndex, onForwardBegin, onClose 
   const [detailsByteSize, setDetailsByteSize] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
   const dragStateRef = useRef<{ lastX: number; lastY: number } | null>(null);
+  // The press point of the current gesture — separates a backdrop CLICK from
+  // the tail of a pan that happened to end on the backdrop.
+  const pressPointRef = useRef<{ x: number; y: number } | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
 
@@ -171,6 +174,14 @@ export function Lightbox({ session, images, startIndex, onForwardBegin, onClose 
     ? attachment.fileName.slice(attachment.fileName.lastIndexOf(".") + 1).toUpperCase()
     : "";
 
+  // Click outside the window (the OS took focus elsewhere) closes the viewer
+  // — the same contract useOutsideDismiss gives the popups (user rule
+  // 2026-10-19: "close on a click outside the app window when possible").
+  useEffect(() => {
+    window.addEventListener("blur", onClose);
+    return () => window.removeEventListener("blur", onClose);
+  }, [onClose]);
+
   return createPortal(
     <div
       className="lightbox"
@@ -187,6 +198,20 @@ export function Lightbox({ session, images, startIndex, onForwardBegin, onClose 
       }}
       onMouseDown={(event) => {
         dragStateRef.current = { lastX: event.clientX, lastY: event.clientY };
+        pressPointRef.current = { x: event.clientX, y: event.clientY };
+      }}
+      onClick={(event) => {
+        // Backdrop click-to-close: only a press-and-release ON THE BACKDROP
+        // itself (target === the root — the image and toolbar are children)
+        // that never turned into a pan (a few px of jitter is still a click).
+        if (event.target !== event.currentTarget) {
+          return;
+        }
+        const press = pressPointRef.current;
+        if (press !== null && Math.hypot(event.clientX - press.x, event.clientY - press.y) < 6) {
+          onClose();
+        }
+        pressPointRef.current = null;
       }}
       onMouseMove={(event) => {
         const drag = dragStateRef.current;
