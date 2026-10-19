@@ -4,7 +4,7 @@ import { appStore, closeOwnershipTransfer, closeServerSettings, connectionDirect
 import type { ConnectionSession } from "../domain/session/connection-session";
 import { CaptionBar } from "./components/CaptionBar";
 import { LoginModal } from "./components/LoginModal";
-import { MainScreen } from "./components/MainScreen";
+import { MainScreen, UserBar } from "./components/MainScreen";
 import { ServerMenu } from "./components/ServerMenu";
 import { TransferOwnershipModal } from "./components/TransferOwnershipModal";
 import { TlsTrustModal } from "./components/TlsTrustModal";
@@ -20,6 +20,9 @@ export function App(): React.JSX.Element {
   const userSettingsOpen = useStore(appStore, (state) => state.userSettingsOpen);
   const ownershipModalOpen = useStore(appStore, (state) => state.ownershipModalOpen);
   const ownershipPreselect = useStore(appStore, (state) => state.ownershipPreselect);
+  // The client-scoped settings open even with NO session at all (the empty
+  // user bar's gear) — only the account scope demands a live/last session.
+  const settingsScope = useStore(appStore, (state) => state.userSettingsScope);
   // The user-settings overlay must NOT unmount through a session restart (the
   // username rename quietly reopens the session while Settings is open — oak
   // keeps the window): during the gap the binding drops to null, and the
@@ -81,7 +84,7 @@ export function App(): React.JSX.Element {
             </div>
           </div>
         ) : null}
-        {userSettingsOpen && settingsSession !== null ? (
+        {userSettingsOpen && (settingsSession !== null || settingsScope === "client") ? (
           <div className="settings-overlay">
             <UserSettingsModal session={settingsSession} />
             <div className="settings-close-column">
@@ -115,6 +118,12 @@ function EmptyMainScreen(): React.JSX.Element {
         <div className="left-columns">
           <ServerRail activeRecordId={null} session={null} />
           <aside className="sidebar" />
+        </div>
+        {/* The overlay card exists here too: with no server connected it is a
+            fully empty bar with the gear ONLY — client settings (and the log
+            export a failed setup needs) stay reachable (user report #1). */}
+        <div className="left-overlay">
+          <UserBar session={null} />
         </div>
       </div>
       <main className="content">

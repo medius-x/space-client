@@ -92,8 +92,27 @@ export function MainScreen({ session }: { session: ConnectionSession }): React.J
 
 /** The lower half of the overlay card: avatar + nick + connection status (+ the
  *  ↻ retry while the connection is down) and the ONE chrome button (settings) —
- *  avatar editing lives in Settings (oak parity). */
-function UserBar({ session }: { session: ConnectionSession }): React.JSX.Element {
+ *  avatar editing lives in Settings (oak parity).
+ *
+ *  session === null (fresh install, no server connected AT ALL): a fully empty
+ *  card with the gear ONLY (user spec, bug #1 of the 2026-10-16 test round) —
+ *  client-scoped settings (sound, keybinds, diagnostics with the log export)
+ *  must stay reachable even before the first server exists; a failed server
+ *  setup leaves the user a way to pull the logs. */
+export function UserBar({ session }: { session: ConnectionSession | null }): React.JSX.Element {
+  if (session === null) {
+    return (
+      <div className="user-bar empty">
+        <button className="ghost user-bar-button" title="Settings" onClick={toggleUserSettings}>
+          <span className="icon mdi-cog" />
+        </button>
+      </div>
+    );
+  }
+  return <ConnectedUserBar session={session} />;
+}
+
+function ConnectedUserBar({ session }: { session: ConnectionSession }): React.JSX.Element {
   const ownUsername = useStore(appStore, (state) => state.ownUsername) ?? session.username();
   // The rename model: the bar shows the NICKNAME; the login never renders.
   const ownDisplayName = useDisplayName(session, ownUsername);

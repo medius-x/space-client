@@ -69,7 +69,7 @@ function SectionHeading({ title }: { title: string }): React.JSX.Element {
   return <div className="roles-list-header overview-heading"><span>{title}</span></div>;
 }
 
-export function UserSettingsModal({ session }: { session: ConnectionSession }): React.JSX.Element {
+export function UserSettingsModal({ session }: { session: ConnectionSession | null }): React.JSX.Element {
   const scope = useStore(appStore, (state) => state.userSettingsScope);
   const visibleSections = SECTIONS.filter((entry) =>
     scope === "account" ? SERVER_SCOPED_SECTIONS.has(entry.key) : !SERVER_SCOPED_SECTIONS.has(entry.key));
@@ -78,8 +78,14 @@ export function UserSettingsModal({ session }: { session: ConnectionSession }): 
   // section selected — fall back to the scope's first entry.
   const activeSection = visibleSections.some((entry) => entry.key === section) ? section : visibleSections[0]!.key;
   const staged = useStagedSettings(session);
+  // A null session (no server AT ALL — a fresh install) reaches here only in
+  // the CLIENT scope: the empty user bar's gear opens it (user report #1),
+  // keeping audio, keybinds and the diagnostics/log export reachable. The
+  // server-scoped sections are filtered out above and never mount on null.
   const serverName = useStore(connectionDirectory, (records) =>
-    records.find((entry) => entry.id === session.recordId)?.cachedServerName ?? session.hostUrl());
+    session !== null
+      ? records.find((entry) => entry.id === session.recordId)?.cachedServerName ?? session.hostUrl()
+      : "");
   const sectionLabel = SECTIONS.find((entry) => entry.key === activeSection)?.label ?? "";
   const headingTitle = SERVER_SCOPED_SECTIONS.has(activeSection)
     ? `${sectionLabel} — ${serverName}`
@@ -121,8 +127,8 @@ export function UserSettingsModal({ session }: { session: ConnectionSession }): 
           row list scrolls (user request 2026-10-07). */}
       <div className={"settings-body" + (activeSection === "keybinds" ? " keybinds-pinned" : "")}>
         <SectionHeading title={headingTitle} />
-        {activeSection === "general" ? <GeneralSection session={session} /> : null}
-        {activeSection === "account" ? <AccountSection session={session} /> : null}
+        {activeSection === "general" && session !== null ? <GeneralSection session={session} /> : null}
+        {activeSection === "account" && session !== null ? <AccountSection session={session} /> : null}
         {activeSection === "audio" ? <AudioSection staged={staged} /> : null}
         {activeSection === "video" ? <VideoSection staged={staged} /> : null}
         {activeSection === "keybinds" ? <KeybindsSection /> : null}
@@ -161,12 +167,14 @@ export interface StagedSettings {
   discard(): void;
 }
 
-function useStagedSettings(session: ConnectionSession): StagedSettings {
+function useStagedSettings(session: ConnectionSession | null): StagedSettings {
   const [draft, setDraft] = useState<Partial<ClientSettings>>({});
   const [notifDraft, setNotifDraft] = useState<NotificationPrefs | null>(null);
   const stored = useStore(settingsStore, (snapshot) => snapshot);
   const storedNotif = useStore(connectionDirectory, (records) =>
-    records.find((entry) => entry.id === session.recordId)?.notifPrefs ?? DEFAULT_NOTIFICATION_PREFS);
+    (session !== null
+      ? records.find((entry) => entry.id === session.recordId)?.notifPrefs
+      : undefined) ?? DEFAULT_NOTIFICATION_PREFS);
 
   const value = <K extends keyof ClientSettings>(key: K): ClientSettings[K] =>
     (key in draft ? draft[key] : stored[key]) as ClientSettings[K];
@@ -193,14 +201,14 @@ function useStagedSettings(session: ConnectionSession): StagedSettings {
         roomAudio.setOutputDevice(applied.speakerDeviceId);
         notifications.setOutputDevice(applied.speakerDeviceId); // UI sounds follow the chosen speaker (oak's playout line)
       }
-      if (applied.imageCacheMegabytes !== undefined) {
+      if (applied.imageCacheMegabytes !== undefined && session !== null) {
         session.attachmentCache.setDiskBudget(applied.imageCacheMegabytes * 1024 * 1024); // 0 purges the disk layer
       }
     }
     const stagedNotif = notifDraft;
     setNotifDraft(null);
-    if (stagedNotif !== null) {
-      void updateNotificationPrefs(session.recordId, stagedNotif);
+    if (stagedNotif !== null && session !== null) {
+      void updateNotificationPrefs(session.recordId, stagedNotif); // no session — a local draft only
     }
   };
 
@@ -713,11 +721,11 @@ function AppearanceSection({ staged }: { staged: StagedSettings }): React.JSX.El
 }
 
 function NotificationsSection({ session, staged }: {
-  session: ConnectionSession;
+  session: ConnectionSession | null;
   staged: StagedSettings;
 }): React.JSX.Element {
   const record = useStore(connectionDirectory, (records) =>
-    records.find((entry) => entry.id === session.recordId) ?? null);
+    (session !== null ? records.find((entry) => entry.id === session.recordId) : undefined) ?? null);
   const prefs = staged.notif ?? record?.notifPrefs ?? DEFAULT_NOTIFICATION_PREFS;
 
   return (
@@ -767,23 +775,27 @@ function NotificationsSection({ session, staged }: {
           ))}
         </select>
       </label>
-      <h3>Server — {record?.cachedServerName ?? session.hostUrl()}</h3>
-      <label className="settings-field"><span>Show toasts for</span>
-        <select value={prefs.mode}
-          onChange={(event) => staged.setNotif({ ...prefs, mode: event.target.value as NotificationPrefs["mode"] })}>
-          <option value="ALL">All messages</option>
-          <option value="MENTIONS">Mentions only</option>
-          <option value="NOTHING">Nothing</option>
-        </select>
-      </label>
-      <label className="settings-check">
-        <input type="checkbox" checked={prefs.suppressEveryoneHere}
-          onChange={(event) => staged.setNotif({ ...prefs, suppressEveryoneHere: event.target.checked })} />
-        <span>Suppress @everyone and @here</span>
-      </label>
+      {session !== null ? (
+        <>
+          <h3>Server — {record?.cachedServerName ?? session.hostUrl()}</h3>
+          <label className="settings-field"><span>Show toasts for</span>
+            <select value={prefs.mode}
+              onChange={(event) => staged.setNotif({ ...prefs, mode: event.target.value as NotificationPrefs["mode"] })}>
+              <option value="ALL">All messages</option>
+              <option value="MENTIONS">Mentions only</option>
+              <option value="NOTHING">Nothing</option>
+            </select>
+          </label>
+          <label className="settings-check">
+            <input type="checkbox" checked={prefs.suppressEveryoneHere}
+              onChange={(event) => staged.setNotif({ ...prefs, suppressEveryoneHere: event.target.checked })} />
+            <span>Suppress @everyone and @here</span>
+          </label>
       <div className="settings-hint">
         Suppress keeps @everyone/@here out of the red badge (still counted unread).
       </div>
+        </>
+      ) : null}
     </div>
   );
 }
@@ -794,31 +806,39 @@ function NotificationsSection({ session, staged }: {
  *  their own log archive for a problem report; "Diagnostics" says what it is
  *  for, "Connections" said only what a third of it shows. Client-scoped, so the
  *  ⚙ button opens it for everyone; no server permission is involved. */
-function DiagnosticsSection({ session }: { session: ConnectionSession }): React.JSX.Element {
+function DiagnosticsSection({ session }: { session: ConnectionSession | null }): React.JSX.Element {
   const records = useStore(connectionDirectory, (allRecords) => allRecords);
-  const record = records.find((entry) => entry.id === session.recordId) ?? null;
+  const record = session !== null
+    ? records.find((entry) => entry.id === session.recordId) ?? null
+    : null;
   // The ADVERTISED address a member types into "Add server" — stored server-side
   // in the profile (oak's activeServerConnectionAddress), NOT our connect URL.
-  const address = advertisedAddress(
-    session.serverProfile?.connectionHost ?? null,
-    session.serverProfile?.connectionPort ?? null,
-  );
+  const address = session !== null
+    ? advertisedAddress(
+        session.serverProfile?.connectionHost ?? null,
+        session.serverProfile?.connectionPort ?? null,
+      )
+    : null;
   return (
     <div>
-      <h3>This server</h3>
-      <div className="settings-hint">{record?.cachedServerName ?? session.hostUrl()}</div>
-      {/* The advertised address is what a NEW member types into "Add server". When the
-          server has not set one, fall back to the address THIS client is connected by —
-          it demonstrably works, unlike the old "not set by the server" dead end. */}
-      <div className="settings-hint">
-        Address to enter when connecting: {address ?? (record?.hostUrl ?? session.hostUrl())}
-      </div>
-      {/* The compatibility skeleton (2026-10-15): the build the client is talking to —
-          the first thing to check when a button is mysteriously missing. Old servers
-          predate the field; "unknown" is the honest answer there. */}
-      <div className="settings-hint">
-        Server version: {session.serverProfile?.version ?? "unknown"}
-      </div>
+      {session !== null ? (
+        <>
+          <h3>This server</h3>
+          <div className="settings-hint">{record?.cachedServerName ?? session.hostUrl()}</div>
+          {/* The advertised address is what a NEW member types into "Add server". When the
+              server has not set one, fall back to the address THIS client is connected by —
+              it demonstrably works, unlike the old "not set by the server" dead end. */}
+          <div className="settings-hint">
+            Address to enter when connecting: {address ?? (record?.hostUrl ?? session.hostUrl())}
+          </div>
+          {/* The compatibility skeleton (2026-10-15): the build the client is talking to —
+              the first thing to check when a button is mysteriously missing. Old servers
+              predate the field; "unknown" is the honest answer there. */}
+          <div className="settings-hint">
+            Server version: {session.serverProfile?.version ?? "unknown"}
+          </div>
+        </>
+      ) : null}
       <h3>Saved connections</h3>
       {records.map((entry) => (
         <div key={entry.id} className="settings-hint">

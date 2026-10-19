@@ -2093,6 +2093,9 @@ button.wide-add { width: 100%; }
   background: var(--sp-input);
   flex-shrink: 0;
 }
+/* The no-server bar (bug #1): an empty card with the gear alone, pushed to the
+   right edge where the button lives in the connected bar too. */
+.user-bar.empty { justify-content: flex-end; }
 .user-bar-button { padding: 4px 8px; }
 .user-bar-button:hover { background: var(--sp-card-hover); }
 .user-bar-button .icon { font-size: 16px; }
