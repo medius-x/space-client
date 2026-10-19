@@ -1489,6 +1489,7 @@ export async function bootstrapApp(): Promise<void> {
   watchNoiseSettings(); // an engine pick rebuilds the detour while voice/call is live
   watchDeviceSettings(); // device picks re-resolve (hashes die across restarts)
   installHotkeys(); // global OS chords + the window keydown (local binds)
+  installFileDropGuard(); // a file dropped ANYWHERE never navigates the window
   installSourceDeadListener(); // the window-share liveness watchdog reports here
   installPopoutClosedListener(); // the share pop-out's own close lands here
   installTlsPromptListener(); // untrusted server certificates ask for trust here
@@ -3494,6 +3495,29 @@ function installPopoutVolumeListener(): void {
  *  left popoutActive stuck true forever). */
 function installPopoutClosedListener(): void {
   window.spaceWindow?.onClosed(() => popoutClosed());
+}
+
+/**
+ * Document-level FILE-drag safety net (capture phase): a file dropped outside
+ * the chat pane's handlers must never navigate the window to file:// (the
+ * will-navigate guard ALLOWED file URLs — a stray drop replaced the whole
+ * app). preventDefault on dragover also keeps the OS cursor off the raw
+ * "forbidden" state while a drag sweeps non-pane areas.
+ */
+function installFileDropGuard(): void {
+  const isFileDrag = (event: DragEvent): boolean =>
+    event.dataTransfer !== null && [...event.dataTransfer.types].includes("Files");
+  document.addEventListener("dragover", (event) => {
+    if (isFileDrag(event)) {
+      event.preventDefault(); // marks the drop ALLOWED; staging stays the pane's job
+    }
+  }, true);
+  document.addEventListener("drop", (event) => {
+    if (isFileDrag(event)) {
+      event.preventDefault(); // the browser default would navigate to the file
+      log.info("dnd", `document-level file drop intercepted at ${event.target instanceof Element ? event.target.tagName : "?"}`);
+    }
+  }, true);
 }
 
 /** Push the voice-panel mirror (mute/deafen glyphs + NS engine) into the

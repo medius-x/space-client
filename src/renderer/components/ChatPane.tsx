@@ -309,6 +309,14 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
   const [selection, setSelection] = useState<ReadonlySet<number>>(new Set());
   const [staged, setStaged] = useState<readonly StagedFile[]>([]);
   const [dragOver, setDragOver] = useState(false);
+  // Drag enter/leave DEPTH (child boundary crossings fire both — a boolean
+  // flickered on every child edge). The counter cancels the pairs; the
+  // highlight is depth > 0.
+  const dragDepthRef = useRef(0);
+  // [dnd] diagnostic: the first enter after a long idle and every drop are
+  // logged — a wedged native drag controller (the roles-reorder precedent)
+  // shows up as "drops stopped while the user swears the cursor was here".
+  const lastDragActivityRef = useRef(0);
   // oak: overflow past the cap reports a closing note row ("N more skipped — max 10");
   // the upload spinner reuses the staging box while attachments are being sent.
   const [capNote, setCapNote] = useState<string | null>(null);
@@ -506,20 +514,43 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
   return (
     <div
       className={"chat-pane" + (dragOver ? " drag-over" : "")}
-      onDragOver={(event) => {
-        // preventDefault stays UNCONDITIONAL — a dropped file must never
-        // navigate the window away — but the overlay promises a working drop:
-        // a viewer without ATTACH_FILES (or a restricted DM) never sees it.
-        event.preventDefault();
+      onDragEnter={() => {
+        const now = Date.now();
+        if (now - lastDragActivityRef.current > 30_000) {
+          log.info("dnd", `drag entered the chat pane (idle ${Math.round((now - lastDragActivityRef.current) / 1000)}s)`);
+        }
+        lastDragActivityRef.current = now;
+        dragDepthRef.current += 1;
+        // The overlay promises a working drop: a viewer without ATTACH_FILES
+        // (or a restricted DM) never sees it.
         if (permissions?.attachFiles !== false) {
           setDragOver(true);
         }
       }}
-      onDragLeave={() => setDragOver(false)}
+      onDragOver={(event) => {
+        // preventDefault stays UNCONDITIONAL — a dropped file must never
+        // navigate the window away — and it is what keeps the OS cursor in
+        // "drop allowed" while the drag sweeps the pane.
+        event.preventDefault();
+        lastDragActivityRef.current = Date.now();
+      }}
+      onDragLeave={() => {
+        dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+        if (dragDepthRef.current === 0) {
+          setDragOver(false);
+        }
+      }}
+      onDragEnd={() => {
+        dragDepthRef.current = 0;
+        setDragOver(false);
+      }}
       onDrop={(event) => {
         event.preventDefault();
+        dragDepthRef.current = 0;
         setDragOver(false);
-        addStagedFiles([...event.dataTransfer.files]);
+        const files = [...event.dataTransfer.files];
+        log.info("dnd", `drop: ${files.length} file(s) staged`);
+        addStagedFiles(files);
       }}
     >
       <div className="chat-header">
@@ -1628,6 +1659,7 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
                   key={segmentIndex}
                   className="body-link"
                   href={segment.url}
+                  draggable={false}
                   onClick={(event) => {
                     event.preventDefault(); // the app never navigates — the system browser opens
                     void window.spaceMedia?.openExternal(segment.url);
