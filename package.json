@@ -14,6 +14,7 @@
     "build": "electron-vite build",
     "start": "npm run build && electron .",
     "start2": "npm run build && electron . --space-instance=b",
+    "start3": "npm run build && electron . --space-instance=c",
     "test": "vitest run",
     "watch": "vitest",
     "icons": "node scripts/regen-icons.mjs",
@@ -25,6 +26,7 @@
     "profile": "node scripts/capture-profile.mjs",
     "start:tools": "npm run build && electron . --space-devtools",
     "start2:tools": "npm run build && electron . --space-instance=b --space-devtools",
+    "start3:tools": "npm run build && electron . --space-instance=c --space-devtools",
     "df3:glue": "node scripts/extract-df3-glue.mjs",
     "ns:vendor": "node scripts/vendor-ns-engines.mjs"
   },

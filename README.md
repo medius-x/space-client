@@ -4,10 +4,9 @@
 rooms, screen sharing and calls for your own community — on infrastructure you
 control.
 
-<!-- Screenshots (insert before the release): main window with a chat open,
-     a voice room with screen sharing, the "Create a server" setup step. -->
-
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+
+![Main window with a chat open](docs/chat.png)
 
 ## Download & install
 
@@ -39,6 +38,8 @@ from the client:
    certificate and a firewall — with individually generated secrets.
 3. Your account is created as the server owner and you are logged in
    automatically.
+
+![Creating a server from the client](docs/create-server.png)
 
 What the server needs:
 
@@ -79,6 +80,8 @@ accounts and client trust pins are preserved.
 - Noise suppression with five engines, switchable live
 - Voice invites, sharing quality presets, a pop-out viewer window and a
   connection quality indicator
+
+![Voice room with screen sharing](docs/voice-room.png)
 
 ### Server management
 
