@@ -1103,6 +1103,19 @@ ipcMain.on("space-window:retargetPopout", (_event, target: unknown) => {
 
 ipcMain.handle("space-window:popoutParams", () => popoutTarget);
 
+// Renderer-forced pop-out close: the share pop-out owns an INDEPENDENT Janus
+// subscription, so when the viewer is kicked/banned the main window must be
+// able to tear the window down too — without this the video kept playing
+// after the viewer left the room/server (live report 2026-10-19). The
+// "closed" handler above still fires popout:closed back to the renderer.
+ipcMain.on("space-window:closePopout", () => {
+  if (popoutWindow !== null && !popoutWindow.isDestroyed()) {
+    popoutWindow.close();
+  } else {
+    popoutTarget = null; // nothing to close — at least drop the stale target
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Toast window (oak's NotificationToast): a frameless TRANSPARENT always-on-top
 // overlay at the main window's screen bottom-right, hosting the toast stack —

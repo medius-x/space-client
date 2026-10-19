@@ -11,17 +11,21 @@ function describeError(error: unknown): string {
 }
 
 /**
- * Remote-audio plumbing for the spike. Two lessons baked in from the live smokes:
+ * Remote-audio plumbing. Two lessons baked in from the live smokes:
  *
- * 1. PLAYOUT goes through a plain <audio> element DIRECTLY (element.volume as the
- *    gain). Remote WebRTC tracks were silent through BOTH createMediaStreamSource
- *    and a captured element (createMediaElementSource) — the bare element is the
- *    one path Chromium reliably plays. Trade-off: element.volume caps at 1.0, so
- *    the spike's >100% boost range is clamped.
- * 2. ANALYSIS (meters, speaking, stereo probe) rides a SEPARATE
- *    createMediaStreamSource feeding analysers only — never connected to
- *    destination. If Chromium feeds it, we get L/R meters; if not, playout still
- *    works and the meters simply read −∞ (we will see which in the diagnostics).
+ * 1. PLAYOUT (2026-10-19 revision) goes through the WebAudio graph: the SAME
+ *    createMediaStreamSource the analysers ride also feeds a per-chain GAIN
+ *    (0..2) into the context destination, and the <audio> element is muted —
+ *    element.volume caps at 1.0 (a platform limit), which had silently killed
+ *    the whole >100% half of the per-user volume sliders (live report
+ *    2026-10-19: "only the left half of the slider works"). The analysis taps
+ *    proved the source feeds reliably long ago (speaking meters). If the graph
+ *    cannot be built, the chain falls back to the legacy element path with its
+ *    100% ceiling — audio never dies because of the feature.
+ * 2. ANALYSIS (meters, speaking, stereo probe) rides SEPARATE connections from
+ *    that same source into analysers only. The share chain's SPLITTER taps are
+ *    analysis-only: a splitter output carries ONE channel, so the playout and
+ *    the #483 reference gains are fed from the source DIRECTLY (stereo kept).
  *
  * Chains are keyed by FEED ID: two feeds sharing a display name (a stale
  * not-yet-timed-out publisher + the fresh one) must not clobber each other.
@@ -42,11 +46,16 @@ interface VoiceChain {
   analysisSource: MediaStreamAudioSourceNode;
   buffer: Float32Array<ArrayBuffer>;
   level: number;
-  /** The user-set volume; element.volume is this OR 0 while deafened. */
+  /** The user-set volume; the playout gain (or the fallback element) is this
+   *  OR 0 while deafened. */
   volume: number;
-  /** Mirrors element.volume into the share-subtraction reference (#483): the
-   *  analysis source carries the RAW track, so the reference chain must apply
-   *  the same gain the element applies to its playout. */
+  /** The PLAYOUT gain (0..2) feeding the context destination — null when the
+   *  graph could not be built (legacy element path then applies the volume,
+   *  capped at 100%). */
+  playoutGain: GainNode | null;
+  /** Mirrors the effective playout level into the share-subtraction reference
+   *  (#483): the analysis source carries the RAW track, so the reference chain
+   *  must apply the same gain the playout applies. */
   referenceGain: GainNode;
 }
 
@@ -60,23 +69,22 @@ interface ShareChain {
   left: Float32Array<ArrayBuffer>;
   right: Float32Array<ArrayBuffer>;
   volume: number;
+  /** Same as VoiceChain.playoutGain. */
+  playoutGain: GainNode | null;
   /** Same mirror as VoiceChain.referenceGain (#483). */
   referenceGain: GainNode;
 }
 
-function playbackElement(track: MediaStreamTrack, initialVolume: number, deafened: boolean,
-  outputDeviceId: string | null, chainLabel: string): HTMLAudioElement {
+function playbackElement(track: MediaStreamTrack, chainLabel: string): HTMLAudioElement {
   const element = new Audio();
   element.autoplay = true;
-  element.volume = deafened ? 0 : Math.min(1, Math.max(0, initialVolume));
+  // The element is the CARRIER of the track into Chromium's decode pipeline —
+  // its own audibility is zeroed by the caller once the graph playout is up
+  // (element.volume caps at 1.0; the graph gain is the real 0..2 volume).
+  element.volume = 0;
   element.srcObject = new MediaStream([track]);
-  // A failed sink switch or play() means the user hears NOTHING while every log line
+  // A failed play() means the pipeline never spins up while every log line
   // looks healthy — these failures must be on disk (logging round, 2026-10-06).
-  if (outputDeviceId !== null && typeof element.setSinkId === "function") {
-    void element.setSinkId(outputDeviceId).catch((error: unknown) => {
-      log.warn("audio", `playback (${chainLabel}) setSinkId failed: ${describeError(error)}`);
-    });
-  }
   void element.play().catch((error: unknown) => {
     log.warn("audio", `playback (${chainLabel}) play() failed: ${describeError(error)}`);
   });
@@ -115,9 +123,24 @@ export class RoomAudio {
   private ensureContext(): AudioContext {
     if (this.context === null) {
       this.context = new AudioContext();
+      this.applyContextSink(this.context);
       log.info("audio", `AudioContext created (${this.context.sampleRate} Hz, state=${this.context.state})`);
     }
     return this.context;
+  }
+
+  /** AudioContext.setSinkId is structural-typed (absent from the TS libs) —
+   *  the same feature-detect NotificationHub uses. The whole graph playout
+   *  follows the context sink. */
+  private applyContextSink(context: AudioContext): void {
+    const sink = (context as unknown as { setSinkId?: (deviceId: string) => Promise<void> }).setSinkId;
+    if (typeof sink !== "function") {
+      log.warn("audio", "AudioContext.setSinkId unavailable — graph playout stays on the default device");
+      return;
+    }
+    void sink.call(context, this.outputDeviceId ?? "").catch((error: unknown) => {
+      log.warn("audio", `context setSinkId("${this.outputDeviceId ?? "default"}") failed: ${describeError(error)}`);
+    });
   }
 
   private ensureReferenceBus(): GainNode {
@@ -148,10 +171,11 @@ export class RoomAudio {
     return this.ensureReferenceBus();
   }
 
-  /** The single effective-level expression shared by the element and the
-   *  reference gain (deafen zeroes both; the clamp matches playbackElement). */
+  /** The single effective-level expression shared by the playout gain and the
+   *  reference mirror (deafen zeroes both). The ceiling is 2.0 — the >100%
+   *  half of the volume sliders, unrepresentable through element.volume. */
   private effectiveVolume(volume: number): number {
-    return this.deafened ? 0 : Math.min(1, Math.max(0, volume));
+    return this.deafened ? 0 : Math.min(2, Math.max(0, volume));
   }
 
   /** The reconstructed playout of every attached chain (#483): the share
@@ -168,7 +192,7 @@ export class RoomAudio {
       await context.resume();
     }
     if (context.state !== "running") {
-      log.error("audio", `AudioContext stuck in ${context.state} — analysis will read silence`);
+      log.error("audio", `AudioContext stuck in ${context.state} — graph playout and analysis are silent`);
       return;
     }
     log.info("audio", "AudioContext running");
@@ -178,11 +202,16 @@ export class RoomAudio {
     return this.context?.state ?? "none";
   }
 
-  /** Live output switch (the speaker is an immediate property, oak parity). */
+  /** Live output switch (the speaker is an immediate property, oak parity).
+   *  The context sink moves the WHOLE graph playout; the per-element sinks only
+   *  matter for fallback chains still playing through their element. */
   setOutputDevice(deviceId: string | null): void {
     this.outputDeviceId = deviceId;
+    if (this.context !== null) {
+      this.applyContextSink(this.context);
+    }
     for (const chain of [...this.voiceChains.values(), ...this.shareChains.values()]) {
-      if (typeof chain.element.setSinkId === "function") {
+      if (chain.playoutGain === null && typeof chain.element.setSinkId === "function") {
         void chain.element.setSinkId(deviceId ?? "").catch((error: unknown) => {
           log.warn("audio", `output switch to "${deviceId ?? "default"}" failed: ${describeError(error)}`);
         });
@@ -200,7 +229,10 @@ export class RoomAudio {
     }
     this.detachVoiceFeed(feedId);
     const context = this.ensureContext();
-    const element = playbackElement(track, volume, this.deafened, this.outputDeviceId, `voice ${username}`);
+    if (context.state !== "running") {
+      void this.resume(); // the graph playout lives and dies by the context state
+    }
+    const element = playbackElement(track, `voice ${username}`);
     const analysisSource = context.createMediaStreamSource(new MediaStream([track]));
     const analyser = context.createAnalyser();
     analyser.fftSize = 512;
@@ -209,6 +241,8 @@ export class RoomAudio {
     referenceGain.gain.value = this.effectiveVolume(volume);
     analysisSource.connect(referenceGain); // the subtraction reference tap (#483)
     referenceGain.connect(this.ensureReferenceBus());
+    const playoutGain = this.buildPlayoutGain(analysisSource, volume, `voice ${username}`);
+    this.applyCarrierVolume(element, playoutGain, volume);
     this.voiceChains.set(feedId, {
       username,
       track,
@@ -218,9 +252,10 @@ export class RoomAudio {
       buffer: new Float32Array(analyser.fftSize),
       level: 0,
       volume,
+      playoutGain,
       referenceGain,
     });
-    log.info("audio", `voice chain attached: feed ${feedId} "${username}" (element playout @ ${element.volume.toFixed(2)})`);
+    log.info("audio", `voice chain attached: feed ${feedId} "${username}" (${playoutGain !== null ? `graph playout @ ${this.effectiveVolume(volume).toFixed(2)}` : "element fallback playout"})`);
   }
 
   attachShareTrack(feedId: number, username: string, track: MediaStreamTrack, volume: number): void {
@@ -232,20 +267,27 @@ export class RoomAudio {
     }
     this.detachShareFeed(feedId);
     const context = this.ensureContext();
-    const element = playbackElement(track, volume, this.deafened, this.outputDeviceId, `share ${username}`);
+    if (context.state !== "running") {
+      void this.resume();
+    }
+    const element = playbackElement(track, `share ${username}`);
     const analysisSource = context.createMediaStreamSource(new MediaStream([track]));
     const splitter = context.createChannelSplitter(2);
     const analyserLeft = context.createAnalyser();
     const analyserRight = context.createAnalyser();
     analyserLeft.fftSize = 1024;
     analyserRight.fftSize = 1024;
-    analysisSource.connect(splitter); // analysis tap tree — no destination anywhere
+    analysisSource.connect(splitter); // the ANALYSIS tap tree (one channel per output)
     splitter.connect(analyserLeft, 0);
     splitter.connect(analyserRight, 1);
     const referenceGain = context.createGain();
     referenceGain.gain.value = this.effectiveVolume(volume);
     analysisSource.connect(referenceGain); // the subtraction reference tap (#483)
     referenceGain.connect(this.ensureReferenceBus());
+    // The playout/ref gains are fed from the SOURCE directly (a splitter output
+    // carries one channel — stereo would collapse, the M0 lesson).
+    const playoutGain = this.buildPlayoutGain(analysisSource, volume, `share ${username}`);
+    this.applyCarrierVolume(element, playoutGain, volume);
     this.shareChains.set(feedId, {
       username,
       track,
@@ -256,9 +298,33 @@ export class RoomAudio {
       left: new Float32Array(analyserLeft.fftSize),
       right: new Float32Array(analyserRight.fftSize),
       volume,
+      playoutGain,
       referenceGain,
     });
-    log.info("audio", `share chain attached: feed ${feedId} "${username}" (element playout, track channels=${track.getSettings().channelCount ?? "?"})`);
+    log.info("audio", `share chain attached: feed ${feedId} "${username}" (${playoutGain !== null ? "graph playout" : "element fallback playout"}, track channels=${track.getSettings().channelCount ?? "?"})`);
+  }
+
+  /** The graph playout gain (0..2) into the context destination. Null = the
+   *  graph could not be built (a hard failure, e.g. a closed context): the
+   *  caller keeps the LEGACY element playout, capped at 100% — audio survives
+   *  the feature failing. */
+  private buildPlayoutGain(source: MediaStreamAudioSourceNode, volume: number, chainLabel: string): GainNode | null {
+    try {
+      const gain = this.ensureContext().createGain();
+      gain.gain.value = this.effectiveVolume(volume);
+      source.connect(gain);
+      gain.connect(this.ensureContext().destination);
+      return gain;
+    } catch (error: unknown) {
+      log.warn("audio", `playout graph build failed (${chainLabel}): ${describeError(error)} — falling back to the element path (boost capped at 100%)`);
+      return null;
+    }
+  }
+
+  /** The carrier element is SILENT while the graph owns the playout; on the
+   *  fallback path it carries the volume itself (platform-capped at 1.0). */
+  private applyCarrierVolume(element: HTMLAudioElement, playoutGain: GainNode | null, volume: number): void {
+    element.volume = playoutGain !== null ? 0 : Math.min(1, this.effectiveVolume(volume));
   }
 
   detachFeed(feedId: number): void {
@@ -277,6 +343,7 @@ export class RoomAudio {
         voice.analysisSource.disconnect();
         voice.analyser.disconnect();
         voice.referenceGain.disconnect();
+        voice.playoutGain?.disconnect();
       } catch {
         // already torn down
       }
@@ -295,6 +362,7 @@ export class RoomAudio {
         share.analyserLeft.disconnect();
         share.analyserRight.disconnect();
         share.referenceGain.disconnect();
+        share.playoutGain?.disconnect();
       } catch {
         // already torn down
       }
@@ -336,10 +404,16 @@ export class RoomAudio {
     }
   }
 
-  /** THE volume point: element playout AND the #483 reference mirror move together. */
+  /** THE volume point: the graph playout gain (or the fallback element) AND
+   *  the #483 reference mirror move together. */
   private applyChainVolume(chain: VoiceChain | ShareChain): void {
     const effective = this.effectiveVolume(chain.volume);
-    chain.element.volume = effective;
+    if (chain.playoutGain !== null) {
+      chain.playoutGain.gain.value = effective;
+      chain.element.volume = 0;
+    } else {
+      chain.element.volume = Math.min(1, effective);
+    }
     chain.referenceGain.gain.value = effective;
   }
 

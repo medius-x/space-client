@@ -2931,7 +2931,7 @@ async function connectVoiceRoom(channel: Channel): Promise<void> {
         mediaSource: navigator.mediaDevices as MediaSource,
         callbacks: {
           onParticipants: (feeds) => {
-            appStore.patch({ participants: feeds });
+            appStore.patch({ participants: ghostGuard(feeds) });
             pruneDeadView(feeds);
           },
           onRemoteTrack: handleRemoteTrack,
@@ -3323,6 +3323,8 @@ function watchNoiseSettings(): void {
 }
 
 export async function teardownVoice(): Promise<void> {
+  stopWatchingShare();
+  ghostFeedSince.clear();
   stopAfkReporting();
   stopVoiceRttPolling();
   uplinkStallStrikes = 0;
@@ -3408,6 +3410,48 @@ function handleRemoteTrackEnded(feedId: number, _username: string, kind: RemoteT
     return;
   }
   roomAudio.detachFeed(feedId);
+}
+
+/** Ghost-feed guard (live report 2026-10-19): the room tiles render JANUS
+ *  FEEDS, and a rejoining publisher keeps its stale feed alive for a while —
+ *  forceKick is display-matched and asynchronous, so several rapid deafen
+ *  kicks left several ghosts of the same user in the room. The SERVER's
+ *  member list is the authority: a feed whose display has been absent from
+ *  it for over the grace window is a ghost and drops out of the tiles. The
+ *  grace covers roster-lag (a fresh join reaching Janus before its JOINED
+ *  event reaches us). */
+const GHOST_FEED_GRACE_MS = 3000;
+const ghostFeedSince = new Map<number, number>();
+
+function ghostGuard(feeds: FeedInfo[]): FeedInfo[] {
+  const channelId = appStore.getSnapshot().activeVoiceChannelId;
+  const memberNames = channelId !== null
+    ? activeSession?.rosterStore.getSnapshot().voiceMembers.get(channelId)
+    : undefined;
+  if (memberNames === undefined || memberNames.size === 0) {
+    return feeds; // no server roster for the room yet — nothing to judge by
+  }
+  const now = Date.now();
+  const kept: FeedInfo[] = [];
+  for (const feed of feeds) {
+    if (memberNames.has(feed.display)) {
+      ghostFeedSince.delete(feed.feedId);
+      kept.push(feed);
+      continue;
+    }
+    const since = ghostFeedSince.get(feed.feedId);
+    if (since === undefined) {
+      ghostFeedSince.set(feed.feedId, now);
+      kept.push(feed); // first sighting — the roster may simply lag Janus
+      continue;
+    }
+    if (now - since < GHOST_FEED_GRACE_MS) {
+      kept.push(feed);
+    } else {
+      log.warn("voice", `ghost feed ${feed.feedId} ("${feed.display}") dropped — not a room member anymore`);
+    }
+  }
+  return kept;
 }
 
 /** A stopped share disables its streams in the feed ANNOUNCEMENT — every feed
@@ -4029,6 +4073,19 @@ export function resumeGlobalHotkeys(): void {
  *  the direct-path window sat on "Waiting for the video…" forever). */
 function dropPopoutWatchTarget(): void {
   window.spaceWindow?.retargetPopout(null);
+}
+
+/** Forcibly END the share watch — kick/ban/teardown paths. Unlike
+ * setViewingFeed (a TOGGLE), this always clears, and it also CLOSES the
+ * pop-out window: the pop-out runs its own Janus videoroom subscription, so
+ * without the close a banned or deafen-kicked viewer kept watching the share
+ * long after leaving the room/server (live report 2026-10-19). Living in
+ * teardownVoice covers every exit: kick, ban, rejoin ladder, session death. */
+function stopWatchingShare(): void {
+  appStore.patch({ viewingFeedId: null });
+  sfuSession?.setViewingFeed(null);
+  dropPopoutWatchTarget();
+  window.spaceWindow?.closePopout();
 }
 
 /** The pop-out window's subscription target for a watched feed (video-only):

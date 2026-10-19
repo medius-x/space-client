@@ -257,6 +257,9 @@ contextBridge.exposeInMainWorld("spaceWindow", {
   retargetPopout(target: unknown): void {
     ipcRenderer.send("space-window:retargetPopout", target);
   },
+  closePopout(): void {
+    ipcRenderer.send("space-window:closePopout");
+  },
   popoutParams(): Promise<unknown> {
     return ipcRenderer.invoke("space-window:popoutParams");
   },

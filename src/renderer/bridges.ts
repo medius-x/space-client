@@ -69,6 +69,9 @@ export interface WindowBridge {
   openPopout(): Promise<boolean>;
   /** Push the (newly) watched feed to the open pop-out; null = waiting state. */
   retargetPopout(target: PopoutTarget | null): void;
+  /** Force-close the pop-out (kick/ban teardown — its Janus subscription is
+   *  independent of the main window's and must not outlive the viewer). */
+  closePopout(): void;
   /** The pop-out's initial target (main stores the last retarget). */
   popoutParams(): Promise<PopoutTarget | null>;
   /** Live retargets while the pop-out is open. */
