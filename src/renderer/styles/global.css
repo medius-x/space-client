@@ -655,6 +655,42 @@ input:focus { outline: none; border-color: var(--sp-accent); }
 /* oak's server badge: grey for plain unread, red once mentioned. */
 .rail-badge.plain { background: #4e5058; }
 
+/* ===== Rail drag-reorder (the Sidebar channel-drag styling, 2026-10-19) ===== */
+
+body.rail-dragging,
+body.rail-dragging * { cursor: grabbing !important; }
+/* The dragged row collapses to a 2px blurple bar (the .channel-row.drop-gap
+   idiom); its children keep their slots via visibility, not removal. */
+.rail-wrap.drop-gap {
+  height: 2px;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--sp-accent);
+}
+.rail-wrap.drop-gap > * { visibility: hidden; }
+/* The floating icon copy — FIXED through a portal (the scrolling rail clips an
+   absolutely positioned child at its edge, the rail-bubble lesson). Display is
+   gated by .positioned, set on the first pointermove, to avoid a 0,0 flash. */
+.rail-drag-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  display: none;
+  width: 48px;
+  height: 48px;
+  clip-path: url(#sp-squircle);
+  background: var(--sp-surface);
+  color: var(--sp-text);
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 0.5px;
+  pointer-events: none;
+  z-index: 200;
+  opacity: 0.95;
+}
+.rail-drag-ghost.positioned { display: flex; align-items: center; justify-content: center; }
+
 /* ===== Context menu (M1) ===== */
 
 .context-menu {
