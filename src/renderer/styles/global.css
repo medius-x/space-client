@@ -4195,12 +4195,21 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  position: relative;
   -webkit-app-region: drag;
   user-select: none;
 }
 .caption-brand { font-size: 13px; font-weight: 700; color: var(--sp-text); padding: 0 12px; }
+/* The main window's brand is centered over the 72px server rail (36px = half
+   its width), lining up with the avatars below; absolute so the flex
+   space-between doesn't fight the centering. The pop-out (subtitle variant)
+   keeps the classic left-aligned brand. */
+.caption-brand.rail-center { position: absolute; left: 36px; transform: translateX(-50%); padding: 0; white-space: nowrap; }
 .caption-subtitle { font-size: 12px; font-weight: 400; color: var(--sp-text-dim); margin-left: 8px; }
-.caption-buttons { display: flex; height: 100%; -webkit-app-region: no-drag; }
+/* margin-left:auto keeps the buttons right-aligned even when the brand is
+   absolute (out of the flex flow) — a lone space-between child would otherwise
+   fall to the row's START (the live "buttons jumped left" report). */
+.caption-buttons { display: flex; height: 100%; margin-left: auto; -webkit-app-region: no-drag; }
 .caption-button {
   width: 46px;
   height: 32px;

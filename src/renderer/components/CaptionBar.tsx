@@ -18,7 +18,10 @@ export function CaptionBar({ subtitle }: { subtitle?: string }): React.JSX.Eleme
 
   return (
     <div className="caption-bar">
-      <span className="caption-brand">
+      {/* The main window's brand centers over the server rail (user request
+          2026-10-19); the pop-out keeps the classic left layout — centering a
+          long "SPACE · Screen share" would clip past the window's left edge. */}
+      <span className={"caption-brand" + (subtitle === undefined ? " rail-center" : "")}>
         SPACE
         {subtitle === undefined ? null : <span className="caption-subtitle">{subtitle}</span>}
       </span>
