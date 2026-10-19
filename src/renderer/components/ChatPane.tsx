@@ -951,6 +951,20 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
   const settlingJumpCancelRef = useRef<(() => void) | null>(null);
   useEffect(() => () => settlingJumpCancelRef.current?.(), []);
 
+  // Row keys are scoped by the server RECORD. Message ids are per-database
+  // sequences — two servers' ids collide head-on — and the virtualizer
+  // SURVIVES the session swap (a switch promotes another session without
+  // remounting this tree), keeping its measured-height cache keyed by row
+  // key (the cache WINS over the estimate in tanstack's core). With a bare
+  // id, the new server's rows adopted the OLD server's heights; every row
+  // then re-measured to its real height as it scrolled into view, shifting
+  // content under the reader (the cross-server scroll jump, live report
+  // 2026-10-19).
+  const rowKeyOf = useCallback(
+    (messageId: number) => `${session.recordId}:${messageId}`,
+    [session.recordId],
+  );
+
   // oak's divider lifecycle (MainController, Java-ported): it appears above the
   // first unread (channel open, or a live batch while the user is away) and is
   // dismissed ONLY by the pinned-bottom timer — 1.5s, RESTARTED by every
@@ -1003,6 +1017,10 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
     setBeginReached(false);
     belowEndRef.current = false;
     setJumpToPresent(false);
+    // A back-fill jump belongs to the list that armed it — after a server
+    // switch the same numeric id denotes a DIFFERENT message (the same
+    // id-collision class the scoped row keys close).
+    pendingJumpRef.current = null;
   }, [channel.id, session]);
 
   // The auto catch-up may heal the window while the user is looking at it (the
@@ -1032,7 +1050,7 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
     belowEndRef.current = around;
     setJumpToPresent(around);
     settlingJumpCancelRef.current?.();
-    settlingJumpCancelRef.current = scheduleSettlingJump(listRef, String(aroundTarget), () => {
+    settlingJumpCancelRef.current = scheduleSettlingJump(listRef, rowKeyOf(aroundTarget), () => {
       // Re-flash with every re-assertion: the row may only ENTER the viewport
       // on a late attempt, when the original highlight is long gone.
       setHighlightId(aroundTarget);
@@ -1065,8 +1083,9 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
       window.setTimeout(() => {
         const index = messages.findIndex((message) => message.id > dividerReadId
           && message.authorUsername !== session.username());
-        if (index > 0) {
-          listRef.current?.scrollToKey(String(messages[index]?.id), "center");
+        const firstUnread = index > 0 ? messages[index] : undefined;
+        if (firstUnread !== undefined) {
+          listRef.current?.scrollToKey(rowKeyOf(firstUnread.id), "center");
         }
       }, 60);
     } else {
@@ -1128,7 +1147,7 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
     }
     pendingJumpRef.current = null;
     settlingJumpCancelRef.current?.();
-    settlingJumpCancelRef.current = scheduleSettlingJump(listRef, String(target), () => {
+    settlingJumpCancelRef.current = scheduleSettlingJump(listRef, rowKeyOf(target), () => {
       setHighlightId(target);
       window.setTimeout(() => setHighlightId(null), HIGHLIGHT_TTL_MS);
     });
@@ -1320,7 +1339,7 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
       className="message-list virtual-list"
       ref={listRef}
       items={messages}
-      itemKey={(message) => String(message.id)}
+      itemKey={(message) => rowKeyOf(message.id)}
       estimateHeight={groupedEstimateHeight}
       onNearTop={loadOlder}
       onBottomProximity={(nearBottom) => {
