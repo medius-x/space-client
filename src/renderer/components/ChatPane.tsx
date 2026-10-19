@@ -16,10 +16,8 @@ import { firstHttpUrl, segmentMessageContent } from "../../domain/logic/mention-
 import {
   filterEmojis,
   isEmojiOnlyMessage,
-  jumboEmojiEstimateExtra,
-  JUMBO_EMOJI_DEFAULT_PX,
 } from "../../domain/logic/emoji-picker";
-import { filterStickerPacks, stickerEstimateExtra, stickerForwardFileName } from "../../domain/logic/sticker-picker";
+import { filterStickerPacks, stickerForwardFileName } from "../../domain/logic/sticker-picker";
 import {
   customEmojiNameOfReactionSlug,
   filterBuiltInReactions,
@@ -42,8 +40,9 @@ import { REACTION_CATALOG, REACTION_GLYPH_BY_SLUG } from "../../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { Modal } from "./Modal";
 import { VirtualList, type VirtualListHandle } from "./VirtualList";
-import { AttachmentView } from "./AttachmentView";
-import { isAudioFile, isImageFile, isVideoFile, reservedVideoThumbBox, singleTileBox } from "../../domain/logic/attachment-layout";
+import { AttachmentView, attachmentUsableWidth } from "./AttachmentView";
+import { isImageFile } from "../../domain/logic/attachment-layout";
+import { estimateRowHeight, QUOTE_DEPTH_MAX } from "../../domain/logic/message-row-height";
 import { learnedDims } from "../media-dims";
 import { Avatar } from "./Avatar";
 import { NowPlayingBar } from "./NowPlayingBar";
@@ -60,7 +59,6 @@ interface StagedFile {
 /** Jump back-fill cap (oak's MAX_JUMP_BACKFILL_MESSAGES). */
 const MAX_JUMP_BACKFILL = 1000;
 const HIGHLIGHT_TTL_MS = 1500;
-const QUOTE_DEPTH_MAX = 5;
 
 /** Records a used expression into the persisted MRU — the "Latest" row BOTH pickers
  *  share (a reaction pick and a composer insert feed the same list, user request
@@ -71,78 +69,6 @@ const recordRecentExpression = (slug: string): void => {
     recentExpressions: pushRecentExpression(settingsStore.getSnapshot().recentExpressions, slug),
   });
 };
-
-/**
- * Content-aware height estimate — the flatter the estimate, the more totalHeight
- * "breathes" when measurement replaces it, and a breathing scrollHeight makes the
- * scrollbar thumb drift off the cursor mid-drag (the mapping denominator moves).
- * CONTINUATION rows of a group are estimated with a smaller base (~22px reality)
- * than head rows — inside big single-author groups the old flat 30px base doubled
- * the estimate→measure delta on every row and the extent never stopped moving
- * (live report). Grouping knowledge arrives via MessageList's startById map.
- */
-function estimateRowHeight(message: Message, startsGroup: boolean, hasDiscussionTile = false, jumboEmojiPx = JUMBO_EMOJI_DEFAULT_PX): number {
-  const CHARS_PER_LINE = 72;
-  const lines = message.content === null ? 0 : Math.max(1, Math.ceil(message.content.length / CHARS_PER_LINE));
-  let height = (startsGroup ? 30 : 24) + lines * 21;
-  // A potentially-jumbo row (emoji-only content) grows with the reader's size
-  // setting — prepaid here so measurement does not shift rows below it.
-  height += jumboEmojiEstimateExtra(message.content, jumboEmojiPx);
-  // The sticker block renders at a FIXED height, so its prepayment is exact (the
-  // media-round lesson applied to the one image whose size we control).
-  height += stickerEstimateExtra(message.sticker);
-  if (message.reply !== null) {
-    height += 34;
-  }
-  if (message.forward !== null) {
-    height += 30;
-  }
-  if (message.reactions.length > 0) {
-    height += 26;
-  }
-  if (hasDiscussionTile) {
-    height += 24;
-  }
-  // Media-aware attachment estimate (live report: a flat +22 made every
-  // picture/video row JUMP on measure — the real mosaic is 200-500px, and the
-  // estimate→fact delta shifted everything below it). Rough by design — but the
-  // 2026-09-25 exact-reservation round upgrades it: the wire now carries the
-  // media's intrinsic dimensions (and legacy rows learn them after one decode),
-  // so single images and video thumbs estimate by their real aspect instead of
-  // a flat magnitude. Multi-image mosaics stay count-based (square crops).
-  let attachmentEstimate = 0;
-  let imageTiles = 0;
-  let singleImage: { width: number; height: number } | null = null;
-  for (const attachment of message.attachments) {
-    const known = attachment.width !== null && attachment.height !== null
-      ? { width: attachment.width, height: attachment.height }
-      : learnedDims(attachment.key);
-    if (isImageFile(attachment.fileName)) {
-      imageTiles += 1;
-      if (singleImage === null) {
-        singleImage = known;
-      }
-    } else if (isVideoFile(attachment.fileName)) {
-      attachmentEstimate += known !== null
-        ? reservedVideoThumbBox(known.width, known.height, 480, 320).height + 24
-        : 340; // unknown aspect — the historical flat card
-    } else if (isAudioFile(attachment.fileName)) {
-      attachmentEstimate += 56;
-    } else {
-      attachmentEstimate += 56; // the plain-file card (the audio-card height)
-    }
-  }
-  if (imageTiles > 0) {
-    const tiles = Math.min(imageTiles, 10);
-    // Mosaic rows: 1 → its real aspect box when known (~300 flat otherwise),
-    // 2–3 → one row (~210), 4+ → a 2-column grid of square crops.
-    attachmentEstimate += tiles === 1
-      ? (singleImage !== null ? singleTileBox(480, singleImage.width, singleImage.height).height : 300)
-      : tiles <= 3 ? 210 : Math.ceil(tiles / 2) * 220;
-  }
-  height += attachmentEstimate;
-  return height;
-}
 
 /**
  * A jump's first scroll lands on ESTIMATED row heights; the real measurements
@@ -197,8 +123,11 @@ function scheduleSettlingJump(
   return cancel;
 }
 
+/** Actions handed down to every MessageRow. IDENTITY IS THE MEMO CONTRACT: the
+ *  rows are memoized, so this object must keep its reference across renders —
+ *  members may be value-deps (selectionMode/selection legitimately repaint all
+ *  rows at once) or stable callbacks, never a fresh closure over volatile state. */
 interface ChatActions {
-  replyTo: Message | null;
   setReplyTo(message: Message | null): void;
   beginEdit(message: Message): void;
   beginForward(messages: readonly Message[]): void;
@@ -207,6 +136,10 @@ interface ChatActions {
   selection: ReadonlySet<number>;
   toggleSelected(messageId: number): void;
 }
+
+/** Placeholder replaced by MessageList's scroll/backfill wiring — stable by
+ *  construction, so the ChatPane-level actions object never churns over it. */
+const noopJumpTo = (_messageId: number): void => undefined;
 
 /** Channel-shaped view over a DM row — the chat surface is channel-agnostic. */
 function dmViewChannel(dm: DmChannel, selfUsername: string): Channel {
@@ -292,13 +225,15 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
   // user can keep typing immediately (user rule 2026-10-19: after Reply or
   // an attach the caret belongs in the composer, at the END of any draft).
   const [composerFocusSignal, setComposerFocusSignal] = useState(0);
-  const focusComposer = () => setComposerFocusSignal((value) => value + 1);
-  const armReply = (message: Message | null) => {
+  const focusComposer = useCallback(() => {
+    setComposerFocusSignal((value) => value + 1);
+  }, []);
+  const armReply = useCallback((message: Message | null) => {
     setReplyTo(message);
     if (message !== null) {
       focusComposer();
     }
-  };
+  }, [focusComposer]);
   const [editing, setEditing] = useState<Message | null>(null);
   const [menu, setMenu] = useState<{ message: Message; x: number; y: number } | null>(null);
   const [picker, setPicker] = useState<{ message: Message; x: number; y: number } | null>(null);
@@ -416,7 +351,12 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
     : null;
   // DM rows render through a Channel-shaped adapter — MessageList and the composer
   // stay channel-agnostic (message/history/ack APIs are shared with DMs on the wire).
-  const viewChannel = dm !== null ? dmViewChannel(dm, ownUsername) : channel;
+  // Memoized: MessageList is memoized, so the channel prop must keep its identity —
+  // a fresh adapter literal every render used to defeat the row memo in DM views.
+  const viewChannel = useMemo(
+    () => (dm !== null ? dmViewChannel(dm, ownUsername) : channel),
+    [dm, ownUsername, channel],
+  );
   const activeAround = useStore(appStore, (state) => state.activeAround);
   // The around target only applies to THIS chat (a search hit in another channel
   // first switches the channel; the field then survives into the new mount).
@@ -446,10 +386,12 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
   const chatTitlePrefix = dm !== null && dm.type === "DM" ? "@" : "#";
   // The chat-surface binding while a discussion is open: a Channel-shaped adapter over the
   // discussion channel (id is all the send/reaction paths need; permissions resolve through
-  // the parent server-side, so the parent's composer bits apply as-is).
-  const chatChannel: Channel = openDiscussionEntry !== null && openDiscussionEntry.discussionId !== null
+  // the parent server-side, so the parent's composer bits apply as-is). Memoized with
+  // viewChannel (see above) — same row-memo contract.
+  const chatChannel: Channel = useMemo(() => (openDiscussionEntry?.discussionId != null
     ? { id: openDiscussionEntry.discussionId, name: "Discussion", type: "TEXT", createdAt: "", locked: false, parentId: null, position: 0 }
-    : viewChannel!; // the null viewChannel dead-ends above (chat-empty) before this line
+    : viewChannel!), // the null viewChannel dead-ends above (chat-empty) before this line
+    [openDiscussionEntry?.discussionId ?? null, viewChannel]);
 
   // The unified reaction picker (phase 3): the composer picker's visual language over
   // BOTH catalogs — the 10 built-in slugs plus the server's custom emojis, one search
@@ -487,6 +429,30 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
     setSelection(new Set());
   };
 
+  // Identity-stable by construction: flips ONLY on selection changes (which
+  // legitimately repaint every row — the hover cluster and click gating read them).
+  // Declared ABOVE the dead-end early return below — hooks may never sit behind
+  // a conditional return ("Rendered more hooks than during the previous render").
+  const actions = useMemo<ChatActions>(() => ({
+    setReplyTo: armReply,
+    beginEdit: (editTarget: Message) => setEditing(editTarget),
+    beginForward: (forwardList: readonly Message[]) => setForwardQueue(forwardList),
+    jumpTo: noopJumpTo, // MessageList replaces this with its scroll/backfill wiring
+    selectionMode,
+    selection,
+    toggleSelected: (messageId: number) => {
+      setSelection((previous) => {
+        const next = new Set(previous);
+        if (next.has(messageId)) {
+          next.delete(messageId);
+        } else {
+          next.add(messageId);
+        }
+        return next;
+      });
+    },
+  }), [armReply, selectionMode, selection]);
+
   if (viewChannel === null) {
     // Two dead ends, two messages: channels EXIST but every one is locked for
     // this viewer (a role pull) vs a server with no text channels at all.
@@ -501,27 +467,6 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
       </div>
     );
   }
-
-  const actions: ChatActions = {
-    replyTo,
-    setReplyTo: armReply,
-    beginEdit: (message) => setEditing(message),
-    beginForward: (list) => setForwardQueue(list),
-    jumpTo: () => undefined, // MessageList replaces this with its scroll/backfill wiring
-    selectionMode,
-    selection,
-    toggleSelected: (messageId) => {
-      setSelection((previous) => {
-        const next = new Set(previous);
-        if (next.has(messageId)) {
-          next.delete(messageId);
-        } else {
-          next.add(messageId);
-        }
-        return next;
-      });
-    },
-  };
 
   return (
     <div
@@ -978,7 +923,11 @@ interface MessageListProps {
   onReactedBy(state: { x: number; y: number; names: readonly string[] }): void;
 }
 
-function MessageList(props: MessageListProps): React.JSX.Element {
+// Memoized: ChatPane re-renders on every store/UI event it subscribes to (a
+// discussion bump server-wide, a roster push, menu/picker/reply state flips) —
+// with memo, those stop cascading into the visible window's rows whenever the
+// list's own props are unchanged.
+const MessageList = memo(function MessageList(props: MessageListProps): React.JSX.Element {
   const { session, channel, messages, aroundTarget, actions, editing } = props;
   const listRef = useRef<VirtualListHandle | null>(null);
   const nearBottomRef = useRef(true);
@@ -1275,45 +1224,46 @@ function MessageList(props: MessageListProps): React.JSX.Element {
       });
   };
 
-  const wiredActions: ChatActions = {
-    ...actions,
-    jumpTo: (messageId: number) => {
-      if (messages.some((message) => message.id === messageId)) {
-        settlingJumpCancelRef.current?.();
-        settlingJumpCancelRef.current = scheduleSettlingJump(listRef, String(messageId), () => {
-          setHighlightId(messageId);
-          window.setTimeout(() => setHighlightId(null), HIGHLIGHT_TTL_MS);
-        });
-        return;
-      }
-      pendingJumpRef.current = messageId;
-      void (async () => {
-        let loaded = 0;
-        while (
-          !session.messageStore.listFor(channel.id).some((message) => message.id === messageId)
-          && loaded < MAX_JUMP_BACKFILL
-        ) {
-          const list = session.messageStore.listFor(channel.id);
-          if (list.length === 0) {
-            pendingJumpRef.current = null;
-            return;
-          }
-          const raw = await session.loadOlder(channel.id, list[0]!.id);
-          if (raw < HISTORY_PAGE) {
-            pendingJumpRef.current = null; // history exhausted — the quote is dangling
-            return;
-          }
-          loaded += raw;
-        }
-        if (!session.messageStore.listFor(channel.id).some((message) => message.id === messageId)) {
-          pendingJumpRef.current = null; // the backfill cap gave up — say so (oak's toast)
-          notifications.showToast({ title: "space", channelName: "", body: "Message is too far back to jump to" });
-        }
-      })().catch((error: unknown) => {
-        log.warn("chat", `jump-to backfill (message ${messageId}) failed: ${error instanceof Error ? error.message : String(error)}`);
+  // jumpTo reads the STORE for its fast path (fresher than the messages prop —
+  // the same source the backfill loop below reads), which keeps the callback
+  // free of the messages dep: its identity survives every new message.
+  const jumpTo = useCallback((messageId: number) => {
+    if (session.messageStore.listFor(channel.id).some((message) => message.id === messageId)) {
+      settlingJumpCancelRef.current?.();
+      settlingJumpCancelRef.current = scheduleSettlingJump(listRef, String(messageId), () => {
+        setHighlightId(messageId);
+        window.setTimeout(() => setHighlightId(null), HIGHLIGHT_TTL_MS);
       });
-    },
-  };
+      return;
+    }
+    pendingJumpRef.current = messageId;
+    void (async () => {
+      let loaded = 0;
+      while (
+        !session.messageStore.listFor(channel.id).some((message) => message.id === messageId)
+        && loaded < MAX_JUMP_BACKFILL
+      ) {
+        const list = session.messageStore.listFor(channel.id);
+        if (list.length === 0) {
+          pendingJumpRef.current = null;
+          return;
+        }
+        const raw = await session.loadOlder(channel.id, list[0]!.id);
+        if (raw < HISTORY_PAGE) {
+          pendingJumpRef.current = null; // history exhausted — the quote is dangling
+          return;
+        }
+        loaded += raw;
+      }
+      if (!session.messageStore.listFor(channel.id).some((message) => message.id === messageId)) {
+        pendingJumpRef.current = null; // the backfill cap gave up — say so (oak's toast)
+        notifications.showToast({ title: "space", channelName: "", body: "Message is too far back to jump to" });
+      }
+    })().catch((error: unknown) => {
+      log.warn("chat", `jump-to backfill (message ${messageId}) failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }, [channel, session]);
+  const wiredActions = useMemo<ChatActions>(() => ({ ...actions, jumpTo }), [actions, jumpTo]);
 
   const groupStarts = useMemo(() => computeGroupStarts(messages.map((message): GroupableMessage => ({
     id: message.id,
@@ -1342,8 +1292,16 @@ function MessageList(props: MessageListProps): React.JSX.Element {
     return originIds;
   }, [rowDiscussionsVersion, session, channel.id]);
   const groupedEstimateHeight = useCallback(
-    (message: Message): number => estimateRowHeight(message, startById.get(message.id) ?? true,
-      discussionOriginIds.has(message.id), emojiJumboSize),
+    (message: Message): number => estimateRowHeight(message, {
+      startsGroup: startById.get(message.id) ?? true,
+      hasDiscussionTile: discussionOriginIds.has(message.id),
+      jumboEmojiPx: emojiJumboSize,
+      // The LIVE attachment width the rows measured — the estimate must equal
+      // the first paint or the measurement shifts everything below (the
+      // bounce-through-images report, 2026-10-19).
+      usableWidth: attachmentUsableWidth(),
+      knownDimsOf: learnedDims,
+    }),
     [startById, discussionOriginIds, emojiJumboSize],
   );
 
@@ -1422,7 +1380,7 @@ function MessageList(props: MessageListProps): React.JSX.Element {
       ) : null}
     </>
   );
-}
+});
 
 // ---------------------------------------------------------------------------
 // Rows
@@ -1569,6 +1527,14 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
   // /topic/emojis must repaint already-mounted (memoized) rows — the row owns the
   // name-set subscription, the token lookup happens per segment in InlineEmoji.
   const emojiNames = useStore(session.emojiStore, (state) => state.names);
+  // Segmentation is memoized: the regex pass and the jumbo/preview derivations
+  // run only when THIS row's message (store identity — edits/reactions replace
+  // the object) or the emoji catalog actually changes, not on every parent render.
+  const segmented = useMemo(() => {
+    const segments = segmentMessageContent(message.content, message.mentions, emojiNames);
+    return { segments, emojiOnly: isEmojiOnlyMessage(segments) };
+  }, [message, emojiNames]);
+  const previewUrl = useMemo(() => firstHttpUrl(message.content), [message]); // oak: only the FIRST link gets a card
 
   useEffect(() => {
     setDraft(message.content ?? "");
@@ -1658,34 +1624,28 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
     </>
   ) : (
     <div className="message-content">
-      {(() => {
-        // Computed once per render: the segments feed the mapping AND the jumbo
-        // check (an emoji-only message renders its tokens large — Discord rule).
-        const segments = segmentMessageContent(message.content, message.mentions, emojiNames);
-        const emojiOnly = isEmojiOnlyMessage(segments);
-        return segments.map((segment, segmentIndex) =>
-          segment.kind === "mention"
-            ? <span key={segmentIndex} className="mention">{segment.text}</span>
-            : segment.kind === "link"
-              ? (
-                <a
-                  key={segmentIndex}
-                  className="body-link"
-                  href={segment.url}
-                  draggable={false}
-                  onClick={(event) => {
-                    event.preventDefault(); // the app never navigates — the system browser opens
-                    void window.spaceMedia?.openExternal(segment.url);
-                  }}
-                >
-                  {segment.text}
-                </a>
-              )
-              : segment.kind === "emoji"
-                ? <InlineEmoji key={segmentIndex} session={session} name={segment.name} large={emojiOnly} />
-                : <span key={segmentIndex}>{segment.text}</span>,
-        );
-      })()}
+      {segmented.segments.map((segment, segmentIndex) =>
+        segment.kind === "mention"
+          ? <span key={segmentIndex} className="mention">{segment.text}</span>
+          : segment.kind === "link"
+            ? (
+              <a
+                key={segmentIndex}
+                className="body-link"
+                href={segment.url}
+                draggable={false}
+                onClick={(event) => {
+                  event.preventDefault(); // the app never navigates — the system browser opens
+                  void window.spaceMedia?.openExternal(segment.url);
+                }}
+              >
+                {segment.text}
+              </a>
+            )
+            : segment.kind === "emoji"
+              ? <InlineEmoji key={segmentIndex} session={session} name={segment.name} large={segmented.emojiOnly} />
+              : <span key={segmentIndex}>{segment.text}</span>,
+      )}
       {message.editedAt !== null ? <span className="message-edited">(edited)</span> : null}
     </div>
   );
@@ -1697,7 +1657,6 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
       removal={editing ? { markedKeys: removedKeys, toggle: toggleRemovedKey } : undefined}
     />
   );
-  const previewUrl = firstHttpUrl(message.content); // oak: only the FIRST link gets a card
 
   return (
     <div

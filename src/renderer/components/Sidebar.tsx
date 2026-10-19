@@ -102,9 +102,15 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
   // The speaking poll (the room view's idiom, oak's pollSpeakingLevels): every
   // 150 ms repaint the SNAPSHOT of who is speaking — the sidebar avatars get
   // the same green ring the room tiles have. Identity-stable on no change, so
-  // an idle room never re-renders the column.
+  // an idle room never re-renders the column. Runs ONLY while the viewer is in
+  // a voice room (the rings exist there and nowhere else) — an idle session
+  // used to pay a 6.7 Hz setState evaluation for nothing.
   const [speakingUsers, setSpeakingUsers] = useState<ReadonlySet<string>>(new Set());
   useEffect(() => {
+    if (activeVoiceChannelId === null) {
+      setSpeakingUsers((previous) => (previous.size === 0 ? previous : new Set()));
+      return;
+    }
     const timer = window.setInterval(() => {
       setSpeakingUsers((previous) => {
         const next = roomAudio.speakingSnapshot();
@@ -115,7 +121,7 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
       });
     }, 150);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [activeVoiceChannelId]);
 
   // --- Drag-reorder (the RolesSection pointer mechanics) ---------------------
   /** The drag in flight; the dragged row renders as the drop gap. */

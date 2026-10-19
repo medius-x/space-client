@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { GROUP_GAP_MS, computeGroupStarts, continuesGroup, toEpochMs } from "../src/domain/logic/message-grouping";
+import {
+  GROUP_GAP_MS,
+  computeGroupStarts,
+  continuesGroup,
+  formatHeaderStamp,
+  formatTimeOfDay,
+  toEpochMs,
+} from "../src/domain/logic/message-grouping";
 
 const MINUTE = 60_000;
 
@@ -60,5 +67,32 @@ describe("continuesGroup (pagination boundary alignment)", () => {
   it("toEpochMs parses ISO strings and maps garbage to 0", () => {
     expect(toEpochMs("2026-09-04T10:15:30.123Z")).toBe(Date.parse("2026-09-04T10:15:30.123Z"));
     expect(toEpochMs("not a date")).toBe(0);
+  });
+});
+
+describe("timestamp formatters (cached Intl instances)", () => {
+  const HOUR = 3_600_000;
+  // LOCAL-component dates: the Today/Yesterday logic compares local calendar
+  // days, so the arithmetic must stay inside one local day on ANY host tz.
+  const now = new Date(2026, 9, 19, 12, 0, 0).getTime(); // Oct 19 2026, local noon
+
+  it("formatTimeOfDay matches the one-shot toLocaleTimeString it replaced", () => {
+    const sample = new Date(2026, 9, 19, 14, 5).getTime();
+    expect(formatTimeOfDay(sample))
+      .toBe(new Date(sample).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+  });
+
+  it("formatHeaderStamp renders Today/Yesterday and the full date for older days", () => {
+    expect(formatHeaderStamp(now - 2 * HOUR, now)).toMatch(/^Today at \d{2}:\d{2}$/);
+    expect(formatHeaderStamp(now - 26 * HOUR, now)).toMatch(/^Yesterday at \d{2}:\d{2}$/);
+    // Older: "<short month> <day> at HH:MM" (English month abbreviations, oak parity).
+    const oldStamp = new Date(2026, 8, 4, 9, 30).getTime();
+    expect(formatHeaderStamp(oldStamp, now)).toMatch(/^[A-Z][a-z]{2} \d{1,2} at \d{2}:\d{2}$/);
+    expect(formatHeaderStamp(oldStamp, now)).toMatch(/^Sep 4 at \d{2}:\d{2}$/);
+  });
+
+  it("relativeDates=false always shows the full date", () => {
+    expect(formatHeaderStamp(now - 2 * HOUR, now, false)).toMatch(/^[A-Z][a-z]{2} \d{1,2} at \d{2}:\d{2}$/);
+    expect(formatHeaderStamp(now - 2 * HOUR, now, false)).not.toContain("Today");
   });
 });

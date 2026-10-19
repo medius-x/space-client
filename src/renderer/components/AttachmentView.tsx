@@ -31,6 +31,25 @@ export interface AttachmentRemoval {
 }
 
 /**
+ * THE attachment-block width — one source for BOTH the render and the row
+ * HEIGHT ESTIMATE (estimateRowHeight). Rows remount constantly while a
+ * virtualized list scrolls, and every remount used to start from a hardcoded
+ * 400/480 and correct a frame later: each image row grew after mount, the
+ * content above the viewport thickened, and the viewport was repeatedly thrown
+ * back down through image-heavy history while scrolling UP (live report
+ * 2026-10-19). Seeding every mount from the last MEASURED width makes the
+ * first paint the final paint; the ResizeObserver only handles real window
+ * resizes now.
+ */
+let lastMeasuredAttachmentWidth = 0;
+
+/** The live attachment-block width; a sane default until any row has measured
+ *  (only the very first rows of a session estimate against it). */
+export function attachmentUsableWidth(): number {
+  return lastMeasuredAttachmentWidth >= 120 ? lastMeasuredAttachmentWidth : 480;
+}
+
+/**
  * Everything a message carries besides text: the image mosaic, video cards
  * (client-generated preview + play overlay + duration badge), audio cards
  * (one shared player) and plain file chips (system browser fallback).
@@ -57,15 +76,21 @@ export function AttachmentView({ session, message, onForwardBegin, removal }: {
     !isImageFile(attachment.fileName) && !isVideoFile(attachment.fileName) && !isAudioFile(attachment.fileName));
 
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [containerWidth, setContainerWidth] = useState(400);
+  const [containerWidth, setContainerWidth] = useState(attachmentUsableWidth());
   useEffect(() => {
     const element = containerRef.current;
     if (element === null) {
       return;
     }
-    const observer = new ResizeObserver(() => setContainerWidth(element.clientWidth));
+    const adoptWidth = (width: number): void => {
+      if (width >= 120 && width !== lastMeasuredAttachmentWidth) {
+        lastMeasuredAttachmentWidth = width;
+        setContainerWidth(width);
+      }
+    };
+    const observer = new ResizeObserver(() => adoptWidth(element.clientWidth));
     observer.observe(element);
-    setContainerWidth(element.clientWidth);
+    adoptWidth(element.clientWidth);
     return () => observer.disconnect();
   }, []);
 
@@ -105,7 +130,7 @@ export function AttachmentView({ session, message, onForwardBegin, removal }: {
         </div>
       ) : null}
       {videos.map((attachment) => (
-        <VideoCardView key={attachment.key} session={session} attachment={attachment} onOpen={() => setVideo(attachment)} />
+        <VideoCardView key={attachment.key} session={session} attachment={attachment} usableWidth={usable} onOpen={() => setVideo(attachment)} />
       ))}
       {audios.map((attachment) => (
         <AudioCardView key={attachment.key} session={session} attachment={attachment} />
@@ -226,9 +251,10 @@ function MosaicTileView({ session, attachment, tile, removal, onClick }: {
   );
 }
 
-function VideoCardView({ session, attachment, onOpen }: {
+function VideoCardView({ session, attachment, usableWidth, onOpen }: {
   session: ConnectionSession;
   attachment: Attachment;
+  usableWidth: number;
   onOpen(): void;
 }): React.JSX.Element {
   const thumbUrl = useAttachmentImage(
@@ -240,12 +266,14 @@ function VideoCardView({ session, attachment, onOpen }: {
   const durationSeconds = attachment.durationMillis !== null ? attachment.durationMillis / 1000 : null;
   // The reserved box: the wire's intrinsic frame dimensions when present, else
   // the learned cache (the preview shares the frame's aspect), else the
-  // historical 16:9 plate — sized against a nominal row width (the CSS caps at
-  // max-height 320 / max-width 100% of the block).
+  // historical 16:9 plate — sized against the LIVE row width (the CSS caps at
+  // max-height 320 / max-width 100% of the block). The old nominal 480 made
+  // the reserved box smaller than the real card on wide windows — the estimate
+  // and the first paint disagreed and the row grew on measurement.
   const known = attachment.width !== null && attachment.height !== null
     ? { width: attachment.width, height: attachment.height }
     : learnedDims(attachment.key);
-  const reserved = reservedVideoThumbBox(known?.width ?? 0, known?.height ?? 0, 480, 320);
+  const reserved = reservedVideoThumbBox(known?.width ?? 0, known?.height ?? 0, usableWidth, 320);
   return (
     <div className="video-card" onClick={onOpen} title={attachment.fileName}>
       {thumbUrl !== null ? (

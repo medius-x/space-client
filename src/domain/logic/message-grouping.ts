@@ -45,10 +45,19 @@ export function toEpochMs(createdAtIso: string): number {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
+/** Cached formatters: Intl.DateTimeFormat CONSTRUCTION is the expensive part of
+ *  timestamp rendering (locale databases are resolved per instance) — rows used
+ *  to build 1-2 of these per render. The cached instance's .format() output is
+ *  byte-identical to the one-shot toLocaleTimeString call it replaced. */
+const TIME_OF_DAY_FORMATTER = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit" });
+
 /** "14:05" local time for the group head (locale-dependent by design, not unit-tested). */
 export function formatTimeOfDay(epochMs: number): string {
-  return new Date(epochMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return TIME_OF_DAY_FORMATTER.format(epochMs);
 }
+
+/** See TIME_OF_DAY_FORMATTER — same caching rationale for the month name. */
+const MONTH_FORMATTER = new Intl.DateTimeFormat("en", { month: "short" });
 
 /** oak's message-header stamp: "Today at 14:05" / "Yesterday at 14:05" / "Sep 4
  *  at 14:05". relativeDates=false (oak Appearance) always shows the full date. */
@@ -65,6 +74,5 @@ export function formatHeaderStamp(epochMs: number, nowMs: number, relativeDates 
   if (relativeDates && sameDay(date, yesterday)) {
     return `Yesterday at ${time}`;
   }
-  const month = date.toLocaleString("en", { month: "short" });
-  return `${month} ${date.getDate()} at ${time}`;
+  return `${MONTH_FORMATTER.format(date)} ${date.getDate()} at ${time}`;
 }
