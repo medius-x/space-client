@@ -16,10 +16,55 @@
  * frames (dev-only collision, accepted).
  */
 import { log } from "../logging";
+import { rmsToDbfs } from "../core/audio-math";
 import { createSystemAudioSource, type SystemAudioSource } from "./system-audio-source";
 
 let active: SystemAudioSource | null = null;
+let activeKind: "window" | "screen" | null = null;
 let monitorWanted = false;
+
+/** RMS telemetry of the live native capture (2026-10-19, the kyoDzo
+ *  investigation): a capture that STARTED but records digital silence (player
+ *  in WASAPI exclusive mode, target playing to another output device, a mixer's
+ *  virtual endpoint in between) is indistinguishable from a working one in the
+ *  lifecycle logs alone. The worklet already measures per-second RMS for the
+ *  self-test; the production share reports it too, at the [share-stats]
+ *  cadence. */
+const SHARE_AUDIO_STATS_INTERVAL_MS = 10_000;
+let statsTimer: ReturnType<typeof setInterval> | null = null;
+let peakLinearRms = 0;
+
+function describeDbfs(linearRms: number): string {
+  const dbfs = rmsToDbfs(linearRms);
+  return dbfs <= -100 ? "silent" : `${dbfs.toFixed(1)} dBFS`;
+}
+
+function startShareAudioStats(kind: "window" | "screen", source: SystemAudioSource): void {
+  stopShareAudioStats();
+  peakLinearRms = 0;
+  statsTimer = setInterval(() => {
+    const stats = source.latestStats();
+    if (stats === null) {
+      return; // no 1 s worklet window has completed yet
+    }
+    peakLinearRms = Math.max(peakLinearRms, stats.rmsLeft, stats.rmsRight);
+    log.info("share-audio", `${kind}: L ${describeDbfs(stats.rmsLeft)} · R ${describeDbfs(stats.rmsRight)} · underruns ${stats.underruns} · dropped ${stats.dropped}`);
+  }, SHARE_AUDIO_STATS_INTERVAL_MS);
+}
+
+function stopShareAudioStats(): void {
+  if (statsTimer === null) {
+    return;
+  }
+  clearInterval(statsTimer);
+  statsTimer = null;
+  // The session summary answers "did the capture EVER carry sound" in one line:
+  // a whole share peaking at silence is the exclusive-mode/wrong-device
+  // signature, even when nobody was watching the periodic lines.
+  const peak = rmsToDbfs(peakLinearRms);
+  log.info("share-audio", `${activeKind ?? "capture"} ended; peak ${peak <= -100 ? "SILENT for the whole session" : peak.toFixed(1) + " dBFS"}`);
+  peakLinearRms = 0;
+}
 
 /** Whether a native share capture is running (the diag monitor attaches to it). */
 export function isNativeShareActive(): boolean {
@@ -74,6 +119,8 @@ export async function acquireNativeShareAudioTrack(sourceId?: string, monitorSin
       return null;
     }
     active = source;
+    activeKind = sourceId !== undefined ? "window" : "screen";
+    startShareAudioStats(activeKind, source);
     return source.track;
   } catch (error) {
     releaseNativeShareAudio();
@@ -86,6 +133,7 @@ export async function acquireNativeShareAudioTrack(sourceId?: string, monitorSin
  *  path calls this; a no-op when no native share is running. */
 export function releaseNativeShareAudio(): void {
   monitorWanted = false;
+  stopShareAudioStats();
   if (active === null) {
     return;
   }
@@ -94,5 +142,6 @@ export function releaseNativeShareAudio(): void {
   } finally {
     active.dispose();
     active = null;
+    activeKind = null;
   }
 }

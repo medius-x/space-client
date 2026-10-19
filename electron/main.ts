@@ -982,7 +982,12 @@ ipcMain.handle("space-sysaudio:start", async (_event, sourceId: unknown) => {
     options,
   );
   const scope = result.mode === "include" ? `per-app pid ${result.pid}` : "desktop minus this process";
-  appendLog(`[sysaudio] native capture ${result.started ? `started (${scope})` : `FAILED to start (${scope})`}`);
+  // pid 0 on an include-start means the HWND never resolved to a live process —
+  // decode it right in the log instead of leaving "pid 0" to interpretation.
+  const failureNote = !result.started && result.mode === "include" && result.pid === 0
+    ? " — window pid unresolved (dead window or malformed source id)"
+    : "";
+  appendLog(`[sysaudio] native capture ${result.started ? `started (${scope})` : `FAILED to start (${scope})${failureNote}`}`);
   return result.started;
 });
 ipcMain.handle("space-sysaudio:stop", () => {

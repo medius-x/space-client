@@ -1352,6 +1352,12 @@ function makeSessionHooks(recordId: string): SessionHooks {
  *  and on hotplug. */
 const resolvedDevices = { microphone: null as string | null, speaker: null as string | null, camera: null as string | null };
 
+/** Real output-device labels by id — feeds the audio-environment log line (the
+ *  mixer investigation, 2026-10-19: whether SPACE follows the OS default or is
+ *  pinned to a concrete endpoint decides whether a third-party mixer can group
+ *  it at all; the label list shows a mixer's virtual endpoint by name). */
+let outputLabelById = new Map<string, string>();
+
 async function resolveSavedDevices(): Promise<void> {
   const settings = settingsStore.getSnapshot();
   try {
@@ -1364,11 +1370,15 @@ async function resolveSavedDevices(): Promise<void> {
       settings.microphoneDeviceId,
       settings.microphoneLabel,
     );
+    const outputDevices = devices.filter((device) => device.kind === "audiooutput");
     resolvedDevices.speaker = matchDeviceId(
-      devices.filter((device) => device.kind === "audiooutput"),
+      outputDevices,
       settings.speakerDeviceId,
       settings.speakerLabel,
     );
+    outputLabelById = new Map(outputDevices
+      .filter((device) => device.deviceId !== "default" && device.deviceId !== "communications")
+      .map((device) => [device.deviceId, device.label] as const));
     resolvedDevices.camera = matchDeviceId(
       devices.filter((device) => device.kind === "videoinput"),
       settings.cameraDeviceId,
@@ -1376,6 +1386,26 @@ async function resolveSavedDevices(): Promise<void> {
     );
   } catch {
     // keep the previous resolution
+  }
+}
+
+/** One support-log line that answers "what does SPACE render into": the resolved
+ *  sink (system default vs a pinned concrete device) plus the visible output
+ *  devices. Third-party mixers (VoiceMeeter/Sonar-class) can only group and
+ *  volume-control apps whose audio sessions live on THEIR device — i.e. the
+ *  system default; a SPACE pinned to a physical endpoint is invisible to them
+ *  by design. Skipped until enumeration returns real labels (pre-permission
+ *  there is nothing truthful to log). */
+function logAudioEnvironment(): void {
+  if (resolvedDevices.speaker === null && outputLabelById.size === 0) {
+    return;
+  }
+  const sink = resolvedDevices.speaker === null
+    ? "system default"
+    : outputLabelById.get(resolvedDevices.speaker) ?? resolvedDevices.speaker;
+  log.info("audio", `playback sink: ${sink}`);
+  if (outputLabelById.size > 0) {
+    log.info("audio", `output devices: ${[...outputLabelById.values()].join(" | ")}`);
   }
 }
 
@@ -1392,6 +1422,7 @@ function watchDeviceSettings(): void {
       roomAudio.setOutputDevice(resolvedDevices.speaker);
       notifications.setOutputDevice(resolvedDevices.speaker);
       setActiveShareMonitorSink(resolvedDevices.speaker); // the diag monitor ear rides along
+      logAudioEnvironment();
     });
   };
   settingsStore.subscribe(update); // Apply re-resolves (a fresh hash was just saved)
@@ -1858,6 +1889,7 @@ async function openSession(recordId: string): Promise<void> {
     await resolveSavedDevices(); // ids die across restarts — resolve by label first
     roomAudio.setOutputDevice(resolvedDevices.speaker); // the saved sink, before any chain attaches
     notifications.setOutputDevice(resolvedDevices.speaker); // UI sounds follow the same speaker (oak's playout line)
+    logAudioEnvironment();
     appStore.patch({
       ...formClosePatch(),
       ownUsername: record.username,
