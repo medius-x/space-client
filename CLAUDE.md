@@ -4438,3 +4438,63 @@ en/ru; финальный греп на захардкоженные много�
 - Прочее: member-card ПКМ-карточка `width: fit-content; max-width: 240`
   (контент ~160px — исторические 240 оставляли треть пустой); «canceled»
   исходы saveFile мертвы (диалога нет) — провалы честно репортятся.
+
+## Раунд автообновления клиента (2026-10-20; КЛИЕНТ-ONLY — сервер/wire не тронуты)
+
+Клиент сам узнаёт о новых версиях на GitHub и сам обновляется (все решения — обсуждение
+2026-10-20). Движок: **electron-updater 6.8.9** (dependencies + external main-бандла —
+едет в asar prod-deps рядом с koffi/ssh2) против GitHub Releases; `autoDownload=false` —
+НИ ОДНОГО тихого байта: закачка стартует только по кнопке Update. Установка полностью
+автоматическая: скачалось → graceful teardown голоса/звонка (900 мс, путь tray-Quit —
+before-quit ставит gracefulQuitStarted, close-to-tray гвард пропускает) →
+`quitAndInstall(true,true)` — тихий NSIS + автоперезапуск, юзер ничего не закрывает.
+
+- **Фид**: publish-блок electron-builder.yml → github `medius-x/space-client` (owner из
+  git-remote); electron-updater читает `resources/app-update.yml` ИЗ ПАКА (билдер
+  генерит его из publish-блока; `--dir` НЕ генерит — верификация только полным dist).
+  afterPack-вырезание app-update.yml УДАЛЕНО вместе со скриптом remove-app-update.cjs.
+  **ГРАБЛЯ ИМЁН: latest.yml ссылается на ДЕФИСНОЕ `SPACE-Setup-<v>.exe`, а билдер
+  кладёт файл с ПРОБЕЛАМИ** — CI publish-степ зеркалит exe+blockmap в канонические
+  имена перед `gh release upload` (иначе апдейтер ловит 404 на ассете). CI-сборка:
+  `npm run dist -- --publish never` (артефакты фида генерятся, публикация остаётся
+  нашим gh-шагом).
+- **Проверки** (runtime `startUpdateChecks`): при старте (через 15 с, БЕЗ idle-гейта —
+  баннер статичен и никого не прерывает) + суточная ТОЛЬКО при системном idle ≥ 15 мин
+  (тот же `space-idle` мост, что AFK-комнаты; порог — СВОЯ константа
+  UPDATE_IDLE_THRESHOLD_SECONDS=900, у AFK свой 60); Check now обходит всё. Тумблеры
+  НЕТ (юзер-правка: «автоматических» обновлений нет — название врёт; оба чекбокса
+  off = механизм выключен целиком). Чистая логика `domain/logic/update-policy.ts`
+  (+11 тестов): idle/daily-гейты, `shouldShowUpdateBanner` (скип = ТОЧНАЯ строка
+  версии, следующая реармится), `isNewerVersion` (числовое a.b.c; мусор/пререлизы =
+  не новее — даунгрейд не рекламируется).
+- **UpdateBanner** (Sidebar, ПОД server-header, НАД овнершип-баннером — идиома
+  ownership-карточки с blurple): Update / Cancel / Skip this version. Update при живом
+  голосе/звонке → короткий confirm «перезапустит, разговор оборвётся» (отказ = баннер
+  остаётся — юзер-решение); закачка = прогресс-бар + скорость + Cancel
+  (CancellationToken); downloaded → установка сразу. Cancel = скрыть до следующей
+  проверки (`updateDismissed` реармится каждым available-репортом); Skip = KV
+  `skippedUpdateVersion`. Глиф mdi-update (icons.css 60).
+- **General (client) → Updates**: строка «Update available: vN — Update now» светится
+  ВСЕГДА при известном обновлении (эскейп после скипа/отмены), чекбоксы Check on
+  startup / Daily check while running, Check now со статусом; dev-билд честно пишет
+  «not available in development builds» (app.isPackaged-гейт в main — dev не трогает
+  апдейтер, общий userData с продом). Полиш раунда: заголовок Images → Cache; отступы
+  секций `.settings-body h3` 24/6 (заголовок венчает СВОЙ раздел, не хвост чужого);
+  hint Downloads сокращён.
+- **IPC `space-updates:*`** (electron/updates.ts): check/download/cancelDownload/install
+  — download/install БЕЗ аргументов (рендерер не рулит ни фидом, ни путями; фид запинен
+  в паке); sha512 из latest.yml проверяется апдейтером (HTTPS+hash — MITM/битая докачка
+  исключены); install гвардится «скачано реально через апдейтер»; лог `[update]`
+  (пейсинг прогресса 10%-шагами). События `space-updates:state` → `appStore.update`
+  {status, version, percent, bytesPerSecond}; available-результат проверки НЕ затирает
+  идущий downloading.
+- Security: остаточный риск один — компрометация GitHub-аккаунта = злой апдейт всем
+  (без подписи кода не закрывается, осознанный trade-off); репо обязано быть ПУБЛИЧНЫМ
+  (приватный = 404 анонимному апдейтеру; токен в клиент не зашивается). Bootstrap:
+  0.1.0-билды уже несут апдейтер — при первом GitHub-релизе всем установившим прилетит
+  предложение. Репо medius-x/space-client на момент раунда НЕ создано (API 404) —
+  полный смоук цикла после релиза (bump pom+package → тег сервера → images:publish →
+  тег клиента). Хвост D1 рядом: PROVISIONING_JAR_URL всё ещё плейсхолдер
+  oak-server/oak-server — поправить при создании релиза.
+- Гейты: 791/791 (88 файлов) + typecheck + build + dist-верификация фид-артефактов.
+  Смоук юзера пройден («вроде ничего не сломалось») + 3 полиш-правки по ходу.
