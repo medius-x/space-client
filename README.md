@@ -101,6 +101,9 @@ accounts and client trust pins are preserved.
 - Friends, direct messages and group conversations
 - Notifications: per-server modes, always-on-top toasts, in-app sounds
 - Customizable hotkeys — including a global mute that works in games
+- Self-updates from GitHub Releases: the client checks in the background (on
+  startup and once a day while idle) and offers the new version with a banner —
+  one click downloads and installs it quietly, accounts and settings survive
 - Dark theme, audio/video device settings, configurable image cache
 - Built-in diagnostics with a one-click log archive
 
@@ -131,8 +134,6 @@ accounts and client trust pins are preserved.
 
 - Windows client only for now
 - One installation is one community — no multi-community hosting yet
-- No auto-update: install a newer version over the old one (your accounts and
-  settings survive)
 
 ## License
 
