@@ -82,8 +82,12 @@ export function installUpdateIpc(deps: UpdatesIpcDeps): void {
       return { status: "unsupported", version: null, message: null };
     }
     try {
-      const result = await autoUpdater.checkForUpdates();
-      const candidate = result.updateInfo.version;
+      const info = (await autoUpdater.checkForUpdates())?.updateInfo;
+      const candidate = typeof info?.version === "string" ? info.version : null;
+      if (candidate === null) {
+        log("check failed: the feed returned no version");
+        return { status: "error", version: null, message: "the feed returned no version" };
+      }
       if (isNewerVersion(candidate, app.getVersion())) {
         log(`v${candidate} is available (current v${app.getVersion()})`);
         return { status: "available", version: candidate, message: null };

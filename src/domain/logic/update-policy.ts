@@ -56,8 +56,10 @@ export function isNewerVersion(candidate: string, current: string): boolean {
     return false;
   }
   for (let index = 0; index < 3; index += 1) {
-    if (candidateParts[index] !== currentParts[index]) {
-      return candidateParts[index] > currentParts[index];
+    const candidatePart = candidateParts[index] ?? 0;
+    const currentPart = currentParts[index] ?? 0;
+    if (candidatePart !== currentPart) {
+      return candidatePart > currentPart;
     }
   }
   return false;
