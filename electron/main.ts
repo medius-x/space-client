@@ -1,6 +1,7 @@
 import { isSystemAudioAvailable, startSystemAudio, stopSystemAudio } from "./system-audio";
 import { getClientSize, isWindowConfirmedDead, watchSourceLiveness } from "./window-liveness";
 import { cancelProvisioningRun, startProvisioningRun } from "./provisioning";
+import { installUpdateIpc } from "./updates";
 import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeTheme, net, powerMonitor, protocol, safeStorage, screen, session, shell, Tray } from "electron";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -1030,6 +1031,16 @@ ipcMain.handle("space-capture:watchSource", (_event, sourceId: unknown) => {
 // keeps the member out of AFK, exactly the Discord "idle" semantics.
 // ---------------------------------------------------------------------------
 ipcMain.handle("space-idle:time", () => powerMonitor.getSystemIdleTime());
+
+// ---------------------------------------------------------------------------
+// Client self-update (2026-10-20): electron-updater against this repo's GitHub
+// Releases — every download is user-initiated, the install is fully automatic
+// (see electron/updates.ts). Lifecycle events land in the main window only.
+// ---------------------------------------------------------------------------
+installUpdateIpc({
+  emit: (event) => sendToMainWindow("space-updates:state", event),
+  log: (line) => appendLog(line),
+});
 
 // ---------------------------------------------------------------------------
 // Native system-audio capture (#485): WASAPI process-loopback, desktop minus

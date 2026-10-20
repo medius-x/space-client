@@ -88,6 +88,15 @@ export interface ClientSettings {
    *  on first use; this holds the chosen absolute path or null for the
    *  default. Read by the MAIN process at save time. */
   downloadsFolder: string | null;
+  /** Self-update checks (2026-10-20): on startup and/or once a day while the
+   *  client keeps running (the daily pass fires only after 15 minutes of
+   *  system-wide idle — update-policy.ts). BOTH off = the mechanism is fully
+   *  disabled (no probes, no banner); the manual "Check now" button stays. */
+  updateCheckOnStartup: boolean;
+  updateCheckDaily: boolean;
+  /** The version the user Skipped in the update banner — it stays hidden for
+   *  exactly this version; the next release un-hides itself. */
+  skippedUpdateVersion: string | null;
 }
 
 export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
@@ -116,6 +125,9 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   pickerLastTab: "emoji",
   recentExpressions: [],
   downloadsFolder: null,
+  updateCheckOnStartup: true,
+  updateCheckDaily: true,
+  skippedUpdateVersion: null,
 };
 
 const KV_KEY = "client-settings";
@@ -180,6 +192,17 @@ export class SettingsStore extends Emitter {
         ...this.settings,
         downloadsFolder: typeof rest.downloadsFolder === "string" && rest.downloadsFolder.length > 0
           ? rest.downloadsFolder
+          : null,
+      };
+      // Update checks are plain booleans (anything else in hand-edited KV
+      // falls back to the defaults), and the skipped version is a non-empty
+      // string or nothing.
+      this.settings = {
+        ...this.settings,
+        updateCheckOnStartup: typeof rest.updateCheckOnStartup === "boolean" ? rest.updateCheckOnStartup : true,
+        updateCheckDaily: typeof rest.updateCheckDaily === "boolean" ? rest.updateCheckDaily : true,
+        skippedUpdateVersion: typeof rest.skippedUpdateVersion === "string" && rest.skippedUpdateVersion.length > 0
+          ? rest.skippedUpdateVersion
           : null,
       };
     }

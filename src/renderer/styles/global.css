@@ -2834,6 +2834,40 @@ button.wide-add { width: 100%; }
 .ownership-banner-actions { display: flex; gap: 8px; }
 .ownership-banner-actions button { padding: 4px 10px; font-size: 12px; }
 .ownership-banner .error-line { min-height: 14px; font-size: 11px; }
+
+/* The client self-update banner (2026-10-20): the ownership-banner card idiom
+   with a BLURPLE accent (an app update outranks server matters). The progress
+   row lives here because the download runs from the banner's Update button. */
+.update-banner {
+  background: var(--sp-pane);
+  border-radius: 8px;
+  margin: 8px 0;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.update-banner-text {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--sp-text);
+  font-size: 12px;
+}
+.update-banner-text .icon { font-size: 16px; color: var(--sp-accent); flex-shrink: 0; }
+.update-progress-row { display: flex; align-items: center; gap: 8px; }
+.update-progress {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--sp-control);
+  overflow: hidden;
+}
+.update-progress-fill { height: 100%; background: var(--sp-accent); }
+.update-progress-note { font-size: 11px; color: var(--sp-text-dim); flex: none; }
+
+/* The General section's "Update available" row (label + button on one line). */
+.update-settings-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
 /* The confirming warning in the transfer modal (amber — the staged-change voice). */
 .ownership-warning { color: var(--sp-yellow); }
 
@@ -3231,6 +3265,11 @@ input[type="checkbox"]:disabled { opacity: 0.5; cursor: default; }
 }
 .settings-empty { color: var(--sp-text-dim); padding: 24px; text-align: center; }
 .settings-field { display: flex; flex-direction: column; gap: 4px; margin: 12px 0; max-width: 420px; }
+/* Section headings in the settings body: MORE air ABOVE than below — the
+   heading caps its OWN section instead of dangling under the previous one
+   (live nitpick 2026-10-20; the bare h3 otherwise rides UA margins). */
+.settings-body h3 { margin: 24px 0 6px; }
+.settings-body h3:first-child { margin-top: 4px; }
 .settings-field > span { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--sp-text-muted); }
 /* A disabled field must read GREY, not merely inert (the storage screen's time input when
    automatic cleanup is off — the visual is the message, live report). */

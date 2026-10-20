@@ -17,7 +17,9 @@ export default defineConfig({
       // node_modules at runtime (bundling a .node addon is impossible).
       // ssh2 loads its crypto backends with runtime requires — bundling
       // breaks them the same way, so it resolves from node_modules too.
-      rollupOptions: { external: ["electron", "koffi", "ssh2"] },
+      // electron-updater resolves its provider backends lazily at runtime;
+      // it ships as production node_modules alongside koffi/ssh2.
+      rollupOptions: { external: ["electron", "koffi", "ssh2", "electron-updater"] },
     },
   },
   preload: {

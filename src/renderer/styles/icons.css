@@ -70,6 +70,7 @@
 .icon.mdi-trash-can::before { content: "\F0A79"; }
 .icon.mdi-triangle-wave::before { content: "\F147C"; }
 .icon.mdi-undo::before { content: "\F054C"; }
+.icon.mdi-update::before { content: "\F06B0"; }
 .icon.mdi-video::before { content: "\F0567"; }
 .icon.mdi-volume-high::before { content: "\F057E"; }
 .icon.mdi-volume-off::before { content: "\F0581"; }

@@ -6,9 +6,12 @@ import {
   changeAccountUsername,
   connectionDirectory,
   inVoiceOrCall,
+  manualUpdateCheck,
+  proceedUpdateDownload,
   roomAudio,
   settingsStore,
   toggleUserSettings,
+  updateInterruptsMedia,
   updateNotificationPrefs,
 } from "../runtime";
 import { notifications } from "../notifications";
@@ -22,6 +25,7 @@ import { DEFAULT_NOTIFICATION_PREFS } from "../../domain/session/connection-reco
 import { CHANGE_NICKNAME_PERMISSION, type NotificationPrefs } from "../../types";
 import { useDisplayName } from "../hooks/useDisplayName";
 import { downloadClientLogs } from "../logs-export";
+import { Modal } from "./Modal";
 import { Avatar } from "./Avatar";
 import { AvatarEditor, userAvatarApi } from "./ProfileModal";
 import { KeybindsSection } from "./KeybindsSection";
@@ -895,8 +899,9 @@ function DownloadsFolderRow(): React.JSX.Element {
 
 /** General (CLIENT scope) — the ⚙ window's front tab (user request
  *  2026-10-19): the downloads folder and the disk-cache size moved here from
- *  Diagnostics and Appearance. Immediate writes, no Apply step — the same
- *  persistedGain category as Diagnostics. */
+ *  Diagnostics and Appearance; the Updates block joined them (2026-10-20).
+ *  Immediate writes, no Apply step — the same persistedGain category as
+ *  Diagnostics. */
 function GeneralClientSection({ session }: { session: ConnectionSession | null }): React.JSX.Element {
   const cacheMegabytes = useStore(settingsStore, (state) => state.imageCacheMegabytes);
   const changeCache = (megabytes: number): void => {
@@ -907,13 +912,14 @@ function GeneralClientSection({ session }: { session: ConnectionSession | null }
   };
   return (
     <div>
+      <h3>Updates</h3>
+      <UpdatesSettingsBlock />
       <h3>Downloads</h3>
       <div className="settings-hint">
-        Everything this client saves — logs, media from chats, pack exports — lands in this
-        folder, without a save dialog. Collisions get a " (N)" suffix.
+        Everything this client saves — logs, media from chats, pack exports — lands in this folder.
       </div>
       <DownloadsFolderRow />
-      <h3>Images</h3>
+      <h3>Cache</h3>
       <label className="settings-field"><span>Disk cache size</span>
         <select value={cacheMegabytes} onChange={(event) => changeCache(Number(event.target.value))}>
           {DISK_CACHE_CHOICES.map((size) => (
@@ -925,6 +931,88 @@ function GeneralClientSection({ session }: { session: ConnectionSession | null }
         The disk cache stores avatars and attachments by their stable key; Off keeps
         everything in memory only (nothing is written to disk).
       </div>
+    </div>
+  );
+}
+
+/** The Updates block of the client General section (user decisions 2026-10-20):
+ *  the always-on "Update available" row (it ignores both Skip and the banner's
+ *  Cancel — the escape hatch after either), the two check toggles (BOTH off =
+ *  the mechanism is fully disabled), and a manual Check now that bypasses the
+ *  toggles and the idle gate. Immediate writes. */
+function UpdatesSettingsBlock(): React.JSX.Element {
+  const update = useStore(appStore, (state) => state.update);
+  const checkOnStartup = useStore(settingsStore, (settings) => settings.updateCheckOnStartup);
+  const checkDaily = useStore(settingsStore, (settings) => settings.updateCheckDaily);
+  const [checkNote, setCheckNote] = useState<string | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  const startUpdate = (): void => {
+    if (updateInterruptsMedia()) {
+      setConfirmOpen(true);
+      return;
+    }
+    proceedUpdateDownload();
+  };
+
+  const checkNow = async (): Promise<void> => {
+    setCheckNote("Checking…");
+    const result = await manualUpdateCheck();
+    if (result.status === "available" && result.version !== null) {
+      setCheckNote(`Update available: ${result.version}`);
+    } else if (result.status === "none") {
+      setCheckNote("You are up to date.");
+    } else if (result.status === "unsupported") {
+      setCheckNote("Updates are not available in development builds.");
+    } else {
+      setCheckNote(`Check failed: ${result.message ?? "unknown error"}`);
+    }
+  };
+
+  return (
+    <div>
+      {update.version !== null ? (
+        <div className="update-settings-row">
+          <span>Update available: <b>{`v${update.version}`}</b></span>
+          {update.status === "downloading" ? (
+            <span className="settings-hint">{`Downloading — ${Math.round(update.percent ?? 0)}%`}</span>
+          ) : update.status === "failed" ? (
+            <span className="settings-hint">Download failed — see the log.</span>
+          ) : (
+            <button className="primary" onClick={startUpdate}>Update now</button>
+          )}
+        </div>
+      ) : null}
+      <label className="settings-check">
+        <input type="checkbox" checked={checkOnStartup}
+          onChange={(event) => settingsStore.apply({ updateCheckOnStartup: event.target.checked })} />
+        <span>Check on startup</span>
+      </label>
+      <label className="settings-check">
+        <input type="checkbox" checked={checkDaily}
+          onChange={(event) => settingsStore.apply({ updateCheckDaily: event.target.checked })} />
+        <span>Daily check while running</span>
+      </label>
+      <div className="settings-hint">
+        The daily check fires only after the computer has been idle for 15 minutes; the
+        banner appears after a check finds a newer version. Turn both toggles off to
+        disable update checks entirely — updates never download without your click.
+      </div>
+      <div className="modal-actions left">
+        <button onClick={() => void checkNow()}>Check now</button>
+        {checkNote !== null ? <span className="settings-hint">{checkNote}</span> : null}
+      </div>
+      {confirmOpen ? (
+        <Modal title="Update SPACE" onClose={() => setConfirmOpen(false)}>
+          <div className="modal-note">
+            Updating restarts the client now — an active voice or call session will be dropped.
+          </div>
+          <div className="modal-actions left">
+            <button className="ghost" onClick={() => setConfirmOpen(false)}>Not now</button>
+            <button className="primary" onClick={() => { setConfirmOpen(false); proceedUpdateDownload(); }}>Update now</button>
+          </div>
+        </Modal>
+      ) : null}
     </div>
   );
 }

@@ -311,6 +311,32 @@ export interface ProvisioningBridge {
   onEvent(callback: (event: ProvisioningIpcEvent) => void): void;
 }
 
+/** A self-update check's outcome as main reports it ("unsupported" = a dev
+ *  build — the updater never arms there). */
+export interface UpdateCheckResult {
+  status: "available" | "none" | "error" | "unsupported";
+  version: string | null;
+  message: string | null;
+}
+
+/** The self-update lifecycle events main pushes: download progress, the
+ *  finished download (the renderer then installs), a user cancel, a failure. */
+export type UpdateStateEvent =
+  | { kind: "downloading"; percent: number; transferred: number; total: number; bytesPerSecond: number }
+  | { kind: "downloaded"; version: string }
+  | { kind: "canceled" }
+  | { kind: "error"; message: string };
+
+/** Self-update bridge (2026-10-20): the checks and the user-initiated download
+ *  ride IPC; every byte of update traffic starts from an explicit click. */
+export interface UpdatesBridge {
+  check(): Promise<UpdateCheckResult>;
+  download(): Promise<{ started: boolean; reason: string | null }>;
+  cancelDownload(): void;
+  install(): void;
+  onState(callback: (event: UpdateStateEvent) => void): void;
+}
+
 declare global {
   interface Window {
     spaceCapture?: CaptureBridge;
@@ -321,5 +347,6 @@ declare global {
     spaceIdle?: IdleBridge;
     spaceTls?: TlsCertBridge;
     spaceProvisioning?: ProvisioningBridge;
+    spaceUpdates?: UpdatesBridge;
   }
 }

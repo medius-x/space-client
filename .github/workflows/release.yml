@@ -71,7 +71,10 @@ jobs:
           }
 
       - name: Build the installer
-        run: npm run dist
+        # --publish never: this workflow uploads the artifacts itself; the flag
+        # still makes electron-builder emit latest.yml (the update feed) and the
+        # blockmap (differential downloads) next to the exe.
+        run: npm run dist -- --publish never
 
       - name: Publish the installer to the GitHub Release
         shell: pwsh
@@ -79,8 +82,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "${env:GITHUB_REF_NAME}"
-          # electron-builder names the artifact "SPACE Setup <version>.exe" (no v prefix)
-          $exe = Get-ChildItem -Path release -Filter "*.exe" | Select-Object -First 1
-          if ($null -eq $exe) { Write-Error "no installer produced"; exit 1 }
-          gh release create "$tag" "$($exe.FullName)" --title "$tag" --generate-notes --verify-tag `
-            || gh release upload "$tag" "$($exe.FullName)" --clobber
+          $version = $tag.TrimStart('v')
+          # electron-builder writes DASHED names into latest.yml
+          # ("SPACE-Setup-<version>.exe"); GitHub asset names must match those
+          # EXACTLY or the updater's download 404s — so the local files (built
+          # with spaces) are mirrored to the canonical names before upload.
+          # latest.yml + the blockmap ride along — they ARE the update feed
+          # electron-updater consumes.
+          $exeCanonical = "release/SPACE-Setup-$version.exe"
+          $blockmapCanonical = "$exeCanonical.blockmap"
+          Copy-Item "release/SPACE Setup $version.exe" $exeCanonical -Force
+          Copy-Item "release/SPACE Setup $version.exe.blockmap" $blockmapCanonical -Force
+          $artifacts = @($exeCanonical, $blockmapCanonical, "release/latest.yml")
+          foreach ($artifact in $artifacts) {
+            if (-not (Test-Path $artifact)) { Write-Error "missing release artifact: $artifact"; exit 1 }
+          }
+          gh release create "$tag" $artifacts --title "$tag" --generate-notes --verify-tag `
+            || gh release upload "$tag" $artifacts --clobber

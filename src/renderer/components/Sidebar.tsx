@@ -6,14 +6,18 @@ import {
   closeDiscussionView,
   closeServerMenu,
   connectionDirectory,
+  dismissUpdateBanner,
   joinVoiceGuarded,
   openDiscussion,
   openServerMenu,
+  proceedUpdateDownload,
   roomAudio,
   setActiveChannel,
   setSidebarDiscussions,
   settingsStore,
+  skipUpdateVersion,
   toggleRoomView,
+  updateInterruptsMedia,
   watchShareInWindow,
 } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
@@ -27,6 +31,7 @@ import {
   type ChannelGroups,
 } from "../../domain/logic/channel-groups";
 import { applyChannelDrop, type DragSubject, type DropList } from "../../domain/logic/channel-drag";
+import { shouldShowUpdateBanner } from "../../domain/logic/update-policy";
 import { filterVoiceInviteCandidates, onlineVoiceInviteCandidates } from "../../domain/logic/voice-invite";
 import { notifications } from "../notifications";
 import { log } from "../../logging";
@@ -571,6 +576,9 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
             </span>
             <span className="icon mdi-chevron-down sidebar-server-chevron" />
           </div>
+          {/* The client self-update banner (2026-10-20) sits ABOVE the ownership
+              offer — an update of the app itself outranks a server matter. */}
+          <UpdateBanner />
           {/* The recipient's PERSISTENT ownership notification: rendered while THIS
               member holds an incoming pending offer (fetched at session start — it
               survives the recipient being offline — and refreshed on every
@@ -659,6 +667,88 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
       ) : null}
     </aside>
   );
+}
+
+/**
+ * The client self-update banner (2026-10-20, under the server header — the
+ * ownership-banner card idiom): "Space X is available" with Update / Cancel /
+ * Skip this version. Update CONFIRMS first when a voice/call session is live
+ * (declining keeps the banner); during the download the card becomes a
+ * progress bar with a Cancel-download button, and a finished download installs
+ * automatically (silent install, the app relaunches itself). Cancel only hides
+ * the card until the next check re-arms it; Skip persists the version in
+ * settings — the General section still offers the update either way.
+ */
+function UpdateBanner(): React.JSX.Element | null {
+  const update = useStore(appStore, (state) => state.update);
+  const dismissed = useStore(appStore, (state) => state.updateDismissed);
+  const skippedVersion = useStore(settingsStore, (settings) => settings.skippedUpdateVersion);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  if (dismissed || !shouldShowUpdateBanner(update.version, skippedVersion) || update.status === "idle") {
+    return null;
+  }
+
+  const startUpdate = (): void => {
+    if (updateInterruptsMedia()) {
+      setConfirmOpen(true);
+      return;
+    }
+    proceedUpdateDownload();
+  };
+
+  const percent = Math.round(update.percent ?? 0);
+  return (
+    <div className="update-banner">
+      <div className="update-banner-text">
+        <span className="icon mdi-update" />
+        {update.status === "downloading" ? (
+          <span>{`Downloading update — ${percent}%`}</span>
+        ) : update.status === "failed" ? (
+          <span>Download failed — check the log and try again</span>
+        ) : (
+          <span>{`Space ${update.version} is available`}</span>
+        )}
+      </div>
+      {update.status === "downloading" ? (
+        <div className="update-progress-row">
+          <div className="update-progress"><div className="update-progress-fill" style={{ width: `${percent}%` }} /></div>
+          <span className="update-progress-note">{formatUpdateSpeed(update.bytesPerSecond)}</span>
+        </div>
+      ) : null}
+      <div className="ownership-banner-actions">
+        {update.status === "downloading" ? (
+          <button className="ghost" onClick={() => window.spaceUpdates?.cancelDownload()}>Cancel download</button>
+        ) : (
+          <>
+            <button className="primary" onClick={startUpdate}>Update</button>
+            <button className="ghost" onClick={() => dismissUpdateBanner()}>Cancel</button>
+            <button className="ghost" onClick={() => { if (update.version !== null) { skipUpdateVersion(update.version); } }}>Skip this version</button>
+          </>
+        )}
+      </div>
+      {confirmOpen ? (
+        <Modal title="Update SPACE" onClose={() => setConfirmOpen(false)}>
+          <div className="modal-note">
+            Updating restarts the client now — an active voice or call session will be dropped.
+          </div>
+          <div className="modal-actions left">
+            <button className="ghost" onClick={() => setConfirmOpen(false)}>Not now</button>
+            <button className="primary" onClick={() => { setConfirmOpen(false); proceedUpdateDownload(); }}>Update now</button>
+          </div>
+        </Modal>
+      ) : null}
+    </div>
+  );
+}
+
+/** "4.2 MB/s" / "312 KB/s" for the download row; empty when unknown. */
+function formatUpdateSpeed(bytesPerSecond: number | null): string {
+  if (bytesPerSecond === null || !Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) {
+    return "";
+  }
+  const megabytes = bytesPerSecond / (1024 * 1024);
+  return megabytes >= 1 ? `${megabytes.toFixed(1)} MB/s` : `${Math.round(bytesPerSecond / 1024)} KB/s`;
 }
 
 /**

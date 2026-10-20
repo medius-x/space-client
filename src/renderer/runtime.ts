@@ -35,8 +35,9 @@ import { paletteColor } from "../domain/logic/user-palette";
 import { displayNameOf } from "../domain/logic/display-name";
 import { isAfkActive } from "../domain/logic/afk-activity";
 import { initialConnectionQuality, type ConnectionQualitySnapshot } from "../domain/logic/connection-quality";
+import { isDailyCheckDue, isIdleEnoughForUpdateCheck } from "../domain/logic/update-policy";
 import { memberKickReasonText, memberKickTitle } from "../domain/logic/moderation-reason";
-import type { TlsUntrustedEvent } from "./bridges";
+import type { TlsUntrustedEvent, UpdateCheckResult, UpdateStateEvent } from "./bridges";
 import { SettingsStore, type ClientSettings } from "../domain/stores/SettingsStore";
 import {
   acceleratorFromKeyboardEvent,
@@ -196,7 +197,25 @@ export interface AppState {
   /** The login/register attempt to re-run after a Trust decision (the rejected
    *  attempt died before reaching the server). Set by LoginModal on every submit. */
   tlsRetry: (() => void) | null;
+  /** The client self-update flow (2026-10-20): the known newer release, its
+   *  download progress and the outcome. The banner also renders while a
+   *  download runs (the progress lives there). */
+  update: UpdateFlowState;
+  /** The banner's Cancel: hide it for THIS round — every fresh "available"
+   *  report (startup, daily, manual) resets the flag, so Cancel means "remind
+   *  me at the next check". Skip (settings, persisted) is the permanent one. */
+  updateDismissed: boolean;
 }
+
+/** The self-update snapshot the banner and the General section render. */
+export interface UpdateFlowState {
+  status: "idle" | "available" | "downloading" | "failed";
+  version: string | null;
+  percent: number | null;
+  bytesPerSecond: number | null;
+}
+
+const UPDATE_FLOW_IDLE: UpdateFlowState = { status: "idle", version: null, percent: null, bytesPerSecond: null };
 
 class AppStore extends Emitter {
   private state: AppState = {
@@ -257,6 +276,8 @@ class AppStore extends Emitter {
     tlsPrompt: null,
     tlsRetry: null,
     bootRetryNotice: null,
+    update: UPDATE_FLOW_IDLE,
+    updateDismissed: false,
   };
 
   getSnapshot = (): AppState => this.state;
@@ -1527,6 +1548,7 @@ export async function bootstrapApp(): Promise<void> {
   installPopoutVolumeListener(); // the share pop-out's volume slider lands here
   installPopoutVoiceActionListener(); // the pop-out's mirrored voice-panel buttons land here
   installAppClosingListener(); // the forestalled window close leaves voice/call cleanly
+  startUpdateChecks(); // client self-update: startup + daily-in-idle probes
   settingsStore.subscribe(pushPopoutVoiceState); // an NS engine flip recolors the pop-out's button
   pushPopoutVoiceState(); // the initial mirror (the pop-out reads it on mount)
   notifications.setToastConfig({
@@ -3579,6 +3601,140 @@ function installPopoutVolumeListener(): void {
  *  left popoutActive stuck true forever). */
 function installPopoutClosedListener(): void {
   window.spaceWindow?.onClosed(() => popoutClosed());
+}
+
+// ---------------------------------------------------------------------------
+// Client self-update (2026-10-20): electron-updater lives in the MAIN process;
+// this side schedules the CHECKS (startup + daily-in-idle, both settings-
+// gated), keeps the flow state the banner and General render, and walks the
+// install through the same graceful voice/call teardown the tray Quit uses.
+// ---------------------------------------------------------------------------
+
+let lastUpdateCheckAt = 0;
+
+async function runUpdateCheck(): Promise<UpdateCheckResult> {
+  lastUpdateCheckAt = Date.now();
+  const bridge = window.spaceUpdates;
+  if (bridge === undefined) {
+    return { status: "unsupported", version: null, message: null };
+  }
+  const result = await bridge.check();
+  applyUpdateCheckResult(result);
+  return result;
+}
+
+/** A finished check repaints the flow: a newer version re-arms the banner
+ *  (updateDismissed=false — Cancel only meant "until the next check"), anything
+ *  else clears it — UNLESS a download is running (a stray manual check
+ *  mid-download must not eat its progress). */
+function applyUpdateCheckResult(result: UpdateCheckResult): void {
+  if (result.status === "available" && result.version !== null) {
+    appStore.patch({
+      update: { status: "available", version: result.version, percent: null, bytesPerSecond: null },
+      updateDismissed: false,
+    });
+    return;
+  }
+  if (appStore.getSnapshot().update.status !== "downloading") {
+    appStore.patch({ update: UPDATE_FLOW_IDLE });
+  }
+}
+
+/** The updater's lifecycle events: download progress, the finished download
+ *  (the install fires right away — the user consented at the Update click), a
+ *  cancel, a failure. */
+function installUpdateStateListener(): void {
+  window.spaceUpdates?.onState((event: UpdateStateEvent) => {
+    if (event.kind === "downloading") {
+      const previous = appStore.getSnapshot().update;
+      appStore.patch({
+        update: {
+          status: "downloading",
+          version: previous.version,
+          percent: Number.isFinite(event.percent) ? event.percent : 0,
+          bytesPerSecond: event.bytesPerSecond,
+        },
+      });
+    } else if (event.kind === "downloaded") {
+      installUpdateNow(event.version);
+    } else if (event.kind === "canceled") {
+      const previous = appStore.getSnapshot().update;
+      appStore.patch({
+        update: { status: "available", version: previous.version, percent: null, bytesPerSecond: null },
+        updateDismissed: false, // a canceled download re-arms the banner buttons
+      });
+    } else if (event.kind === "error") {
+      log.warn("update", `download failed: ${event.message}`);
+      const previous = appStore.getSnapshot().update;
+      appStore.patch({ update: { status: "failed", version: previous.version, percent: null, bytesPerSecond: null } });
+    }
+  });
+}
+
+/** The automatic install after a completed download: leave voice/call first
+ *  (the tray-Quit recipe — the peers' tiles drop at once, not on Janus's own
+ *  timeout), then the silent NSIS installer takes over and relaunches the app. */
+function installUpdateNow(version: string | null): void {
+  log.info("update", `v${version ?? "?"} downloaded — installing (app restarts)`);
+  void teardownVoice();
+  void teardownCall();
+  window.setTimeout(() => window.spaceUpdates?.install(), 900);
+}
+
+/** The startup check (NO idle gate — the banner is static and interrupts
+ *  nothing) + the daily one, which fires ONLY while the computer has been idle
+ *  for 15 minutes (the same powerMonitor bridge the AFK sweep reads; the user
+ *  never sees a probe compete for attention). Both toggles OFF = no probes at
+ *  all; the manual Check now button bypasses this scheduler entirely. */
+function startUpdateChecks(): void {
+  installUpdateStateListener();
+  lastUpdateCheckAt = Date.now(); // the daily clock starts at boot
+  if (settingsStore.getSnapshot().updateCheckOnStartup) {
+    window.setTimeout(() => void runUpdateCheck(), 15_000);
+  }
+  window.setInterval(() => {
+    if (!settingsStore.getSnapshot().updateCheckDaily) {
+      return;
+    }
+    if (!isDailyCheckDue(lastUpdateCheckAt, Date.now())) {
+      return;
+    }
+    void (async () => {
+      const idleSeconds = window.spaceIdle ? await window.spaceIdle.getSystemIdleTime() : Number.POSITIVE_INFINITY;
+      if (isIdleEnoughForUpdateCheck(idleSeconds)) {
+        await runUpdateCheck();
+      }
+    })();
+  }, 60_000);
+}
+
+/** A LIVE voice/call session an update would interrupt — the Update buttons
+ *  confirm first when this is true (user decision 2026-10-20: refusing keeps
+ *  the banner until the update or an explicit Cancel). */
+export function updateInterruptsMedia(): boolean {
+  const state = appStore.getSnapshot();
+  return state.activeVoiceChannelId !== null || state.callState !== "idle";
+}
+
+/** Start the user-initiated download (the interrupt confirm, when needed, is
+ *  the caller's — both the banner and the General section render it). */
+export function proceedUpdateDownload(): void {
+  void window.spaceUpdates?.download();
+}
+
+/** The banner's Cancel — re-arms on the next "available" report. */
+export function dismissUpdateBanner(): void {
+  appStore.patch({ updateDismissed: true });
+}
+
+/** The banner's Skip — persists the exact version; the NEXT release re-arms. */
+export function skipUpdateVersion(version: string): void {
+  settingsStore.apply({ skippedUpdateVersion: version });
+}
+
+/** The General section's Check now (bypasses the toggles and the idle gate). */
+export async function manualUpdateCheck(): Promise<UpdateCheckResult> {
+  return runUpdateCheck();
 }
 
 /**

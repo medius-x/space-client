@@ -203,6 +203,29 @@ contextBridge.exposeInMainWorld("spaceIdle", {
   },
 });
 
+/** Self-update bridge (2026-10-20): check the feed / start a user-initiated
+ *  download / cancel it / install the finished one. State events flow back on
+ *  "space-updates:state" (single listener slot — removeAllListeners keeps a
+ *  remount from stacking a second one, the toast-channel precedent). */
+contextBridge.exposeInMainWorld("spaceUpdates", {
+  check(): Promise<unknown> {
+    return ipcRenderer.invoke("space-updates:check");
+  },
+  download(): Promise<unknown> {
+    return ipcRenderer.invoke("space-updates:download");
+  },
+  cancelDownload(): void {
+    void ipcRenderer.invoke("space-updates:cancelDownload");
+  },
+  install(): void {
+    ipcRenderer.send("space-updates:install");
+  },
+  onState(callback: (event: unknown) => void): void {
+    ipcRenderer.removeAllListeners("space-updates:state");
+    ipcRenderer.on("space-updates:state", (_event, payload) => callback(payload));
+  },
+});
+
 /** Provisioning bridge (round C): the Create tab starts an SSH deployment of
  *  the OAK stack on a fresh server and renders the step events streaming back. */
 contextBridge.exposeInMainWorld("spaceProvisioning", {
