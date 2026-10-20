@@ -59,11 +59,16 @@ jobs:
           $tag = "${env:GITHUB_REF_NAME}"
           $dest = "electron/provisioning/files"
           New-Item -ItemType Directory -Force -Path "$dest/images" | Out-Null
-          $assets = @("oak-server.jar") + (Get-Content "$dest/images/manifest.json" -Raw | ConvertFrom-Json | ForEach-Object { "images/$($_.archive)" })
-          foreach ($asset in $assets) {
+          # manifest.json lists FLAT archive names ("postgres.tar.gz") — images:publish
+          # uploads them under exactly those asset names, so the download URL is flat
+          # too; only the DESTINATION differs (jar → files/, archives → files/images/).
+          $jarAsset = "oak-server.jar"
+          $archives = Get-Content "$dest/images/manifest.json" -Raw | ConvertFrom-Json | ForEach-Object { $_.archive }
+          foreach ($asset in @($jarAsset) + @($archives)) {
             $url = "https://github.com/${env:SERVER_REPO}/releases/download/${tag}/${asset}"
+            $out = if ($asset -eq $jarAsset) { "$dest/$asset" } else { "$dest/images/$asset" }
             Write-Host "fetching $url"
-            & curl.exe -fsSL --retry 3 -o "$dest/$asset" "$url"
+            & curl.exe -fsSL --retry 3 -o $out "$url"
             if ($LASTEXITCODE -ne 0) {
               Write-Error "asset ${asset} is missing from the oak-server release ${tag} — run 'npm run images:publish -- ${tag}' on the dev machine (or upload the archives to that release) and re-run this workflow"
               exit 1
