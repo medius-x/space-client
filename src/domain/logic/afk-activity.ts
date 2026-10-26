@@ -6,9 +6,11 @@ export const AFK_IDLE_GRACE_SECONDS = 60;
 
 /**
  * Whether the member counts as ACTIVE for the AFK sweep: currently speaking in
- * the room, OR the system-wide input idle under the grace period. The reporter
+ * the room, streaming outgoing media (a live screen share or camera — someone
+ * showing something is present by definition, whatever the input idle timer
+ * says), OR the system-wide input idle under the grace period. The reporter
  * sends a heartbeat only while this holds; the server treats silence as idle.
  */
-export function isAfkActive(idleSeconds: number, speaking: boolean): boolean {
-  return speaking || idleSeconds < AFK_IDLE_GRACE_SECONDS;
+export function isAfkActive(idleSeconds: number, speaking: boolean, streaming = false): boolean {
+  return speaking || streaming || idleSeconds < AFK_IDLE_GRACE_SECONDS;
 }

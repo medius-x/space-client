@@ -502,6 +502,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
           y={nsMenu.y}
           onPick={(next) => settingsStore.apply({ noiseSuppressionEngine: next })}
           onClose={() => setNsMenu(null)}
+          triggerRef={nsButtonRef}
         />
       ) : null}
     </div>

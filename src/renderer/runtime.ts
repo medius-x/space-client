@@ -638,7 +638,7 @@ export async function toggleSystemAudioMonitor(): Promise<void> {
   }
   const source = await createSystemAudioSource({ monitorSinkId: resolvedDevices.speaker });
   bridge.onFrame((pcm) => source.feed(pcm));
-  if (!(await bridge.start())) {
+  if (!(await bridge.start()).started) {
     source.dispose();
     log.info("sysaudio", "monitor failed to start");
     return;
@@ -673,7 +673,7 @@ export async function runSystemAudioSelfTest(): Promise<void> {
     }
     const source = await createSystemAudioSource();
     bridge.onFrame((pcm) => source.feed(pcm));
-    if (!(await bridge.start())) {
+    if (!(await bridge.start()).started) {
       source.dispose();
       log.error("selftest", "sysaudio: capture failed to start");
       return;
@@ -2832,12 +2832,26 @@ function cancelVoiceRejoin(): void {
 }
 
 /** The AFK heartbeat interval: while the ACTIVE session is in a voice room, report
- *  activity every 30 s (speaking, or system-wide input idle under the grace). */
+ *  activity every 30 s (speaking, or system-wide input idle under the grace).
+ *  The TICK CLOCK is main-owned (armAfkTicker) — a renderer interval starves
+ *  on a hidden window and silently stopped heartbeats for PRESENT members
+ *  (live reports 2026-10); when the bridge is older, a local interval is the
+ *  degraded fallback. */
 let afkReportTimer: number | null = null;
+let afkTickerArmed = false;
 
 function startAfkReporting(): void {
-  if (afkReportTimer !== null) {
+  if (afkTickerArmed || afkReportTimer !== null) {
     return; // already running (a rejoin into another room keeps the one timer)
+  }
+  const idleBridge = window.spaceIdle;
+  if (idleBridge?.armAfkTicker !== undefined && idleBridge.onAfkTick !== undefined) {
+    afkTickerArmed = true;
+    idleBridge.onAfkTick((idleSeconds) => {
+      void reportAfkActivity(idleSeconds);
+    });
+    idleBridge.armAfkTicker(true);
+    return;
   }
   afkReportTimer = window.setInterval(() => {
     void reportAfkActivity();
@@ -2845,21 +2859,38 @@ function startAfkReporting(): void {
 }
 
 function stopAfkReporting(): void {
+  if (afkTickerArmed) {
+    afkTickerArmed = false;
+    window.spaceIdle?.armAfkTicker?.(false);
+  }
   if (afkReportTimer !== null) {
     window.clearInterval(afkReportTimer);
     afkReportTimer = null;
   }
 }
 
-async function reportAfkActivity(): Promise<void> {
+/** Every tick logs its verdict (the incident trace the user asked for,
+ *  2026-10-27: AFK ejections of present members with no visible cause —
+ *  pair these lines with main's `[afk] tick idle=Ns` and the server sweep). */
+async function reportAfkActivity(mainMeasuredIdleSeconds?: number): Promise<void> {
   const session = activeSession;
-  if (session === null || appStore.getSnapshot().activeVoiceChannelId === null) {
+  const state = appStore.getSnapshot();
+  if (session === null || state.activeVoiceChannelId === null) {
     return;
   }
   // A missing bridge (old preload) degrades to speaking-only — never a false "active".
-  const idleSeconds = window.spaceIdle ? await window.spaceIdle.getSystemIdleTime() : Number.POSITIVE_INFINITY;
-  const speaking = roomAudio.speakingSnapshot().has(appStore.getSnapshot().ownUsername ?? "");
-  if (isAfkActive(idleSeconds, speaking)) {
+  const idleSeconds = mainMeasuredIdleSeconds !== undefined
+    ? mainMeasuredIdleSeconds
+    : window.spaceIdle
+      ? await window.spaceIdle.getSystemIdleTime()
+      : Number.POSITIVE_INFINITY;
+  const speaking = roomAudio.speakingSnapshot().has(state.ownUsername ?? "");
+  // An outgoing screen share or camera is activity by definition — the member
+  // is demonstrably present even with a cold system-input idle timer.
+  const streaming = state.sharing || state.cameraOn;
+  const active = isAfkActive(idleSeconds, speaking, streaming);
+  log.info("voice", `afk heartbeat: ${active ? "sent" : "SKIPPED — idle"} (idle ${idleSeconds}s, speaking=${speaking}, streaming=${streaming})`);
+  if (active) {
     session.stomp.send("/app/voice.activity", {});
   }
 }
@@ -3892,6 +3923,9 @@ export async function shareTarget(target: ShareTarget): Promise<void> {
     const granted = display.getVideoTracks()[0]?.getSettings();
     log.info("share", `capture settings: ${granted?.width ?? "?"}×${granted?.height ?? "?"} @ ${Math.round(granted?.frameRate ?? 0)} fps`);
     display.getVideoTracks()[0]?.addEventListener("ended", () => {
+      // WHO killed a share was invisible in the lifecycle logs (the 2026-10-24
+      // screen session died 6.6 s in with both teardown lines and no cause).
+      log.warn("share", "display video track ended — stopping the share");
       void stopShareInternal();
     });
     // Native process-loopback (#485): screens capture the desktop MINUS our
@@ -5186,6 +5220,8 @@ export async function callShareTarget(target: ShareTarget): Promise<void> {
     const granted = display.getVideoTracks()[0]?.getSettings();
     log.info("call", `share capture settings: ${granted?.width ?? "?"}×${granted?.height ?? "?"} @ ${Math.round(granted?.frameRate ?? 0)} fps`);
     display.getVideoTracks()[0]?.addEventListener("ended", () => {
+      // The invisible-killer diagnostic (the room seam's twin, 2026-10-24).
+      log.warn("call", "display video track ended — stopping the share");
       void stopCallShareInternal();
     });
     // Same native substitution as the room seam (#485): screens exclude our

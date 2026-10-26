@@ -555,15 +555,18 @@ function RolesSection({ session }: { session: ConnectionSession }): React.JSX.El
               data-role-kind={role.kind}
               data-role-dragged={isDragged ? "true" : undefined}
               onClick={() => setSelectedId(role.id)}
-              onPointerDown={(event) => {
-                // The press that may become a drag; the window-level
-                // pointermove commits it past the threshold. Left button only.
-                if (event.button === 0 && draggable) {
-                  dragCandidateRef.current = { roleId: role.id, startX: event.clientX, startY: event.clientY };
-                }
-              }}
             >
-              <span className={"role-grip" + (draggable ? "" : " pinned")}>⠿</span>
+              <span
+                className={"role-grip" + (draggable ? "" : " pinned")}
+                onPointerDown={(event) => {
+                  // The press that may become a drag; the window-level
+                  // pointermove commits it past the threshold. Left button only.
+                  // Only the GRIP arms the drag — the rest of the row just selects.
+                  if (event.button === 0 && draggable) {
+                    dragCandidateRef.current = { roleId: role.id, startX: event.clientX, startY: event.clientY };
+                  }
+                }}
+              >⠿</span>
               <span className="role-color-chip" style={{ background: role.color !== null ? argbIntToCss(role.color) : "var(--sp-role-chip-default)" }} />
               <span className="role-name">{role.name}</span>
               {role.kind === "CUSTOM" ? (

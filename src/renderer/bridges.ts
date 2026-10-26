@@ -111,16 +111,26 @@ export interface WindowBridge {
   minimize(): void;
   toggleMaximize(): void;
   close(): void;
+  /** Bring the window forward — restore from minimized / show from tray / focus. */
+  raise(): void;
   onMaximizedChange(callback: (maximized: boolean) => void): void;
 }
 
+/** The capture-start result as it crosses IPC. */
+export interface SysAudioStartInfo {
+  started: boolean;
+  mode: "exclude-self" | "include";
+  pid: number;
+}
+
 /** Native system-audio bridge (#485): WASAPI process-loopback — frames arrive
- *  as interleaved stereo Int16 at the ~10 ms cadence. Without a source id the
- *  capture is the whole desktop minus OUR process; a window source id
+ *  as interleaved stereo Int16 at the ~10 ms cadence (legacy push mode; with
+ *  a returned ring the data path is shared memory instead). Without a source
+ *  id the capture is the whole desktop minus OUR process; a window source id
  *  ("window:HWND:…") captures only that application's process tree. */
 export interface SysAudioBridge {
   available(): Promise<boolean>;
-  start(sourceId?: string): Promise<boolean>;
+  start(sourceId?: string): Promise<SysAudioStartInfo>;
   stop(): Promise<void>;
   onFrame(callback: (pcm: Int16Array, silent: boolean) => void): void;
 }
@@ -225,6 +235,13 @@ export interface HotkeyBridge {
  *  OS-wide user input, from Electron's powerMonitor in main. */
 export interface IdleBridge {
   getSystemIdleTime(): Promise<number>;
+  /** Arm the MAIN-PROCESS 30 s AFK tick (a renderer interval starves on a
+   *  hidden window — the same class the share-audio ring closed). Optional:
+   *  older preloads lack it and the runtime falls back to its own interval. */
+  armAfkTicker?(armed: boolean): void;
+  /** The tick push: main measured the system idle and wants a heartbeat
+   *  decision (the STOMP send itself lives in the renderer). */
+  onAfkTick?(callback: (idleSeconds: number) => void): void;
 }
 
 /** An untrusted server certificate main rejected and surfaced for a trust

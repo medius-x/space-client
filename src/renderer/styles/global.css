@@ -3473,10 +3473,11 @@ input[type="checkbox"]:disabled { opacity: 0.5; cursor: default; }
 }
 .role-grip:active { cursor: grabbing; }
 .role-grip.pinned { opacity: 0.35; cursor: default; }
-/* Pointer-drag: the whole draggable row carries the grab cursor; while the
-   drag is live the entire app shows grabbing (a body class toggled by the
+/* Pointer-drag: only the GRIP carries the grab cursor and starts the drag —
+   the rest of the row stays a plain pointer (click selects). While the drag
+   is live the entire app shows grabbing (a body class toggled by the
    component — no system drag cursor is involved at all). */
-.roles-row.draggable { cursor: grab; touch-action: none; }
+.roles-row.draggable .role-grip { cursor: grab; touch-action: none; }
 body.role-dragging,
 body.role-dragging * { cursor: grabbing !important; }
 /* The floating snapshot of the dragged row — rides beside the pointer via an
@@ -3934,23 +3935,28 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 }
 .search-load-more:hover { color: var(--sp-text); }
 
-/* The around window's escape hatch: visible while the chat is parked mid-history
-   (a search jump), pinned above the composer at the pane's bottom-right. */
-.jump-to-present {
+/* Scroll-to-latest: a gray-circle twin of the settings screen's close button,
+   pinned above the composer at the pane's bottom-right — shown whenever the
+   reader is away from the newest message (scrolled up in ordinary history, or
+   a search-jump window with an id-unknown gap below). A gap click reloads the
+   live tail; otherwise it is a plain bottom scroll. */
+.chat-scroll-down {
   position: absolute;
   right: 20px;
   bottom: 88px; /* above the composer card + its padding */
   z-index: 6;
-  padding: 4px 12px;
-  font-size: 12px;
-  font-family: inherit;
-  font-weight: 700;
-  color: #fff;
-  background: var(--sp-accent);
-  border-radius: 8px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--sp-control);
+  color: var(--sp-text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
-.jump-to-present:hover { background: var(--sp-accent-hover); }
+.chat-scroll-down:hover { background: var(--sp-hover); color: var(--sp-text); }
 
 /* ===== M7 oak-parity: avatar presence overlay, members pane, scrollbars ===== */
 

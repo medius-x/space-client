@@ -427,7 +427,13 @@ export async function startSystemAudio(
     }
 
     // The drain: pumped by a 10 ms timer (no native thread), packets batch per
-    // tick. PCM leaves native memory through the _Out_ memcpy into a JS Buffer.
+    // tick. PCM leaves native memory through the _Out_ memcpy into a JS Buffer
+    // and crosses to the renderer per frame (fire-and-forget IPC). A shared-
+    // memory ring was tried here (2026-10-27) and is NOT viable: Chromium only
+    // exposes SharedArrayBuffer in a renderer under cross-origin isolation,
+    // and COI/COEP would block this multi-server client's presigned media
+    // loads from user servers — the injector worklet bridges delivery jitter
+    // with its own (now 4 s) ring instead.
     const packetFrames = lib.cell(4);
     const dataOut = lib.cell(8);
     const framesOut = lib.cell(4);
@@ -502,7 +508,15 @@ export async function startSystemAudio(
   }
 }
 
-export function stopSystemAudio(): void {
-  activeSession?.stop();
+/** Stops the capture. Returns false when nothing was running (the caller's
+ *  "stopped" log line then stays silent — a no-op stop fires on every share
+ *  start through the defensive release). */
+export function stopSystemAudio(): boolean {
+  const session = activeSession;
   activeSession = null;
+  if (session === null) {
+    return false;
+  }
+  session.stop();
+  return true;
 }

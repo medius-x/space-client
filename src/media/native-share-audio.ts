@@ -33,6 +33,7 @@ let monitorWanted = false;
 const SHARE_AUDIO_STATS_INTERVAL_MS = 10_000;
 let statsTimer: ReturnType<typeof setInterval> | null = null;
 let peakLinearRms = 0;
+let sawStatsWindow = false;
 
 function describeDbfs(linearRms: number): string {
   const dbfs = rmsToDbfs(linearRms);
@@ -42,11 +43,13 @@ function describeDbfs(linearRms: number): string {
 function startShareAudioStats(kind: "window" | "screen", source: SystemAudioSource): void {
   stopShareAudioStats();
   peakLinearRms = 0;
+  sawStatsWindow = false;
   statsTimer = setInterval(() => {
     const stats = source.latestStats();
     if (stats === null) {
       return; // no 1 s worklet window has completed yet
     }
+    sawStatsWindow = true;
     peakLinearRms = Math.max(peakLinearRms, stats.rmsLeft, stats.rmsRight);
     log.info("share-audio", `${kind}: L ${describeDbfs(stats.rmsLeft)} · R ${describeDbfs(stats.rmsRight)} · underruns ${stats.underruns} · dropped ${stats.dropped}`);
   }, SHARE_AUDIO_STATS_INTERVAL_MS);
@@ -58,12 +61,19 @@ function stopShareAudioStats(): void {
   }
   clearInterval(statsTimer);
   statsTimer = null;
-  // The session summary answers "did the capture EVER carry sound" in one line:
-  // a whole share peaking at silence is the exclusive-mode/wrong-device
-  // signature, even when nobody was watching the periodic lines.
-  const peak = rmsToDbfs(peakLinearRms);
-  log.info("share-audio", `${activeKind ?? "capture"} ended; peak ${peak <= -100 ? "SILENT for the whole session" : peak.toFixed(1) + " dBFS"}`);
+  // The session summary answers "did the capture EVER carry sound" in one
+  // line — and distinguishes the two silent deaths: NO stats window ever
+  // completing means the injector produced no quanta at all (a suspended
+  // context / starved renderer), which the old line misreported as digital
+  // silence (the 2026-10-24 screen-share session).
+  if (!sawStatsWindow) {
+    log.info("share-audio", `${activeKind ?? "capture"} ended; NO SIGNAL (worklet stats never arrived — injector silent or starved)`);
+  } else {
+    const peak = rmsToDbfs(peakLinearRms);
+    log.info("share-audio", `${activeKind ?? "capture"} ended; peak ${peak <= -100 ? "SILENT for the whole session" : peak.toFixed(1) + " dBFS"}`);
+  }
   peakLinearRms = 0;
+  sawStatsWindow = false;
 }
 
 /** Whether a native share capture is running (the diag monitor attaches to it). */
@@ -111,9 +121,16 @@ export async function acquireNativeShareAudioTrack(sourceId?: string, monitorSin
     }
     releaseNativeShareAudio(); // a leaked previous session must not block this one
     const source = await createSystemAudioSource({ monitorSinkId: monitorSinkId ?? null });
-    // Wire the sink BEFORE start: frames flow on the first drain tick.
+    // Wire the sink BEFORE start: in the legacy IPC-push mode frames flow on
+    // the first drain tick (in ring mode the listener stays inert — frames
+    // never come, the worklet reads shared memory instead).
     bridge.onFrame((pcm, _silent) => source.feed(pcm));
-    if (!(await bridge.start(sourceId))) {
+    const startInfo = await bridge.start(sourceId);
+    if (!startInfo.started) {
+      // Main may have started the capture anyway (a render-side failure after
+      // a successful start — the leaked-session trap of 2026-10-27): stop it,
+      // or the single-capture slot blocks every later share until app restart.
+      void bridge.stop();
       source.dispose();
       log.warn("share", `native audio failed to start${sourceId !== undefined ? ` (source ${sourceId})` : ""} — falling back`);
       return null;
@@ -130,17 +147,19 @@ export async function acquireNativeShareAudioTrack(sourceId?: string, monitorSin
 }
 
 /** Frees the WASAPI session and the injector context — every share teardown
- *  path calls this; a no-op when no native share is running. */
+ *  path calls this. The bridge stop is UNCONDITIONAL: a start that succeeded
+ *  in main but left no renderer-side owner (a bailed acquire) still holds the
+ *  single-capture slot and must not outlive this call. */
 export function releaseNativeShareAudio(): void {
   monitorWanted = false;
   stopShareAudioStats();
+  void window.spaceSysAudio?.stop();
   if (active === null) {
     return;
   }
   try {
-    void window.spaceSysAudio?.stop();
-  } finally {
     active.dispose();
+  } finally {
     active = null;
     activeKind = null;
   }

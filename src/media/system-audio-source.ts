@@ -4,8 +4,14 @@
  * WebAudio graph through a port-fed worklet ring — no input pins, the process()
  * quanta pull from the ring. The resulting MediaStreamDestination track is the
  * same shape the NS pipelines already publish (a WebAudio-synthesized track is
- * addTrack-able today). Ring sizing: ~250 ms of headroom — the IPC cadence is
- * 10 ms but a busy main can hiccup.
+ * addTrack-able today). Ring sizing: 4 s per channel — the IPC cadence is
+ * 10 ms but either process can hiccup for hundreds of milliseconds (frame
+ * stalls of ~150 ms were measured in the click-burst incident, 2026-10-24),
+ * and a dry ring is an audible click EVERY 2.67 ms quantum until it refills.
+ * A shared-memory ring feeding the worklet directly was tried and is NOT
+ * viable here: Chromium exposes SharedArrayBuffer in a renderer only under
+ * cross-origin isolation, and COI/COEP would block this multi-server client's
+ * presigned media loads from user servers (probe, 2026-10-27).
  */
 
 import { log } from "../logging";
@@ -14,8 +20,8 @@ const INJECTOR_WORKLET_SOURCE = `
 class PcmInjector extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.ringLeft = new Float32Array(48000);  // 1 s per channel
-    this.ringRight = new Float32Array(48000);
+    this.ringLeft = new Float32Array(192000);  // 4 s per channel — bridges multi-stall jank
+    this.ringRight = new Float32Array(192000);
     this.readIndex = 0;
     this.writeIndex = 0;
     this.pending = 0;
@@ -172,6 +178,16 @@ export async function createSystemAudioSource(options?: SystemAudioSourceOptions
       stats = { underruns: data.underruns, dropped: data.dropped, rmsLeft: data.rmsLeft, rmsRight: data.rmsRight };
     }
   };
+  // A suspended injector context produces no process() quanta at all: the
+  // published track goes bit-silent with ZERO errors anywhere (the "peak
+  // SILENT" ambiguity of the 2026-10-24 session). Watch the state and resume
+  // aggressively — autoplayPolicy is no-user-gesture-required, so resume works.
+  context.onstatechange = () => {
+    if (context.state !== "running" && context.state !== "closed") {
+      log.warn("audio", `system-audio injector context ${context.state} — resuming`);
+      void context.resume().catch(() => undefined);
+    }
+  };
 
   let monitorGain: GainNode | null = null;
   return {
@@ -209,6 +225,7 @@ export async function createSystemAudioSource(options?: SystemAudioSourceOptions
         node.disconnect();
         sink.disconnect();
       } finally {
+        context.onstatechange = null; // closing flips the state — no resume race
         void context.close().catch(() => undefined);
       }
     },

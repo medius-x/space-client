@@ -911,6 +911,23 @@ ipcMain.on("space-window:maximize", (event) => {
 ipcMain.on("space-window:close", (event) => {
   BrowserWindow.fromWebContents(event.sender)?.close();
 });
+// A toast click wants the sender window FORWARD — even when it is minimized or
+// hidden to tray. The renderer's window.focus() cannot lift those states, so
+// the click's navigation would land on an invisible screen (live report: "the
+// toast click does not jump anywhere" while the main window sat minimized).
+ipcMain.on("space-window:raise", (event) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (window === undefined || window === null) {
+    return;
+  }
+  if (window.isMinimized()) {
+    window.restore();
+  }
+  if (!window.isVisible()) {
+    window.show();
+  }
+  window.focus();
+});
 // The pop-out's volume sliders: the AUDIO plays in the main window (the pop-out
 // subscribes video-only), so the value forwards there and applies to the picked
 // chain (share or the peer's voice) / persists per username. The kind is
@@ -1032,6 +1049,27 @@ ipcMain.handle("space-capture:watchSource", (_event, sourceId: unknown) => {
 // ---------------------------------------------------------------------------
 ipcMain.handle("space-idle:time", () => powerMonitor.getSystemIdleTime());
 
+// The AFK heartbeat CLOCK lives HERE, not in the renderer: a renderer
+// setInterval starves on a hidden/backgrounded window for minutes at a time
+// (the same Windows behavior the share-audio ring closed), silently stopping
+// the /app/voice.activity heartbeats and sweeping PRESENT members to the AFK
+// channel (live reports 2026-10: members playing a game with space minimized).
+// Main never throttles; every tick is LOGGED, so even a frozen renderer
+// leaves the trace, and the push drives the renderer's STOMP send.
+let afkTicker: ReturnType<typeof setInterval> | null = null;
+ipcMain.on("space-afk:arm", (_event, armed: unknown) => {
+  if (armed === true && afkTicker === null) {
+    afkTicker = setInterval(() => {
+      const idleSeconds = powerMonitor.getSystemIdleTime();
+      appendLog(`[afk] tick idle=${idleSeconds}s`);
+      sendToMainWindow("space-afk:tick", idleSeconds);
+    }, 30_000);
+  } else if (armed !== true && afkTicker !== null) {
+    clearInterval(afkTicker);
+    afkTicker = null;
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Client self-update (2026-10-20): electron-updater against this repo's GitHub
 // Releases — every download is user-initiated, the install is fully automatic
@@ -1064,11 +1102,16 @@ ipcMain.handle("space-sysaudio:start", async (_event, sourceId: unknown) => {
     ? " — window pid unresolved (dead window or malformed source id)"
     : "";
   appendLog(`[sysaudio] native capture ${result.started ? `started (${scope})` : `FAILED to start (${scope})${failureNote}`}`);
-  return result.started;
+  // The WHOLE result — the renderer reads .started/.mode/.pid and attaches the
+  // shared ring when present. Returning bare `result.started` here made the
+  // renderer read `undefined` and fall back to video-only while the capture
+  // kept RUNNING in main (leaked single-capture slot, live report 2026-10-27).
+  return result;
 });
 ipcMain.handle("space-sysaudio:stop", () => {
-  stopSystemAudio();
-  appendLog("[sysaudio] native capture stopped");
+  if (stopSystemAudio()) {
+    appendLog("[sysaudio] native capture stopped");
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -1324,6 +1367,14 @@ ipcMain.on("space-toast:hover", (_event, interactive: unknown) => {
   // isDestroyed guard (the crash of 2026-10-16): the hover IPC can land while
   // the toast window is being torn down during quit — `?.` checks null only.
   if (toastWindow !== null && !toastWindow.isDestroyed()) {
+    if (next) {
+      // The cursor is over a card and a click is imminent — re-assert the
+      // topmost band: Windows occasionally demotes the toast window out of it
+      // after hide/show cycles, leaving cards UNDER other windows while the
+      // forwarded hover still works (the "hover yes, click no" live report).
+      toastWindow.setAlwaysOnTop(true, "screen-saver");
+      toastWindow.moveTop();
+    }
     toastWindow.setIgnoreMouseEvents(!next, { forward: true });
   }
 });
@@ -1359,6 +1410,10 @@ ipcMain.on("space-toast:empty", () => {
 
 ipcMain.on("space-toast:clicked", (_event, id: unknown) => {
   if (typeof id === "number") {
+    // Diagnostic hop marker (the call-card precedent): paired with the
+    // renderer's "card N clicked" and the hub's routing line, a missing hop
+    // names exactly where a click died.
+    appendLog(`[main] toast click id=${id}`);
     sendToMainWindow("toast:clicked", id);
   }
 });

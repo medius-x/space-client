@@ -92,15 +92,23 @@ class NotificationHub {
     window.spaceToast?.onClicked((cardId) => {
       const callback = this.cardCallbacks.get(cardId) ?? null;
       this.cardCallbacks.delete(cardId);
-      window.focus(); // bring the app forward first (oak's toast click)
+      log.info("toast", `click id=${cardId} ${callback !== null ? "routed" : "no callback"}`);
+      // Bring the app forward first (oak's toast click) — including from
+      // minimized/tray, where a bare window.focus() cannot restore the window
+      // and the navigation would land on an invisible screen (live report:
+      // "the toast click does not jump anywhere").
+      window.spaceWindow?.raise();
+      window.focus();
       callback?.();
     });
     window.spaceToast?.onCallAction((action) => {
-      window.focus(); // answering a call brings the app forward too
+      window.spaceWindow?.raise(); // answering a call brings the app forward too
+      window.focus();
       this.callActionHandler?.(action);
     });
     window.spaceToast?.onVoiceInviteAction((action, id) => {
-      window.focus(); // joining a room brings the app forward too
+      window.spaceWindow?.raise(); // joining a room brings the app forward too
+      window.focus();
       this.voiceInviteActionHandler?.(action, id);
     });
   }

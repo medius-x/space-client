@@ -944,11 +944,20 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
   // The around window's downward end: true while an id-unknown gap sits between the
   // window's last message and the live tail (the search jump opened mid-history).
   const belowEndRef = useRef(false);
+  // One-shot: the batch that LANDED the tail (the short page closing the around
+  // gap) must not raise the NEW divider — the reader just scrolled through that
+  // history by hand, it is read, not unread (live report 2026-10-27: the whole
+  // first downward page lit up as NEW the moment the pill vanished). Set on the
+  // around→plain transition, consumed by the growth effect below; a no-growth
+  // pass expires it so a stale flag can never swallow a REAL divider later.
+  const tailLandingSuppressRef = useRef(false);
   const loadingNewerRef = useRef(false);
   const [jumpToPresent, setJumpToPresent] = useState(false);
-  // Live rows the around guard has dropped since the window was armed — the
-  // pill's "N new" label, the only visible sign the view sits mid-history.
-  const aroundDropped = useStore(session.messageStore, (store) => store.aroundDropCount(channel.id));
+  // The scroll-to-latest chevron's "reader is away from the newest message"
+  // half — the OTHER half is jumpToPresent (a search-jump window with a gap
+  // below: the reader can sit at the loaded list's bottom edge and still be
+  // far from the chat's real end).
+  const [scrolledUp, setScrolledUp] = useState(false);
   const [dividerReadId, setDividerReadId] = useState<number | null>(null);
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [beginReached, setBeginReached] = useState(false);
@@ -1023,6 +1032,8 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
     setBeginReached(false);
     belowEndRef.current = false;
     setJumpToPresent(false);
+    setScrolledUp(false);
+    tailLandingSuppressRef.current = false;
     // A back-fill jump belongs to the list that armed it — after a server
     // switch the same numeric id denotes a DIFFERENT message (the same
     // id-collision class the scoped row keys close).
@@ -1032,11 +1043,26 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
   // The auto catch-up may heal the window while the user is looking at it (the
   // gap below is paginated through — the list is contiguous with the tail
   // again): the "gap" affordance goes away, what remains is ordinary scrolling.
+  // ARMING is symmetric: when the jump target was ALREADY in the loaded list,
+  // the consumption effect below runs BEFORE the around snapshot lands and
+  // reads a not-yet-armed flag — the store flag is the authority, so it arms
+  // here too (live report: after a search jump to a recent message, scrolling
+  // back down loaded nothing and the "Jump to present" pill never showed).
   const aroundActive = useStore(session.messageStore, (store) => store.isAroundWithoutTail(channel.id));
   useEffect(() => {
-    if (!aroundActive && belowEndRef.current) {
+    if (aroundActive) {
+      if (!belowEndRef.current) {
+        belowEndRef.current = true;
+        setJumpToPresent(true);
+      }
+    } else if (belowEndRef.current) {
       belowEndRef.current = false;
-      setJumpToPresent(false);
+      // The PILL outlives the data gap: it dismisses only when the reader
+      // reaches the bottom (onBottomProximity) or clicks it — the gap closing
+      // a page early must not strand the reader without the jump affordance.
+      // The flag only clears together with a batch landing the tail — mark
+      // that batch as "walked-through history" for the growth effect.
+      tailLandingSuppressRef.current = true;
     }
   }, [aroundActive]);
 
@@ -1112,22 +1138,31 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
   const lastStickLogAtRef = useRef(0);
   useEffect(() => {
     const grew = messages.length > messageCountRef.current;
+    if (!grew) {
+      tailLandingSuppressRef.current = false; // expire stale suppression
+    }
     const pinned = nearBottomRef.current;
     const watching = pinned && document.hasFocus();
     const ownBatch = previousTailRef.current !== null
       && messages.filter((message) => message.id > previousTailRef.current!)
         .every((message) => message.authorUsername === session.username());
     // While an around window is paginating DOWN, the "new" rows below are OLD
-    // messages fetched on demand — not unread arrivals. No divider raise, no ack;
-    // scrollToBottom stays (it chains the next downward page while pinned).
-    if (grew && previousTailRef.current !== null && !watching && !ownBatch && !belowEndRef.current) {
+    // messages fetched on demand — not unread arrivals. No divider raise, no
+    // ack, and NO stick-to-bottom either: revealed history grows BELOW the
+    // anchored reader (the snap used to yank the reader to each page's end and
+    // could dead-end at the exact bottom, where wheel-down makes no scroll
+    // event at all — "the latest messages never load"; live report 2026-10-27.
+    // The page chain is driven by loadNewer itself now).
+    if (grew && tailLandingSuppressRef.current) {
+      tailLandingSuppressRef.current = false; // the tail-landing batch: history walked through by hand
+    } else if (grew && previousTailRef.current !== null && !watching && !ownBatch && !belowEndRef.current) {
       setDividerReadId(previousTailRef.current);
     }
     // Server ids only — the optimistic tail (negative ids) must not become the
     // unread divider's anchor or the own-batch filter's threshold.
     previousTailRef.current = lastServerMessageId(messages);
     messageCountRef.current = messages.length;
-    if (grew && pinned) {
+    if (grew && pinned && !belowEndRef.current) {
       // Diagnostics marker (paced): if the thumb bounce is THIS call fighting
       // the departing reader, space.log shows it next to the drift lines —
       // one log, both suspects, no guessing.
@@ -1137,6 +1172,8 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
         log.info("vscroll", "stick-to-bottom: scrollToBottom on batch arrival (reader pinned)");
       }
       listRef.current?.scrollToBottom();
+      setJumpToPresent(false); // pinned on the LIVE bottom — the jump affordance is spent
+      setScrolledUp(false);
     }
     if (grew && (watching || ownBatch) && !belowEndRef.current) {
       ackActiveChannel();
@@ -1240,20 +1277,31 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
     loadingNewerRef.current = true;
     void (async () => {
       try {
-        // Server id only: a surviving optimistic temp row (negative id) parked at
-        // the tail would send an invalid afterId cursor.
-        const lastId = lastServerMessageId(messages);
+        // The cursor comes from the STORE, not the messages prop: the chained
+        // call below may fire from a timeout holding a pre-render closure, and
+        // a stale prop cursor would refetch the same page forever (jumpTo
+        // precedent). Server id only — an optimistic temp row (negative id)
+        // parked at the tail would send an invalid afterId cursor.
+        const lastId = lastServerMessageId(session.messageStore.listFor(channel.id));
         if (lastId === null) {
           return;
         }
         const raw = await session.loadNewer(channel.id, lastId);
         if (raw < NEWER_PAGE) {
           belowEndRef.current = false;
-          setJumpToPresent(false);
+          // jumpToPresent deliberately STAYS: the pill is positional (until
+          // the reader reaches the bottom), not gap-driven.
           session.messageStore.markTailReached(channel.id);
           if (nearBottomRef.current && document.hasFocus()) {
             ackActiveChannel(); // contiguous tail now — the ack is finally true
           }
+        } else if (nearBottomRef.current) {
+          // Chain without waiting for a scroll event: the reader stayed at the
+          // revealed edge, so keep paging until they pull away or the tail
+          // lands. (Relying on bottom-proximity alone dead-ends when the
+          // reader sits at the EXACT bottom — wheel-down there produces no
+          // scroll event, so the edge trigger never re-fires.)
+          window.setTimeout(() => loadNewerRef.current(), 50);
         }
       } catch {
         // next near-bottom pass retries
@@ -1262,6 +1310,10 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
       }
     })();
   };
+  // Latest-closure ref: the chain above must call the CURRENT loadNewer (with
+  // a fresh nearBottomRef-aware closure), not the one captured at arm time.
+  const loadNewerRef = useRef(loadNewer);
+  loadNewerRef.current = loadNewer;
 
   /** "Jump to present": discard the window, refetch the newest page as the plain
    *  contiguous tail and land on the bottom. */
@@ -1394,8 +1446,17 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
       }}
       onBottomProximity={(nearBottom) => {
         nearBottomRef.current = nearBottom;
+        setScrolledUp(!nearBottom);
         if (nearBottom) {
           scheduleDividerDismiss(); // back at the bottom → restart the countdown
+          // The reader reached the LOADED list's bottom edge. That is the
+          // chat's real bottom ONLY without a gap below — during around
+          // pagination this same edge fires with belowEnd still armed, and
+          // dismissing the jump affordance there is what made the chevron
+          // vanish at the first page boundary (live report 2026-10-27).
+          if (!belowEndRef.current) {
+            setJumpToPresent(false);
+          }
           if (belowEndRef.current) {
             loadNewer(); // pinned at the window's lower edge → page towards the tail
           }
@@ -1442,9 +1503,21 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
         </>
       )}
       />
-      {jumpToPresent && messages.length > 0 ? (
-        <button className="jump-to-present" onClick={jumpToPresentNow}>
-          Jump To Present{aroundDropped > 0 ? ` · ${aroundDropped} new` : ""} ↓
+      {(scrolledUp || jumpToPresent) && messages.length > 0 ? (
+        <button
+          className="chat-scroll-down"
+          title="Jump to the latest messages"
+          onClick={() => {
+            if (belowEndRef.current) {
+              // An id-unknown gap sits below — only a tail reload truly lands
+              // on the newest message (the old "Jump To Present" behavior).
+              jumpToPresentNow();
+              return;
+            }
+            listRef.current?.scrollToBottom();
+          }}
+        >
+          <span className="icon mdi-chevron-down" />
         </button>
       ) : null}
     </>

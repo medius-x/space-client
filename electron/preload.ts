@@ -196,10 +196,23 @@ contextBridge.exposeInMainWorld("spaceCapture", {
 });
 
 /** System-idle bridge (the AFK sweep's activity source): seconds since the last
- *  OS-WIDE user input, straight from Electron's powerMonitor. */
+ *  OS-WIDE user input, straight from Electron's powerMonitor. The AFK TICK
+ *  itself is main-owned (a renderer interval starves on a hidden window,
+ *  silently stopping heartbeats for PRESENT members — live reports 2026-10). */
 contextBridge.exposeInMainWorld("spaceIdle", {
   getSystemIdleTime(): Promise<number> {
     return ipcRenderer.invoke("space-idle:time");
+  },
+  armAfkTicker(armed: boolean): void {
+    ipcRenderer.send("space-afk:arm", armed);
+  },
+  onAfkTick(callback: (idleSeconds: number) => void): void {
+    ipcRenderer.removeAllListeners("space-afk:tick");
+    ipcRenderer.on("space-afk:tick", (_event, idleSeconds: unknown) => {
+      if (typeof idleSeconds === "number") {
+        callback(idleSeconds);
+      }
+    });
   },
 });
 
@@ -375,6 +388,11 @@ contextBridge.exposeInMainWorld("spaceWindow", {
   },
   close(): void {
     ipcRenderer.send("space-window:close");
+  },
+  /** Bring this window forward — restore from minimized, show from tray, focus
+   *  (the toast click path: navigation must not land on an invisible window). */
+  raise(): void {
+    ipcRenderer.send("space-window:raise");
   },
   onMaximizedChange(callback: (maximized: boolean) => void): void {
     ipcRenderer.on("space-window:maximized", (_event, maximized: unknown) => {
