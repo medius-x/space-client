@@ -321,6 +321,10 @@ export class ConnectionSession {
     this.rosterStore.setUsers(users);
     if (profile) {
       this.serverProfile = profile;
+      // The build this client talks to (user request 2026-10-27): exported log
+      // archives must answer "which version did this bug happen on" for BOTH
+      // sides — the client's version rides the main-process boot line.
+      log.info("session", `server version: ${profile.version ?? "unknown"}`);
       void this.directory.update(this.recordId, { cachedServerName: profile.name, cachedServerAvatarKey: profile.avatarKey });
     }
     if (myPermissions) {
@@ -1525,7 +1529,13 @@ export class ConnectionSession {
     });
     this.stomp.subscribe("/topic/server", (raw) => {
       const profile = JSON.parse(raw) as ServerProfile;
+      const previousVersion = this.serverProfile?.version ?? null;
       this.serverProfile = profile;
+      // Same version trail as the start() snapshot, but only when the build
+      // actually changed — a rename push must not spam the log.
+      if (profile.version !== previousVersion) {
+        log.info("session", `server version: ${profile.version ?? "unknown"}`);
+      }
       void this.directory.update(this.recordId, { cachedServerName: profile.name, cachedServerAvatarKey: profile.avatarKey });
     });
     this.stomp.subscribe("/topic/channels", (raw) => {

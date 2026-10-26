@@ -26,6 +26,7 @@ import { CHANGE_NICKNAME_PERMISSION, type NotificationPrefs } from "../../types"
 import { useDisplayName } from "../hooks/useDisplayName";
 import { downloadClientLogs } from "../logs-export";
 import { Modal } from "./Modal";
+import { NS_ENGINE_DESCRIPTIONS, NS_ENGINE_LABELS } from "./VoiceRoom";
 import { Avatar } from "./Avatar";
 import { AvatarEditor, userAvatarApi } from "./ProfileModal";
 import { KeybindsSection } from "./KeybindsSection";
@@ -344,6 +345,13 @@ function AudioSection({ staged }: { staged: StagedSettings }): React.JSX.Element
           <option value="off">Off</option>
         </select>
       </label>
+      {/* The selected engine's one-liner (user request 2026-10-27) — the same
+          text the selector card shows on hover, so the choice is informed in
+          both places. */}
+      <div className="settings-hint">
+        {NS_ENGINE_LABELS[staged.value("noiseSuppressionEngine")]} — {" "}
+        {NS_ENGINE_DESCRIPTIONS[staged.value("noiseSuppressionEngine")]}
+      </div>
       {/* DFN3 only — its native knob has a hard 0..100 ceiling, so a SLIDER
           (user decision), never a free-form number field. */}
       {staged.value("noiseSuppressionEngine") === "deepfilternet3" ? (
@@ -809,6 +817,15 @@ function DiagnosticsSection({ session }: { session: ConnectionSession | null }):
   const record = session !== null
     ? records.find((entry) => entry.id === session.recordId) ?? null
     : null;
+  // The CLIENT's own build (user request 2026-10-27): "did the update land?"
+  // answered without the log. Plain package.json version in dev, exe version
+  // when packaged. Shown with or without a session — the section is client-scoped.
+  const [clientVersion, setClientVersion] = useState<string | null>(null);
+  useEffect(() => {
+    void window.spaceUpdates?.getVersion()
+      .then((version) => setClientVersion(typeof version === "string" ? version : null))
+      .catch(() => undefined);
+  }, []);
   // The ADVERTISED address a member types into "Add server" — stored server-side
   // in the profile (oak's activeServerConnectionAddress), NOT our connect URL.
   const address = session !== null
@@ -819,6 +836,7 @@ function DiagnosticsSection({ session }: { session: ConnectionSession | null }):
     : null;
   return (
     <div>
+      <div className="settings-hint">Client version: {clientVersion ?? "…"}</div>
       {session !== null ? (
         <>
           <h3>This server</h3>

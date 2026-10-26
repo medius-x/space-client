@@ -348,6 +348,9 @@ export type UpdateStateEvent =
  *  ride IPC; every byte of update traffic starts from an explicit click. */
 export interface UpdatesBridge {
   check(): Promise<UpdateCheckResult>;
+  /** The client's own version — package.json in dev, the exe version when
+   *  packaged (Diagnostics, user request 2026-10-27). */
+  getVersion(): Promise<string>;
   download(): Promise<{ started: boolean; reason: string | null }>;
   cancelDownload(): void;
   install(): void;

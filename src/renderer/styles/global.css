@@ -143,8 +143,10 @@ body:has(.toast-stack) {
 .voice-channel:hover { background: var(--sp-hover); }
 .voice-channel:hover .channel-row { color: var(--sp-text); }
 .voice-channel .channel-row:hover { background: transparent; } /* the block owns the hover */
-.voice-channel.active { background: var(--sp-selected); }
-.voice-channel.active .channel-row { color: var(--sp-text); }
+/* Discord parity (user request 2026-10-27): the voice room you sit in is NOT
+   highlighted like the active text channel — no selected background. The live
+   connection reads through the GREEN name/glyph (below) and the member rows,
+   exactly like Discord's connected-voice channel. */
 .voice-channel.active.voice-live .channel-row { color: var(--sp-green); }
 .voice-channel.locked { cursor: not-allowed; }
 .voice-channel.locked .channel-row { cursor: not-allowed; }
@@ -750,6 +752,8 @@ body.rail-dragging * { cursor: grabbing !important; }
 }
 .context-menu-item:hover { background: var(--sp-hover); }
 .context-menu-item.danger:hover { background: var(--sp-red); color: #fff; }
+.context-menu-item:disabled { opacity: 0.45; }
+.context-menu-item:disabled:hover { background: transparent; }
 /* oak's .popup-separator: a hairline splitting action blocks (Call | Kick/Ban). */
 .context-menu-separator {
   height: 1px;
@@ -2026,6 +2030,13 @@ button.wide-add { width: 100%; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* The FULL origin row under the tile (user request 2026-10-27): an ordinary
+   .message-row, aligned with the list below (same side margins as the panel).
+   flex-shrink keeps it from being squeezed by the chat column. */
+.discussion-origin-full {
+  margin: 0 16px 4px;
+  flex-shrink: 0;
 }
 .discussion-origin-draft-tag {
   color: var(--sp-yellow);

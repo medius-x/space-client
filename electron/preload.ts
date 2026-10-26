@@ -224,6 +224,10 @@ contextBridge.exposeInMainWorld("spaceUpdates", {
   check(): Promise<unknown> {
     return ipcRenderer.invoke("space-updates:check");
   },
+  /** The client's own version (Diagnostics, user request 2026-10-27). */
+  getVersion(): Promise<unknown> {
+    return ipcRenderer.invoke("space-updates:version");
+  },
   download(): Promise<unknown> {
     return ipcRenderer.invoke("space-updates:download");
   },

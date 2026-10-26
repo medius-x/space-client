@@ -136,6 +136,19 @@ export const NS_ENGINE_LABELS: Record<NoiseEngineKind, string> = {
   dtln: "DTLN",
 };
 
+/** One-line engine descriptions (user request 2026-10-27): the quality VERDICT
+ *  rides first so a hover (the selector card) and the Audio settings answer
+ *  "which one should I use" at a glance. The wording mirrors the engine table
+ *  the user kept from the 2026-09-17 round, plus the suppression quality. */
+export const NS_ENGINE_DESCRIPTIONS: Record<NoiseEngineKind, string> = {
+  off: "No processing at all — the raw microphone.",
+  rnnoise: "Hybrid DSP + neural net. Good suppression quality, very light on CPU.",
+  deepfilternet3: "Heavy neural network. The best suppression quality of the set.",
+  dtln: "Recurrent neural network. High quality, wideband 16 kHz, heavy.",
+  speex: "Classic DSP. Moderate suppression, the lightest footprint.",
+  gate: "Pure logic, zero intelligence — mutes pauses, does not remove noise.",
+};
+
 /** The NS button's tooltip (oak): the click opens the engine selector card. */
 function nsTitle(engine: NoiseEngineKind): string {
   return `Noise suppression: ${NS_ENGINE_LABELS[engine]}`;
@@ -165,6 +178,7 @@ export function NsEngineMenu({ engine, x, y, onPick, onClose, triggerRef }: {
         <button
           key={option}
           className="engine-row"
+          title={NS_ENGINE_DESCRIPTIONS[option]}
           onClick={() => {
             onPick(option);
             onClose();
@@ -1064,7 +1078,12 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
 // The member card (right-click a room tile): personal volumes + moderation
 // ---------------------------------------------------------------------------
 
-/** The 0–200% volume slider with a value pill riding above the thumb while it
+/** The peer-volume ceiling (user request 2026-10-27: 200% → 300%). One constant
+ *  feeds the slider's max, the tooltip math and the IPC clamp in main — keep
+ *  them in sync (RoomAudio carries its own MAX_PLAYOUT_GAIN twin). */
+export const PEER_VOLUME_MAX = 3;
+
+/** The 0–300% volume slider with a value pill riding above the thumb while it
  *  moves (user request 2026-10-19: the level was checkable only visually). The
  *  pill re-arms on every change and hides 700 ms after the last one. */
 export function VolumeSliderInput({ value, className, disabled, title, onValueChange }: {
@@ -1084,7 +1103,7 @@ export function VolumeSliderInput({ value, className, disabled, title, onValueCh
   return (
     <div className="volume-slider-wrap">
       <input
-        type="range" min={0} max={2} step={0.01}
+        type="range" min={0} max={PEER_VOLUME_MAX} step={0.01}
         className={className}
         disabled={disabled}
         value={value}
@@ -1102,7 +1121,7 @@ export function VolumeSliderInput({ value, className, disabled, title, onValueCh
       {tooltipValue !== null ? (
         <span
           className="volume-tooltip"
-          style={{ left: `${Math.min(92, Math.max(8, Math.round((tooltipValue / 2) * 100)))}%` }}
+          style={{ left: `${Math.min(92, Math.max(8, Math.round((tooltipValue / PEER_VOLUME_MAX) * 100)))}%` }}
         >
           {Math.round(tooltipValue * 100)}%
         </span>
@@ -1111,7 +1130,7 @@ export function VolumeSliderInput({ value, className, disabled, title, onValueCh
   );
 }
 
-/** One 0–200% volume row with a 0 ↔ last-positive mute toggle (oak's volume rows).
+/** One 0–300% volume row with a 0 ↔ last-positive mute toggle (oak's volume rows).
  *  The caption appears ONLY when both rows are visible (oak shows no caption on
  *  the lone voice slider) — label=null renders the row uncaptioned. */
 function VolumeRow({ label, initialGain, remoteGain, onChange }: {

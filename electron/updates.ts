@@ -103,6 +103,11 @@ export function installUpdateIpc(deps: UpdatesIpcDeps): void {
 
   ipcMain.handle("space-updates:check", () => check());
 
+  // The client's own version for the Diagnostics section (user request
+  // 2026-10-27: "did the update land?") — app.getVersion() reads package.json
+  // in dev and the exe version when packaged.
+  ipcMain.handle("space-updates:version", (): string => app.getVersion());
+
   ipcMain.handle("space-updates:download", async (): Promise<{ started: boolean; reason: string | null }> => {
     if (!app.isPackaged) {
       return { started: false, reason: "not packaged" };

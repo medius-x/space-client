@@ -167,6 +167,11 @@ function replyPreviewOf(message: Message): string {
   return message.attachments[0]?.fileName ?? "";
 }
 
+/** Identity-stable empty for selectors that conditionally read a store list
+ *  (the discussion-origin lookup): a fresh [] literal per call would break the
+ *  useSyncExternalStore snapshot contract (the M6 infinite-rerender lesson). */
+const EMPTY_MESSAGES: readonly Message[] = [];
+
 export function ChatPane({ session }: { session: ConnectionSession }): React.JSX.Element {
   const channels = useStore(session.channelStore, (channels) => channels);
   const activeChannelId = useStore(appStore, (state) => state.activeChannelId);
@@ -197,12 +202,24 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
       : null,
     [openDiscussionEntry, session, discussionsVersion],
   );
-  const draftOrigin = useMemo(
-    () => openDiscussionEntry !== null && isDiscussionDraft
-      ? session.messageStore.listFor(openDiscussionEntry.channelId)
-          .find((message) => message.id === openDiscussionEntry.originMessageId) ?? null
+  // The ORIGIN message of the open discussion (draft or live), resolved from the
+  // parent channel's loaded list: the panel's frozen snapshot stays as the
+  // compact tile, and the FULL row (long text, mosaics, stickers, jumbo emoji —
+  // everything the snippet tile cannot show, user request 2026-10-27) renders
+  // underneath exactly as it does in the channel. Null — the origin sits outside
+  // the loaded window — keeps the tile-only panel, an honest state rather than
+  // a broken render. SUBSCRIBED (not read-once): edits and reactions on the
+  // origin repaint the panel too. The module-level empty keeps the selector
+  // identity-stable when no discussion is open (the M6 snapshot contract).
+  const originParentMessages = useStore(
+    session.messageStore,
+    (store) => (openDiscussionEntry !== null ? store.listFor(openDiscussionEntry.channelId) : EMPTY_MESSAGES),
+  );
+  const originMessage = useMemo(
+    () => openDiscussionEntry !== null
+      ? originParentMessages.find((message) => message.id === openDiscussionEntry.originMessageId) ?? null
       : null,
-    [openDiscussionEntry, isDiscussionDraft, session],
+    [openDiscussionEntry, originParentMessages],
   );
   const chatChannelId = openDiscussionEntry?.discussionId ?? activeChatId;
   const messages = useStore(session.messageStore, (store) => store.listFor(chatChannelId ?? -1));
@@ -546,12 +563,33 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
         <DiscussionOriginPanel
           session={session}
           discussion={openDiscussionRow}
-          draftOrigin={null}
+          originFull={originMessage}
           onCloseRequest={() => setCloseDiscussionTarget(openDiscussionRow)}
+          parentChannel={viewChannel}
+          authorColor={authorColor}
+          actions={actions}
+          editingMessage={editing}
+          setEditing={setEditing}
+          onMenu={setMenu}
+          onPicker={setPicker}
+          onReactedBy={setReactedBy}
         />
       ) : null}
-      {isDiscussionDraft && draftOrigin !== null ? (
-        <DiscussionOriginPanel session={session} discussion={null} draftOrigin={draftOrigin} onCloseRequest={() => undefined} />
+      {isDiscussionDraft && originMessage !== null ? (
+        <DiscussionOriginPanel
+          session={session}
+          discussion={null}
+          originFull={originMessage}
+          onCloseRequest={() => undefined}
+          parentChannel={viewChannel}
+          authorColor={authorColor}
+          actions={actions}
+          editingMessage={editing}
+          setEditing={setEditing}
+          onMenu={setMenu}
+          onPicker={setPicker}
+          onReactedBy={setReactedBy}
+        />
       ) : null}
       <NowPlayingBar session={session} />
       {isDiscussionDraft ? (
@@ -1973,92 +2011,141 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
 });
 
 /**
- * The origin panel of an OPEN discussion (the pin-card slot): the frozen start-message
- * snapshot (author nick through the live roster, snippet, time) with the thread's controls —
+ * The origin panel of an OPEN discussion (the pin-card slot): the thread's controls —
  * back to the channel, Follow/Unfollow, and Close (MANAGE_MESSAGES, behind a confirm —
- * closes for everyone). The DRAFT variant (lazy creation) renders the origin straight from
- * the parent channel's own message list and carries no controls — the thread does not
+ * closes for everyone). UNDER the tile the origin renders as a FULL chat row (user
+ * request 2026-10-27): the snippet tile cannot carry long text, mosaics, stickers or
+ * jumbo emoji — the row can, exactly as it appears in the channel; with the row present
+ * the tile carries CONTROLS ONLY (user follow-up: the snippet duplicated the row). The
+ * frozen snapshot body (author/snippet/time) stays for the rare case of the origin
+ * sitting outside the parent's loaded window — no row, no duplicate, just the summary.
+ * The DRAFT variant (lazy creation) renders the origin straight from the parent
+ * channel's own message list and carries no thread controls — the thread does not
  * exist server-side until the first reply.
  */
-function DiscussionOriginPanel({ session, discussion, draftOrigin, onCloseRequest }: {
+function DiscussionOriginPanel({ session, discussion, originFull, onCloseRequest, parentChannel, authorColor, actions, editingMessage, setEditing, onMenu, onPicker, onReactedBy }: {
   session: ConnectionSession;
   discussion: Discussion | null;
-  draftOrigin: Message | null;
+  /** The parent-channel Message behind the thread (null when it sits outside
+   *  the loaded window — the tile alone remains). For a DRAFT this IS the origin. */
+  originFull: Message | null;
   onCloseRequest(): void;
+  /** The PARENT channel (the origin message's home — reactions and edits on it
+   *  belong there, not to the discussion adapter). */
+  parentChannel: Channel;
+  authorColor(username: string): string | null;
+  actions: ChatActions;
+  editingMessage: Message | null;
+  setEditing(message: Message | null): void;
+  onMenu(state: { message: Message; x: number; y: number }): void;
+  onPicker(state: { message: Message; x: number; y: number }): void;
+  onReactedBy(state: { x: number; y: number; names: readonly string[] }): void;
 }): React.JSX.Element | null {
   const rosterUsers = useStore(session.rosterStore, (state) => state.users);
   const trackedVersion = useStore(session.discussionsStore, (store) => store.version);
   void trackedVersion; // the row below is read imperatively; this re-renders on flips
   const row = discussion !== null ? session.discussionsStore.byId(discussion.id) ?? discussion : null;
   const canManageMessages = session.permissionStore.can("MANAGE_MESSAGES");
+  // The origin as an ordinary chat row under the tile — real actions, so Reply,
+  // Edit and reactions work on it right from the thread view.
+  const fullRow = originFull !== null ? (
+    <div className="discussion-origin-full">
+      <MessageRow
+        session={session}
+        channel={parentChannel}
+        message={originFull}
+        authorColor={authorColor}
+        startsGroup
+        editing={editingMessage !== null && editingMessage.id === originFull.id}
+        highlighted={false}
+        selected={false}
+        discussion={undefined}
+        actions={actions}
+        setEditing={setEditing}
+        onMenu={onMenu}
+        onPicker={onPicker}
+        onReactedBy={onReactedBy}
+      />
+    </div>
+  ) : null;
   if (row === null) {
-    // The draft: the origin comes from the parent's own loaded list.
-    if (draftOrigin === null) {
+    // The draft: the origin comes from the parent's own loaded list and always
+    // renders as the full row below — the tile carries ONLY the controls (user
+    // follow-up 2026-10-27: the snippet duplicated the row). The empty body
+    // keeps the layout: back left, the draft tag right.
+    if (originFull === null) {
       return null;
     }
     return (
-      <div className="discussion-origin-panel">
-        <button className="discussion-origin-back" title="Back to the channel" onClick={() => closeDiscussionView()}>
-          <span className="icon mdi-arrow-left" />
-        </button>
-        <div className="discussion-origin-body">
-          <div className="discussion-origin-author">
-            {displayNameOf(rosterUsers, draftOrigin.authorUsername)}
-            <span className="discussion-origin-time">
-              {formatHeaderStamp(new Date(draftOrigin.createdAt).getTime(), Date.now())}
-            </span>
-          </div>
-          <div className="discussion-origin-snippet">{draftOrigin.content || "(attachment)"}</div>
+      <>
+        <div className="discussion-origin-panel">
+          <button className="discussion-origin-back" title="Back to the channel" onClick={() => closeDiscussionView()}>
+            <span className="icon mdi-arrow-left" />
+          </button>
+          <div className="discussion-origin-body" />
+          <div className="discussion-origin-draft-tag">draft</div>
         </div>
-        <div className="discussion-origin-draft-tag">draft</div>
-      </div>
+        {fullRow}
+      </>
     );
   }
   const originTime = row.originCreatedAt !== null
     ? formatHeaderStamp(new Date(row.originCreatedAt).getTime(), Date.now())
     : null;
   return (
-    <div className="discussion-origin-panel">
-      <button
-        className="discussion-origin-back"
-        title="Back to the channel"
-        onClick={() => closeDiscussionView()}
-      >
-        <span className="icon mdi-arrow-left" />
-      </button>
-      <div className="discussion-origin-body">
-        <div className="discussion-origin-author">
-          {displayNameOf(rosterUsers, row.originAuthorName)}
-          {originTime !== null ? <span className="discussion-origin-time">{originTime}</span> : null}
-        </div>
-        <div className="discussion-origin-snippet">{row.originSnippet || "(attachment)"}</div>
-      </div>
-      <div className="discussion-origin-actions">
+    <>
+      <div className="discussion-origin-panel">
         <button
-          className="discussion-origin-action"
-          title={row.tracked ? "Unfollow discussion" : "Follow discussion"}
-          onClick={() => {
-            const request = row.tracked
-              ? session.untrackDiscussion(row.id)
-              : session.trackDiscussion(row.id);
-            void request.catch((error: unknown) => {
-              notifications.showToast({ title: "space", channelName: "", body: error instanceof Error ? error.message : String(error) });
-            });
-          }}
+          className="discussion-origin-back"
+          title="Back to the channel"
+          onClick={() => closeDiscussionView()}
         >
-          <span className={"icon " + (row.tracked ? "mdi-eye-off-outline" : "mdi-eye-plus-outline")} />
+          <span className="icon mdi-arrow-left" />
         </button>
-        {canManageMessages ? (
+        {originFull !== null ? (
+          // The full row below carries the message — the tile keeps the
+          // controls only (user follow-up 2026-10-27); the empty body keeps
+          // the actions pinned to the right edge.
+          <div className="discussion-origin-body" />
+        ) : (
+          // No full row (the origin sits outside the loaded window) — the
+          // frozen snapshot stays as the tile's only content.
+          <div className="discussion-origin-body">
+            <div className="discussion-origin-author">
+              {displayNameOf(rosterUsers, row.originAuthorName)}
+              {originTime !== null ? <span className="discussion-origin-time">{originTime}</span> : null}
+            </div>
+            <div className="discussion-origin-snippet">{row.originSnippet || "(attachment)"}</div>
+          </div>
+        )}
+        <div className="discussion-origin-actions">
           <button
-            className="discussion-origin-action danger"
-            title="Close discussion for everyone"
-            onClick={onCloseRequest}
+            className="discussion-origin-action"
+            title={row.tracked ? "Unfollow discussion" : "Follow discussion"}
+            onClick={() => {
+              const request = row.tracked
+                ? session.untrackDiscussion(row.id)
+                : session.trackDiscussion(row.id);
+              void request.catch((error: unknown) => {
+                notifications.showToast({ title: "space", channelName: "", body: error instanceof Error ? error.message : String(error) });
+              });
+            }}
           >
-            <span className="icon mdi-close" />
+            <span className={"icon " + (row.tracked ? "mdi-eye-off-outline" : "mdi-eye-plus-outline")} />
           </button>
-        ) : null}
+          {canManageMessages ? (
+            <button
+              className="discussion-origin-action danger"
+              title="Close discussion for everyone"
+              onClick={onCloseRequest}
+            >
+              <span className="icon mdi-close" />
+            </button>
+          ) : null}
+        </div>
       </div>
-    </div>
+      {fullRow}
+    </>
   );
 }
 
@@ -2481,6 +2568,81 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
     }
   };
 
+  // The EDITOR context menu (user request 2026-10-27): Electron renders no
+  // native one inside a textarea, so right-click offers the standard editing
+  // verbs through the app's own ContextMenu. Clipboard state is probed
+  // asynchronously the moment the menu opens (Paste flips on when the
+  // clipboard holds text); the selection verbs read the field synchronously.
+  const [editorMenu, setEditorMenu] = useState<{
+    x: number;
+    y: number;
+    hasSelection: boolean;
+    hasText: boolean;
+    canPaste: boolean;
+  } | null>(null);
+
+  const selectionRange = (): { start: number; end: number } => {
+    const field = composerInputRef.current;
+    return field !== null
+      ? { start: field.selectionStart ?? 0, end: field.selectionEnd ?? 0 }
+      : { start: 0, end: 0 };
+  };
+
+  /** Applies a menu verb's text change: state set, a stale @-query dropped, the
+   *  caret refocused where the edit landed (the applyMention rAF idiom). */
+  const applyEditorText = (nextText: string, caret: number): void => {
+    setText(nextText);
+    setMentionQuery(null);
+    window.requestAnimationFrame(() => {
+      const field = composerInputRef.current;
+      if (field !== null) {
+        field.focus();
+        field.setSelectionRange(caret, caret);
+      }
+    });
+  };
+
+  const runEditorVerb = (verb: "undo" | "redo" | "cut" | "copy" | "paste" | "delete" | "selectAll"): void => {
+    const field = composerInputRef.current;
+    if (field === null) {
+      return;
+    }
+    field.focus();
+    // Undo/Redo ride the field's NATIVE edit stack — execCommand fires an
+    // input event, so the ordinary onChange picks the result up.
+    if (verb === "undo" || verb === "redo") {
+      document.execCommand(verb);
+      return;
+    }
+    const { start, end } = selectionRange();
+    const selected = text.slice(start, end);
+    if (verb === "copy") {
+      void navigator.clipboard.writeText(selected).catch(() => undefined);
+      return;
+    }
+    if (verb === "cut" || verb === "delete") {
+      if (verb === "cut") {
+        void navigator.clipboard.writeText(selected).catch(() => undefined);
+      }
+      applyEditorText(`${text.slice(0, start)}${text.slice(end)}`, start);
+      return;
+    }
+    if (verb === "paste") {
+      void navigator.clipboard.readText().then((inserted) => {
+        if (inserted.length === 0) {
+          return;
+        }
+        const range = selectionRange();
+        applyEditorText(
+          `${text.slice(0, range.start)}${inserted}${text.slice(range.end)}`,
+          range.start + inserted.length,
+        );
+      }).catch(() => undefined);
+      return;
+    }
+    field.select(); // selectAll
+  };
+
   return (
     <div className="composer">
       {mentionQuery !== null && mentionCandidates.length > 0 ? (
@@ -2647,6 +2809,27 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
               onPaste(files);
             }
           }}
+          onContextMenu={(event) => {
+            // Electron shows no native menu in a textarea — our own verb set
+            // (user request 2026-10-27).
+            event.preventDefault();
+            const { start, end } = selectionRange();
+            setEditorMenu({
+              x: event.clientX,
+              y: event.clientY,
+              hasSelection: end > start,
+              hasText: text.length > 0,
+              canPaste: false,
+            });
+            // Async clipboard probe: Paste enables itself when text is there.
+            // A rejected probe (permission hiccup) keeps the verb ENABLED —
+            // better a no-op click than a mysteriously dead Paste.
+            void navigator.clipboard.readText()
+              .then((probe) => setEditorMenu((current) =>
+                current === null ? current : { ...current, canPaste: probe.length > 0 }))
+              .catch(() => setEditorMenu((current) =>
+                current === null ? current : { ...current, canPaste: true }));
+          }}
           onKeyDown={(event) => {
           if (event.key === "Escape" && onCancelReply !== null) {
             event.preventDefault();
@@ -2714,6 +2897,24 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
           inset matches the left overlay card's, so the two read as a pair.
           The error line only exists while a send actually failed. */}
       {error !== null ? <div className="composer-error">{error}</div> : null}
+      {editorMenu !== null ? (
+        <ContextMenu
+          x={editorMenu.x}
+          y={editorMenu.y}
+          items={[
+            { label: "Undo", action: () => runEditorVerb("undo") },
+            { label: "Redo", action: () => runEditorVerb("redo") },
+            { label: "", separator: true, action: () => undefined },
+            { label: "Cut", disabled: !editorMenu.hasSelection, action: () => runEditorVerb("cut") },
+            { label: "Copy", disabled: !editorMenu.hasSelection, action: () => runEditorVerb("copy") },
+            { label: "Paste", disabled: !editorMenu.canPaste, action: () => runEditorVerb("paste") },
+            { label: "Delete", disabled: !editorMenu.hasSelection, action: () => runEditorVerb("delete") },
+            { label: "", separator: true, action: () => undefined },
+            { label: "Select all", disabled: !editorMenu.hasText, action: () => runEditorVerb("selectAll") },
+          ]}
+          onClose={() => setEditorMenu(null)}
+        />
+      ) : null}
     </div>
   );
 }

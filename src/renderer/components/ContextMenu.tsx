@@ -6,6 +6,9 @@ export interface ContextMenuItem {
   danger?: boolean;
   /** A thin rule instead of a row (oak's popupSeparator) — Call | — | Kick/Ban. */
   separator?: boolean;
+  /** Greyed out and unclickable — the composer's Cut/Back-space rows when
+   *  nothing is selected (the editor context menu, 2026-10-27). */
+  disabled?: boolean;
   action: () => void;
 }
 
@@ -41,6 +44,7 @@ export function ContextMenu({ x, y, items, onClose, anchor }: {
         <button
           key={item.label}
           className={"context-menu-item" + (item.danger ? " danger" : "")}
+          disabled={item.disabled === true}
           onClick={() => {
             onClose();
             item.action();

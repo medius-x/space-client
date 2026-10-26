@@ -931,13 +931,15 @@ ipcMain.on("space-window:raise", (event) => {
 // The pop-out's volume sliders: the AUDIO plays in the main window (the pop-out
 // subscribes video-only), so the value forwards there and applies to the picked
 // chain (share or the peer's voice) / persists per username. The kind is
-// validated — a malformed channel name must never reach the renderer.
+// validated — a malformed channel name must never reach the renderer. The gain
+// ceiling (3.0 = 300%, user request 2026-10-27) mirrors the renderer's
+// PEER_VOLUME_MAX.
 ipcMain.on("space-window:popoutVolume", (_event, username: unknown, volume: unknown, kind: unknown) => {
   if (typeof username !== "string" || typeof volume !== "number" || !Number.isFinite(volume)
     || (kind !== "voice" && kind !== "share")) {
     return;
   }
-  sendToMainWindow("popout:volume", username, Math.min(2, Math.max(0, volume)), kind);
+  sendToMainWindow("popout:volume", username, Math.min(3, Math.max(0, volume)), kind);
 });
 // MAIN → pop-out: a gain changed in the main window (slider sync).
 ipcMain.on("space-window:pushPopoutVolume", (_event, username: unknown, gain: unknown, kind: unknown) => {
@@ -1436,10 +1438,50 @@ ipcMain.on("space-toast:voiceInviteAction", (_event, action: unknown, id: unknow
   }
 });
 
+// Window bounds persistence (user request 2026-10-27): the user's size and
+// position survive restarts. A plaintext KV key (no secrets — same layer as
+// client-settings), written debounced from the live resize/move stream and
+// immediately on maximize flips. getNormalBounds() carries the RESTORED size
+// even while maximized, so a restart re-maximizes without losing the restore
+// size.
+const WINDOW_BOUNDS_KEY = "window-bounds";
+
+interface SavedWindowBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  maximized: boolean;
+}
+
+function readSavedWindowBounds(): SavedWindowBounds | null {
+  const raw = kvRead(WINDOW_BOUNDS_KEY);
+  if (raw === null || typeof raw !== "object") {
+    return null;
+  }
+  const candidate = raw as Partial<SavedWindowBounds>;
+  const { x, y, width, height, maximized } = candidate;
+  if (typeof x !== "number" || typeof y !== "number" || typeof width !== "number" || typeof height !== "number"
+    || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height)
+    || width < 300 || height < 200
+    || (maximized !== undefined && typeof maximized !== "boolean")) {
+    return null;
+  }
+  // A monitor from the last session may be gone (undocked, RDP) — only honor
+  // bounds that land on or at least touch a display that exists now.
+  const onLiveDisplay = screen.getAllDisplays().some((display) => {
+    const area = display.workArea;
+    return x < area.x + area.width && x + width > area.x && y < area.y + area.height && y + height > area.y;
+  });
+  return onLiveDisplay ? { x, y, width, height, maximized: maximized === true } : null;
+}
+
 async function createWindow(): Promise<void> {
+  const savedBounds = readSavedWindowBounds();
   const mainWindow = new BrowserWindow({
-    width: 1080,
-    height: 693,
+    width: savedBounds?.width ?? 1080,
+    height: savedBounds?.height ?? 693,
+    ...(savedBounds !== null ? { x: savedBounds.x, y: savedBounds.y } : {}),
     title: "space",
     frame: false, // oak's borderless chrome — the renderer draws the caption bar
     backgroundColor: "#1e1f22",
@@ -1488,6 +1530,42 @@ async function createWindow(): Promise<void> {
   // The caption's maximize glyph flips on restore (oak's ▢↔❐).
   mainWindow.on("maximize", () => mainWindow.webContents.send("space-window:maximized", true));
   mainWindow.on("unmaximize", () => mainWindow.webContents.send("space-window:maximized", false));
+  if (savedBounds?.maximized === true) {
+    // Applied AFTER construction so the restore size (the saved normal bounds)
+    // survives the maximize — Windows tracks the normal position itself.
+    mainWindow.maximize();
+  }
+
+  // The user's window geometry persists (see readSavedWindowBounds): the
+  // resize/move stream is hot during a drag, so writes are debounced; the
+  // maximize flips carry only the flag and land immediately.
+  const persistWindowBounds = (): void => {
+    if (mainWindow.isDestroyed()) {
+      return;
+    }
+    const bounds = mainWindow.getNormalBounds();
+    void kvMutate(WINDOW_BOUNDS_KEY, () => ({
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height,
+      maximized: mainWindow.isMaximized(),
+    }));
+  };
+  let windowBoundsSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  const scheduleWindowBoundsSave = (): void => {
+    if (windowBoundsSaveTimer !== null) {
+      clearTimeout(windowBoundsSaveTimer);
+    }
+    windowBoundsSaveTimer = setTimeout(() => {
+      windowBoundsSaveTimer = null;
+      persistWindowBounds();
+    }, 800);
+  };
+  mainWindow.on("resize", scheduleWindowBoundsSave);
+  mainWindow.on("move", scheduleWindowBoundsSave);
+  mainWindow.on("maximize", persistWindowBounds);
+  mainWindow.on("unmaximize", persistWindowBounds);
   // Liveness watch (2026-10-01, the voice-invite chase): a receiver logged the
   // incoming invite and then went fully silent — without these hooks a dead or
   // frozen renderer/main leaves NOTHING in space.log to tell which one died.

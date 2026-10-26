@@ -172,10 +172,14 @@ export class RoomAudio {
   }
 
   /** The single effective-level expression shared by the playout gain and the
-   *  reference mirror (deafen zeroes both). The ceiling is 2.0 — the >100%
-   *  half of the volume sliders, unrepresentable through element.volume. */
+   *  reference mirror (deafen zeroes both). The ceiling is 3.0 — the >100%
+   *  boost of the volume sliders (raised 200% → 300%, user request 2026-10-27),
+   *  unrepresentable through element.volume. Keep in sync with the renderer's
+   *  PEER_VOLUME_MAX and the popout IPC clamp in main. */
+  private static readonly MAX_PLAYOUT_GAIN = 3;
+
   private effectiveVolume(volume: number): number {
-    return this.deafened ? 0 : Math.min(2, Math.max(0, volume));
+    return this.deafened ? 0 : Math.min(RoomAudio.MAX_PLAYOUT_GAIN, Math.max(0, volume));
   }
 
   /** The reconstructed playout of every attached chain (#483): the share

@@ -5,6 +5,70 @@ Electron + TypeScript **спайк-клиент** OAK-сервера. Цель �
 звук через `getDisplayMedia` и браузерный APM. После спайка — решение о полной переписи
 клиента. Полный план: `C:\Users\Home\.claude\plans\goofy-leaping-sutton.md`.
 
+## Раунд 8 доработок (2026-10-27, код готов, СМОУК юзера pending; коммит — по команде)
+
+Семь доработок одной пачкой (модель раунда 7: всё сразу → гейты → подробный смоук-план).
+
+- **Обсуждение: полный рендер сообщения-корня под плиткой.** Плитка-снапшот
+  (автор/сниппет/контролы) осталась, ПОД ней — обычный `MessageRow` (юзер-репорт:
+  большие сообщения не влезали в сниппет, только-картинка/только-эмодзи не
+  отображались вовсе). Механика: `originMessage` в ChatPane — SUBSCRIBED-поиск
+  (`useStore(messageStore, listFor(parentChannelId))` + find по originMessageId,
+  идентичность через module-EMPTY для закрытого обсуждения — M6-контракт), для
+  draft и live одинаково; панель принимает `originFull` + реальные
+  actions/setEditing/onMenu/onPicker/onReactedBy + `parentChannel` (права/реакции
+  на origin живут в РОДИТЕЛЕ, не в discussion-адаптере) и рендерит ряд с
+  `startsGroup` — Reply/Edit/реакции работают прямо из вида треда. Origin вне
+  загруженного окна → честная плитка-без-ряда (не битый рендер). CSS
+  `.discussion-origin-full { margin: 0 16px 4px }`. **Фоллоу-ап юзера (тот же
+  день):** при живом полном ряде плитка несёт ТОЛЬКО КНОПКИ (back/follow/close,
+  draft-тег) — снапшот-тело (автор/сниппет/время) убрано как дубль (пустой
+  `.discussion-origin-body` держит actions справа); снапшот остаётся лишь в
+  fallback-случае «origin вне загруженного окна», где ряда нет.
+- **Голос: комната, где сидишь, больше НЕ выделена как активный чат.** Discord-
+  проверка веб-поиском: подключённая голосовая НЕ получает selected-фон, связь
+  читается через зелёный глиф/имя и участников под каналом. Удалены
+  `.voice-channel.active`-фон + белый текст (global.css); ЗЕЛЁНОЕ имя/glyph
+  (`voice-live`) осталось.
+- **NS-движки: краткие описания с оценкой качества.** Новая карта
+  `NS_ENGINE_DESCRIPTIONS` (VoiceRoom.tsx, рядом с LABELS): формулировки из
+  таблицы юзера 2026-09-17 («гибрид DSP+нейросеть»/«классический DSP»/«чистая
+  логика») + вердикт качества (best/high/good/moderate/only-mutes-pauses). Shows:
+  tooltip (title) на каждой строке NsEngineMenu (все поверхности попапа) И строка
+  под селектором Engine в Settings → Audio (импорт из VoiceRoom, цикла нет).
+- **Окно: размер/позиция переживают перезапуск.** KV-ключ `window-bounds`
+  (plaintext, как client-settings): `readSavedWindowBounds()` — жёсткая валидация
+  (типы/конечность/мин 300×200/пересечение с workArea живого дисплея — отвязанный
+  монитор не оживляет окно за экраном); применён в `createWindow` +
+  `maximize()` после конструирования (getNormalBounds() в persist несёт RESTORE-
+  размер даже в maximized — рестарт в развёрнутом виде не теряет обычный).
+  Запись: debounced 800 мс от resize/move + немедленно на maximize-флипах.
+- **Версии: клиент в Diagnostics + обе версии в лог.** IPC `space-updates:version`
+  → app.getVersion() (updates.ts; preload/bridges `getVersion()`); Diagnostics —
+  строка «Client version:» ВСЕГДА (секция клиент-скоуп, видна и без сервера).
+  Версия клиента в логе уже была (boot-строка main); серверная — НОВАЯ
+  `log.info("session", "server version: …")` в start() и на /topic/server-пуше
+  (только при СМЕНЕ — rename не спамит).
+- **Громкость пира до 300%** (было 200%): `PEER_VOLUME_MAX = 3` (VoiceRoom,
+  экспорт) кормит слайдер `VolumeSliderInput` (max + математика тултипа — все
+  поверхности автоматом: карточка роста, попап шара, пилюля звонка);
+  `RoomAudio.MAX_PLAYOUT_GAIN = 3` (effectiveVolume; element-fallback остался на
+  платформенном капе 1.0); IPC-кламп main popoutVolume 2→3. Три места синхронны.
+- **Композер: ПКМ-контекстное меню.** Electron не показывает нативное меню в
+  textarea — своё через ContextMenu: Undo/Redo (execCommand на нативном edit-
+  стеке, input-event подхватывает onChange), Cut/Copy (clipboard.writeText),
+  Paste (clipboard.readText → вставка на каретке), Delete, Select all; enabled-
+  статусы по выделению/тексту, Paste включается async-пробой буфера (отказ пробы
+  = пункт жив, лучше no-op чем мёртвая кнопка). `ContextMenuItem` += `disabled?`
+  + CSS `:disabled`. Правки текста идут через `applyEditorText` (setText + rAF-
+  рефокус с кареткой — applyMention-идиома).
+- Гейты: 793/793 + typecheck + build. Security-проход: единственный новый IPC
+  (`space-updates:version`) — без ввода, отвечает константой процесса;
+  `window-bounds` — plaintext без секретов, валидация до применения, kvPath-
+  санитайз ключа-константы; композер-меню — локальный clipboard API без IPC;
+  новых REST/STOMP-каналов и пермиссион-гейтов нет.
+
+
 ## Раунд 7 багов эксплуатации (2026-10-27, СМОУК ПРОЙДЕН юзером — кроме AFK-диагностики: у тестировавшего логика и не ломалась, ждём живого инцидента от пострадавших; серверная половина — только sweep-лог в oak-server)
 
 Семь репортов живого теста (логи 2026-10-24 в Desktop/баги/{1,2}; инциденты звука
