@@ -4,8 +4,8 @@ import {
   appStore,
   connectionDirectory,
   openDmWithUser,
+  requestServerSwitch,
   setFriendsTab,
-  switchConnection,
   type FriendsTab,
 } from "../runtime";
 import { socialDirectory } from "../social-aggregate";
@@ -244,7 +244,7 @@ function FriendRow({ session, row }: { session: ConnectionSession; row: FriendRo
       ) : (
         // oak: rows of OTHER instances only offer switching to them — the
         // friend/DM mutations are scoped to that instance's active connection.
-        <button className="friend-action" onClick={() => void switchConnection(row.recordId)}>
+        <button className="friend-action" onClick={() => requestServerSwitch(row.recordId)}>
           {t("friends.openServer", { server: row.serverName })}
         </button>
       )}

@@ -12,7 +12,7 @@ import {
   sessionForRecord,
   sessionsIndex,
   settingsStore,
-  switchConnection,
+  requestServerSwitch,
   toggleHomeMode,
 } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
@@ -230,10 +230,12 @@ export function ServerRail({ activeRecordId, session }: {
                 exitHomeMode();
                 return;
               }
-              // NEVER gated: the rail is the primary navigation and a switching
+              // NEVER busy-gated: the rail is the primary navigation and a switching
               // attempt in flight must not eat clicks (user decision 2026-10-08) —
-              // switchConnection/openSession tolerate the overlap.
-              void switchConnection(record.id);
+              // switchConnection/openSession tolerate the overlap. A live voice
+              // room only gets a CONFIRM first (user request 2026-10-28) — the
+              // switch always leaves the room.
+              requestServerSwitch(record.id);
             }}
           />
         );

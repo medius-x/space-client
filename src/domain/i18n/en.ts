@@ -227,6 +227,12 @@ export const EN = {
   "serverMenu.reloginNote": "Re-enter the password for \"{user}\" on {server}.",
   "serverMenu.logIn": "Log in",
 
+  // switchConfirm — the in-room server-switch warning (the switch always
+  // leaves the voice room; voice lives on the active session only).
+  "switchConfirm.title": "Leave the voice room?",
+  "switchConfirm.body": "Switching to {server} will disconnect you from the voice channel {channel}.",
+  "switchConfirm.continue": "Continue",
+
   // tls — the self-signed certificate fingerprint dialog.
   "tls.changedTitle": "Server certificate changed",
   "tls.fingerprintTitle": "Server certificate fingerprint",

@@ -180,6 +180,11 @@ export interface AppState {
    *  ROW — session-bound entries appear only for the ACTIVE record. Rendered by
    *  ServerMenu.tsx. */
   serverMenu: { recordId: string; x: number; y: number; anchor?: HTMLElement | null } | null;
+  /** The switch-away-from-voice confirmation (user request 2026-10-28): switching
+   *  the active server ALWAYS leaves the voice room (voice lives on the ACTIVE
+   *  session only — background sessions hold no voice), so an in-room switch asks
+   *  first. Rendered by SwitchConfirmModal at the App level; null = no dialog. */
+  switchConfirm: { recordId: string } | null;
   /** The owner's "Transfer ownership" flow (Server Settings → Members → the member's
    *  Transfer ownership button, owner-only). Rendered by TransferOwnershipModal.tsx
    *  against the ACTIVE session; ownershipPreselect carries the picked member's id
@@ -272,6 +277,7 @@ class AppStore extends Emitter {
     sidebarDiscussions: false,
     pendingOpenDiscussion: null,
     serverMenu: null,
+    switchConfirm: null,
     ownershipModalOpen: false,
     ownershipPreselect: null,
     tlsPrompt: null,
@@ -1695,6 +1701,45 @@ export async function switchConnection(recordId: string): Promise<void> {
   }
 }
 
+/** The USER-facing switch entry points (the rail click, the server menu's
+ *  settings entries, the friends pane's "Open server"): switching away from a
+ *  live voice room asks first (user request 2026-10-28) — the switch always
+ *  leaves the room, and the room's fate deserves a warning. AUTOMATIC switch
+ *  paths (toast navigation, the background-call accept, the delete-survivor)
+ *  call switchConnection directly: their trigger already named the destination
+ *  intent, a second dialog would only block the flow. The optional continuation
+ *  runs after the switch lands (the "switch then open settings" pattern). */
+let switchContinuation: (() => void) | null = null;
+
+export function requestServerSwitch(recordId: string, continuation?: () => void): void {
+  if (appStore.getSnapshot().activeVoiceChannelId !== null
+    && activeSession !== null
+    && activeSession.recordId !== recordId) {
+    switchContinuation = continuation ?? null;
+    appStore.patch({ switchConfirm: { recordId } });
+    return;
+  }
+  void switchConnection(recordId).then(continuation);
+}
+
+/** The dialog's Continue: run the switch the user just approved. */
+export function confirmServerSwitch(): void {
+  const target = appStore.getSnapshot().switchConfirm;
+  if (target === null) {
+    return;
+  }
+  const continuation = switchContinuation;
+  switchContinuation = null;
+  appStore.patch({ switchConfirm: null });
+  void switchConnection(target.recordId).then(continuation ?? undefined);
+}
+
+/** The dialog's Cancel (also its ✕/Esc): forget the pending switch. */
+export function cancelServerSwitch(): void {
+  switchContinuation = null;
+  appStore.patch({ switchConfirm: null });
+}
+
 export async function removeConnection(recordId: string): Promise<void> {
   const wasActive = activeSession?.recordId === recordId;
   const record = connectionDirectory.get(recordId);
@@ -1823,8 +1868,17 @@ async function openSession(recordId: string): Promise<void> {
   // session stays alive in the map as a background listener.
   const existing = sessionMap.get(recordId) ?? null;
   if (existing !== null && !existing.isDisposed()) {
-    await teardownVoice();
+    // The switch leaves the voice room with FULL leave semantics (user report
+    // 2026-10-28): a bare teardownVoice() left the rejoin ladder armed and the
+    // STOMP voice.leave unsent — and the demoted session's socket stays ALIVE,
+    // so the server kept the member listed in the room forever (the phantom).
+    // leaveVoice sends the leave while activeSession still points at the OLD
+    // session (it flips below) and resets the room state the panel renders.
+    if (appStore.getSnapshot().activeVoiceChannelId !== null) {
+      log.info("voice", "server switch leaves the voice room");
+    }
     teardownCall();
+    await leaveVoice();
     roomAudio.stopLevelPolling();
     roomAudio.detachOwnMic();
     const demoted = activeSession;
@@ -1880,8 +1934,14 @@ async function openSession(recordId: string): Promise<void> {
   // already in memory); only an unstarted half-session (the offline view —
   // empty stores, STOMP never started) still tears down.
   const outgoing = activeSession;
+  // Same full-leave discipline as the promote branch above (2026-10-28): the
+  // voice.leave must fly through the OLD session's socket while it is still
+  // the active one — the server only clears the room membership it sees.
+  if (appStore.getSnapshot().activeVoiceChannelId !== null) {
+    log.info("voice", "server switch leaves the voice room");
+  }
   teardownCall();
-  await teardownVoice();
+  await leaveVoice();
   roomAudio.stopLevelPolling();
   roomAudio.detachOwnMic();
   activeSession = null;
@@ -2132,6 +2192,7 @@ function activeSessionUiResetPatch(): Partial<AppState> {
     activeDiscussion: null,
     sidebarDiscussions: false,
     serverMenu: null,
+    switchConfirm: null,
     ownershipModalOpen: false,
     ownershipPreselect: null,
   };
@@ -2518,17 +2579,19 @@ export function canManageServerSettingsOfRecord(recordId: string): boolean {
  *  switch actually LANDED, so a failed switch never opens the previous server's
  *  settings against a dead binding. */
 export async function switchAndOpenServerSettings(recordId: string): Promise<void> {
-  await switchConnection(recordId);
-  if (activeSession?.recordId === recordId) {
-    openServerSettings(); // re-checks the gate against the now-active session
-  }
+  requestServerSwitch(recordId, () => {
+    if (activeSession?.recordId === recordId) {
+      openServerSettings(); // re-checks the gate against the now-active session
+    }
+  });
 }
 
 export async function switchAndOpenAccountSettings(recordId: string): Promise<void> {
-  await switchConnection(recordId);
-  if (activeSession?.recordId === recordId) {
-    openAccountSettings();
-  }
+  requestServerSwitch(recordId, () => {
+    if (activeSession?.recordId === recordId) {
+      openAccountSettings();
+    }
+  });
 }
 
 function notificationPrefsFor(recordId: string): NotificationPrefs {

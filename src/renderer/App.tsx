@@ -6,6 +6,7 @@ import { CaptionBar } from "./components/CaptionBar";
 import { LoginModal } from "./components/LoginModal";
 import { MainScreen, UserBar } from "./components/MainScreen";
 import { ServerMenu } from "./components/ServerMenu";
+import { SwitchConfirmModal } from "./components/SwitchConfirmModal";
 import { TransferOwnershipModal } from "./components/TransferOwnershipModal";
 import { TlsTrustModal } from "./components/TlsTrustModal";
 import { ServerRail } from "./components/ServerRail";
@@ -62,6 +63,10 @@ export function App(): React.JSX.Element {
               right-click): mounted here so the rail path works with no live
               session too (Re-login/Delete need none). */}
           <ServerMenu />
+          {/* The in-room server-switch confirmation (2026-10-28): the switch
+              always leaves the voice room, so it asks first. App level on
+              purpose — the trigger can be any switch surface. */}
+          <SwitchConfirmModal />
           {/* The owner's ownership-transfer confirmation (Server Settings → Members →
               the member's Transfer ownership button). Mounted against the PREVIOUS
               session through the restart gap, like the settings overlays. */}

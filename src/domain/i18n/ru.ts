@@ -231,6 +231,12 @@ export const RU: Dict = {
   "serverMenu.reloginNote": "Введите пароль заново для «{user}» на {server}.",
   "serverMenu.logIn": "Войти",
 
+  // switchConfirm — предупреждение при смене сервера из голосовой комнаты
+  // (свитч всегда выходит из комнаты: голос живёт только на активной сессии).
+  "switchConfirm.title": "Покинуть голосовую комнату?",
+  "switchConfirm.body": "Переключение на «{server}» отключит вас от голосового канала {channel}.",
+  "switchConfirm.continue": "Продолжить",
+
   // tls
   "tls.changedTitle": "Сертификат сервера изменился",
   "tls.fingerprintTitle": "Отпечаток сертификата сервера",
