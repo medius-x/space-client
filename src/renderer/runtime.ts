@@ -38,7 +38,7 @@ import { initialConnectionQuality, type ConnectionQualitySnapshot } from "../dom
 import { isDailyCheckDue, isIdleEnoughForUpdateCheck } from "../domain/logic/update-policy";
 import { memberKickReasonText, memberKickTitle } from "../domain/logic/moderation-reason";
 import type { TlsUntrustedEvent, UpdateCheckResult, UpdateStateEvent } from "./bridges";
-import { SettingsStore, type ClientSettings } from "../domain/stores/SettingsStore";
+import { DEFAULT_CLIENT_SETTINGS, SettingsStore, type ClientSettings } from "../domain/stores/SettingsStore";
 import { currentLang, resolveUiLanguage, setLanguage, t as tr } from "../domain/i18n/i18n";
 import {
   acceleratorFromKeyboardEvent,
@@ -4193,7 +4193,7 @@ export function kickVoiceUser(username: string): void {
 // ---------------------------------------------------------------------------
 
 /** The engine to return to when the NS hotkey re-enables suppression. */
-let lastNoiseEngine: ClientSettings["noiseSuppressionEngine"] = "deepfilternet3";
+let lastNoiseEngine: ClientSettings["noiseSuppressionEngine"] = DEFAULT_CLIENT_SETTINGS.noiseSuppressionEngine;
 
 /** off ↔ the last real engine. Commits through the settings store — the existing
  *  watchNoiseSettings rebuilds the LIVE pipeline; nothing here touches audio. */

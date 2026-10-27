@@ -5,6 +5,7 @@ import { CaptionBar } from "./CaptionBar";
 import type { NoiseEngineKind } from "../../media/noise-suppression";
 import type { PopoutTarget, PopoutVoiceState } from "../bridges";
 import { log } from "../../logging";
+import { DEFAULT_CLIENT_SETTINGS } from "../../domain/stores/SettingsStore";
 import { useT } from "../hooks/useT";
 
 function isPopoutTarget(value: unknown): value is PopoutTarget {
@@ -70,7 +71,10 @@ export function PopoutScreen(): React.JSX.Element {
   const [voiceVolume, setVoiceVolumeState] = useState(1);
   const voiceVolumeLastPositiveRef = useRef(1);
   const [fullscreen, setFullscreen] = useState(false);
-  const [voiceState, setVoiceState] = useState<PopoutVoiceState>({ muted: false, deafened: false, nsEngine: "deepfilternet3" });
+  // The NS seed mirrors the settings default — the pop-out never loads the
+  // settings store (no bootstrapApp), and the real engine arrives with the
+  // first voiceState push anyway; this only colors the one frame before it.
+  const [voiceState, setVoiceState] = useState<PopoutVoiceState>({ muted: false, deafened: false, nsEngine: DEFAULT_CLIENT_SETTINGS.noiseSuppressionEngine });
   const [nsMenuAt, setNsMenuAt] = useState<{ x: number; y: number } | null>(null);
   // The NS toggle button — its press must not outside-dismiss the menu, or the
   // click-toggle re-opens it (the emoji-picker anchorRef lesson).
