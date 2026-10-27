@@ -11,6 +11,7 @@ import { lookup } from "node:dns/promises";
 import { isBlockedAddress, PREVIEW_REDIRECT_LIMIT, previewUrlFromString } from "../src/domain/logic/net-guard";
 import { logBucketName, outdatedLogBucketNames } from "../src/domain/logic/log-buckets";
 import { certFingerprintsMatch, formatCertFingerprint, hostnameFromUrl, normalizeCertFingerprint } from "../src/domain/logic/cert-pin";
+import { currentLang, setLanguage, t as tUi } from "../src/domain/i18n/i18n";
 
 /**
  * Space spike — Electron main process.
@@ -1154,6 +1155,52 @@ function loadRendererTarget(window: BrowserWindow, hash: string): Promise<void> 
   return window.loadFile(path.join(__dirname, "..", "renderer", "index.html"), { hash });
 }
 
+// ---------------------------------------------------------------------------
+// UI language (localization round 2026-10-27): the MAIN window resolves the
+// setting and pushes the result here; main re-labels its own chrome (tray,
+// pop-out title) and broadcasts flips to EVERY renderer. The toast and
+// pop-out windows run without bootstrapApp, so the broadcast is their only
+// language source besides the startup get().
+// ---------------------------------------------------------------------------
+
+/** Seed from KV before the first renderer sync — the tray builds at window
+ *  creation, earlier than any sync could arrive (the configuredDownloadsDir
+ *  precedent). Garbage/unset falls back to the OS locale. */
+function seedLanguageFromKv(): void {
+  const settings = kvRead("client-settings");
+  const raw = settings !== null && typeof settings === "object"
+    ? (settings as Record<string, unknown>).language
+    : undefined;
+  setLanguage(raw === "ru" || raw === "en"
+    ? raw
+    : (app.getLocale().startsWith("ru") ? "ru" : "en"));
+}
+
+ipcMain.handle("space-i18n:get", (): string => currentLang());
+
+ipcMain.on("space-i18n:sync", (_event, lang: unknown) => {
+  // Union validation: anything but en/ru is silently ignored — a hostile or
+  // buggy renderer cannot wedge the tray into a bogus dictionary state.
+  if (lang !== "en" && lang !== "ru") {
+    return;
+  }
+  const previous = currentLang();
+  setLanguage(lang);
+  if (lang === previous) {
+    return;
+  }
+  appendLog(`[i18n] language switched to ${lang}`);
+  rebuildTrayMenu();
+  if (popoutWindow !== null && !popoutWindow.isDestroyed()) {
+    popoutWindow.setTitle(tUi("popout.title"));
+  }
+  sendToMainWindow("space-i18n:language", lang);
+  sendToPopoutWindow("space-i18n:language", lang);
+  if (toastWindow !== null && !toastWindow.isDestroyed()) {
+    toastWindow.webContents.send("space-i18n:language", lang);
+  }
+});
+
 ipcMain.handle("space-window:popout", () => {
   if (popoutWindow && !popoutWindow.isDestroyed()) {
     popoutWindow.focus();
@@ -1164,7 +1211,7 @@ ipcMain.handle("space-window:popout", () => {
     height: 520,
     minWidth: 420,
     minHeight: 300,
-    title: "space — screen share",
+    title: tUi("popout.title"), // localized (2026-10-27); re-set on every language sync
     frame: false, // the SAME borderless chrome as the main window — the pop-out renders its own CaptionBar (2026-09-25 style round)
     backgroundColor: "#1e1f22",
     webPreferences: {
@@ -1709,7 +1756,25 @@ function initiateGracefulQuit(mainWindow: BrowserWindow): void {
  *  Quit runs the graceful path; Open/Click re-show the hidden window.
  *  Packaged: the icon rides in extraResources (resources/build/icon-48.png) —
  *  the project tree does not exist inside the asar, and close-to-tray WITHOUT
- *  a tray would hide the window into a zombie process (packaged smoke). */
+ *  a tray would hide the window into a zombie process (packaged smoke).
+ *  The menu is rebuilt by refreshTrayLabels() on every language flip — its
+ *  labels are the one piece of main-process UI text that lives outside the
+ *  renderers (localization round 2026-10-27). */
+let trayRef: Tray | null = null;
+let trayWindow: BrowserWindow | null = null;
+
+function rebuildTrayMenu(): void {
+  if (trayRef === null || trayWindow === null) {
+    return;
+  }
+  const mainWindow = trayWindow;
+  trayRef.setContextMenu(Menu.buildFromTemplate([
+    { label: tUi("tray.open"), click: () => { mainWindow.show(); mainWindow.focus(); } },
+    { type: "separator" },
+    { label: tUi("tray.quit"), click: () => initiateGracefulQuit(mainWindow) },
+  ]));
+}
+
 function createTray(mainWindow: BrowserWindow): void {
   const iconPath = app.isPackaged
     ? path.join(process.resourcesPath, "build", "icon-48.png")
@@ -1721,12 +1786,10 @@ function createTray(mainWindow: BrowserWindow): void {
     return;
   }
   const tray = new Tray(iconPath);
+  trayRef = tray;
+  trayWindow = mainWindow;
   tray.setToolTip(instanceName ? `SPACE (${instanceName.toUpperCase()})` : "SPACE");
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: "Open", click: () => { mainWindow.show(); mainWindow.focus(); } },
-    { type: "separator" },
-    { label: "Quit", click: () => initiateGracefulQuit(mainWindow) },
-  ]));
+  rebuildTrayMenu();
   // Bare left-click shows the window — the Windows tray habit.
   tray.on("click", () => {
     mainWindow.show();
@@ -1744,6 +1807,7 @@ app.whenReady().then(() => {
   // exposure among them) is DARK instead of the light-theme white.
   nativeTheme.themeSource = "dark";
   registerSpaceAssetProtocol();
+  seedLanguageFromKv(); // tray/title labels localize from the first paint (before any renderer sync)
   void createWindow();
   app.on("activate", () => {
     // macOS habit — harmless on Windows, kept for free.

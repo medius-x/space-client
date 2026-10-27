@@ -3,6 +3,7 @@ import type { ConnectionSession } from "../../domain/session/connection-session"
 import type { AttachmentUploadSlot } from "../../types";
 import { AvatarCropDialog } from "./AvatarCropDialog";
 import { Modal } from "./Modal";
+import { useT } from "../hooks/useT";
 
 const ORIGINAL_MAX_SIDE = 2048;
 
@@ -73,6 +74,7 @@ export function AvatarEditor({ session, api, preview, hint, removeTitle, removeN
   /** Overview layout: the preview on the left, the buttons stacked beside it. */
   stacked?: boolean;
 }): React.JSX.Element {
+  const t = useT();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [cropSourceUrl, setCropSourceUrl] = useState<string | null>(null);
   const [sourceOwned, setSourceOwned] = useState(false); // blob: URLs we must revoke
@@ -92,7 +94,7 @@ export function AvatarEditor({ session, api, preview, hint, removeTitle, removeN
       return;
     }
     if (!file.type.startsWith("image/")) {
-      setError("Pick a PNG or JPG image.");
+      setError(t("avatar.errNotImage"));
       return;
     }
     setCropFromFile(file);
@@ -142,7 +144,7 @@ export function AvatarEditor({ session, api, preview, hint, removeTitle, removeN
     try {
       const url = await api.originalUrl();
       if (url === null) {
-        setError("No stored original — pick a new image instead.");
+        setError(t("avatar.errNoOriginal"));
         return;
       }
       // Route through the attachment cache (fetch → blob URL): the same pipeline
@@ -155,7 +157,7 @@ export function AvatarEditor({ session, api, preview, hint, removeTitle, removeN
       const objectPath = new URL(url).pathname;
       const objectUrl = await session.attachmentCache.loadImage({ key: `avatar-original:${objectPath}`, url });
       if (objectUrl === null) {
-        setError("Could not load the stored original.");
+        setError(t("avatar.errLoadOriginal"));
         return;
       }
       setCropFromFile(null);
@@ -186,12 +188,12 @@ export function AvatarEditor({ session, api, preview, hint, removeTitle, removeN
       <div className={"avatar-editor-block" + (stacked ? " stacked" : "")}>
         <div className="profile-head">
           {preview}
-          {busy ? <div className="settings-hint">Working…</div> : null}
+          {busy ? <div className="settings-hint">{t("avatar.working")}</div> : null}
         </div>
         <div className="modal-actions left profile-actions">
-          <button className="primary" disabled={busy} onClick={pickFile}>Change avatar…</button>
-          <button className="ghost" disabled={busy} onClick={() => void beginRecrop()}>Re-crop</button>
-          <button className="danger" disabled={busy} onClick={() => setRemoveArmed(true)}>Remove</button>
+          <button className="primary" disabled={busy} onClick={pickFile}>{t("avatar.change")}</button>
+          <button className="ghost" disabled={busy} onClick={() => void beginRecrop()}>{t("avatar.recrop")}</button>
+          <button className="danger" disabled={busy} onClick={() => setRemoveArmed(true)}>{t("common.remove")}</button>
         </div>
       </div>
       <input ref={fileInputRef} type="file" accept="image/*" hidden onChange={onFileChosen} />
@@ -200,8 +202,8 @@ export function AvatarEditor({ session, api, preview, hint, removeTitle, removeN
         <Modal title={removeTitle} onClose={() => setRemoveArmed(false)}>
           <div className="modal-note">{removeNote}</div>
           <div className="modal-actions">
-            <button className="ghost" onClick={() => setRemoveArmed(false)}>Cancel</button>
-            <button className="danger" disabled={busy} onClick={() => void removeCurrent()}>Remove</button>
+            <button className="ghost" onClick={() => setRemoveArmed(false)}>{t("common.cancel")}</button>
+            <button className="danger" disabled={busy} onClick={() => void removeCurrent()}>{t("common.remove")}</button>
           </div>
         </Modal>
       ) : null}

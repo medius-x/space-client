@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { log } from "../../logging";
+import { useT } from "../hooks/useT";
 import type { ToastCardPayload, ToastCallCardPayload, ToastShowPayload, ToastVoiceInviteCardPayload } from "../bridges";
 
 /**
@@ -40,6 +41,7 @@ interface ActiveCallCard extends ToastCallCardPayload {}
 type ActiveVoiceInviteCard = ToastVoiceInviteCardPayload & { expiresAt: number };
 
 export function ToastStackScreen(): React.JSX.Element {
+  const t = useT();
   const [cards, setCards] = useState<ActiveCard[]>([]);
   const [callCard, setCallCard] = useState<ActiveCallCard | null>(null);
   const [voiceInviteCards, setVoiceInviteCards] = useState<ActiveVoiceInviteCard[]>([]);
@@ -302,7 +304,11 @@ export function ToastStackScreen(): React.JSX.Element {
             </span>
           )}
           <div className="toast-call-text">
-            <span className="toast-call-status">{callCard.status}</span>
+            {/* The wire status stays the EN discriminator ("Incoming call" |
+                "Connecting…" — bridges.ts); the VISIBLE text renders per language. */}
+            <span className="toast-call-status">
+              {callCard.status === "Incoming call" ? t("toast.incomingCall") : t("voice.connecting")}
+            </span>
             <span className="toast-call-name">{callCard.peer}</span>
             <span className="toast-call-server">{callCard.serverName}</span>
           </div>
@@ -310,7 +316,7 @@ export function ToastStackScreen(): React.JSX.Element {
             <div className="toast-call-actions">
               <button
                 className="toast-call-accept"
-                title="Accept"
+                title={t("friends.accept")}
                 // pointerdown is the rawest hop marker (diagnostic, live
                 // 2026-10-15): it fires before click — presence without a
                 // following "accept clicked" means the click never assembled.
@@ -324,7 +330,7 @@ export function ToastStackScreen(): React.JSX.Element {
               </button>
               <button
                 className="toast-call-decline"
-                title="Decline"
+                title={t("friends.decline")}
                 onPointerDown={() => log.info("toast", "call button pointerdown")}
                 onClick={() => {
                   log.info("toast", "call decline clicked");
@@ -355,7 +361,7 @@ export function ToastStackScreen(): React.JSX.Element {
             window.spaceToast?.empty();
           }}
         >
-          Hide all
+          {t("toast.hideAll")}
         </button>
       ) : null}
       {voiceInviteCards.map((card) => (
@@ -376,14 +382,14 @@ export function ToastStackScreen(): React.JSX.Element {
             </span>
           )}
           <div className="toast-call-text">
-            <span className="toast-call-status">Voice invite</span>
+            <span className="toast-call-status">{t("toast.voiceInviteCard")}</span>
             <span className="toast-call-name">{card.inviterName}</span>
             <span className="toast-call-server">{card.channelName} · {card.serverName}</span>
           </div>
           <div className="toast-call-actions">
             <button
               className="toast-invite-join"
-              title="Join"
+              title={t("toast.join")}
               onClick={() => {
                 log.info("toast", `voice invite ${card.id} join clicked`);
                 window.spaceToast?.voiceInviteAction("join", card.id);
@@ -393,7 +399,7 @@ export function ToastStackScreen(): React.JSX.Element {
             </button>
             <button
               className="toast-invite-dismiss"
-              title="Dismiss"
+              title={t("toast.dismiss")}
               onClick={() => {
                 log.info("toast", `voice invite ${card.id} dismissed`);
                 window.spaceToast?.voiceInviteAction("dismiss", card.id);

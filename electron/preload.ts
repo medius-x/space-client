@@ -243,6 +243,29 @@ contextBridge.exposeInMainWorld("spaceUpdates", {
   },
 });
 
+/** UI-language bridge (localization round 2026-10-27): the main window pushes
+ *  the resolved language; main re-labels tray/titles and broadcasts flips to
+ *  every renderer (the toast and pop-out windows have no bootstrap of their
+ *  own — the broadcast is their only language source). */
+contextBridge.exposeInMainWorld("spaceI18n", {
+  sync(lang: string): void {
+    ipcRenderer.send("space-i18n:sync", lang);
+  },
+  get(): Promise<unknown> {
+    return ipcRenderer.invoke("space-i18n:get");
+  },
+  onLanguage(callback: (lang: string) => void): void {
+    // Single-subscriber channel: replace any previous listener — a remount
+    // (HMR) must not stack a second one and double-dispatch.
+    ipcRenderer.removeAllListeners("space-i18n:language");
+    ipcRenderer.on("space-i18n:language", (_event, lang: unknown) => {
+      if (lang === "en" || lang === "ru") {
+        callback(lang);
+      }
+    });
+  },
+});
+
 /** Provisioning bridge (round C): the Create tab starts an SSH deployment of
  *  the OAK stack on a fresh server and renders the step events streaming back. */
 contextBridge.exposeInMainWorld("spaceProvisioning", {

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { useStore } from "../hooks/useStore";
+import { useT } from "../hooks/useT";
+import type { MessageKey, Translator } from "../../domain/i18n/i18n";
 import {
   appStore,
   callShareTarget,
@@ -63,6 +65,7 @@ function markTone(modFlag: boolean, selfFlag: boolean): "none" | "self" | "mod" 
 
 /** Mute/deafen badges for a voice member — shared by the room tiles and the sidebar. */
 export function VoiceMarks({ marks }: { marks: VoiceMemberMarks | undefined }): React.JSX.Element | null {
+  const t = useT();
   // The SPEAK-permission mute paints with the moderator layer (red — it is server
   // state), but its tooltip tells the real story: no unmute button lifts it.
   const muteTone = markTone((marks?.modMuted ?? false) || (marks?.permMuted ?? false), marks?.selfMuted ?? false);
@@ -73,12 +76,12 @@ export function VoiceMarks({ marks }: { marks: VoiceMemberMarks | undefined }): 
   return (
     <span className="voice-marks">
       {muteTone !== "none" ? (
-        <span className={`voice-mark voice-mark-${muteTone}`} title={marks?.permMuted ? "Not allowed to speak in this channel" : muteTone === "mod" ? "Muted by a moderator" : "Muted by themselves"}>
+        <span className={`voice-mark voice-mark-${muteTone}`} title={marks?.permMuted ? t("voice.notAllowedToSpeak") : muteTone === "mod" ? t("voice.mutedByModerator") : t("voice.mutedByThemselves")}>
           <span className="icon mdi-microphone-off" />
         </span>
       ) : null}
       {deafenTone !== "none" ? (
-        <span className={`voice-mark voice-mark-${deafenTone}`} title={deafenTone === "mod" ? "Deafened by a moderator" : "Deafened by themselves"}>
+        <span className={`voice-mark voice-mark-${deafenTone}`} title={deafenTone === "mod" ? t("voice.deafenedByModerator") : t("voice.deafenedByThemselves")}>
           <span className="icon mdi-headphones-off" />
         </span>
       ) : null}
@@ -89,18 +92,19 @@ export function VoiceMarks({ marks }: { marks: VoiceMemberMarks | undefined }): 
 /** oak's CALL badges: in a 1:1 both endpoints read as SELF-yellow — there is no
  *  moderator in a P2P call (MainController: the call's mute states are its own). */
 export function CallMarks({ micOn, deafenedOn }: { micOn: boolean; deafenedOn: boolean }): React.JSX.Element | null {
+  const t = useT();
   if (micOn && !deafenedOn) {
     return null;
   }
   return (
     <span className="voice-marks">
       {!micOn ? (
-        <span className="voice-mark voice-mark-self" title="Muted">
+        <span className="voice-mark voice-mark-self" title={t("voice.mutedTitle")}>
           <span className="icon mdi-microphone-off" />
         </span>
       ) : null}
       {deafenedOn ? (
-        <span className="voice-mark voice-mark-self" title="Deafened">
+        <span className="voice-mark voice-mark-self" title={t("voice.deafenedTitle")}>
           <span className="icon mdi-headphones-off" />
         </span>
       ) : null}
@@ -139,19 +143,28 @@ export const NS_ENGINE_LABELS: Record<NoiseEngineKind, string> = {
 /** One-line engine descriptions (user request 2026-10-27): the quality VERDICT
  *  rides first so a hover (the selector card) and the Audio settings answer
  *  "which one should I use" at a glance. The wording mirrors the engine table
- *  the user kept from the 2026-09-17 round, plus the suppression quality. */
-export const NS_ENGINE_DESCRIPTIONS: Record<NoiseEngineKind, string> = {
-  off: "No processing at all — the raw microphone.",
-  rnnoise: "Hybrid DSP + neural net. Good suppression quality, very light on CPU.",
-  deepfilternet3: "Heavy neural network. The best suppression quality of the set.",
-  dtln: "Recurrent neural network. High quality, wideband 16 kHz, heavy.",
-  speex: "Classic DSP. Moderate suppression, the lightest footprint.",
-  gate: "Pure logic, zero intelligence — mutes pauses, does not remove noise.",
+ *  the user kept from the 2026-09-17 round, plus the suppression quality.
+ *  Localized through the dictionary; engine NAMES are brand-ish and stay. */
+const NS_ENGINE_DESCRIPTION_KEYS: Record<NoiseEngineKind, MessageKey> = {
+  off: "nsEngine.off.description",
+  rnnoise: "nsEngine.rnnoise.description",
+  deepfilternet3: "nsEngine.deepfilternet3.description",
+  speex: "nsEngine.speex.description",
+  gate: "nsEngine.gate.description",
+  dtln: "nsEngine.dtln.description",
 };
 
+export function nsEngineDescription(t: Translator, engine: NoiseEngineKind): string {
+  return t(NS_ENGINE_DESCRIPTION_KEYS[engine]);
+}
+
+export function nsEngineLabel(t: Translator, engine: NoiseEngineKind): string {
+  return engine === "off" ? t("nsEngine.off.label") : NS_ENGINE_LABELS[engine];
+}
+
 /** The NS button's tooltip (oak): the click opens the engine selector card. */
-function nsTitle(engine: NoiseEngineKind): string {
-  return `Noise suppression: ${NS_ENGINE_LABELS[engine]}`;
+function nsTitle(t: Translator, engine: NoiseEngineKind): string {
+  return t("voice.nsTooltip", { engine: nsEngineLabel(t, engine) });
 }
 
 /** The card renders UPWARDS and HUGS the button: the NS button sits at the
@@ -169,6 +182,7 @@ export function NsEngineMenu({ engine, x, y, onPick, onClose, triggerRef }: {
    *  closed (the emoji-picker anchorRef lesson). */
   triggerRef?: RefObject<HTMLButtonElement | null>;
 }): React.JSX.Element {
+  const t = useT();
   const cardRef = useRef<HTMLDivElement | null>(null);
   useOutsideDismiss(cardRef, onClose, triggerRef);
   const options: NoiseEngineKind[] = ["rnnoise", "deepfilternet3", "dtln", "speex", "gate", "off"];
@@ -178,13 +192,13 @@ export function NsEngineMenu({ engine, x, y, onPick, onClose, triggerRef }: {
         <button
           key={option}
           className="engine-row"
-          title={NS_ENGINE_DESCRIPTIONS[option]}
+          title={nsEngineDescription(t, option)}
           onClick={() => {
             onPick(option);
             onClose();
           }}
         >
-          <span>{NS_ENGINE_LABELS[option]}</span>
+          <span>{nsEngineLabel(t, option)}</span>
           {option === engine ? <span className="icon mdi-check" /> : null}
         </button>
       ))}
@@ -213,6 +227,7 @@ function VoiceSignalGlyph({ level }: { level: VoiceSignalLevel }): React.JSX.Ele
 }
 
 export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX.Element | null {
+  const t = useT();
   const voiceState = useStore(appStore, (state) => state.voiceState);
   const stateDetail = useStore(appStore, (state) => state.stateDetail);
   const voiceRttMillis = useStore(appStore, (state) => state.voiceRttMillis);
@@ -288,17 +303,17 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
       ? (callHealthy ? "live" : "reconnecting")
       : "connecting";
     const statusText = ringingOut
-      ? "Calling…"
+      ? t("voice.calling")
       : callState === "connecting"
-        ? "Connecting…"
+        ? t("voice.connecting")
         : callState === "in-call"
-          ? (callHealthy ? (callSeconds > 0 ? `On a call — ${formatCallSeconds(callSeconds)}` : "On a call") : "Reconnecting…")
-          : "On a call";
+          ? (callHealthy ? (callSeconds > 0 ? t("voice.onACallTimer", { time: formatCallSeconds(callSeconds) }) : t("voice.onACall")) : t("voice.reconnecting"))
+          : t("voice.onACall");
     // oak's voiceScreenBadge equivalent: the peer's announced camera/screen.
     const peerScreens = (peerScreenOn || peerCameraOn) ? 1 : 0;
     return (
       <div className="voice-bar">
-        <div className="voice-bar-info" onClick={toggleRoomView} title="Open / close the call view">
+        <div className="voice-bar-info" onClick={toggleRoomView} title={t("voice.toggleCallView")}>
           <div className="voice-bar-text">
             <span className={"voice-bar-status " + statusClass}>{statusText}</span>
             <span className="voice-bar-details">{callPeer !== null ? `${displayNameOf(rosterUsers, callPeer)} / ${serverName}` : ""}</span>
@@ -317,14 +332,14 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
         <div className="voice-bar-buttons">
           <button
             className={"voice-toggle icon-button" + (callMicOn ? "" : " on")}
-            title={callMicOn ? "Mute" : "Unmute"}
+            title={callMicOn ? t("voice.mute") : t("voice.unmute")}
             onClick={toggleCallMic}
           >
             <span className={"icon " + (callMicOn ? "mdi-microphone" : "mdi-microphone-off")} />
           </button>
           <button
             className={"voice-toggle icon-button" + (callDeafenedOn ? " on" : "")}
-            title={callDeafenedOn ? "Undeafen" : "Deafen"}
+            title={callDeafenedOn ? t("voice.undeafen") : t("voice.deafen")}
             onClick={toggleCallDeafen}
           >
             <span className={"icon " + (callDeafenedOn ? "mdi-headphones-off" : "mdi-headphones")} />
@@ -332,7 +347,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
           <button
             ref={nsButtonRef}
             className={"voice-toggle icon-button ns" + (nsEngine !== "off" ? " on" : "")}
-            title={nsTitle(nsEngine)}
+            title={nsTitle(t, nsEngine)}
             onClick={(event) => setNsMenu(nsMenu === null ? { x: event.currentTarget.getBoundingClientRect().left, y: event.currentTarget.getBoundingClientRect().top } : null)}
           >
             <span className="icon mdi-triangle-wave" />
@@ -344,7 +359,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
           <button
             className={"voice-toggle icon-button share" + (callSharing || callCameraOn ? " on" : "")}
             disabled={ringingOut}
-            title={ringingOut ? "Available once the call connects" : callSharing || callCameraOn ? "Stop screen share" : "Share screen"}
+            title={ringingOut ? t("voice.shareAfterConnect") : callSharing || callCameraOn ? t("voice.stopShare") : t("voice.shareScreen")}
             onClick={() => {
               if (callCameraOn) {
                 void toggleCallCamera(); // the toggle IS the camera's stop
@@ -357,7 +372,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
           >
             <span className="icon mdi-cast-connected" />
           </button>
-          <button className="voice-toggle icon-button leave" title={ringingOut ? "Cancel" : "Hang up"} onClick={hangUpCall}>
+          <button className="voice-toggle icon-button leave" title={ringingOut ? t("common.cancel") : t("voice.hangUp")} onClick={hangUpCall}>
             <span className="icon mdi-phone-hangup" />
           </button>
         </div>
@@ -406,16 +421,16 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
   // "230 ms" read as "everything is fine" — live 2026-10-15): it lives in the
   // waves glyph's tooltip, the glyph itself carries the quality tier.
   const statusText = voiceState === "live"
-    ? "Voice connected"
+    ? t("voice.voiceConnected")
     : voiceState === "reconnecting"
-      ? `Reconnecting…${stateDetail ? ` ${stateDetail}` : ""}`
+      ? t("voice.reconnectingDetail", { detail: stateDetail !== null && stateDetail.length > 0 ? ` ${stateDetail}` : "" })
       : voiceState === "failed"
-        ? "Connection failed"
-        : "Connecting";
+        ? t("voice.connectionFailed")
+        : t("voice.connecting");
 
   return (
     <div className="voice-bar">
-      <div className="voice-bar-info" onClick={toggleRoomView} title="Open / close the room view">
+      <div className="voice-bar-info" onClick={toggleRoomView} title={t("voice.toggleRoomView")}>
         {/* oak stacks TWO lines: the colored status over the channel/server
             detail (voiceInfoRow VBox). NO chevron — the only chevron in the
             subsystem is the room header's back button (main.fxml has none here). */}
@@ -425,7 +440,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
             {voiceState === "live" ? (
               <span
                 className="voice-signal-wrap"
-                title={voiceRttMillis !== null ? `Voice connection: ${voiceRttMillis} ms` : "Voice connection: measuring…"}
+                title={voiceRttMillis !== null ? t("voice.connectionRtt", { rtt: voiceRttMillis }) : t("voice.connectionMeasuring")}
               >
                 <VoiceSignalGlyph level={voiceSignalLevel(voiceRttMillis)} />
               </span>
@@ -449,14 +464,14 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
         <button
           className={"voice-toggle icon-button" + (selfMuted ? " on" : "")}
           disabled={micLocked}
-          title={permMuted ? "Not allowed to speak in this channel" : micLocked ? "Muted in the AFK channel" : selfMuted ? "Unmute" : "Mute"}
+          title={permMuted ? t("voice.notAllowedToSpeak") : micLocked ? t("voice.afkMuted") : selfMuted ? t("voice.unmute") : t("voice.mute")}
           onClick={toggleSelfMute}
         >
           <span className={"icon " + (selfMuted ? "mdi-microphone-off" : "mdi-microphone")} />
         </button>
         <button
           className={"voice-toggle icon-button" + (selfDeafened ? " on" : "")}
-          title={selfDeafened ? "Undeafen" : "Deafen"}
+          title={selfDeafened ? t("voice.undeafen") : t("voice.deafen")}
           onClick={toggleSelfDeafen}
         >
           {/* oak's deafen toggle swaps the glyph: plain headphones while hearing,
@@ -468,7 +483,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
         <button
           ref={nsButtonRef}
           className={"voice-toggle icon-button ns" + (nsEngine !== "off" ? " on" : "")}
-          title={nsTitle(nsEngine)}
+          title={nsTitle(t, nsEngine)}
           onClick={(event) => setNsMenu(nsMenu === null ? { x: event.currentTarget.getBoundingClientRect().left, y: event.currentTarget.getBoundingClientRect().top } : null)}
         >
           <span className="icon mdi-triangle-wave" />
@@ -482,7 +497,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
         {!channelAfk && (canStream || sharing || cameraOn) ? (
           <button
             className={"voice-toggle icon-button share" + (sharing || cameraOn ? " on" : "")}
-            title={sharing || cameraOn ? "Stop screen share" : "Share screen"}
+            title={sharing || cameraOn ? t("voice.stopShare") : t("voice.shareScreen")}
             onClick={() => {
               if (cameraOn) {
                 void toggleCamera(); // the toggle IS the camera's stop
@@ -496,7 +511,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
             <span className="icon mdi-cast-connected" />
           </button>
         ) : null}
-        <button className="voice-toggle icon-button leave" title="Disconnect" onClick={() => void leaveVoice()}>
+        <button className="voice-toggle icon-button leave" title={t("voice.disconnect")} onClick={() => void leaveVoice()}>
           <span className="icon mdi-phone-hangup" />
         </button>
       </div>
@@ -533,6 +548,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
  * sliders out from under the cursor).
  */
 export function RoomView({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const t = useT();
   const participants = useStore(appStore, (state) => state.participants);
   const cameraOn = useStore(appStore, (state) => state.cameraOn);
   const sharing = useStore(appStore, (state) => state.sharing);
@@ -802,21 +818,21 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
         <div className="tile-screen-slot">
           {isSelf && ownMedia ? (
             <>
-              <div className="tile-slot-plate">{sharing ? "Your screen" : "Your camera"}</div>
+              <div className="tile-slot-plate">{sharing ? t("voice.yourScreen") : t("voice.yourCamera")}</div>
               <video ref={localVideoRef} autoPlay playsInline muted />
             </>
           ) : isSelf ? (
             <Avatar session={session} username={username} size={100} />
           ) : hasVideo ? (
             <button className="tile-slot-watch" onClick={() => void watchShareInWindow(feed!.feedId)}>
-              <span className="icon mdi-monitor" /> Watch screen
+              <span className="icon mdi-monitor" /> {t("voice.watchScreen")}
             </button>
           ) : (
             <Avatar session={session} username={username} size={100} />
           )}
         </div>
         <div className="tile-foot">
-          <span className="tile-name" style={{ color: nameColor(username) ?? undefined }}>{nameOf(username)}{isSelf ? " (you)" : ""}</span>
+          <span className="tile-name" style={{ color: nameColor(username) ?? undefined }}>{nameOf(username)}{isSelf ? ` ${t("members.you")}` : ""}</span>
           <VoiceMarks marks={marksByMember.get(username)} />
         </div>
       </div>
@@ -842,7 +858,7 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
         <div className="tile-screen-slot">
           {isSelf && ownMedia ? (
             <>
-              <div className="tile-slot-plate">{callSharing ? "Your screen" : "Your camera"}</div>
+              <div className="tile-slot-plate">{callSharing ? t("voice.yourScreen") : t("voice.yourCamera")}</div>
               <video ref={callSelfVideoRef} autoPlay playsInline muted />
             </>
           ) : isSelf ? (
@@ -863,7 +879,7 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
             >
               <video ref={bindCallPeerVideoElement} autoPlay playsInline onDoubleClick={toggleCallWatchFullscreen} />
               {callPeerVideoReady ? null : (
-                <div className="tile-slot-plate"><span className="icon mdi-monitor" /> Sharing screen…</div>
+                <div className="tile-slot-plate"><span className="icon mdi-monitor" /> {t("voice.sharingScreen")}</div>
               )}
               {callWatchFullscreen ? (
                 <div className={"call-watch-toolbar" + (callWatchActive || callNsMenuAt !== null ? " visible" : "")}>
@@ -873,14 +889,14 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
                       engine running green — separator, volume group, exit. */}
                   <button
                     className={"popout-voice-toggle" + (callMicOn ? "" : " on")}
-                    title={callMicOn ? "Mute" : "Unmute"}
+                    title={callMicOn ? t("voice.mute") : t("voice.unmute")}
                     onClick={toggleCallMic}
                   >
                     <span className={"icon " + (callMicOn ? "mdi-microphone" : "mdi-microphone-off")} />
                   </button>
                   <button
                     className={"popout-voice-toggle" + (callDeafenedOn ? " on" : "")}
-                    title={callDeafenedOn ? "Undeafen" : "Deafen"}
+                    title={callDeafenedOn ? t("voice.undeafen") : t("voice.deafen")}
                     onClick={toggleCallDeafen}
                   >
                     <span className={"icon " + (callDeafenedOn ? "mdi-headphones-off" : "mdi-headphones")} />
@@ -888,7 +904,7 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
                   <button
                     ref={callNsButtonRef}
                     className={"popout-voice-toggle ns" + (nsEngine !== "off" ? " on" : "")}
-                    title={nsTitle(nsEngine)}
+                    title={nsTitle(t, nsEngine)}
                     onClick={(event) => {
                       const rect = event.currentTarget.getBoundingClientRect();
                       setCallNsMenuAt(callNsMenuAt === null ? { x: rect.left, y: rect.top - 6 } : null);
@@ -903,11 +919,11 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
                       volume" slider dragged both chains at once). */}
                   <div className="popout-volume-group">
                     <div className="popout-volume-cell">
-                      <span className="popout-volume-label">Voice</span>
+                      <span className="popout-volume-label">{t("voice.voiceLabel")}</span>
                       <div className="popout-volume-row">
                         <button
                           className="popout-volume-toggle"
-                          title={callVoiceGain > 0 ? "Mute voice" : "Unmute voice"}
+                          title={callVoiceGain > 0 ? t("voice.muteVoice") : t("voice.unmuteVoice")}
                           onClick={() => {
                             const nextGain = callVoiceGain > 0
                               ? 0
@@ -926,7 +942,7 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
                         <VolumeSliderInput
                           className="popout-volume"
                           value={callVoiceGain}
-                          title={`Voice volume — ${Math.round(callVoiceGain * 100)}%`}
+                          title={t("voice.voiceVolumeTooltip", { percent: Math.round(callVoiceGain * 100) })}
                           onValueChange={(nextGain) => {
                             if (nextGain > 0) {
                               callVoiceGainLastPositiveRef.current = nextGain;
@@ -940,11 +956,11 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
                       </div>
                     </div>
                     <div className="popout-volume-cell">
-                      <span className="popout-volume-label">Video</span>
+                      <span className="popout-volume-label">{t("voice.videoLabel")}</span>
                       <div className="popout-volume-row">
                         <button
                           className="popout-volume-toggle"
-                          title={callShareGain > 0 ? "Mute share audio" : "Unmute share audio"}
+                          title={callShareGain > 0 ? t("voice.muteShareAudio") : t("voice.unmuteShareAudio")}
                           onClick={() => {
                             const nextGain = callShareGain > 0
                               ? 0
@@ -963,7 +979,7 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
                         <VolumeSliderInput
                           className="popout-volume"
                           value={callShareGain}
-                          title={`Share volume — ${Math.round(callShareGain * 100)}%`}
+                          title={t("voice.shareVolumeTooltip", { percent: Math.round(callShareGain * 100) })}
                           onValueChange={(nextGain) => {
                             if (nextGain > 0) {
                               callShareGainLastPositiveRef.current = nextGain;
@@ -978,12 +994,12 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
                     </div>
                   </div>
                   <span className="popout-toolbar-sep" />
-                  <button className="popout-fullscreen" title="Exit fullscreen (Esc)" onClick={toggleCallWatchFullscreen}>
+                  <button className="popout-fullscreen" title={t("voice.exitFullscreen")} onClick={toggleCallWatchFullscreen}>
                     <span className="icon mdi-fullscreen-exit" />
                   </button>
                 </div>
               ) : (
-                <button className="call-watch-open" title="Fullscreen" onClick={toggleCallWatchFullscreen}>
+                <button className="call-watch-open" title={t("voice.fullscreen")} onClick={toggleCallWatchFullscreen}>
                   <span className="icon mdi-fullscreen" />
                 </button>
               )}
@@ -1008,7 +1024,7 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
           )}
         </div>
         <div className="tile-foot">
-          <span className="tile-name" style={{ color: nameColor(username) ?? undefined }}>{nameOf(username)}{isSelf ? " (you)" : ""}</span>
+          <span className="tile-name" style={{ color: nameColor(username) ?? undefined }}>{nameOf(username)}{isSelf ? ` ${t("members.you")}` : ""}</span>
           {isSelf
             ? <CallMarks micOn={callMicOn} deafenedOn={callDeafenedOn} />
             : <CallMarks micOn={peerMicOn} deafenedOn={peerDeafenedOn} />}
@@ -1027,13 +1043,14 @@ export function RoomView({ session }: { session: ConnectionSession }): React.JSX
             → stretch → the BACK button at the RIGHT edge (buildRoomView 4261-4276).
             In a call the title is the PEER's name (roomTitleLabel = callPeer). */}
         <span className="icon mdi-volume-high" />
-        <span className="pane-title">{callMode ? nameOf(callPeer ?? "") : channel !== null ? channel.name : "Voice room"}</span>
+        <span className="pane-title">{callMode ? nameOf(callPeer ?? "") : channel !== null ? channel.name : t("voice.voiceRoom")}</span>
         <span className="room-view-sub">
-          {callMode
-            ? `2 in room${callPeerMedia ? " · 1 screen" : ""}`
-            : `${participants.length + 1} in room${screens > 0 ? ` · ${screens} screen${screens > 1 ? "s" : ""}` : ""}`}
+          {(callMode
+            ? t("voice.inRoomCount", { count: 2 }) + (callPeerMedia ? ` · ${t("voice.screensCount", { count: 1 })}` : "")
+            : t("voice.inRoomCount", { count: participants.length + 1 })
+              + (screens > 0 ? ` · ${t("voice.screensCount", { count: screens })}` : ""))}
         </span>
-        <button className="voice-toggle icon-button room-view-back" title="Back to chat" onClick={toggleRoomView}>
+        <button className="voice-toggle icon-button room-view-back" title={t("voice.backToChat")} onClick={toggleRoomView}>
           <span className="icon mdi-chevron-left" />
         </button>
       </div>
@@ -1132,15 +1149,20 @@ export function VolumeSliderInput({ value, className, disabled, title, onValueCh
 
 /** One 0–300% volume row with a 0 ↔ last-positive mute toggle (oak's volume rows).
  *  The caption appears ONLY when both rows are visible (oak shows no caption on
- *  the lone voice slider) — label=null renders the row uncaptioned. */
-function VolumeRow({ label, initialGain, remoteGain, onChange }: {
+ *  the lone voice slider) — label=null renders the row uncaptioned. The mute
+ *  button's tooltip names the STREAM it silences (voice/share) — NOT the mic
+ *  keys, which the self-toggle buttons own (user re-labeling round 2026-10-28). */
+function VolumeRow({ label, kind, initialGain, remoteGain, onChange }: {
   label: string | null;
+  /** Which stream this row silences — picks the tooltip key pair. */
+  kind: "voice" | "share";
   initialGain: number;
   /** A change made elsewhere (the pop-out's slider, another surface) that THIS
    *  row follows live; null = nothing to apply. */
   remoteGain: number | null;
   onChange(gain: number): void;
 }): React.JSX.Element {
+  const t = useT();
   const [gain, setGain] = useState(initialGain);
   const lastPositiveRef = useRef(initialGain > 0 ? initialGain : 1);
   useEffect(() => {
@@ -1151,6 +1173,8 @@ function VolumeRow({ label, initialGain, remoteGain, onChange }: {
       }
     }
   }, [remoteGain]);
+  const unmuteTitle = kind === "voice" ? t("voice.unmuteVoice") : t("voice.unmuteShareAudio");
+  const muteTitle = kind === "voice" ? t("voice.muteVoice") : t("voice.muteShareAudio");
   return (
     <div className="volume-row">
       {label !== null ? <span className="volume-row-label">{label}</span> : null}
@@ -1166,7 +1190,7 @@ function VolumeRow({ label, initialGain, remoteGain, onChange }: {
       />
       <button
         className={"icon-button volume-mute" + (gain === 0 ? " on" : "")}
-        title={gain === 0 ? "Unmute" : "Mute"}
+        title={gain === 0 ? unmuteTitle : muteTitle}
         onClick={() => {
           const next = gain === 0 ? lastPositiveRef.current : 0;
           setGain(next);
@@ -1195,6 +1219,7 @@ export function VoiceMemberCard({ session, username, hasShare, moderation = true
   y: number;
   onClose(): void;
 }): React.JSX.Element {
+  const t = useT();
   const cardRef = useRef<HTMLDivElement | null>(null);
   useOutsideDismiss(cardRef, onClose);
   const permissions = useStore(session.permissionStore, (state) => state.my?.permissions ?? []);
@@ -1228,14 +1253,14 @@ export function VoiceMemberCard({ session, username, hasShare, moderation = true
   return (
     <div ref={cardRef} className="member-card" style={{ left, top }}>
       <div className="member-card-title">{displayNameOf(rosterUsers, username)}</div>
-      <VolumeRow label={hasShare ? "Voice" : null} initialGain={persistedGain("voice", username)} remoteGain={remoteVoiceGain} onChange={(gain) => setVoiceVolume(username, gain)} />
+      <VolumeRow label={hasShare ? t("voice.voiceLabel") : null} kind="voice" initialGain={persistedGain("voice", username)} remoteGain={remoteVoiceGain} onChange={(gain) => setVoiceVolume(username, gain)} />
       {hasShare ? (
-        <VolumeRow label="Share audio" initialGain={persistedGain("share", username)} remoteGain={remoteShareGain} onChange={(gain) => setShareVolume(username, gain)} />
+        <VolumeRow label={t("voice.shareAudioLabel")} kind="share" initialGain={persistedGain("share", username)} remoteGain={remoteShareGain} onChange={(gain) => setShareVolume(username, gain)} />
       ) : null}
       {canMute || canDeafen || canKick ? <div className="member-card-separator" /> : null}
       {canMute ? (
         <button className="member-card-action" onClick={() => { onClose(); serverMuteUser(username); }}>
-          {marks?.modMuted ? "Unmute" : "Server mute"}
+          {marks?.modMuted ? t("voice.serverUnmute") : t("voice.serverMute")}
         </button>
       ) : null}
       {canDeafen ? (
@@ -1243,15 +1268,15 @@ export function VoiceMemberCard({ session, username, hasShare, moderation = true
         // force "stop hearing") — the label says what the click really does.
         <button
           className="member-card-action"
-          title="Deafens the member and disconnects them from the room; they can rejoin deafened"
+          title={t("voice.deafenKickHint")}
           onClick={() => { onClose(); serverDeafenUser(username); }}
         >
-          {marks?.modDeafened ? "Undeafen" : "Deafen / kick"}
+          {marks?.modDeafened ? t("voice.serverUndeafen") : t("voice.deafenKick")}
         </button>
       ) : null}
       {canKick ? (
         <button className="member-card-action danger" onClick={() => { onClose(); kickVoiceUser(username); }}>
-          Kick from voice
+          {t("voice.kickFromVoice")}
         </button>
       ) : null}
     </div>
@@ -1260,21 +1285,23 @@ export function VoiceMemberCard({ session, username, hasShare, moderation = true
 
 /** The room↔call exclusivity question (oak parity: both directions ask). */
 export function CallConflictModal(): React.JSX.Element | null {
+  const t = useT();
   const conflict = useStore(appStore, (state) => state.callConflict);
   if (conflict === null) {
     return null;
   }
+  const peerName = conflict.peer ?? "";
   const description = conflict.kind === "start-call"
-    ? `Calling ${conflict.peer} will disconnect you from the voice room.`
+    ? t("voice.conflictStartCall", { peer: peerName })
     : conflict.kind === "accept-call"
-      ? `Accepting ${conflict.peer}'s call will disconnect you from the voice room.`
-      : `Joining the voice room will end your call with ${conflict.peer}.`;
+      ? t("voice.conflictAcceptCall", { peer: peerName })
+      : t("voice.conflictJoinRoom", { peer: peerName });
   return (
-    <Modal title="Are you sure?" onClose={() => resolveCallConflict(false)}>
+    <Modal title={t("voice.conflictTitle")} onClose={() => resolveCallConflict(false)}>
       <div className="modal-note">{description}</div>
       <div className="modal-actions">
-        <button className="ghost" onClick={() => resolveCallConflict(false)}>Cancel</button>
-        <button className="danger" onClick={() => resolveCallConflict(true)}>Continue</button>
+        <button className="ghost" onClick={() => resolveCallConflict(false)}>{t("common.cancel")}</button>
+        <button className="danger" onClick={() => resolveCallConflict(true)}>{t("voice.continueVerb")}</button>
       </div>
     </Modal>
   );

@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { useStore } from "../hooks/useStore";
+import { useT } from "../hooks/useT";
 import { keybindStatusStore, resumeGlobalHotkeys, settingsStore, suspendGlobalHotkeys } from "../runtime";
 import { Modal } from "./Modal";
+import type { MessageKey, Translator } from "../../domain/i18n/i18n";
 import {
   acceleratorFromKeyboardEvent,
   DEFAULT_KEYBINDS,
@@ -14,6 +16,36 @@ import {
   type KeybindAction,
   type Keybinds,
 } from "../../domain/logic/keybinds";
+
+/** The catalog's labels/hints resolve through the dictionary (the localization
+ *  round): the ActionId union is closed, so the key maps are compile-checked. */
+const KEYBIND_LABEL_KEYS: Record<ActionId, MessageKey> = {
+  "toggle-mute": "keybinds.toggle-mute.label",
+  "toggle-deafen": "keybinds.toggle-deafen.label",
+  "toggle-noise-suppression": "keybinds.toggle-noise-suppression.label",
+  "accept-call": "keybinds.accept-call.label",
+  "decline-call": "keybinds.decline-call.label",
+  "next-channel": "keybinds.next-channel.label",
+  "prev-channel": "keybinds.prev-channel.label",
+  "toggle-search": "keybinds.toggle-search.label",
+  "mark-channel-read": "keybinds.mark-channel-read.label",
+};
+
+const KEYBIND_HINT_KEYS: Record<ActionId, MessageKey> = {
+  "toggle-mute": "keybinds.toggle-mute.hint",
+  "toggle-deafen": "keybinds.toggle-deafen.hint",
+  "toggle-noise-suppression": "keybinds.toggle-noise-suppression.hint",
+  "accept-call": "keybinds.accept-call.hint",
+  "decline-call": "keybinds.decline-call.hint",
+  "next-channel": "keybinds.next-channel.hint",
+  "prev-channel": "keybinds.prev-channel.hint",
+  "toggle-search": "keybinds.toggle-search.hint",
+  "mark-channel-read": "keybinds.mark-channel-read.hint",
+};
+
+export function keybindLabel(t: Translator, actionId: ActionId): string {
+  return t(KEYBIND_LABEL_KEYS[actionId]);
+}
 
 /**
  * Keybinds (2026-09-18) — INSTANT-apply with a per-row confirmation (user
@@ -61,29 +93,33 @@ function KeybindRecorder({ shownChord, recording, pending, conflictNotice, onTog
   onConfirm(): void;
   onRevert(): void;
 }): React.JSX.Element {
+  const t = useT();
   const bound = shownChord !== "";
   return (
     <div className="keybind-recorder-wrap">
       <button
         className={"keybind-recorder" + (recording ? " recording" : "") + (pending !== null ? " pending" : "")}
         onClick={onToggleRecord}
-        title={recording ? "Recording… (Escape cancels, Backspace unbinds)" : bound ? "Click to re-record" : "Click to bind"}
+        title={recording ? t("keybinds.recordingTitle") : bound ? t("keybinds.reRecordTitle") : t("keybinds.bindTitle")}
       >
-        {recording ? "Press keys…" : formatAccelerator(shownChord)}
+        {recording ? t("keybinds.pressKeys") : formatAccelerator(shownChord)}
       </button>
       {pending !== null ? (
         <span className="keybind-confirm">
-          <button className="keybind-confirm-accept" title="Save this binding" onClick={onConfirm}>
+          <button className="keybind-confirm-accept" title={t("keybinds.saveBindingTitle")} onClick={onConfirm}>
             <span className="icon mdi-check" />
           </button>
-          <button className="keybind-confirm-cancel" title="Keep the previous binding" onClick={onRevert}>
+          <button className="keybind-confirm-cancel" title={t("keybinds.keepPreviousTitle")} onClick={onRevert}>
             <span className="icon mdi-close" />
           </button>
         </span>
       ) : null}
       {conflictNotice !== null ? (
         <span className="keybind-conflict-popup">
-          {formatAccelerator(conflictNotice.chord)} is already bound to {conflictNotice.holderLabel}
+          {t("keybinds.conflictPopup", {
+            chord: formatAccelerator(conflictNotice.chord),
+            label: conflictNotice.holderLabel,
+          })}
         </span>
       ) : null}
     </div>
@@ -102,27 +138,26 @@ function KeybindRow({ action, shownChord, recording, conflictHolders, pending, c
   onRevert(): void;
   onReset(): void;
 }): React.JSX.Element {
+  const t = useT();
   const status = useStore(keybindStatusStore, (snapshot) => snapshot[action.id] ?? null);
   const isDefault = shownChord === (action.defaultAccelerator ?? "");
   return (
     <div className="keybind-row">
       <div className="keybind-label">
-        <span>{action.label}</span>
-        <span className="keybind-hint">{action.hint}</span>
+        <span>{t(KEYBIND_LABEL_KEYS[action.id])}</span>
+        <span className="keybind-hint">{t(KEYBIND_HINT_KEYS[action.id])}</span>
         {conflictHolders !== undefined && shownChord !== "" ? (
           <span className="keybind-badge warn">
-            Also used by {conflictHolders.filter((holder) => holder !== action.id)
-              .map((holder) => KEYBIND_ACTIONS.find((candidate) => candidate.id === holder)?.label ?? holder)
-              .join(", ")}
+            {t("keybinds.alsoUsedBy", { labels: conflictHolders.filter((holder) => holder !== action.id)
+              .map((holder) => keybindLabel(t, holder))
+              .join(", ") })}
           </span>
         ) : null}
         {action.scope === "global" && isBareKeyAccelerator(shownChord) ? (
-          <span className="keybind-badge warn">
-            A single key takes it from every application — add Ctrl, Alt or Shift
-          </span>
+          <span className="keybind-badge warn">{t("keybinds.bareKeyWarning")}</span>
         ) : null}
         {action.scope === "global" && status === "taken" ? (
-          <span className="keybind-badge warn">In use by another application</span>
+          <span className="keybind-badge warn">{t("keybinds.takenBadge")}</span>
         ) : null}
       </div>
       <KeybindRecorder
@@ -136,7 +171,7 @@ function KeybindRow({ action, shownChord, recording, conflictHolders, pending, c
       />
       {/* Always present (row alignment — live request), disabled while the shown
           value IS the default. Disabled state = "nothing to restore". */}
-      <button className="keybind-reset" title="Reset to the default binding" disabled={isDefault} onClick={onReset}>
+      <button className="keybind-reset" title={t("keybinds.resetRowTitle")} disabled={isDefault} onClick={onReset}>
         <span className="icon mdi-refresh" />
       </button>
     </div>
@@ -144,6 +179,7 @@ function KeybindRow({ action, shownChord, recording, conflictHolders, pending, c
 }
 
 export function KeybindsSection(): React.JSX.Element {
+  const t = useT();
   const stored = useStore(settingsStore, (snapshot) => snapshot.keybinds);
   const bindings = resolveKeybinds(stored);
   const [pending, setPending] = useState<PendingBinding | null>(null);
@@ -227,7 +263,7 @@ export function KeybindsSection(): React.JSX.Element {
     if (chord !== "") {
       const holder = KEYBIND_ACTIONS.find((other) => other.id !== actionId && bindings[other.id] === chord);
       if (holder !== undefined) {
-        setConflictNotice({ actionId, chord, holderLabel: holder.label });
+        setConflictNotice({ actionId, chord, holderLabel: keybindLabel(t, holder.id) });
         return;
       }
     }
@@ -291,18 +327,11 @@ export function KeybindsSection(): React.JSX.Element {
        rows scroll, and the list runs down to the divider above the button. */
     <div className="keybinds-section">
       <div className="keybinds-scroll">
-        <h3>Global</h3>
-        <div className="settings-hint">
-          These work even when the window is not focused — mute yourself from a game.
-          The chords are registered with the operating system; a chord another
-          application already owns is badged and will not fire.
-        </div>
+        <h3>{t("keybinds.globalHeader")}</h3>
+        <div className="settings-hint">{t("keybinds.globalHint")}</div>
         {globalActions.map(renderRow)}
-        <h3>In-app</h3>
-        <div className="settings-hint">
-          These fire while the window is focused. A bare key stays plain typing inside
-          the message composer; chords with Ctrl, Alt or Win fire everywhere.
-        </div>
+        <h3>{t("keybinds.inAppHeader")}</h3>
+        <div className="settings-hint">{t("keybinds.inAppHint")}</div>
         {localActions.map(renderRow)}
       </div>
       {/* Right-aligned WITH the rows: the row list is capped at 560px, so the
@@ -311,16 +340,14 @@ export function KeybindsSection(): React.JSX.Element {
           above spans the same 560px column — the list runs down into it. */}
       <div className="keybind-reset-all-row">
         <button className="keybind-reset-all" onClick={() => setResetAllOpen(true)}>
-          Reset all keybinds
+          {t("keybinds.resetAll")}
         </button>
       </div>
       {resetAllOpen ? (
-        <Modal title="Reset all keybinds" onClose={() => setResetAllOpen(false)}>
-          <div className="modal-note">
-            Reset every binding — global and in-app — back to its default?
-          </div>
+        <Modal title={t("keybinds.resetAll")} onClose={() => setResetAllOpen(false)}>
+          <div className="modal-note">{t("keybinds.resetAllNote")}</div>
           <div className="modal-actions">
-            <button className="ghost" onClick={() => setResetAllOpen(false)}>Cancel</button>
+            <button className="ghost" onClick={() => setResetAllOpen(false)}>{t("common.cancel")}</button>
             <button
               className="primary"
               onClick={() => {
@@ -330,7 +357,7 @@ export function KeybindsSection(): React.JSX.Element {
                 setResetAllOpen(false);
               }}
             >
-              Reset
+              {t("keybinds.resetVerb")}
             </button>
           </div>
         </Modal>

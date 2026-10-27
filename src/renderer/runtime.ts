@@ -39,6 +39,7 @@ import { isDailyCheckDue, isIdleEnoughForUpdateCheck } from "../domain/logic/upd
 import { memberKickReasonText, memberKickTitle } from "../domain/logic/moderation-reason";
 import type { TlsUntrustedEvent, UpdateCheckResult, UpdateStateEvent } from "./bridges";
 import { SettingsStore, type ClientSettings } from "../domain/stores/SettingsStore";
+import { currentLang, resolveUiLanguage, setLanguage, t as tr } from "../domain/i18n/i18n";
 import {
   acceleratorFromKeyboardEvent,
   adjacentChannelId,
@@ -431,7 +432,7 @@ function pingDiscussionEvent(
   notifications.showToast({
     title: displayNameOf(session.rosterStore.getSnapshot().users, event.actorUsername),
     channelName: toastServerHeader(serverDisplayName(recordId),
-      `#${parentChannel?.name ?? event.parentChannelId} · discussion`),
+      `#${parentChannel?.name ?? event.parentChannelId} · ${tr("toast.discussionSuffix")}`),
     body,
     mention: true,
     onClick: () => {
@@ -1137,7 +1138,7 @@ function makeSessionHooks(recordId: string): SessionHooks {
       }
       cancelVoiceRejoin();
       void leaveVoice();
-      notifications.showToast({ title: "Voice", channelName: byUsername, body: "You were kicked from the voice channel." });
+      notifications.showToast({ title: tr("voice.voiceLabel"), channelName: byUsername, body: tr("toast.kickedFromVoice") });
     },
     onVoiceMoved: (channelId) => {
       // The AFK sweep (only the active session is ever in voice). The membership
@@ -1154,7 +1155,7 @@ function makeSessionHooks(recordId: string): SessionHooks {
         void leaveVoice();
         return;
       }
-      notifications.showToast({ title: "Voice", channelName: channel.name, body: `You were moved to #${channel.name}` });
+      notifications.showToast({ title: tr("voice.voiceLabel"), channelName: channel.name, body: tr("toast.movedToChannel", { channel: channel.name }) });
       void joinVoice(channel);
     },
     onCallSignal: (signal) => {
@@ -1236,8 +1237,8 @@ function makeSessionHooks(recordId: string): SessionHooks {
             notifications.showToast({
               title: displayNameOf(backgroundSession.rosterStore.getSnapshot().users, event.message.authorUsername),
               channelName: toastServerHeader(serverDisplayName(recordId),
-                `#${parentChannel?.name ?? event.discussion.parentChannelId} · discussion`),
-              body: toastBodyFallback(event.message),
+                `#${parentChannel?.name ?? event.discussion.parentChannelId} · ${tr("toast.discussionSuffix")}`),
+              body: toastBodyFallback(event.message, currentLang()),
               mention: true,
               onClick: () => {
                 void openDiscussionOnInstance(recordId, event.discussionId);
@@ -1255,7 +1256,7 @@ function makeSessionHooks(recordId: string): SessionHooks {
       if (event.type === "REMOVED") {
         if (appStore.getSnapshot().activeDiscussion?.discussionId === event.discussionId) {
           closeDiscussionView();
-          notifications.showToast({ title: "space", channelName: "", body: "Discussion was closed" });
+          notifications.showToast({ title: "space", channelName: "", body: tr("toast.discussionWasClosed") });
         }
         return;
       }
@@ -1286,7 +1287,7 @@ function makeSessionHooks(recordId: string): SessionHooks {
           && appStore.getSnapshot().activeDiscussion?.discussionId !== event.discussionId
           && mentionsIdentity(event.message, session)) {
         session.discussionsStore.setTracked(event.discussionId, true); // server auto-joined me
-        pingDiscussionEvent(recordId, session, event, toastBodyFallback(event.message));
+        pingDiscussionEvent(recordId, session, event, toastBodyFallback(event.message, currentLang()));
       }
     },
     onDiscussionLiveMessage: (message) => {
@@ -1332,8 +1333,8 @@ function makeSessionHooks(recordId: string): SessionHooks {
       );
     },
     onMemberKicked: (event) => {
-      const reason = memberKickReasonText(event);
-      const title = memberKickTitle(event);
+      const reason = memberKickReasonText(event, currentLang());
+      const title = memberKickTitle(event, currentLang());
       if (!isActive()) {
         log.warn("app", `${event.removed ? "removed" : event.banned ? "banned" : "kicked"} on a background server (record ${recordId}) — dropping the session`);
         disposeBackgroundSession(recordId);
@@ -1360,7 +1361,7 @@ function makeSessionHooks(recordId: string): SessionHooks {
       // `to` — the hooks factory has no session, the record carries the username).
       if (event.type === "ACCEPTED"
         && event.transfer.toUsername === connectionDirectory.get(recordId)?.username) {
-        notifications.showToast({ title: "Server", channelName: "", body: "You are now the owner of this server." });
+        notifications.showToast({ title: tr("common.server"), channelName: "", body: tr("sidebar.ownership.nowOwner") });
       }
     },
   };
@@ -1535,6 +1536,17 @@ async function retryBootResume(recordId: string): Promise<void> {
   scheduleBootResume(recordId, Math.min(2 ** bootResumeAttempt, 30));
 }
 
+/** i18n (localization round 2026-10-27): resolve the language setting ("system"
+ *  → navigator), push it into the i18n module state (repaints every subscribed
+ *  component) and sync the main process (tray/titles) plus the aux windows via
+ *  its broadcast. Runs on boot and on every settings flip — the live-repaint
+ *  idiom of relativeDates. */
+function applyUiLanguage(): void {
+  const lang = resolveUiLanguage(settingsStore.getSnapshot().language, navigator.language);
+  setLanguage(lang);
+  void window.spaceI18n?.sync(lang);
+}
+
 /** App entry: load the directory, auto-resume the most recently used connection. */
 export async function bootstrapApp(): Promise<void> {
   await settingsStore.load();
@@ -1549,6 +1561,8 @@ export async function bootstrapApp(): Promise<void> {
   installPopoutVoiceActionListener(); // the pop-out's mirrored voice-panel buttons land here
   installAppClosingListener(); // the forestalled window close leaves voice/call cleanly
   startUpdateChecks(); // client self-update: startup + daily-in-idle probes
+  applyUiLanguage(); // i18n boot: resolve, repaint, mirror into main + the aux windows
+  settingsStore.subscribe(applyUiLanguage); // a language flip repoints tray/titles and repaints live
   settingsStore.subscribe(pushPopoutVoiceState); // an NS engine flip recolors the pop-out's button
   pushPopoutVoiceState(); // the initial mirror (the pop-out reads it on mount)
   notifications.setToastConfig({
@@ -2169,7 +2183,7 @@ export function setActiveChannel(channelId: number, aroundMessageId?: number): v
         log.warn("chat", `around open failed, falling back to the tail: ${errorMessage(error)}`);
         appStore.patch({ activeAround: null });
         if (error instanceof ApiError && error.status === 404) {
-          notifications.showToast({ title: "space", channelName: "", body: "Message not found — showing the latest messages" });
+          notifications.showToast({ title: "space", channelName: "", body: tr("toast.messageNotFound") });
         }
         return session.loadHistory(channelId);
       })
@@ -2333,7 +2347,7 @@ export function closeDiscussionForEveryone(discussionId: number): void {
   void session.closeDiscussion(discussionId)
     .then(() => {
       closeDiscussionView();
-      notifications.showToast({ title: "space", channelName: "", body: "Discussion closed" });
+      notifications.showToast({ title: "space", channelName: "", body: tr("toast.discussionClosed") });
     })
     .catch((error: unknown) => {
       notifications.showToast({ title: "space", channelName: "", body: errorMessage(error) });
@@ -3201,7 +3215,7 @@ async function detachVoiceAfterLoss(reason: string): Promise<void> {
   appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", stateDetail: null, participants: [], viewingFeedId: null, roomViewOpen: false });
   if (hadSession && settingsStore.getSnapshot().soundEnabled) { // the app sound switch (ding + knocks)
     notifications.playKnock("leave");
-    notifications.showToast({ title: "Voice", channelName: "Connection lost", body: `You were disconnected from the room — ${reason}.` });
+    notifications.showToast({ title: tr("voice.voiceLabel"), channelName: tr("toast.connectionLost"), body: tr("toast.disconnectedFromRoom", { reason }) });
   }
 }
 
@@ -4589,7 +4603,7 @@ function handleCallSignal(signal: IncomingCallSignal): void {
         return;
       }
       teardownCall();
-      notifications.showToast({ title: "Call", channelName: signal.from, body: "Declined your call." });
+      notifications.showToast({ title: tr("toast.callTitle"), channelName: signal.from, body: tr("toast.declinedCall") });
       return;
     }
     case "HANGUP": {
@@ -4597,7 +4611,7 @@ function handleCallSignal(signal: IncomingCallSignal): void {
         return;
       }
       teardownCall();
-      notifications.showToast({ title: "Call", channelName: signal.from, body: "The call ended." });
+      notifications.showToast({ title: tr("toast.callTitle"), channelName: signal.from, body: tr("toast.callEnded") });
       return;
     }
     default: {
@@ -4701,12 +4715,12 @@ function armRingTimeout(): void {
     if (state.callState === "ringing-out") {
       activeSession?.sendCallSignal({ type: "HANGUP", to: state.callPeer ?? "", sdp: null, candidate: null });
       teardownCall();
-      notifications.showToast({ title: "Call", channelName: state.callPeer ?? "", body: "No answer." });
+      notifications.showToast({ title: tr("toast.callTitle"), channelName: state.callPeer ?? "", body: tr("toast.noAnswer") });
     } else if (state.callState === "ringing-in") {
       teardownCall(); // missed call — the caller's own timeout sends HANGUP
     } else if (state.callState === "connecting") {
       teardownCall(); // the callee's re-armed gap: ACCEPT flew, the offer never came
-      notifications.showToast({ title: "Call", channelName: state.callPeer ?? "", body: "Could not connect." });
+      notifications.showToast({ title: tr("toast.callTitle"), channelName: state.callPeer ?? "", body: tr("toast.couldNotConnect") });
     }
   }, timeoutSeconds * 1000);
 }
@@ -4757,7 +4771,7 @@ async function beginOutgoingCall(username: string): Promise<void> {
     // The toast is short-lived — the full cause must survive in the log (live
     // report: an unreadable error flashed and vanished).
     log.error("call", `outgoing call failed to start: ${errorMessage(error)}`);
-    notifications.showToast({ title: "Call", channelName: username, body: `Microphone unavailable — ${errorMessage(error)}` });
+    notifications.showToast({ title: tr("toast.callTitle"), channelName: username, body: tr("toast.micUnavailable", { message: errorMessage(error) }) });
     return;
   } finally {
     callMicBootInFlight = false;
@@ -4836,7 +4850,7 @@ async function acceptCallNow(): Promise<void> {
     callPublishedMic = await wrapCallMic(callMicStream);
   } catch (error) {
     log.error("call", `accept failed to start: ${errorMessage(error)}`);
-    notifications.showToast({ title: "Call", channelName: peer, body: `Microphone unavailable — ${errorMessage(error)}` });
+    notifications.showToast({ title: tr("toast.callTitle"), channelName: peer, body: tr("toast.micUnavailable", { message: errorMessage(error) }) });
     teardownCall();
     return;
   } finally {

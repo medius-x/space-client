@@ -77,8 +77,12 @@ import { emojiNameFromFileName } from "../../domain/logic/emoji-picker";
 import { formatExpiresIn, formatTtlWords } from "../../domain/logic/invite-link";
 import { moveRoleIdTowards } from "../../domain/logic/role-drag";
 import { isOutgoingPending } from "../../domain/logic/ownership-transfer";
+import { permissionDescription, permissionLabel } from "../../domain/i18n/permissions";
+import { currentLang, type MessageKey, type Translator } from "../../domain/i18n/i18n";
+import { formatTimeOfDay } from "../../domain/logic/message-grouping";
+import { useT } from "../hooks/useT";
 import { Modal } from "./Modal";
-import { AFK_TIMEOUT_PRESETS, CreateChannelModal } from "./CreateChannelModal";
+import { AFK_TIMEOUT_PRESETS, CreateChannelModal, afkTimeoutLabel } from "./CreateChannelModal";
 import { Avatar } from "./Avatar";
 import { AvatarEditor, serverAvatarApi } from "./ProfileModal";
 import { ChannelGlyph } from "./ChannelGlyph";
@@ -91,44 +95,6 @@ import { ServerIconPreview } from "./ServerRail";
  * gated live; the wire pushes (/topic/roles, /topic/members, channels.changed)
  * refresh the stores, so a second client's edits re-render this screen too.
  */
-
-/** Human names + one-line descriptions for the permission catalog (no tooltips — always visible).
- *  Mirrors the server's enforcement map — the retired bits (EMBED_LINKS, USE_EXTERNAL_EMOJIS)
- *  are gone from /api/permissions entirely, so they carry no rows here either. */
-const PERMISSION_INFO: Record<string, { label: string; description: string }> = {
-  ADMINISTRATOR: { label: "Administrator", description: "Every permission, bypassing channel overrides." },
-  MANAGE_SERVER: { label: "Manage Server", description: "Rename the server, edit its icon and connection info." },
-  MANAGE_ROLES: { label: "Manage Roles", description: "Create, edit, delete and reorder roles." },
-  MANAGE_CHANNELS: { label: "Manage Channels", description: "Create, rename, delete channels and edit overrides." },
-  MANAGE_MEMBERS: { label: "Manage Members", description: "Assign roles to members and manage invites." },
-  KICK_MEMBERS: { label: "Kick Members", description: "Remove members from the server. Removal is permanent." },
-  BAN_MEMBERS: { label: "Ban Members", description: "Ban members from logging in, and unban." },
-  MANAGE_NICKNAMES: { label: "Manage Nicknames", description: "Change other members' names." },
-  CHANGE_NICKNAME: { label: "Change Nickname", description: "Change your own username." },
-  VIEW_AUDIT_LOG: { label: "View Audit Log", description: "See the server's moderation history." },
-  MANAGE_EMOJIS: { label: "Manage Emojis & Stickers", description: "Upload and remove custom emoji and stickers." },
-  SEND_MESSAGES: { label: "Send Messages", description: "Type in text channels." },
-  MANAGE_MESSAGES: { label: "Manage Messages", description: "Delete and edit other members' messages." },
-  ATTACH_FILES: { label: "Attach Files", description: "Upload images and files." },
-  READ_MESSAGE_HISTORY: { label: "Read Message History", description: "Read past messages." },
-  MENTION_EVERYONE: { label: "Mention Everyone", description: "@everyone and @here ping everyone." },
-  ADD_REACTIONS: { label: "Add Reactions", description: "React to messages." },
-  CONNECT: { label: "Connect", description: "Join voice channels." },
-  SPEAK: { label: "Speak", description: "Talk in voice channels." },
-  MUTE_MEMBERS: { label: "Mute Members", description: "Server-mute members in voice." },
-  DEAFEN_MEMBERS: { label: "Deafen Members", description: "Server-deafen members in voice." },
-  MOVE_MEMBERS: { label: "Move Members", description: "Move members between voice channels." },
-  USE_VAD: { label: "Use Voice Activity", description: "Speak without push-to-talk." },
-  PRIORITY_SPEAKER: { label: "Priority Speaker", description: "Be heard over other speakers." },
-  STREAM: { label: "Stream", description: "Share your screen or camera in voice." },
-  REQUEST_TO_SPEAK: { label: "Request to Speak", description: "Ask to speak on stage channels." },
-  VIEW_CHANNEL: { label: "View Channel", description: "See the channel at all." },
-  MANAGE_STORAGE: { label: "Manage Storage", description: "Edit the storage cleanup policy and trigger manual runs." },
-  RESTRICT_PRIVATE_MESSAGES: {
-    label: "Restrict Private Messages",
-    description: "Holders cannot send or receive direct messages. Existing conversations stay readable.",
-  },
-};
 
 /** Permissions with no server enforcement behind them yet (marked in the editor, oak parity).
  *  Kept in lockstep with the server's never-enforced list — every other bit HAS call sites.
@@ -167,6 +133,7 @@ function hexToArgb(hex: string): number | null {
 }
 
 export function ServerSettingsPane({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const t = useT();
   const section = useStore(appStore, (state) => state.serverSettingsSection);
   const permissions = useStore(session.permissionStore, (state) => state.my?.permissions ?? []);
 
@@ -182,21 +149,21 @@ export function ServerSettingsPane({ session }: { session: ConnectionSession }):
 
   const can = (name: string): boolean => permissions.includes(name);
   const sections = [
-    { key: "overview" as const, label: "Overview", enabled: can(MANAGE_SERVER_PERMISSION) },
-    { key: "roles" as const, label: "Roles", enabled: can(MANAGE_ROLES_PERMISSION) },
-    { key: "members" as const, label: "Members", enabled: can(MANAGE_MEMBERS_PERMISSION) || can(KICK_MEMBERS_PERMISSION) || can(BAN_MEMBERS_PERMISSION) },
-    { key: "invites" as const, label: "Invites", enabled: can(MANAGE_MEMBERS_PERMISSION) },
-    { key: "channels" as const, label: "Channels", enabled: can(MANAGE_CHANNELS_PERMISSION) },
-    { key: "emojis" as const, label: "Emoji", enabled: can(MANAGE_EMOJIS_PERMISSION) },
-    { key: "stickers" as const, label: "Stickers", enabled: can(MANAGE_EMOJIS_PERMISSION) },
-    { key: "server" as const, label: "Server", enabled: can(MANAGE_STORAGE_PERMISSION) },
+    { key: "overview" as const, label: t("serverSettings.section.overview"), enabled: can(MANAGE_SERVER_PERMISSION) },
+    { key: "roles" as const, label: t("serverSettings.section.roles"), enabled: can(MANAGE_ROLES_PERMISSION) },
+    { key: "members" as const, label: t("serverSettings.section.members"), enabled: can(MANAGE_MEMBERS_PERMISSION) || can(KICK_MEMBERS_PERMISSION) || can(BAN_MEMBERS_PERMISSION) },
+    { key: "invites" as const, label: t("serverSettings.section.invites"), enabled: can(MANAGE_MEMBERS_PERMISSION) },
+    { key: "channels" as const, label: t("serverSettings.section.channels"), enabled: can(MANAGE_CHANNELS_PERMISSION) },
+    { key: "emojis" as const, label: t("serverSettings.section.emoji"), enabled: can(MANAGE_EMOJIS_PERMISSION) },
+    { key: "stickers" as const, label: t("serverSettings.section.stickers"), enabled: can(MANAGE_EMOJIS_PERMISSION) },
+    { key: "server" as const, label: t("serverSettings.section.server"), enabled: can(MANAGE_STORAGE_PERMISSION) },
   ].filter((entry) => entry.enabled);
   const active = sections.find((entry) => entry.key === section) ?? sections[0];
 
   return (
     <div className="settings-screen">
       <div className="settings-nav">
-        <div className="settings-nav-title">Server Settings</div>
+        <div className="settings-nav-title">{t("serverMenu.serverSettings")}</div>
         {sections.map((entry) => (
           <button
             key={entry.key}
@@ -209,7 +176,7 @@ export function ServerSettingsPane({ session }: { session: ConnectionSession }):
       </div>
       <div className="settings-body">
         {active === undefined ? (
-          <div className="settings-empty">No settings sections available.</div>
+          <div className="settings-empty">{t("serverSettings.noSections")}</div>
         ) : active.key === "overview" ? (
           <OverviewSection session={session} />
         ) : active.key === "roles" ? (
@@ -237,6 +204,7 @@ export function ServerSettingsPane({ session }: { session: ConnectionSession }):
 // ---------------------------------------------------------------------------
 
 function OverviewSection({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const t = useT();
   const record = connectionDirectory.get(session.recordId);
   const serverName = record?.cachedServerName ?? "";
   const [name, setName] = useState(serverName);
@@ -265,7 +233,7 @@ function OverviewSection({ session }: { session: ConnectionSession }): React.JSX
   return (
     <div>
       {/* The heading styled EXACTLY like the roles-list-header label ("Roles — N"). */}
-      <div className="roles-list-header overview-heading"><span>Overview</span></div>
+      <div className="roles-list-header overview-heading"><span>{t("serverSettings.section.overview")}</span></div>
       {/* The server name rides under the heading in the role-name typography,
           edited by the same hover pencil (inline, caret at the end). */}
       <div className="role-editor-title-row">
@@ -294,7 +262,7 @@ function OverviewSection({ session }: { session: ConnectionSession }): React.JSX
           <span className="role-editor-name">{serverName}</span>
         )}
         {!editingName ? (
-          <button className="ghost tiny role-editor-pencil" title="Rename server" onClick={() => {
+          <button className="ghost tiny role-editor-pencil" title={t("serverSettings.renameServer")} onClick={() => {
             setName(serverName);
             setEditingName(true);
           }}>
@@ -307,12 +275,12 @@ function OverviewSection({ session }: { session: ConnectionSession }): React.JSX
         api={serverAvatarApi(session)}
         preview={<ServerIconPreview session={session} size={96} />}
         stacked
-        removeTitle="Remove server icon"
-        removeNote="Remove the server icon? This cannot be undone."
+        removeTitle={t("serverSettings.removeIconTitle")}
+        removeNote={t("serverSettings.removeIconNote")}
       />
       <div className="modal-actions left">
         <SaveButton
-          label="Save Changes"
+          label={t("serverSettings.saveChanges")}
           saved={saved}
           dirty={name.trim().length > 0 && name.trim() !== serverName}
           busy={busy}
@@ -329,6 +297,7 @@ function OverviewSection({ session }: { session: ConnectionSession }): React.JSX
 // ---------------------------------------------------------------------------
 
 function RolesSection({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const t = useT();
   const roles = useStore(session.memberStore, (state) => state.roles);
   const canManageMembers = useStore(session.permissionStore, (state) => state.my?.permissions.includes(MANAGE_MEMBERS_PERMISSION) ?? false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -363,11 +332,11 @@ function RolesSection({ session }: { session: ConnectionSession }): React.JSX.El
     // The default name must already pass the server's role-name validation
     // ([\p{L}\p{N}_-]{1,32} — any alphabet, no spaces); "New-role" is the
     // user-picked default (user decision; renaming in the editor is free-form).
-    let name = "New-role";
+    let name = t("serverSettings.newRoleDefault");
     let counter = 1;
     while (taken.has(name)) {
       counter += 1;
-      name = `New-role-${counter}`;
+      name = `${t("serverSettings.newRoleDefault")}-${counter}`;
     }
     try {
       const role = await session.createRole(name);
@@ -378,7 +347,7 @@ function RolesSection({ session }: { session: ConnectionSession }): React.JSX.El
       // (ResponseStatusException never reaches the server's own log).
       const message = error instanceof Error ? error.message : String(error);
       log.error("settings", `role create failed (name="${name}"): ${message}`);
-      window.alert(`Could not create role: ${message}`);
+      window.alert(t("serverSettings.roleCreateFailed", { message }));
     }
   };
 
@@ -410,7 +379,7 @@ function RolesSection({ session }: { session: ConnectionSession }): React.JSX.El
       // preview back to the store's truth.
       const message = error instanceof Error ? error.message : String(error);
       log.error("settings", `role reorder failed (${ids.length} ids): ${message}`);
-      window.alert(`Could not reorder: ${message}`);
+      window.alert(t("serverSettings.reorderFailed", { message }));
       setPreviewIds(null);
     }
   };
@@ -538,8 +507,8 @@ function RolesSection({ session }: { session: ConnectionSession }): React.JSX.El
     <div className="roles-layout">
       <div className="roles-list" ref={listRef}>
         <div className="roles-list-header">
-          <span>Roles — {custom.length}</span>
-          <button className="section-add" title="Create role" onClick={() => void createRole()}>+</button>
+          <span>{t("serverSettings.rolesHeader", { count: custom.length })}</span>
+          <button className="section-add" title={t("serverSettings.createRole")} onClick={() => void createRole()}>+</button>
         </div>
         {ordered.map((role) => {
           const isDragged = draggedId === role.id;
@@ -570,7 +539,7 @@ function RolesSection({ session }: { session: ConnectionSession }): React.JSX.El
               <span className="role-color-chip" style={{ background: role.color !== null ? argbIntToCss(role.color) : "var(--sp-role-chip-default)" }} />
               <span className="role-name">{role.name}</span>
               {role.kind === "CUSTOM" ? (
-                <button className="ghost tiny" title="Delete role" onClick={(event) => {
+                <button className="ghost tiny" title={t("serverSettings.deleteRole")} onClick={(event) => {
                   event.stopPropagation();
                   setDeleteTarget(role);
                 }}><span className="icon mdi-trash-can" /></button>
@@ -594,7 +563,7 @@ function RolesSection({ session }: { session: ConnectionSession }): React.JSX.El
       })() : null}
       <div className="role-editor">
         {selected === null ? (
-          <div className="settings-empty">Select a role</div>
+          <div className="settings-empty">{t("serverSettings.selectRole")}</div>
         ) : (
           // The draft is per-ROLE: switching the selection must re-seed it. Without
           // the key the editor instance survives the switch and an unsaved draft
@@ -606,9 +575,9 @@ function RolesSection({ session }: { session: ConnectionSession }): React.JSX.El
       </div>
       {deleteTarget !== null ? (
         <ConfirmModal
-          title="Delete role"
-          note={`Delete role "${deleteTarget.name}"? It will be removed from all members.`}
-          confirmLabel="Delete"
+          title={t("serverSettings.deleteRole")}
+          note={t("serverSettings.deleteRoleNote", { name: deleteTarget.name })}
+          confirmLabel={t("common.delete")}
           onConfirm={async () => {
             await session.deleteRole(deleteTarget.id);
             if (selectedId === deleteTarget.id) {
@@ -650,6 +619,7 @@ function RoleEditor({ session, role, canManageMembers }: {
   role: Role;
   canManageMembers: boolean;
 }): React.JSX.Element {
+  const t = useT();
   const [tab, setTab] = useState<"appearance" | "permissions" | "members">("appearance");
   const builtin = role.kind !== "CUSTOM";
   const roleSnapshot = useStore(session.memberStore, (state) => state.roles.find((entry) => entry.id === role.id) ?? role);
@@ -766,7 +736,7 @@ function RoleEditor({ session, role, canManageMembers }: {
         });
       }
       if (failed.length > 0) {
-        setStatus(`${failed.length} membership change${failed.length > 1 ? "s" : ""} failed — ${failed[0]}`);
+        setStatus(t("serverSettings.membershipChangesFailed", { count: failed.length, first: failed[0] ?? "" }));
       } else {
         setSaved(true);
       }
@@ -788,7 +758,7 @@ function RoleEditor({ session, role, canManageMembers }: {
       <div className="role-editor-head">
         {/* oak: the editor column is captioned "Role details" (pane-title in a
             24px row, on the same line as the left column's "Roles" header). */}
-        <div className="pane-title role-editor-caption">Role details</div>
+        <div className="pane-title role-editor-caption">{t("serverSettings.roleDetails")}</div>
         <div className="role-editor-title-row">
           {editingName ? (
             <input
@@ -825,18 +795,18 @@ function RoleEditor({ session, role, canManageMembers }: {
             </span>
           )}
           {!builtin && !editingName && tab === "appearance" ? (
-            <button className="ghost tiny role-editor-pencil" title="Rename role" onClick={() => setEditingName(true)}>
+            <button className="ghost tiny role-editor-pencil" title={t("serverSettings.renameRole")} onClick={() => setEditingName(true)}>
               <span className="icon mdi-pencil" />
             </button>
           ) : null}
-          <span className="settings-hint">{role.kind === "OWNER" ? "Protected role" : role.kind === "EVERYONE" ? "Default permissions" : ""}</span>
+          <span className="settings-hint">{role.kind === "OWNER" ? t("serverSettings.protectedRole") : role.kind === "EVERYONE" ? t("serverSettings.defaultPermissions") : ""}</span>
         </div>
       </div>
       <div className="settings-tabs">
-        <button className={"settings-tab" + (tab === "appearance" ? " active" : "")} onClick={() => setTab("appearance")}>Appearance</button>
-        <button className={"settings-tab" + (tab === "permissions" ? " active" : "")} onClick={() => setTab("permissions")}>Permissions</button>
+        <button className={"settings-tab" + (tab === "appearance" ? " active" : "")} onClick={() => setTab("appearance")}>{t("serverSettings.tab.appearance")}</button>
+        <button className={"settings-tab" + (tab === "permissions" ? " active" : "")} onClick={() => setTab("permissions")}>{t("serverSettings.tab.permissions")}</button>
         {canManageMembers && !builtin ? (
-          <button className={"settings-tab" + (tab === "members" ? " active" : "")} onClick={() => setTab("members")}>Members</button>
+          <button className={"settings-tab" + (tab === "members" ? " active" : "")} onClick={() => setTab("members")}>{t("serverSettings.tab.members")}</button>
         ) : null}
       </div>
       {/* key=role.id REMOUNTS the tab on selection change (the tabs still hold
@@ -860,7 +830,7 @@ function RoleEditor({ session, role, canManageMembers }: {
           membership change (one PUT per member) — nothing applies piecemeal. */}
       {role.kind !== "OWNER" ? (
         <div className="modal-actions left role-editor-save">
-          <SaveButton label="Save Changes" saved={saved} dirty={dirty} busy={busy} onClick={() => void submit()} />
+          <SaveButton label={t("serverSettings.saveChanges")} saved={saved} dirty={dirty} busy={busy} onClick={() => void submit()} />
           {status !== null ? <span className="settings-status">{status}</span> : null}
         </div>
       ) : null}
@@ -873,6 +843,7 @@ function RoleAppearance({ role, draft, patchDraft }: {
   draft: RoleDraft;
   patchDraft(partial: Partial<RoleDraft>): void;
 }): React.JSX.Element {
+  const t = useT();
   const builtin = role.kind !== "CUSTOM";
   const [pickerOpen, setPickerOpen] = useState(false);
   const { color } = draft;
@@ -900,7 +871,7 @@ function RoleAppearance({ role, draft, patchDraft }: {
         {/* oak: a live 22×22 preview beside the "Color" label — the Default
             (no-color) state reads at a glance (grey #99aab5 there). */}
         <div className="role-field-label">
-          <span>Color</span>
+          <span>{t("serverSettings.colorLabel")}</span>
           <span className="role-color-preview" style={{ background: color !== null ? argbIntToCss(color) : "var(--sp-role-chip-default)" }} />
         </div>
         {/* oak's picker row: a two-button column (Default / Custom) beside the
@@ -908,8 +879,8 @@ function RoleAppearance({ role, draft, patchDraft }: {
             color PICKER (oak: modal SV/hue dialog; web: the native one). */}
         <div className="role-picker-row">
           <div className="role-picker-buttons">
-            <button className="ghost wide-add" disabled={builtin} onClick={() => patchDraft({ color: null })}>Default</button>
-            <button className="ghost" disabled={builtin} onClick={() => setPickerOpen(true)}>Custom</button>
+            <button className="ghost wide-add" disabled={builtin} onClick={() => patchDraft({ color: null })}>{t("serverSettings.colorDefault")}</button>
+            <button className="ghost" disabled={builtin} onClick={() => setPickerOpen(true)}>{t("serverSettings.colorCustom")}</button>
           </div>
           <div className="role-palette">
             {swatchRow(ROLE_PALETTE_TOP, "top")}
@@ -934,11 +905,11 @@ function RoleAppearance({ role, draft, patchDraft }: {
           {/* oak: mentionable stays editable even for @everyone (only name/color/
               hoist are builtin-locked) — configureEditorForSelection. */}
           <input type="checkbox" checked={draft.mentionable} disabled={role.kind === "OWNER"} onChange={(event) => patchDraft({ mentionable: event.target.checked })} />
-          <span>Mentionable</span>
+          <span>{t("serverSettings.mentionable")}</span>
         </label>
         <label className="settings-check">
           <input type="checkbox" checked={draft.hoist} disabled={builtin} onChange={(event) => patchDraft({ hoist: event.target.checked })} />
-          <span>Display separately (hoist)</span>
+          <span>{t("serverSettings.hoist")}</span>
         </label>
       </div>
     </div>
@@ -951,6 +922,7 @@ function RolePermissions({ session, role, draft, patchDraft }: {
   draft: RoleDraft;
   patchDraft(partial: Partial<RoleDraft>): void;
 }): React.JSX.Element {
+  const t = useT();
   const [catalog, setCatalog] = useState<readonly PermissionCatalogEntry[] | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const checked = draft.permissions;
@@ -962,18 +934,18 @@ function RolePermissions({ session, role, draft, patchDraft }: {
   }, [session]);
 
   if (role.kind === "OWNER") {
-    return <div className="settings-empty">The OWNER role cannot be edited.</div>;
+    return <div className="settings-empty">{t("serverSettings.ownerNotEditable")}</div>;
   }
 
   return (
     <div className="fill-tab">
       {/* oak: the tab is captioned "Permissions" — no explainer paragraph (the
           VIEW_CHANNEL story lives in its absence: the checkbox simply isn't there). */}
-      <div className="settings-hint">Permissions</div>
+      <div className="settings-hint">{t("serverSettings.tab.permissions")}</div>
       {catalogError !== null ? (
         <div className="settings-empty">{catalogError}</div>
       ) : catalog === null ? (
-        <div className="settings-empty">Loading catalog…</div>
+        <div className="settings-empty">{t("serverSettings.loadingCatalog")}</div>
       ) : (
         /* The permission list FILLS the tab body (user decision 2026-10-05): its
            scroll area reaches the divider above the pinned cross-tab Save button —
@@ -989,9 +961,8 @@ function RolePermissions({ session, role, draft, patchDraft }: {
             }
             return (
               <div key={group}>
-                <div className="friends-section">{group === "GENERAL" ? "General" : group === "TEXT" ? "Text" : "Voice"}</div>
+                <div className="friends-section">{t(group === "GENERAL" ? "serverSettings.permGroup.general" : group === "TEXT" ? "serverSettings.permGroup.text" : "serverSettings.permGroup.voice")}</div>
                 {entries.map((entry) => {
-                  const info = PERMISSION_INFO[entry.name] ?? { label: entry.name, description: "" };
                   return (
                     <label key={entry.name} className="permission-row">
                       <input
@@ -1008,9 +979,9 @@ function RolePermissions({ session, role, draft, patchDraft }: {
                         }}
                       />
                       <span className="permission-label">
-                        {info.label}
-                        {NOT_IMPLEMENTED.has(entry.name) ? <em className="not-implemented"> (not implemented yet)</em> : null}
-                        <small>{info.description}</small>
+                        {permissionLabel(t, entry.name)}
+                        {NOT_IMPLEMENTED.has(entry.name) ? <em className="not-implemented">{t("serverSettings.notImplemented")}</em> : null}
+                        <small>{permissionDescription(t, entry.name)}</small>
                       </span>
                     </label>
                   );
@@ -1031,6 +1002,7 @@ function RoleMembers({ session, role, pending, onStage }: {
   pending: ReadonlyMap<number, MembershipIntent>;
   onStage(userId: number, intent: MembershipIntent | null): void;
 }): React.JSX.Element {
+  const t = useT();
   const members = useStore(session.memberStore, (state) => state.members);
   const roles = useStore(session.memberStore, (state) => state.roles);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -1048,7 +1020,7 @@ function RoleMembers({ session, role, pending, onStage }: {
           "Add member" button UNDER it — no explainer paragraph. Staged rows
           carry their highlight; nothing leaves until "Save Changes". */}
       {rows.length === 0 ? (
-        <div className="settings-empty">No members have this role</div>
+        <div className="settings-empty">{t("serverSettings.noRoleMembers")}</div>
       ) : (
         rows.map((row) => (
           <div key={row.member.userId} className={"list-row role-member-row " + row.state}>
@@ -1057,19 +1029,19 @@ function RoleMembers({ session, role, pending, onStage }: {
             {row.state === "pending-remove" ? (
               /* A staged removal is undoable until Save: the row stays visible,
                  dimmed and struck, and the button puts it back. */
-              <button className="ghost tiny role-remove" title="Undo removal (staged)"
+              <button className="ghost tiny role-remove" title={t("serverSettings.undoRemoval")}
                 onClick={() => onStage(row.member.userId, null)}>
                 <span className="icon mdi-undo" />
               </button>
             ) : row.state === "pending-add" ? (
-              <button className="ghost tiny role-remove" title="Unstage (not saved yet)"
+              <button className="ghost tiny role-remove" title={t("serverSettings.unstage")}
                 onClick={() => onStage(row.member.userId, null)}>
                 <span className="icon mdi-close" />
               </button>
             ) : (
               /* oak's removal glyph: the small close icon on the row's right
                  (role-trash-button + Icons.close), not a textual "×". */
-              <button className="ghost tiny role-remove" title="Remove role"
+              <button className="ghost tiny role-remove" title={t("serverSettings.removeRole")}
                 onClick={() => onStage(row.member.userId, "remove")}>
                 <span className="icon mdi-close" />
               </button>
@@ -1080,12 +1052,12 @@ function RoleMembers({ session, role, pending, onStage }: {
       <button className="primary wide-add" disabled={candidates.length === 0} onClick={() => {
         setPicked(new Set());
         setPickerOpen(true);
-      }}>Add member</button>
+      }}>{t("serverSettings.addMember")}</button>
       {pickerOpen ? (
-        <Modal title={`Add members to ${role.name}`} onClose={() => setPickerOpen(false)}>
+        <Modal title={t("serverSettings.addMembersTo", { role: role.name })} onClose={() => setPickerOpen(false)}>
           <div className="friend-picker-list">
             {candidates.length === 0 ? (
-              <div className="settings-empty">Every member already has this role.</div>
+              <div className="settings-empty">{t("serverSettings.allMembersHaveRole")}</div>
             ) : candidates.map((member) => (
               <label key={member.userId} className="settings-check friend-picker-row">
                 <input
@@ -1107,7 +1079,7 @@ function RoleMembers({ session, role, pending, onStage }: {
             ))}
           </div>
           <div className="modal-actions left">
-            <button className="ghost" onClick={() => setPickerOpen(false)}>Cancel</button>
+            <button className="ghost" onClick={() => setPickerOpen(false)}>{t("common.cancel")}</button>
             <button className="primary" disabled={picked.size === 0} onClick={() => {
               /* Staging, not sending: the picker's picks join the pending map —
                  the cross-tab Save applies them with everything else. */
@@ -1117,7 +1089,7 @@ function RoleMembers({ session, role, pending, onStage }: {
               setPickerOpen(false);
               setPicked(new Set());
             }}>
-              Add {picked.size > 0 ? `(${picked.size})` : ""}
+              {t("serverSettings.addWithCount", { count: picked.size })}
             </button>
           </div>
         </Modal>
@@ -1131,6 +1103,7 @@ function RoleMembers({ session, role, pending, onStage }: {
 // ---------------------------------------------------------------------------
 
 function MembersSection({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const t = useT();
   const members = useStore(session.memberStore, (state) => state.members);
   const roles = useStore(session.memberStore, (state) => state.roles);
   const permissions = useStore(session.permissionStore, (state) => state.my?.permissions ?? []);
@@ -1215,7 +1188,7 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
     try {
       await session.rest.updateMemberRoles(member.userId, member.roleIds.filter((id) => id !== role.id));
     } catch (error: unknown) {
-      window.alert(`Could not remove role: ${error instanceof Error ? error.message : String(error)}`);
+      window.alert(t("serverSettings.removeRoleFailed", { message: error instanceof Error ? error.message : String(error) }));
     }
   };
 
@@ -1225,14 +1198,14 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
       return;
     }
     setRenameBusy(true);
-    setRenameStatus("Saving…");
+    setRenameStatus(t("settings.saving"));
     try {
       await session.renameMember(member.userId, nickname);
       setRenameDraft(null);
       setRenameStatus(null);
     } catch (error: unknown) {
       if (error instanceof ApiError && error.status === 409) {
-        setRenameStatus("Nickname is already taken.");
+        setRenameStatus(t("settings.nickTaken"));
       } else {
         setRenameStatus(error instanceof Error ? error.message : String(error));
       }
@@ -1246,14 +1219,14 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
       return;
     }
     setRenameBusy(true);
-    setRenameStatus("Resetting…");
+    setRenameStatus(t("settings.resetting"));
     try {
       await session.resetMemberNickname(member.userId);
       setRenameDraft(null);
       setRenameStatus(null);
     } catch (error: unknown) {
       if (error instanceof ApiError && error.status === 409) {
-        setRenameStatus("Nickname is already taken.");
+        setRenameStatus(t("settings.nickTaken"));
       } else {
         setRenameStatus(error instanceof Error ? error.message : String(error));
       }
@@ -1266,7 +1239,7 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
   return (
     <div className="roles-layout">
       <div className="roles-list">
-        <div className="roles-list-header"><span>Members — {members.length}</span></div>
+        <div className="roles-list-header"><span>{t("serverSettings.membersHeader", { count: members.length })}</span></div>
         {/* oak's members pane is ONE list out of GET /api/members — the server
             ships banned members there with a flag; a banned row differs only by
             its BANNED badge and its action set (Unban instead of Kick/Ban). */}
@@ -1275,19 +1248,19 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
             onClick={() => setSelectedId(member.userId)}>
             <Avatar session={session} username={member.username} size={20} />
             <span className="member-name" style={{ color: memberNameColor(member, roles) ?? undefined }}>{member.nickname}</span>
-            {member.owner ? <span className="owner-badge">OWNER</span> : null}
-            {member.banned ? <span className="banned-badge">BANNED</span> : null}
+            {member.owner ? <span className="owner-badge">{t("serverSettings.badgeOwner")}</span> : null}
+            {member.banned ? <span className="banned-badge">{t("serverSettings.badgeBanned")}</span> : null}
           </div>
         ))}
         {/* The removal audit — permanent rows, no actions (there is no un-remove). */}
         {removedMembers.length > 0 ? (
           <>
-            <div className="roles-list-header"><span>Removed — {removedMembers.length}</span></div>
+            <div className="roles-list-header"><span>{t("serverSettings.removedHeader", { count: removedMembers.length })}</span></div>
             {removedMembers.map((member) => (
-              <div key={member.userId} className="roles-row" title="Cannot rejoin the server">
+              <div key={member.userId} className="roles-row" title={t("serverSettings.cannotRejoin")}>
                 <Avatar session={session} username={member.username} size={20} />
                 <span className="member-name">{member.nickname}</span>
-                <span className="removed-badge">REMOVED</span>
+                <span className="removed-badge">{t("serverSettings.badgeRemoved")}</span>
               </div>
             ))}
           </>
@@ -1295,30 +1268,30 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
       </div>
       <div className="role-editor">
         {active === null ? (
-          <div className="settings-empty">Select a member</div>
+          <div className="settings-empty">{t("serverSettings.selectMember")}</div>
         ) : (
           <div>
             <span className="role-editor-name">{active.nickname}</span>
-            <div className="settings-hint">Member actions</div>
+            <div className="settings-hint">{t("serverSettings.memberActions")}</div>
             <div className="modal-actions left">
               {active.banned ? (
                 canBan ? (
                   /* oak: Unban carries no confirmation — it restores access. */
                   <button className="primary" onClick={() => {
                     void session.unbanMember(active.userId).catch((error: unknown) => {
-                      window.alert(`Could not unban: ${error instanceof Error ? error.message : String(error)}`);
+                      window.alert(t("serverSettings.unbanFailed", { message: error instanceof Error ? error.message : String(error) }));
                     });
-                  }}>Unban</button>
+                  }}>{t("serverSettings.unban")}</button>
                 ) : null
               ) : (
                 <>
                   {canKick ? (
                     /* oak shows the moderation buttons DISABLED for the owner (not
                        hidden) — the owner is immune, the buttons just never fire. */
-                    <button className="danger" disabled={active.owner} onClick={() => setRemoveTarget(active)}>Remove from server</button>
+                    <button className="danger" disabled={active.owner} onClick={() => setRemoveTarget(active)}>{t("members.removeFromServer")}</button>
                   ) : null}
                   {canBan ? (
-                    <button className="danger" disabled={active.owner} onClick={() => setBanTarget(active)}>Ban</button>
+                    <button className="danger" disabled={active.owner} onClick={() => setBanTarget(active)}>{t("members.banVerb")}</button>
                   ) : null}
                 </>
               )}
@@ -1327,12 +1300,12 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
                   <button className="ghost" onClick={() => {
                     setRenameDraft(active.nickname);
                     setRenameStatus(null);
-                  }}>Rename</button>
+                  }}>{t("serverSettings.renameVerb")}</button>
                 ) : (
                   <button className="ghost" onClick={() => {
                     setRenameDraft(null);
                     setRenameStatus(null);
-                  }}>Cancel rename</button>
+                  }}>{t("serverSettings.cancelRename")}</button>
                 )
               ) : null}
               {/* The owner may hand the crown to any plain member right from the row —
@@ -1343,18 +1316,18 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
               {selfIsOwner && !active.banned && !active.owner ? (
                 outgoingTransfer !== null && outgoingTransfer.toUserId === active.userId ? (
                   <button className="danger" onClick={() => openOwnershipTransfer(active.userId)}>
-                    Cancel ownership transfer
+                    {t("serverSettings.cancelOwnershipTransfer")}
                   </button>
                 ) : (
                   <button className="primary" onClick={() => openOwnershipTransfer(active.userId)}>
-                    Transfer ownership
+                    {t("serverSettings.transferOwnership")}
                   </button>
                 )
               ) : null}
             </div>
             {renameDraft !== null ? (
               <div className="member-rename-form">
-                <label className="settings-field"><span>Nickname</span>
+                <label className="settings-field"><span>{t("settings.nicknameHeader")}</span>
                   <input
                     autoFocus
                     value={renameDraft}
@@ -1373,24 +1346,24 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
                 </label>
                 <div className="modal-actions left">
                   <button className="primary" disabled={renameBusy || renameDraft.trim().length === 0} onClick={() => void applyRename(active)}>
-                    Save nickname
+                    {t("serverSettings.saveNickname")}
                   </button>
-                  <button className="ghost" disabled={renameBusy} onClick={() => void resetRename(active)}>Reset to login</button>
+                  <button className="ghost" disabled={renameBusy} onClick={() => void resetRename(active)}>{t("settings.resetToLogin")}</button>
                 </div>
                 <span className="settings-status">{renameStatus ?? ""}</span>
               </div>
             ) : null}
-            <div className="settings-hint">Roles</div>
+            <div className="settings-hint">{t("serverSettings.rolesHint")}</div>
             {/* oak lists the OWNER row explicitly — the OWNER role is not among
                 the roles, so the owner would otherwise read as "No roles". */}
             {active.owner ? (
               <div className="list-row">
                 <span className="role-color-chip" style={{ background: "var(--sp-role-chip-default)" }} />
-                <span>Owner</span>
+                <span>{t("serverSettings.ownerRole")}</span>
               </div>
             ) : null}
             {!active.owner && active.roleIds.length === 0 ? (
-              <div className="settings-empty">No roles</div>
+              <div className="settings-empty">{t("serverSettings.noRoles")}</div>
             ) : (
               active.roleIds
                 .map((roleId) => roles.find((entry) => entry.id === roleId))
@@ -1403,7 +1376,7 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
                     {canRemoveRole(active, entry) ? (
                       <button
                         className="ghost member-role-remove"
-                        title="Remove role"
+                        title={t("serverSettings.removeRole")}
                         onClick={() => void removeRole(active, entry)}
                       >
                         <span className="icon mdi-close" />
@@ -1417,9 +1390,9 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
       </div>
       {removeTarget !== null ? (
         <ConfirmModal
-          title="Remove member"
-          note={`Remove "${removeTarget.nickname}" from the server? They will be permanently removed and will not be able to rejoin.`}
-          confirmLabel="Remove"
+          title={t("members.removeMemberTitle")}
+          note={t("members.removeConfirm", { name: removeTarget.nickname })}
+          confirmLabel={t("members.removeVerb")}
           onConfirm={async () => {
             await session.removeMember(removeTarget.userId);
           }}
@@ -1428,9 +1401,9 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
       ) : null}
       {banTarget !== null ? (
         <ConfirmModal
-          title="Ban member"
-          note={`Ban "${banTarget.nickname}"? They will no longer be able to log in.`}
-          confirmLabel="Ban"
+          title={t("members.banMemberTitle")}
+          note={t("members.banConfirm", { name: banTarget.nickname })}
+          confirmLabel={t("members.banVerb")}
           onConfirm={async () => {
             await session.banMember(banTarget.userId);
           }}
@@ -1453,6 +1426,7 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
  *  a TTL change, or a REGISTRATION claiming a link) refreshes it, so a spent link drops
  *  out of an open screen without a reopen. */
 function InvitesSection({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const t = useT();
   const invitesState = useStore(session.invitesStore, (state) => state);
   const [ttlDraft, setTtlDraft] = useState("");
   /** True once the user typed in the TTL field — loaded values stop overwriting the
@@ -1563,14 +1537,11 @@ function InvitesSection({ session }: { session: ConnectionSession }): React.JSX.
 
   return (
     <div>
-      <div className="roles-list-header overview-heading"><span>Invites</span></div>
-      <div className="settings-hint">
-        An invite link registers exactly ONE new member and stops working after its TTL.
-        Registration on this server is invite-only.
-      </div>
+      <div className="roles-list-header overview-heading"><span>{t("serverSettings.section.invites")}</span></div>
+      <div className="settings-hint">{t("serverSettings.invitesHint")}</div>
       <div className="invite-ttl-row">
         <div className="invite-ttl-input-row">
-          <span className="invite-ttl-label">Invite links expire after</span>
+          <span className="invite-ttl-label">{t("serverSettings.inviteTtlLabel")}</span>
           {/* Only the INPUT is wrapped: the human rendering hangs off it absolutely
               (top: 100%), flush under the field, completely outside the row's flow —
               the label/"min"/Save arrangement cannot shift. */}
@@ -1586,48 +1557,48 @@ function InvitesSection({ session }: { session: ConnectionSession }): React.JSX.
                 setSaved(false);
               }}
             />
-            <span className="invite-ttl-human">{ttlValid ? formatTtlWords(ttlNumber) : ""}</span>
+            <span className="invite-ttl-human">{ttlValid ? formatTtlWords(ttlNumber, currentLang()) : ""}</span>
           </span>
-          <span className="invite-ttl-unit">min</span>
-          <SaveButton label="Save changes" saved={saved} dirty={ttlDirty} busy={busy} onClick={() => void saveTtl()} />
+          <span className="invite-ttl-unit">{t("serverSettings.minutesUnit")}</span>
+          <SaveButton label={t("serverSettings.saveChanges")} saved={saved} dirty={ttlDirty} busy={busy} onClick={() => void saveTtl()} />
         </div>
       </div>
-      <div className="settings-hint">Changing the TTL reschedules every active link (lowering it may expire some immediately).</div>
+      <div className="settings-hint">{t("serverSettings.ttlRetroactiveNote")}</div>
       <div className="modal-actions left">
         {/* The copy confirmation rides NEXT TO THE BUTTON (user request
             2026-10-19, second pass: a toast in the far corner is easy to miss
             and the action happened HERE). */}
         <span className="invite-create-wrap">
-          {copiedFlash ? <span className="copied-popover">Copied to clipboard</span> : null}
-          <button className="primary" disabled={busy} onClick={() => void createInvite()}>Create invite</button>
+          {copiedFlash ? <span className="copied-popover">{t("serverSettings.copiedToClipboard")}</span> : null}
+          <button className="primary" disabled={busy} onClick={() => void createInvite()}>{t("serverSettings.createInvite")}</button>
         </span>
         <button className="ghost" disabled={busy || invitesState.invites.length === 0} onClick={() => setExpireAllOpen(true)}>
-          Expire all
+          {t("serverSettings.expireAll")}
         </button>
       </div>
       {error !== null ? <div className="error-line">{error}</div> : null}
       {!invitesState.loaded ? (
-        <div className="settings-empty">Loading invites…</div>
+        <div className="settings-empty">{t("serverSettings.loadingInvites")}</div>
       ) : invitesState.invites.length === 0 ? (
-        <div className="settings-empty">No active invites. Create one to let a new member register.</div>
+        <div className="settings-empty">{t("serverSettings.noInvites")}</div>
       ) : (
         invitesState.invites.map((invite) => {
-          const expiresIn = formatExpiresIn(invite.expiresAt, Date.now());
+          const expiresIn = formatExpiresIn(invite.expiresAt, Date.now(), currentLang());
           return (
           <div key={invite.id} className="list-row invite-row">
             <span className="invite-secret" title={invite.link}>{invite.secretPreview}</span>
-            <span className="invite-meta">created by {invite.createdBy}</span>
+            <span className="invite-meta">{t("serverSettings.createdBy", { by: invite.createdBy })}</span>
             {/* "expired" stands alone — no "expires in" prefix on a dead link. */}
-            <span className="invite-meta">{expiresIn === "expired" ? "expired" : `expires in ${expiresIn}`}</span>
+            <span className="invite-meta">{expiresIn === "expired" ? t("serverSettings.expired") : t("serverSettings.expiresIn", { time: expiresIn })}</span>
             <span className="invite-actions">
               <button
                 className="ghost tiny"
-                title="Copy link"
+                title={t("serverSettings.copyLink")}
                 onClick={() => copyLink(invite)}
               ><span className={"icon " + (copiedId === invite.id ? "mdi-check" : "mdi-content-copy")} /></button>
               <button
                 className="ghost tiny"
-                title="Expire this invite"
+                title={t("serverSettings.expireThisInvite")}
                 disabled={busy}
                 onClick={() => void expireOne(invite.id)}
               ><span className="icon mdi-close" /></button>
@@ -1638,9 +1609,9 @@ function InvitesSection({ session }: { session: ConnectionSession }): React.JSX.
       )}
       {expireAllOpen ? (
         <ConfirmModal
-          title="Expire all invites"
-          note="Every active invite link will stop working immediately. New members will need a fresh link."
-          confirmLabel="Expire all"
+          title={t("serverSettings.expireAllTitle")}
+          note={t("serverSettings.expireAllNote")}
+          confirmLabel={t("serverSettings.expireAll")}
           onConfirm={async () => {
             await session.rest.expireAllInvites();
             session.refreshInvites();
@@ -1657,6 +1628,7 @@ function InvitesSection({ session }: { session: ConnectionSession }): React.JSX.
 // ---------------------------------------------------------------------------
 
 function ChannelsSection({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const t = useT();
   const channels = useStore(session.channelStore, (channels) => channels);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Channel | null>(null);
@@ -1669,10 +1641,10 @@ function ChannelsSection({ session }: { session: ConnectionSession }): React.JSX
     <div className="roles-layout">
       <div className="roles-list">
         <div className="roles-list-header">
-          <span>Channels — {list.length}</span>
+          <span>{t("serverSettings.channelsHeader", { count: list.length })}</span>
           {/* The Roles idiom: the header "+" creates a channel through the SAME dialog
               the sidebar's channel panel uses (user request). */}
-          <button className="section-add" title="Create channel" onClick={() => setCreateOpen(true)}>+</button>
+          <button className="section-add" title={t("sidebar.createChannel")} onClick={() => setCreateOpen(true)}>+</button>
         </div>
         {list.map((channel) => (
           <div key={channel.id} className={"roles-row" + (channel.id === selected?.id ? " active" : "")}
@@ -1682,7 +1654,7 @@ function ChannelsSection({ session }: { session: ConnectionSession }): React.JSX
             {channel.afk === true ? <span className="afk-badge">AFK</span> : null}
             {/* oak's ChannelListCell carries the trash right in the row — deleting
                 from the settings window does not require hunting the sidebar. */}
-            <button className="ghost tiny" title="Delete channel" onClick={(event) => {
+            <button className="ghost tiny" title={t("sidebar.deleteChannel")} onClick={(event) => {
               event.stopPropagation();
               setDeleteTarget(channel);
             }}><span className="icon mdi-trash-can" /></button>
@@ -1691,7 +1663,7 @@ function ChannelsSection({ session }: { session: ConnectionSession }): React.JSX
       </div>
       <div className="role-editor">
         {selected === null ? (
-          <div className="settings-empty">Select a channel</div>
+          <div className="settings-empty">{t("serverSettings.selectChannel")}</div>
         ) : (
           <ChannelEditor session={session} channel={selected} />
         )}
@@ -1706,9 +1678,9 @@ function ChannelsSection({ session }: { session: ConnectionSession }): React.JSX
       ) : null}
       {deleteTarget !== null ? (
         <ConfirmModal
-          title="Delete channel"
-          note={`Delete channel "${deleteTarget.name}"? Its messages will be permanently removed.`}
-          confirmLabel="Delete"
+          title={t("sidebar.deleteChannel")}
+          note={t("serverSettings.deleteChannelNote", { name: deleteTarget.name })}
+          confirmLabel={t("common.delete")}
           onConfirm={async () => {
             await session.deleteChannel(deleteTarget.id);
             // The open editor dies with its channel — clear the selection (oak
@@ -1725,6 +1697,7 @@ function ChannelsSection({ session }: { session: ConnectionSession }): React.JSX
 }
 
 function ChannelEditor({ session, channel }: { session: ConnectionSession; channel: Channel }): React.JSX.Element {
+  const t = useT();
   const [tab, setTab] = useState<"permissions" | "access" | "afk">("permissions");
   // The channel name edits INLINE via the hover pencil, like the role name.
   // There is no Appearance tab here, so Enter commits straight away (the tab
@@ -1785,7 +1758,7 @@ function ChannelEditor({ session, channel }: { session: ConnectionSession; chann
             <span className="role-editor-name"><span className={"icon " + (channel.type === "VOICE" ? "mdi-volume-high" : "mdi-pound")} /> {channel.name}</span>
           )}
           {!editingName ? (
-            <button className="ghost tiny role-editor-pencil" title="Rename channel" onClick={() => {
+            <button className="ghost tiny role-editor-pencil" title={t("sidebar.renameChannel")} onClick={() => {
               setName(channel.name);
               setEditingName(true);
             }}>
@@ -1796,11 +1769,11 @@ function ChannelEditor({ session, channel }: { session: ConnectionSession; chann
         </div>
       </div>
       <div className="settings-tabs">
-        <button className={"settings-tab" + (tab === "permissions" ? " active" : "")} onClick={() => setTab("permissions")}>Permissions</button>
-        <button className={"settings-tab" + (tab === "access" ? " active" : "")} onClick={() => setTab("access")}>Access</button>
+        <button className={"settings-tab" + (tab === "permissions" ? " active" : "")} onClick={() => setTab("permissions")}>{t("serverSettings.tab.permissions")}</button>
+        <button className={"settings-tab" + (tab === "access" ? " active" : "")} onClick={() => setTab("access")}>{t("serverSettings.tab.access")}</button>
         {/* The AFK designation is a VOICE-channel concern (the idle-sweep target). */}
         {channel.type === "VOICE" ? (
-          <button className={"settings-tab" + (tab === "afk" ? " active" : "")} onClick={() => setTab("afk")}>AFK</button>
+          <button className={"settings-tab" + (tab === "afk" ? " active" : "")} onClick={() => setTab("afk")}>{t("serverSettings.tab.afk")}</button>
         ) : null}
       </div>
       {/* key=channel.id — same remount contract as the role editor: local edit
@@ -1826,6 +1799,7 @@ function ChannelAfkTab({ session, channel }: {
   session: ConnectionSession;
   channel: Channel;
 }): React.JSX.Element {
+  const t = useT();
   const channels = useStore(session.channelStore, (allChannels) => allChannels);
   const [loaded, setLoaded] = useState(false);
   const [isAfkDraft, setIsAfkDraft] = useState(false);
@@ -1891,9 +1865,9 @@ function ChannelAfkTab({ session, channel }: {
   if (afkHolder !== null && !initialIsAfk) {
     return (
       <div>
-        <div className="overview-heading">AFK channel</div>
+        <div className="overview-heading">{t("serverSettings.afkChannel")}</div>
         <div className="settings-hint">
-          {`"${afkHolder.name}" is already this server's AFK channel — remove the designation there first.`}
+          {t("serverSettings.afkHolderNote", { name: afkHolder.name })}
         </div>
       </div>
     );
@@ -1901,11 +1875,8 @@ function ChannelAfkTab({ session, channel }: {
 
   return (
     <div className="afk-settings fill-tab">
-      <div className="overview-heading">AFK channel</div>
-      <div className="settings-hint">
-        Idle voice members are moved here automatically. Members in this channel are
-        server-muted and cannot share their screen.
-      </div>
+      <div className="overview-heading">{t("serverSettings.afkChannel")}</div>
+      <div className="settings-hint">{t("serverSettings.afkHint")}</div>
       <div className="settings-check">
         <input
           type="checkbox"
@@ -1913,14 +1884,14 @@ function ChannelAfkTab({ session, channel }: {
           checked={isAfkDraft}
           onChange={(event) => setIsAfkDraft(event.target.checked)}
         />
-        <label htmlFor="afk-designation">This channel is the AFK channel</label>
+        <label htmlFor="afk-designation">{t("serverSettings.afkDesignation")}</label>
       </div>
       {isAfkDraft ? (
         <label className="settings-field">
-          <span>AFK timeout</span>
+          <span>{t("serverSettings.afkTimeout")}</span>
           <select value={timeoutDraft} onChange={(event) => setTimeoutDraft(Number(event.target.value))}>
-            {AFK_TIMEOUT_PRESETS.map((preset) => (
-              <option key={preset.minutes} value={preset.minutes}>{preset.label}</option>
+            {AFK_TIMEOUT_PRESETS.map((presetMinutes) => (
+              <option key={presetMinutes} value={presetMinutes}>{afkTimeoutLabel(t, presetMinutes)}</option>
             ))}
           </select>
         </label>
@@ -1929,7 +1900,7 @@ function ChannelAfkTab({ session, channel }: {
           Save row pinned to the panel bottom as in Roles — the status rides INSIDE
           the row like every other tab's, not on a separate error line below. */}
       <div className="modal-actions left role-editor-save">
-        <SaveButton label="Save changes" saved={saved} dirty={dirty} busy={busy} onClick={() => void save()} />
+        <SaveButton label={t("serverSettings.saveChanges")} saved={saved} dirty={dirty} busy={busy} onClick={() => void save()} />
         {error !== null ? <span className="settings-status">{error}</span> : null}
       </div>
     </div>
@@ -1940,6 +1911,7 @@ function ChannelPermissionsTab({ session, channel }: {
   session: ConnectionSession;
   channel: Channel;
 }): React.JSX.Element {
+  const t = useT();
   const roles = useStore(session.memberStore, (state) => state.roles);
   const [catalog, setCatalog] = useState<readonly PermissionCatalogEntry[] | null>(null);
   const [overrides, setOverrides] = useState<Map<number, PermissionSets> | null>(null);
@@ -2003,21 +1975,18 @@ function ChannelPermissionsTab({ session, channel }: {
 
   return (
     <div className="fill-tab">
-      <div className="settings-hint">
-        Click cycles Inherit → Allow (✓, blurple) → Deny (✗, red) — Inherit uses the role's base.
-        Deny @everyone SEND_MESSAGES = a read-only channel. VIEW_CHANNEL lives in the Access tab.
-      </div>
+      <div className="settings-hint">{t("serverSettings.overridesHint")}</div>
       <label className="settings-field">
-        <span>Role</span>
+        <span>{t("serverSettings.roleLabel")}</span>
         <select value={selectedRole?.id ?? ""} onChange={(event) => setSelectedRoleId(event.target.value === "" ? null : Number(event.target.value))}>
-          <option value="">Select a role…</option>
+          <option value="">{t("serverSettings.selectRolePrompt")}</option>
           {editableRoles.map((role) => (
             <option key={role.id} value={role.id}>{role.name}</option>
           ))}
         </select>
       </label>
       {selectedRole === null || sets === null || catalog === null ? (
-        <div className="settings-empty">{overrides === null ? "Loading…" : "Pick a role to edit overrides."}</div>
+        <div className="settings-empty">{overrides === null ? t("serverSettings.loading") : t("serverSettings.pickRole")}</div>
       ) : (
         <>
           {/* The permission LIST fills the tab body and scrolls INSIDE it (user
@@ -2033,12 +2002,12 @@ function ChannelPermissionsTab({ session, channel }: {
               }
               return (
                 <div key={group}>
-                  <div className="friends-section">{group === "GENERAL" ? "General" : group === "TEXT" ? "Text" : "Voice"}</div>
+                  <div className="friends-section">{t(group === "GENERAL" ? "serverSettings.permGroup.general" : group === "TEXT" ? "serverSettings.permGroup.text" : "serverSettings.permGroup.voice")}</div>
                   {entries.map((entry) => (
                     <TriStateControl
                       key={entry.name}
-                      label={PERMISSION_INFO[entry.name]?.label ?? entry.name}
-                      description={PERMISSION_INFO[entry.name]?.description ?? ""}
+                      label={permissionLabel(t, entry.name)}
+                      description={permissionDescription(t, entry.name)}
                       notImplemented={NOT_IMPLEMENTED.has(entry.name)}
                       state={triStateOf(entry.name, sets)}
                       onChange={(next) => setState(entry.name, next)}
@@ -2049,7 +2018,7 @@ function ChannelPermissionsTab({ session, channel }: {
             })}
           </div>
           <div className="modal-actions left role-editor-save">
-            <SaveButton label="Save Changes" saved={saved} dirty={dirty} busy={busy} onClick={() => void submit()} />
+            <SaveButton label={t("serverSettings.saveChanges")} saved={saved} dirty={dirty} busy={busy} onClick={() => void submit()} />
             {status !== null ? <span className="settings-status">{status}</span> : null}
           </div>
         </>
@@ -2072,6 +2041,7 @@ function TriStateControl({ label, description, notImplemented, state, onChange }
   state: TriState;
   onChange(next: TriState): void;
 }): React.JSX.Element {
+  const t = useT();
   const next = state === "inherit" ? "allow" : state === "allow" ? "deny" : "inherit";
   return (
     <div className="tri-control">
@@ -2081,12 +2051,12 @@ function TriStateControl({ label, description, notImplemented, state, onChange }
       <button
         type="button"
         className={"tri-check " + state}
-        title={state === "allow" ? "Allow — click to deny" : state === "deny" ? "Deny — click to inherit" : "Inherit — click to allow"}
+        title={state === "allow" ? t("serverSettings.tri.allow") : state === "deny" ? t("serverSettings.tri.deny") : t("serverSettings.tri.inherit")}
         onClick={() => onChange(next)}
       />
       <span className="tri-label">
         {label}
-        {notImplemented ? <em className="not-implemented"> (not implemented yet)</em> : null}
+        {notImplemented ? <em className="not-implemented">{t("serverSettings.notImplemented")}</em> : null}
         <small>{description}</small>
       </span>
     </div>
@@ -2097,6 +2067,7 @@ function ChannelAccessTab({ session, channel }: {
   session: ConnectionSession;
   channel: Channel;
 }): React.JSX.Element {
+  const t = useT();
   const roles = useStore(session.memberStore, (state) => state.roles);
   const members = useStore(session.memberStore, (state) => state.members);
   const [state, setState] = useState<{
@@ -2153,7 +2124,7 @@ function ChannelAccessTab({ session, channel }: {
   }, [session, channel.id, channel.type]);
 
   if (state === null) {
-    return <div className="settings-empty">{status ?? "Loading…"}</div>;
+    return <div className="settings-empty">{status ?? t("serverSettings.loading")}</div>;
   }
 
   const submit = async (): Promise<void> => {
@@ -2214,41 +2185,39 @@ function ChannelAccessTab({ session, channel }: {
   const grantedUserLabel = (userId: number): string =>
     members.find((member) => member.userId === userId)?.nickname
     ?? state.usernames.get(userId)
-    ?? `user ${userId}`;
+    ?? t("serverSettings.userFallback", { id: userId });
 
   return (
     <div className="fill-tab">
       <div className="settings-hint">
-        Locked: everyone sees the channel, only the listed roles/members can use it.
-        Hidden: everyone else does not see it at all. Writes the same overrides as the
-        Permissions tab (managed set: {ACCESS_MANAGED_PERMISSIONS.join(", ")}).
+        {t("serverSettings.accessHint", { set: ACCESS_MANAGED_PERMISSIONS.join(", ") })}
       </div>
       <label className="settings-field">
-        <span>Visibility</span>
+        <span>{t("serverSettings.visibility")}</span>
         <select value={state.mode} onChange={(event) => {
           const mode = event.target.value as AccessMode;
           setState({ ...state, mode });
         }}>
-          <option value="public">Public</option>
-          <option value="locked">Locked</option>
-          <option value="hidden">Hidden</option>
+          <option value="public">{t("serverSettings.accessMode.public")}</option>
+          <option value="locked">{t("serverSettings.accessMode.locked")}</option>
+          <option value="hidden">{t("serverSettings.accessMode.hidden")}</option>
         </select>
       </label>
       {state.mode === "public" ? (
-        <div className="settings-hint">Public — no access lists.</div>
+        <div className="settings-hint">{t("serverSettings.accessPublicNote")}</div>
       ) : (
         <>
           {/* oak's Access lists: granted rows with "×" + an "Add role…" picker —
               the pickers edit the LOCAL working set; one Save writes everything. */}
-          <div className="friends-section">Roles with access</div>
+          <div className="friends-section">{t("serverSettings.rolesWithAccess")}</div>
           {grantedRoleList.length === 0 ? (
-            <div className="settings-empty">No roles granted</div>
+            <div className="settings-empty">{t("serverSettings.noRolesGranted")}</div>
           ) : (
             grantedRoleList.map((role) => (
               <div key={role.id} className="list-row">
                 <span className="role-color-chip" style={{ background: role.color !== null ? argbIntToCss(role.color) : "var(--sp-role-chip-default)" }} />
                 <span>{role.name}</span>
-                <button className="ghost tiny role-remove" title="Revoke" onClick={() => {
+                <button className="ghost tiny role-remove" title={t("serverSettings.revoke")} onClick={() => {
                   const next = new Set(state.grantedRoleIds);
                   next.delete(role.id);
                   setState({ ...state, grantedRoleIds: next });
@@ -2256,16 +2225,16 @@ function ChannelAccessTab({ session, channel }: {
               </div>
             ))
           )}
-          <button className="ghost wide-add" disabled={grantableRoles.length === 0} onClick={() => setRolePickerOpen(true)}>Add role…</button>
-          <div className="friends-section">Members with access</div>
+          <button className="ghost wide-add" disabled={grantableRoles.length === 0} onClick={() => setRolePickerOpen(true)}>{t("serverSettings.addRoleDots")}</button>
+          <div className="friends-section">{t("serverSettings.membersWithAccess")}</div>
           {state.grantedUserIds.size === 0 ? (
-            <div className="settings-empty">No members granted</div>
+            <div className="settings-empty">{t("serverSettings.noMembersGranted")}</div>
           ) : (
             [...state.grantedUserIds].map((userId) => (
               <div key={userId} className="list-row">
                 <Avatar session={session} username={state.usernames.get(userId) ?? `#${userId}`} size={24} />
                 <span>{grantedUserLabel(userId)}</span>
-                <button className="ghost tiny role-remove" title="Revoke" onClick={() => {
+                <button className="ghost tiny role-remove" title={t("serverSettings.revoke")} onClick={() => {
                   const next = new Set(state.grantedUserIds);
                   next.delete(userId);
                   setState({ ...state, grantedUserIds: next });
@@ -2273,18 +2242,18 @@ function ChannelAccessTab({ session, channel }: {
               </div>
             ))
           )}
-          <button className="ghost wide-add" disabled={candidateMembers.length === 0} onClick={() => setMemberPickerOpen(true)}>Add member…</button>
+          <button className="ghost wide-add" disabled={candidateMembers.length === 0} onClick={() => setMemberPickerOpen(true)}>{t("serverSettings.addMemberDots")}</button>
         </>
       )}
       <div className="modal-actions left role-editor-save">
-        <SaveButton label="Save Changes" saved={saved} dirty={dirty} busy={busy} onClick={() => void submit()} />
+        <SaveButton label={t("serverSettings.saveChanges")} saved={saved} dirty={dirty} busy={busy} onClick={() => void submit()} />
         {status !== null ? <span className="settings-status">{status}</span> : null}
       </div>
       {rolePickerOpen ? (
         <AccessPickerModal
           session={session}
-          title="Add roles with access"
-          emptyNote="Every role already has access."
+          title={t("serverSettings.addRolesAccess")}
+          emptyNote={t("serverSettings.everyRoleHasAccess")}
           rows={grantableRoles.map((role) => ({
             id: role.id,
             label: role.name,
@@ -2300,8 +2269,8 @@ function ChannelAccessTab({ session, channel }: {
       {memberPickerOpen ? (
         <AccessPickerModal
           session={session}
-          title="Add members with access"
-          emptyNote="Every member already has access."
+          title={t("serverSettings.addMembersAccess")}
+          emptyNote={t("serverSettings.everyMemberHasAccess")}
           rows={candidateMembers.map((member) => ({
             id: member.userId,
             label: member.nickname,
@@ -2337,6 +2306,7 @@ function AccessPickerModal({ session, title, emptyNote, rows, onApply, onClose }
   onApply(picked: readonly number[]): void;
   onClose(): void;
 }): React.JSX.Element {
+  const t = useT();
   const [picked, setPicked] = useState<ReadonlySet<number>>(new Set());
   return (
     <Modal title={title} onClose={onClose}>
@@ -2365,8 +2335,8 @@ function AccessPickerModal({ session, title, emptyNote, rows, onApply, onClose }
         ))}
       </div>
       <div className="modal-actions left">
-        <button className="ghost" onClick={onClose}>Cancel</button>
-        <button className="primary" disabled={picked.size === 0} onClick={() => onApply([...picked])}>Add</button>
+        <button className="ghost" onClick={onClose}>{t("common.cancel")}</button>
+        <button className="primary" disabled={picked.size === 0} onClick={() => onApply([...picked])}>{t("common.add")}</button>
       </div>
     </Modal>
   );
@@ -2395,6 +2365,7 @@ function EmojiCatalogCell({ session, emoji, onDelete }: {
   emoji: CustomEmoji;
   onDelete(emoji: CustomEmoji): void;
 }): React.JSX.Element {
+  const t = useT();
   const imageUrl = useAttachmentImage(
     session,
     emoji.url !== null ? { key: emoji.key, url: emoji.url } : null,
@@ -2405,7 +2376,7 @@ function EmojiCatalogCell({ session, emoji, onDelete }: {
         ? <img src={imageUrl} alt={emoji.name} draggable={false} />
         : <span className="emoji-cell-fallback">{emoji.name.slice(0, 2)}</span>}
       <span className="emoji-cell-name" title={`:${emoji.name}:`}>:{emoji.name}:</span>
-      <button className="icon-button emoji-cell-remove" title="Delete emoji" onClick={() => onDelete(emoji)}>
+      <button className="icon-button emoji-cell-remove" title={t("serverSettings.deleteEmoji")} onClick={() => onDelete(emoji)}>
         <span className="icon mdi-close" />
       </button>
     </div>
@@ -2433,30 +2404,28 @@ function useExpressionExchange(
   confirmImport: (filtered: ParsedPackArchive) => Promise<void>;
   closePreview: () => void;
 } {
+  const t = useT();
   const serverName = connectionDirectory.get(session.recordId)?.cachedServerName ?? "";
   const [exchangeBusy, setExchangeBusy] = useState(false);
   const [exchangeStatus, setExchangeStatus] = useState<string | null>(null);
   const [exchangeReport, setExchangeReport] = useState<string | null>(null);
   const [previewArchive, setPreviewArchive] = useState<ParsedPackArchive | null>(null);
 
-  const progressLine = (label: string, done: number, total: number): string =>
-    total > 0 ? `${label} ${done} / ${total}…` : `${label}…`;
-
   const runExport = async (scope: ExportScope): Promise<void> => {
     if (exchangeBusy) {
       return;
     }
     setExchangeBusy(true);
-    setExchangeStatus("Exporting…");
+    setExchangeStatus(t("serverSettings.exporting"));
     setExchangeReport(null);
     onError(""); // clear a stale error the run supersedes
     const result = await exportExpressionPack(session, scope, serverName, (progress) =>
-      setExchangeStatus(progressLine("Exporting", progress.done, progress.total)),
+      setExchangeStatus(t("serverSettings.exchangeProgress", { label: t("serverSettings.exporting"), done: progress.done, total: progress.total })),
     );
     setExchangeBusy(false);
     if (result.status === "failed") {
       setExchangeStatus(null);
-      onError(result.error ?? "Export failed.");
+      onError(result.error ?? t("serverSettings.exportFailed"));
       return;
     }
     setExchangeStatus(null);
@@ -2467,7 +2436,7 @@ function useExpressionExchange(
         packs: result.packs,
         unavailable: result.unavailable,
         fileName: result.fileName,
-      }),
+      }, currentLang()),
     );
   };
 
@@ -2491,13 +2460,13 @@ function useExpressionExchange(
     }
     setPreviewArchive(null);
     setExchangeBusy(true);
-    setExchangeStatus("Importing…");
+    setExchangeStatus(t("serverSettings.importing"));
     const result = await importPackArchive(session, filtered, (progress) =>
-      setExchangeStatus(progressLine("Importing", progress.done, progress.total)),
+      setExchangeStatus(t("serverSettings.exchangeProgress", { label: t("serverSettings.importing"), done: progress.done, total: progress.total })),
     );
     setExchangeBusy(false);
     setExchangeStatus(null);
-    setExchangeReport(formatImportReport(result.counts, result.packsCreated));
+    setExchangeReport(formatImportReport(result.counts, result.packsCreated, currentLang()));
   };
 
   const closePreview = (): void => {
@@ -2525,15 +2494,24 @@ function previewItemKey(kind: "emoji" | "sticker", packName: string, name: strin
   return `${kind}:${packName}:${name}`;
 }
 
-function skipReasonOf(decision: ImportDecision): string | null {
+function skipReasonOf(t: Translator, decision: ImportDecision): string | null {
   if (decision.kind === "skip-name-exists") {
-    return "name exists";
+    return t("serverSettings.skipNameExists");
   }
   if (decision.kind === "skip-limit") {
-    return "limit reached";
+    return t("serverSettings.skipLimit");
   }
   if (decision.kind === "skip-invalid") {
-    return decision.reason;
+    // The planner's reasons are domain constants — mapped to keys here; an
+    // unknown future reason falls through verbatim.
+    const reasonKeys: Record<string, MessageKey> = {
+      "invalid name": "serverSettings.skipInvalidName",
+      "unsupported file type": "serverSettings.skipUnsupportedType",
+      "missing file": "serverSettings.skipMissingFile",
+      "file exceeds 1 MB": "serverSettings.skipTooLarge",
+      "duplicate name in the pack": "serverSettings.skipDuplicateName",
+    };
+    return reasonKeys[decision.reason] !== undefined ? t(reasonKeys[decision.reason]!) : decision.reason;
   }
   return null;
 }
@@ -2550,6 +2528,7 @@ function ImportPreviewModal({ session, archive, onConfirm, onClose }: {
   onConfirm: (filtered: ParsedPackArchive) => void;
   onClose: () => void;
 }): React.JSX.Element {
+  const t = useT();
   const plan = useMemo(
     () => planPackImport(archive.manifest, archive.files, catalogSnapshotOf(session)),
     [archive, session],
@@ -2562,9 +2541,9 @@ function ImportPreviewModal({ session, archive, onConfirm, onClose }: {
         name: decision.name,
         file: archive.manifest.emojis[decisionIndex]?.file ?? "",
         planned: decision.kind === "import",
-        reason: skipReasonOf(decision),
+        reason: skipReasonOf(t, decision),
       })),
-    [plan, archive],
+    [plan, archive, t],
   );
   const packSections = useMemo(
     () =>
@@ -2578,18 +2557,18 @@ function ImportPreviewModal({ session, archive, onConfirm, onClose }: {
           // chunk's verdict (cosmetic; the runtime reports the duplicate).
           const decision = packPlan?.decisions.find((candidate) => candidate.name === stickerEntry.name) ?? null;
           const packBlockedReason =
-            packSkip !== null ? (packSkip.reason === "pack-limit" ? "pack limit reached" : "invalid pack name") : null;
+            packSkip !== null ? (packSkip.reason === "pack-limit" ? t("serverSettings.skipPackLimit") : t("serverSettings.skipInvalidPack")) : null;
           return {
             key: previewItemKey("sticker", trimmedName, stickerEntry.name),
             name: stickerEntry.name,
             file: stickerEntry.file,
             planned: decision !== null && decision.kind === "import" && packBlockedReason === null,
-            reason: packBlockedReason ?? (decision !== null ? skipReasonOf(decision) : "duplicate name in the pack"),
+            reason: packBlockedReason ?? (decision !== null ? skipReasonOf(t, decision) : t("serverSettings.skipDuplicateName")),
           };
         });
         return { name: manifestPack.name, items };
       }),
-    [plan, archive],
+    [plan, archive, t],
   );
 
   const allItems = useMemo(() => [...emojiItems, ...packSections.flatMap((section) => section.items)], [emojiItems, packSections]);
@@ -2672,16 +2651,16 @@ function ImportPreviewModal({ session, archive, onConfirm, onClose }: {
     <div className="modal-overlay">
       <div className="modal-card wide">
         <div className="modal-titlebar">
-          <span className="modal-title">Import expressions</span>
+          <span className="modal-title">{t("serverSettings.importTitle")}</span>
           <button className="modal-close" onClick={onClose}><span className="icon mdi-close" /></button>
         </div>
         <div className="modal-note">
-          From &quot;{archive.manifest.serverName}&quot; — highlighted tiles will be imported, click one to exclude it.
+          {t("serverSettings.importNote", { server: archive.manifest.serverName })}
         </div>
         <div className="import-preview-body">
           {emojiItems.length > 0 ? (
             <div className="import-preview-section">
-              <span className="import-preview-title">Emojis</span>
+              <span className="import-preview-title">{t("picker.tabEmoji")}</span>
               <div className="import-preview-grid">{emojiItems.map(renderCell)}</div>
             </div>
           ) : null}
@@ -2691,12 +2670,12 @@ function ImportPreviewModal({ session, archive, onConfirm, onClose }: {
               <div className="import-preview-grid">{section.items.map(renderCell)}</div>
             </div>
           ))}
-          {allItems.length === 0 ? <div className="modal-note">The archive contains no emojis or stickers.</div> : null}
+          {allItems.length === 0 ? <div className="modal-note">{t("serverSettings.importEmpty")}</div> : null}
         </div>
-        <div className="modal-note">{selectedKeys.size} of {allItems.length} items will be imported ({plannedCount} available).</div>
+        <div className="modal-note">{t("serverSettings.importCount", { selected: selectedKeys.size, total: allItems.length, available: plannedCount })}</div>
         <div className="modal-actions">
-          <button className="ghost" onClick={onClose}>Cancel</button>
-          <button className="primary" disabled={selectedKeys.size === 0} onClick={confirm}>Import {selectedKeys.size}</button>
+          <button className="ghost" onClick={onClose}>{t("common.cancel")}</button>
+          <button className="primary" disabled={selectedKeys.size === 0} onClick={confirm}>{t("serverSettings.importCountVerb", { count: selectedKeys.size })}</button>
         </div>
       </div>
     </div>
@@ -2704,6 +2683,7 @@ function ImportPreviewModal({ session, archive, onConfirm, onClose }: {
 }
 
 function ServerEmojiSection({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const t = useT();
   const emojiState = useStore(session.emojiStore, (state) => state);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [pendingKey, setPendingKey] = useState<string | null>(null);
@@ -2732,11 +2712,11 @@ function ServerEmojiSection({ session }: { session: ConnectionSession }): React.
     }
     const lower = file.name.toLowerCase();
     if (!lower.endsWith(".png") && !lower.endsWith(".gif") && !lower.endsWith(".webp")) {
-      setError("Pick a PNG, GIF or WebP image.");
+      setError(t("serverSettings.errNotImage"));
       return;
     }
     if (file.size > 1024 * 1024) {
-      setError("The file is larger than 1 MB.");
+      setError(t("serverSettings.errTooLarge"));
       return;
     }
     void measureImageSize(file).then((size) => {
@@ -2746,7 +2726,7 @@ function ServerEmojiSection({ session }: { session: ConnectionSession }): React.
     });
     const suggested = emojiNameFromFileName(file.name);
     if (emojiState.names.has(suggested)) {
-      setError(`The name ":${suggested}:" is already taken — pick another.`);
+      setError(t("serverSettings.errNameTakenPick", { name: suggested }));
     }
     setPendingFile(file);
     setNameDraft(suggested);
@@ -2759,11 +2739,11 @@ function ServerEmojiSection({ session }: { session: ConnectionSession }): React.
     }
     const name = nameDraft.trim();
     if (!/^[a-z0-9_-]{1,32}$/.test(name)) {
-      setError("The name must be 1-32 chars of a-z, 0-9, _ and -.");
+      setError(t("serverSettings.errNameGrammar"));
       return;
     }
     if (emojiState.names.has(name)) {
-      setError(`The name ":${name}:" is already taken.`);
+      setError(t("serverSettings.errNameTaken", { name }));
       return;
     }
     setBusy(true);
@@ -2788,7 +2768,7 @@ function ServerEmojiSection({ session }: { session: ConnectionSession }): React.
 
   return (
     <div className="settings-section">
-      <div className="roles-list-header overview-heading"><span>Emoji</span></div>
+      <div className="roles-list-header overview-heading"><span>{t("serverSettings.section.emoji")}</span></div>
       <div className="emoji-upload-row">
         <input
           ref={fileInputRef}
@@ -2811,19 +2791,19 @@ function ServerEmojiSection({ session }: { session: ConnectionSession }): React.
           }}
         />
         <button className="primary" disabled={busy || exchangeBusy || !emojiState.supported} onClick={() => fileInputRef.current?.click()}>
-          Upload emoji
+          {t("serverSettings.uploadEmoji")}
         </button>
         <button
           disabled={busy || exchangeBusy || !emojiState.supported || emojiState.emojis.length === 0}
           onClick={() => void runExport({ kind: "emojis" })}
-        >Export all</button>
+        >{t("serverSettings.exportAll")}</button>
         <button
           disabled={busy || exchangeBusy || !emojiState.supported}
           onClick={() => zipInputRef.current?.click()}
-        >Import</button>
-        <span className="emoji-count">{emojiState.emojis.length} / 200</span>
+        >{t("serverSettings.importVerb")}</button>
+        <span className="emoji-count">{t("serverSettings.emojiCount", { count: emojiState.emojis.length })}</span>
       </div>
-      <div className="settings-hint">PNG, GIF or WebP · up to 1 MB · larger than 256×256 renders downscaled</div>
+      <div className="settings-hint">{t("serverSettings.emojiHint")}</div>
       <div className="exchange-status">{exchangeStatus ?? ""}</div>
       {exchangeReport !== null ? <div className="exchange-report">{exchangeReport}</div> : null}
       {pendingFile !== null ? (
@@ -2834,7 +2814,7 @@ function ServerEmojiSection({ session }: { session: ConnectionSession }): React.
               type="text"
               value={nameDraft}
               maxLength={32}
-              placeholder="name"
+              placeholder={t("serverSettings.namePlaceholder")}
               onChange={(event) => setNameDraft(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !busy) {
@@ -2843,14 +2823,14 @@ function ServerEmojiSection({ session }: { session: ConnectionSession }): React.
                 }
               }}
             />
-            <button className="primary" disabled={busy} onClick={() => void uploadPending()}>Save</button>
-            <button className="ghost" disabled={busy} onClick={resetPending}>Cancel</button>
+            <button className="primary" disabled={busy} onClick={() => void uploadPending()}>{t("common.save")}</button>
+            <button className="ghost" disabled={busy} onClick={resetPending}>{t("common.cancel")}</button>
           </div>
         </div>
       ) : null}
       <div className="error-line">{error ?? ""}</div>
       {emojiState.emojis.length === 0 ? (
-        <div className="emoji-empty">No custom emojis yet — upload a PNG, GIF or WebP up to 1 MB.</div>
+        <div className="emoji-empty">{t("serverSettings.noEmojis")}</div>
       ) : (
         <div className="emoji-grid">
           {emojiState.emojis.map((emoji) => (
@@ -2860,9 +2840,9 @@ function ServerEmojiSection({ session }: { session: ConnectionSession }): React.
       )}
       {deleteTarget !== null ? (
         <ConfirmModal
-          title="Delete emoji"
-          note={`Delete :${deleteTarget.name}:? Messages using it will fall back to plain text.`}
-          confirmLabel="Delete"
+          title={t("serverSettings.deleteEmoji")}
+          note={t("serverSettings.deleteEmojiNote", { name: deleteTarget.name })}
+          confirmLabel={t("common.delete")}
           onConfirm={async () => {
             await session.rest.deleteEmoji(deleteTarget.id);
             session.refreshEmojis();
@@ -2888,6 +2868,7 @@ function StickerCatalogCell({ session, sticker, onDelete }: {
   sticker: Sticker;
   onDelete(sticker: Sticker): void;
 }): React.JSX.Element {
+  const t = useT();
   const imageUrl = useAttachmentImage(
     session,
     sticker.url !== null ? { key: sticker.key, url: sticker.url } : null,
@@ -2898,7 +2879,7 @@ function StickerCatalogCell({ session, sticker, onDelete }: {
         ? <img src={imageUrl} alt={sticker.name} draggable={false} />
         : <span className="sticker-catalog-fallback">{sticker.name.slice(0, 2)}</span>}
       <span className="sticker-catalog-name" title={`:${sticker.name}:`}>:{sticker.name}:</span>
-      <button className="icon-button sticker-catalog-remove" title="Delete sticker" onClick={() => onDelete(sticker)}>
+      <button className="icon-button sticker-catalog-remove" title={t("serverSettings.deleteSticker")} onClick={() => onDelete(sticker)}>
         <span className="icon mdi-close" />
       </button>
     </div>
@@ -2910,6 +2891,7 @@ function StickerCatalogCell({ session, sticker, onDelete }: {
  *  upload flow lives at a time (the active pack owns it). Management rides
  *  MANAGE_EMOJIS — one gate for the whole expressions catalog (user decision). */
 function ServerStickerSection({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const t = useT();
   const stickerState = useStore(session.stickerStore, (state) => state);
   const [packNameDraft, setPackNameDraft] = useState("");
   const [packBusy, setPackBusy] = useState(false);
@@ -2947,11 +2929,11 @@ function ServerStickerSection({ session }: { session: ConnectionSession }): Reac
     }
     const lower = file.name.toLowerCase();
     if (!lower.endsWith(".png") && !lower.endsWith(".gif") && !lower.endsWith(".webp")) {
-      setError("Pick a PNG, GIF or WebP image.");
+      setError(t("serverSettings.errNotImage"));
       return;
     }
     if (file.size > 1024 * 1024) {
-      setError("The file is larger than 1 MB.");
+      setError(t("serverSettings.errTooLarge"));
       return;
     }
     void measureImageSize(file).then((size) => {
@@ -2961,7 +2943,7 @@ function ServerStickerSection({ session }: { session: ConnectionSession }): Reac
     });
     const suggested = emojiNameFromFileName(file.name);
     if (nameTakenInPack(suggested)) {
-      setError(`The name ":${suggested}:" is already taken in this pack — pick another.`);
+      setError(t("serverSettings.errNameTakenInPackPick", { name: suggested }));
     }
     setPendingFile(file);
     setNameDraft(suggested);
@@ -2974,11 +2956,11 @@ function ServerStickerSection({ session }: { session: ConnectionSession }): Reac
     }
     const name = nameDraft.trim();
     if (!/^[a-z0-9_-]{1,32}$/.test(name)) {
-      setError("The name must be 1-32 chars of a-z, 0-9, _ and -.");
+      setError(t("serverSettings.errNameGrammar"));
       return;
     }
     if (nameTakenInPack(name)) {
-      setError(`The name ":${name}:" is already taken in this pack.`);
+      setError(t("serverSettings.errNameTakenInPack", { name }));
       return;
     }
     setBusy(true);
@@ -3021,13 +3003,13 @@ function ServerStickerSection({ session }: { session: ConnectionSession }): Reac
 
   return (
     <div className="settings-section">
-      <div className="roles-list-header overview-heading"><span>Stickers</span></div>
+      <div className="roles-list-header overview-heading"><span>{t("serverSettings.section.stickers")}</span></div>
       <div className="sticker-pack-form">
         <input
           type="text"
           value={packNameDraft}
           maxLength={32}
-          placeholder="New pack name"
+          placeholder={t("serverSettings.newPackName")}
           disabled={!stickerState.supported}
           onChange={(event) => setPackNameDraft(event.target.value)}
           onKeyDown={(event) => {
@@ -3038,16 +3020,16 @@ function ServerStickerSection({ session }: { session: ConnectionSession }): Reac
           }}
         />
         <button className="primary" disabled={packBusy || exchangeBusy || !stickerState.supported || packNameDraft.trim().length === 0}
-          onClick={() => void createPack()}>Create pack</button>
+          onClick={() => void createPack()}>{t("serverSettings.createPack")}</button>
         <button
           disabled={packBusy || exchangeBusy || !stickerState.supported || stickerState.packs.length === 0}
           onClick={() => void runExport({ kind: "stickers" })}
-        >Export all</button>
+        >{t("serverSettings.exportAll")}</button>
         <button
           disabled={packBusy || exchangeBusy || !stickerState.supported}
           onClick={() => zipInputRef.current?.click()}
-        >Import</button>
-        <span className="emoji-count">{stickerState.totalStickers} / 200 stickers · {stickerState.packs.length} / 20 packs</span>
+        >{t("serverSettings.importVerb")}</button>
+        <span className="emoji-count">{t("serverSettings.stickerCounts", { stickers: stickerState.totalStickers, packs: stickerState.packs.length })}</span>
       </div>
       <input
         ref={zipInputRef}
@@ -3059,18 +3041,18 @@ function ServerStickerSection({ session }: { session: ConnectionSession }): Reac
           event.target.value = "";
         }}
       />
-      <div className="settings-hint">PNG, GIF or WebP · up to 1 MB · larger than 512×512 renders downscaled</div>
+      <div className="settings-hint">{t("serverSettings.stickerHint")}</div>
       <div className="exchange-status">{exchangeStatus ?? ""}</div>
       {exchangeReport !== null ? <div className="exchange-report">{exchangeReport}</div> : null}
       <div className="error-line">{error ?? ""}</div>
       {stickerState.packs.length === 0 ? (
-        <div className="sticker-empty">No sticker packs yet — create one to start uploading stickers.</div>
+        <div className="sticker-empty">{t("serverSettings.noPacks")}</div>
       ) : (
         stickerState.packs.map((pack) => (
           <div key={pack.id} className="sticker-pack-block">
             <div className="sticker-pack-header">
               <span className="sticker-pack-header-name" title={pack.name}>{pack.name}</span>
-              <span className="sticker-pack-header-count">{pack.stickers.length} sticker{pack.stickers.length === 1 ? "" : "s"}</span>
+              <span className="sticker-pack-header-count">{t("serverSettings.stickersCount", { count: pack.stickers.length })}</span>
               <button
                 disabled={busy || exchangeBusy || !stickerState.supported}
                 onClick={() => {
@@ -3078,15 +3060,15 @@ function ServerStickerSection({ session }: { session: ConnectionSession }): Reac
                   setUploadPackId(pack.id);
                   window.requestAnimationFrame(() => fileInputRef.current?.click());
                 }}
-              >Upload sticker</button>
+              >{t("serverSettings.uploadSticker")}</button>
               <button
                 disabled={exchangeBusy || busy || !stickerState.supported || pack.stickers.length === 0}
                 onClick={() => void runExport({ kind: "pack", pack })}
-              >Export</button>
+              >{t("serverSettings.exportVerb")}</button>
               <button
                 className="ghost"
                 disabled={packBusy}
-                title="Delete pack"
+                title={t("serverSettings.deletePack")}
                 onClick={() => setDeletePackTarget(pack)}
               ><span className="icon mdi-trash-can" /></button>
             </div>
@@ -3098,7 +3080,7 @@ function ServerStickerSection({ session }: { session: ConnectionSession }): Reac
                     type="text"
                     value={nameDraft}
                     maxLength={32}
-                    placeholder="name"
+                    placeholder={t("serverSettings.namePlaceholder")}
                     onChange={(event) => setNameDraft(event.target.value)}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" && !busy) {
@@ -3107,13 +3089,13 @@ function ServerStickerSection({ session }: { session: ConnectionSession }): Reac
                       }
                     }}
                   />
-                  <button className="primary" disabled={busy} onClick={() => void uploadPending()}>Save</button>
-                  <button className="ghost" disabled={busy} onClick={resetPending}>Cancel</button>
+                  <button className="primary" disabled={busy} onClick={() => void uploadPending()}>{t("common.save")}</button>
+                  <button className="ghost" disabled={busy} onClick={resetPending}>{t("common.cancel")}</button>
                 </div>
               </div>
             ) : null}
             {pack.stickers.length === 0 ? (
-              <div className="sticker-empty">No stickers in this pack yet.</div>
+              <div className="sticker-empty">{t("serverSettings.noStickersInPack")}</div>
             ) : (
               <div className="sticker-grid">
                 {pack.stickers.map((sticker) => (
@@ -3136,9 +3118,9 @@ function ServerStickerSection({ session }: { session: ConnectionSession }): Reac
       />
       {deleteStickerTarget !== null ? (
         <ConfirmModal
-          title="Delete sticker"
-          note={`Delete :${deleteStickerTarget.name}:? Messages using this sticker will show a placeholder.`}
-          confirmLabel="Delete"
+          title={t("serverSettings.deleteSticker")}
+          note={t("serverSettings.deleteStickerNote", { name: deleteStickerTarget.name })}
+          confirmLabel={t("common.delete")}
           onConfirm={async () => {
             await session.rest.deleteSticker(deleteStickerTarget.id);
             session.refreshStickers();
@@ -3148,9 +3130,9 @@ function ServerStickerSection({ session }: { session: ConnectionSession }): Reac
       ) : null}
       {deletePackTarget !== null ? (
         <ConfirmModal
-          title="Delete sticker pack"
-          note={`Delete pack "${deletePackTarget.name}"? All ${deletePackTarget.stickers.length} sticker${deletePackTarget.stickers.length === 1 ? "" : "s"} in it are removed and messages using them will show a placeholder.`}
-          confirmLabel="Delete pack"
+          title={t("serverSettings.deletePackTitle")}
+          note={t("serverSettings.deletePackNote", { name: deletePackTarget.name, count: deletePackTarget.stickers.length })}
+          confirmLabel={t("serverSettings.deletePack")}
           onConfirm={async () => {
             await session.rest.deleteStickerPack(deletePackTarget.id);
             session.refreshStickers();
@@ -3177,6 +3159,7 @@ function ConfirmModal({ title, note, confirmLabel, onConfirm, onClose }: {
   onConfirm(): Promise<void>;
   onClose(): void;
 }): React.JSX.Element {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return (
@@ -3184,7 +3167,7 @@ function ConfirmModal({ title, note, confirmLabel, onConfirm, onClose }: {
       <div className="modal-note">{note}</div>
       <div className="error-line">{error ?? ""}</div>
       <div className="modal-actions left">
-        <button className="ghost" onClick={onClose}>Cancel</button>
+        <button className="ghost" onClick={onClose}>{t("common.cancel")}</button>
         <button className="danger" disabled={busy} onClick={() => {
           setBusy(true);
           void onConfirm().then(onClose).catch((error_: unknown) => {
@@ -3208,12 +3191,13 @@ function SaveButton({ label, saved, dirty, busy, onClick }: {
   busy: boolean;
   onClick(): void;
 }): React.JSX.Element {
+  const t = useT();
   const working = dirty || busy;
   const showSaved = saved && !working;
   return (
     <button className="primary save-button" disabled={!working} onClick={onClick}>
       <span className={showSaved ? "save-button-underlay" : undefined}>{label}</span>
-      {showSaved ? <span className="save-button-overlay">Saved</span> : null}
+      {showSaved ? <span className="save-button-overlay">{t("serverSettings.savedMarker")}</span> : null}
     </button>
   );
 }
@@ -3275,6 +3259,7 @@ const HEALTH_REFRESH_MILLIS = 30_000;
 /** One backing-service row: a presence dot (green/red/grey) + name + one detail
  *  line combining both facets, e.g. "up · 3 ms · running · healthy". */
 function HealthRow({ entry }: { entry: ServerHealthEntry }): React.JSX.Element {
+  const t = useT();
   const dotClass = entry.service.status === "UP" ? " online"
     : entry.service.status === "DISABLED" ? ""
     : " down";
@@ -3282,24 +3267,28 @@ function HealthRow({ entry }: { entry: ServerHealthEntry }): React.JSX.Element {
     <div className="health-row">
       <span className={"presence-dot" + dotClass} />
       <span className="health-row-name">{entry.name}</span>
-      <span className="health-row-detail" title={describeHealthEntry(entry)}>{describeHealthEntry(entry)}</span>
+      <span className="health-row-detail" title={describeHealthEntry(t, entry)}>{describeHealthEntry(t, entry)}</span>
     </div>
   );
 }
 
-function describeHealthEntry(entry: ServerHealthEntry): string {
+function describeHealthEntry(t: Translator, entry: ServerHealthEntry): string {
   const parts: string[] = [];
   if (entry.service.status === "UP") {
-    parts.push("up" + (entry.service.latencyMillis != null ? ` · ${entry.service.latencyMillis} ms` : ""));
+    parts.push(entry.service.latencyMillis != null
+      ? t("serverSettings.healthUpMs", { ms: entry.service.latencyMillis })
+      : t("serverSettings.healthUp"));
   } else if (entry.service.status === "DISABLED") {
-    parts.push("disabled by configuration");
+    parts.push(t("serverSettings.healthDisabled"));
   } else {
-    // DOWN / TIMEOUT — the detail carries the reason (red dot row)
+    // DOWN / TIMEOUT — the detail carries the reason (red dot row); the status
+    // word itself is the server's wire enum, kept verbatim.
     parts.push(entry.service.status.toLowerCase() + (entry.service.detail != null ? ` — ${entry.service.detail}` : ""));
   }
   // The container facet is null on deployments that cannot answer it (provisioned
   // servers run oak inside a container, without the host's docker socket) — the
-  // row then shows the service probe alone, no placeholder text.
+  // row then shows the service probe alone, no placeholder text. Container
+  // statuses are wire enums (running/healthy/…) — verbatim.
   const container = entry.container;
   if (container != null) {
     if (container.status === "UNKNOWN" || container.status === "ABSENT") {
@@ -3313,6 +3302,7 @@ function describeHealthEntry(entry: ServerHealthEntry): string {
 }
 
 function ServerStorageSection({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const t = useT();
   const [status, setStatus] = useState<StorageStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -3366,13 +3356,13 @@ function ServerStorageSection({ session }: { session: ConnectionSession }): Reac
       return;
     }
     setLogsBusy(true);
-    setLogsStatus("Downloading…");
+    setLogsStatus(t("serverSettings.downloading"));
     try {
       const archive = await session.rest.downloadServerLogs();
       const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
       // A dismissed dialog is not an error (the expression-export contract).
       const savedPath = await window.spaceMedia?.saveFile(`server-logs-${stamp}.zip`, archive);
-      setLogsStatus(savedPath == null ? null : "Saved.");
+      setLogsStatus(savedPath == null ? null : t("settings.savedStatus"));
     } catch (downloadError: unknown) {
       setLogsStatus(downloadError instanceof Error ? downloadError.message : String(downloadError));
     } finally {
@@ -3385,9 +3375,9 @@ function ServerStorageSection({ session }: { session: ConnectionSession }): Reac
       return;
     }
     setLogsBusy(true);
-    setLogsStatus("Preparing…");
+    setLogsStatus(t("settings.preparing"));
     const outcome = await downloadClientLogs();
-    setLogsStatus(outcome === "saved" ? "Saved." : "Export failed — see the log.");
+    setLogsStatus(outcome === "saved" ? t("settings.savedStatus") : t("settings.exportFailed"));
     setLogsBusy(false);
   };
 
@@ -3472,7 +3462,7 @@ function ServerStorageSection({ session }: { session: ConnectionSession }): Reac
   };
 
   if (status === null) {
-    return <div className="settings-hint">{error ?? "Loading storage state…"}</div>;
+    return <div className="settings-hint">{error ?? t("serverSettings.loadingStorage")}</div>;
   }
 
   const usedPercent = Math.round(status.usage.usedPercent);
@@ -3482,13 +3472,13 @@ function ServerStorageSection({ session }: { session: ConnectionSession }): Reac
     <div>
       {/* The nav tab is "Server" — the pane heading must repeat it (user report
           2026-10-07): "Storage" named only the first of the tab's blocks. */}
-      <div className="roles-list-header overview-heading"><span>Server</span></div>
+      <div className="roles-list-header overview-heading"><span>{t("serverSettings.section.server")}</span></div>
 
-      <h3>Disk usage</h3>
+      <h3>{t("serverSettings.diskUsage")}</h3>
       {/* The instance's data disk (Postgres + MinIO live on it): the watermark
           policy is measured against exactly this bar. */}
       <div className="settings-hint">
-        {formatBytes(status.usage.usedBytes)} of {formatBytes(status.usage.totalBytes)} used — {usedPercent}%
+        {t("serverSettings.diskUsed", { used: formatBytes(status.usage.usedBytes), total: formatBytes(status.usage.totalBytes), percent: usedPercent })}
       </div>
       <div style={{
         height: 10,
@@ -3505,31 +3495,26 @@ function ServerStorageSection({ session }: { session: ConnectionSession }): Reac
         }} />
       </div>
 
-      <h3>Cleanup policy</h3>
-      <div className="settings-hint">
-        Cleanup is need-driven, not age-driven: when the disk crosses the high threshold at night,
-        the oldest messages and unreferenced attachments are removed until it drops below the low
-        one. Attachments whose last message is deleted go immediately; the newest history is always
-        kept.
-      </div>
+      <h3>{t("serverSettings.cleanupPolicy")}</h3>
+      <div className="settings-hint">{t("serverSettings.cleanupHint")}</div>
       <label className="settings-check">
         <input
           type="checkbox"
           checked={autoEnabled}
           onChange={(event) => setAutoEnabled(event.target.checked)}
         />
-        <span>Automatic cleanup</span>
+        <span>{t("serverSettings.autoCleanup")}</span>
       </label>
       <label className="settings-field">
-        <span>Start cleanup above — {high || "?"}% full</span>
+        <span>{t("serverSettings.cleanupHigh", { value: high || "?" })}</span>
         <input type="range" min={1} max={99} value={high} onChange={(event) => setHigh(event.target.value)} />
       </label>
       <label className="settings-field">
-        <span>Clean down to — {low || "?"}% full</span>
+        <span>{t("serverSettings.cleanupLow", { value: low || "?" })}</span>
         <input type="range" min={0} max={98} value={low} onChange={(event) => setLow(event.target.value)} />
       </label>
       <label className="settings-field">
-        <span>Nightly run at (local time)</span>
+        <span>{t("serverSettings.nightlyAt")}</span>
         <input
           type="text"
           value={runTime}
@@ -3539,39 +3524,36 @@ function ServerStorageSection({ session }: { session: ConnectionSession }): Reac
         />
       </label>
       <div className="modal-actions left">
-        <SaveButton label="Save changes" saved={saved} dirty={dirty} busy={busy} onClick={() => void save()} />
+        <SaveButton label={t("serverSettings.saveChanges")} saved={saved} dirty={dirty} busy={busy} onClick={() => void save()} />
         <button className="ghost" disabled={busy || status.running} onClick={() => setConfirmRun(true)}>
-          {status.running ? "Cleaning…" : "Run cleanup now"}
+          {status.running ? t("serverSettings.cleaning") : t("serverSettings.runCleanupNow")}
         </button>
         <span className="settings-status">
-          {valid ? "" : "The high threshold must be above the low one; time as HH:mm."}
+          {valid ? "" : t("serverSettings.cleanupInvalid")}
         </span>
       </div>
 
       {confirmRun ? (
         <Modal
-          title="Run cleanup now?"
+          title={t("serverSettings.runCleanupTitle")}
           onClose={() => setConfirmRun(false)}
         >
-          <div className="modal-note">
-            The cleanup may take a while, and while it runs the server can hang for a few
-            seconds — the chat freezes until it finishes. Are you sure you want to run it now?
-          </div>
+          <div className="modal-note">{t("serverSettings.runCleanupNote")}</div>
           <div className="modal-actions">
-            <button className="ghost" onClick={() => setConfirmRun(false)}>Cancel</button>
+            <button className="ghost" onClick={() => setConfirmRun(false)}>{t("common.cancel")}</button>
             <button className="danger" onClick={() => {
               setConfirmRun(false);
               void runNow();
-            }}>Run cleanup</button>
+            }}>{t("serverSettings.runCleanupVerb")}</button>
           </div>
         </Modal>
       ) : null}
       {lastRun !== null ? (
         <div className="settings-hint">
-          Last run {lastRun.trigger} — {lastRun.outcome}. Swept {lastRun.sweptOrphanObjects} orphan
-          object(s) ({formatBytes(lastRun.sweptBytes)}), removed {lastRun.purgedMessages} message(s)
-          and {lastRun.purgedAttachmentObjects} attachment object(s)
-          {lastRun.finalUsedPercent >= 0 ? `; disk now ${Math.round(lastRun.finalUsedPercent)}%` : ""}.
+          {t("serverSettings.lastRunIntro", { trigger: lastRun.trigger, outcome: lastRun.outcome })}
+          {" "}
+          {t("serverSettings.lastRunDetail", { orphans: lastRun.sweptOrphanObjects, bytes: formatBytes(lastRun.sweptBytes), messages: lastRun.purgedMessages, attachments: lastRun.purgedAttachmentObjects })}
+          {lastRun.finalUsedPercent >= 0 ? t("serverSettings.lastRunFinal", { percent: Math.round(lastRun.finalUsedPercent) }) : ""}.
         </div>
       ) : null}
       {error !== null ? <div className="settings-warning">{error}</div> : null}
@@ -3580,36 +3562,30 @@ function ServerStorageSection({ session }: { session: ConnectionSession }): Reac
           (is postgres/minio/janus/turn actually usable from there) and reports the
           docker container state — "running but janus does not answer" is the case
           this block exists for. */}
-      <h3 style={{ marginTop: 20 }}>Service health</h3>
+      <h3 style={{ marginTop: 20 }}>{t("serverSettings.serviceHealth")}</h3>
       <div className="settings-hint">
-        The backing services this server depends on: the probe says whether the server can
-        actually use the service, the second part is its docker container state. Refreshes
-        every {HEALTH_REFRESH_MILLIS / 1000} seconds.
+        {t("serverSettings.healthHint", { seconds: HEALTH_REFRESH_MILLIS / 1000 })}
       </div>
       {health !== null ? (
         <>
           {health.services.map((entry) => <HealthRow key={entry.name} entry={entry} />)}
-          <div className="settings-hint">Checked at {new Date(health.checkedAt).toLocaleTimeString()}</div>
+          <div className="settings-hint">{t("serverSettings.checkedAt", { time: formatTimeOfDay(new Date(health.checkedAt).getTime(), currentLang()) })}</div>
         </>
       ) : null}
       {healthUnsupported ? (
-        <div className="settings-hint">This server build does not report service health.</div>
+        <div className="settings-hint">{t("serverSettings.healthUnsupported")}</div>
       ) : null}
       {healthError !== null ? (
-        <div className="settings-warning">{healthError} — retrying every {HEALTH_REFRESH_MILLIS / 1000} seconds.</div>
+        <div className="settings-warning">{t("serverSettings.healthRetry", { message: healthError, seconds: HEALTH_REFRESH_MILLIS / 1000 })}</div>
       ) : null}
 
       {/* Breathing room from the cleanup row above (user report 2026-10-07: too
           close, then 28px was too far — settled in between). */}
-      <h3 style={{ marginTop: 20 }}>Logs</h3>
-      <div className="settings-hint">
-        The server log of the last 24 hours in one zip — the container logs of postgres, minio,
-        janus and coturn are included when Docker is available. "Download client logs" saves this
-        client's own log file; both help investigate a problem report.
-      </div>
+      <h3 style={{ marginTop: 20 }}>{t("serverSettings.logsHeader")}</h3>
+      <div className="settings-hint">{t("serverSettings.logsHint")}</div>
       <div className="modal-actions left">
-        <button disabled={logsBusy} onClick={() => void downloadServerArchive()}>Download server logs</button>
-        <button disabled={logsBusy} onClick={() => void downloadClientArchive()}>Download client logs</button>
+        <button disabled={logsBusy} onClick={() => void downloadServerArchive()}>{t("serverSettings.downloadServerLogs")}</button>
+        <button disabled={logsBusy} onClick={() => void downloadClientArchive()}>{t("settings.downloadClientLogs")}</button>
         <span className="settings-status">{logsStatus ?? ""}</span>
       </div>
     </div>

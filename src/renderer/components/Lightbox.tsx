@@ -11,6 +11,7 @@ import {
   type ViewerTransform,
 } from "../../domain/logic/image-viewer-transform";
 import { humanByteSize } from "../../domain/logic/file-size";
+import { useT } from "../hooks/useT";
 
 /**
  * Full-image viewer (oak's AttachmentViewer): wheel zoom TOWARD THE CURSOR,
@@ -34,6 +35,7 @@ export function Lightbox({ session, images, startIndex, onForwardBegin, onClose 
   onForwardBegin?: () => void;
   onClose(): void;
 }): React.JSX.Element {
+  const t = useT();
   const [index, setIndex] = useState(startIndex);
   const [transform, setTransform] = useState<ViewerTransform>({ baseScale: 1, scale: 1, offsetX: 0, offsetY: 0 });
   const [imageSize, setImageSize] = useState<{ width: number; height: number } | null>(null);
@@ -263,49 +265,49 @@ export function Lightbox({ session, images, startIndex, onForwardBegin, onClose 
             : undefined}
         />
       ) : (
-        <div className="lightbox-status">loading…</div>
+        <div className="lightbox-status">{t("lightbox.loading")}</div>
       )}
       {detailsAnchor !== null && attachment !== null ? (
         <div
           className="lightbox-details"
           style={{ left: detailsAnchor.x, bottom: window.innerHeight - detailsAnchor.y + 8 }}
         >
-          <div><span>Name</span>{attachment.fileName}</div>
-          <div><span>Type</span>{fileExtension}</div>
-          {imageSize !== null ? <div><span>Dimensions</span>{imageSize.width} × {imageSize.height} px</div> : null}
-          <div><span>Size</span>{detailsByteSize !== null ? humanByteSize(detailsByteSize) : "…"}</div>
+          <div><span>{t("lightbox.name")}</span>{attachment.fileName}</div>
+          <div><span>{t("lightbox.type")}</span>{fileExtension}</div>
+          {imageSize !== null ? <div><span>{t("lightbox.dimensions")}</span>{imageSize.width} × {imageSize.height} px</div> : null}
+          <div><span>{t("lightbox.size")}</span>{detailsByteSize !== null ? humanByteSize(detailsByteSize) : "…"}</div>
         </div>
       ) : null}
       <div className="lightbox-toolbar">
         {images.length > 1 ? (
           <>
-            <button className="ghost" disabled={index === 0} onClick={() => setIndex(index - 1)} title="Previous">
+            <button className="ghost" disabled={index === 0} onClick={() => setIndex(index - 1)} title={t("lightbox.previous")}>
               <span className="icon mdi-chevron-left" />
             </button>
             <span className="lightbox-counter">{index + 1} / {images.length}</span>
-            <button className="ghost" disabled={index >= images.length - 1} onClick={() => setIndex(index + 1)} title="Next">
+            <button className="ghost" disabled={index >= images.length - 1} onClick={() => setIndex(index + 1)} title={t("lightbox.next")}>
               <span className="icon mdi-chevron-right" />
             </button>
           </>
         ) : null}
-        <button className="ghost" disabled={busy} onClick={() => void download()} title="Download">
+        <button className="ghost" disabled={busy} onClick={() => void download()} title={t("lightbox.download")}>
           <span className={"icon " + (savedFlash ? "mdi-check" : busy ? "mdi-refresh sp-spin" : "mdi-download")} />
         </button>
         {onForwardBegin !== undefined ? (
-          <button className="ghost" onClick={() => { onForwardBegin(); onClose(); }} title="Forward the image"><span className="icon mdi-forward" /></button>
+          <button className="ghost" onClick={() => { onForwardBegin(); onClose(); }} title={t("lightbox.forwardImage")}><span className="icon mdi-forward" /></button>
         ) : null}
         <button
           className="ghost"
           onClick={() => attachment !== null && void window.spaceMedia?.openExternal(attachment.url)}
-          title="Open in browser"
+          title={t("lightbox.openInBrowser")}
         >
           <span className="icon mdi-open-in-new" />
         </button>
-        <button className="ghost" disabled={busy} onClick={() => void copyToClipboard()} title={copied ? "Copied" : "Copy to clipboard"}>
+        <button className="ghost" disabled={busy} onClick={() => void copyToClipboard()} title={copied ? t("lightbox.copied") : t("lightbox.copyToClipboard")}>
           <span className={"icon " + (copied ? "mdi-check" : "mdi-content-copy")} />
         </button>
-        <button className="ghost" onClick={(event) => void toggleDetails(event.currentTarget)} title="Details"><span className="icon mdi-information-outline" /></button>
-        <button className="ghost" onClick={onClose} title="Close"><span className="icon mdi-close" /></button>
+        <button className="ghost" onClick={(event) => void toggleDetails(event.currentTarget)} title={t("lightbox.details")}><span className="icon mdi-information-outline" /></button>
+        <button className="ghost" onClick={onClose} title={t("common.close")}><span className="icon mdi-close" /></button>
       </div>
     </div>,
     document.body,

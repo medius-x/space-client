@@ -81,6 +81,20 @@ describe("day grouping (#481)", () => {
     expect(formatSearchDayStamp(otherYear, NOW)).toBe("Sep 18, 2024");
   });
 
+  it("labels localize to Russian (RU month order: day first)", () => {
+    const today = new Date(2026, 8, 18, 9, 0, 0).getTime();
+    const yesterday = new Date(2026, 8, 17, 23, 30, 0).getTime();
+    const thisYear = new Date(2026, 3, 4, 10, 0, 0).getTime();
+    const otherYear = new Date(2024, 8, 18, 10, 0, 0).getTime();
+    expect(formatSearchDayStamp(today, NOW, "ru")).toBe("Сегодня");
+    expect(formatSearchDayStamp(yesterday, NOW, "ru")).toBe("Вчера");
+    // «4 апр.» — the RU month abbreviation comes from Intl, same as EN's "Apr".
+    const ruApril = new Intl.DateTimeFormat("ru", { month: "short" }).format(new Date(thisYear));
+    expect(formatSearchDayStamp(thisYear, NOW, "ru")).toBe(`4 ${ruApril}`);
+    const ruSeptember = new Intl.DateTimeFormat("ru", { month: "short" }).format(new Date(otherYear));
+    expect(formatSearchDayStamp(otherYear, NOW, "ru")).toBe(`18 ${ruSeptember}, 2024`);
+  });
+
   it("groups newest-first results into consecutive same-day buckets without re-sorting", () => {
     const groups = groupSearchResultsByDay([
       message(3, "2026-09-18T10:00:00Z"),

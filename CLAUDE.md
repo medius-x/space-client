@@ -5,6 +5,91 @@ Electron + TypeScript **спайк-клиент** OAK-сервера. Цель �
 звук через `getDisplayMedia` и браузерный APM. После спайка — решение о полной переписи
 клиента. Полный план: `C:\Users\Home\.claude\plans\goofy-leaping-sutton.md`.
 
+## Локализация RU/EN + выбор языка (фича D, 2026-10-27, код готов — 815/815 + typecheck + build; СМОУК юзера pending; коммит — по команде)
+
+5 фаз одним раундом (план goofy-leaping-sutton.md): инфраструктура → главные экраны →
+панели/модали → domain-хвосты/runtime/provisioning → зачистка.
+
+- **Архитектура: свой тонкий i18n-слой без зависимостей.** `src/domain/i18n/`:
+  `en.ts` (`EN as const` — источник union'а `MessageKey`), `ru.ts` (`RU: Dict` —
+  компилятор требует ТОЧНОЕ множество ключей = compile-time parity-гейт), `i18n.ts`
+  (`tf(lang,key,params)` чистая; плюрализация `Intl.PluralRules` с кеш-Map и лестницей
+  `forms[category] ?? other ?? первый`; интерполяция `replaceAll("{name}",…)`;
+  `resolveUiLanguage`; `currentLang/setLanguage/t` module state; `enTranslator`
+  дефолт-инъекция; `i18nLanguageStore` Emitter для useSyncExternalStore),
+  `permissions.ts` (бит каталога → ключ с фолбэком на сырое имя бита — wire-множество
+  открытое). Словари TS-константами (не JSON): union-ключи, автодополнение, ~50 КБ.
+  Хук `useT()` = подписка на i18nLanguageStore + возвов `t` — каждый текстовый
+  компонент зовёт сам; строки пропсами не таскаются; переведённые строки НЕ кешировать
+  в module-level.
+- **Язык — ПЕР-ПРОЦЕССНЫЙ module-state** (главное окно / тост-окно / попап / main
+  каждый ставит свой): главное — `applyUiLanguage` + подписка на settingsStore в
+  bootstrapApp; main — KV-сеяние при старте (дефолт по app.getLocale) + IPC-синк;
+  аукс-окна — `spaceI18n.get()` на старте + `onLanguage`-пуш. Настройка
+  `ClientSettings.language: "en"|"ru"|"system"` (санация union), селектор в
+  Settings → General («System default / English / Русский» — endonym, не переводится),
+  immediate без перезапуска. Даты следуют ЯЗЫКУ, не системе:
+  `formatTimeOfDay/formatHeaderStamp(..., lang="en")` (дефолт держит ~110 старых
+  EN-ассертов зелёными; RU-ассерты добавлены), per-locale кеши Intl-форматтеров.
+- **IPC `space-i18n`**: sync (renderer→main, union-валидация мусора), get (аукс-окнам),
+  onLanguage (main→окна; single-slot removeAllListeners). main на смене: трей-меню
+  (`tray.open/tray.quit`; тултип SPACE — бренд), титул попапа `popout.title`, форвард
+  во все окна. Эфемерное ограничение: уже показанные тост-карточки не перекрашиваются.
+- **Переведено ~850 вхождений / ~50 файлов**: чат (композер/меню/форвард/обсуждения/
+  drag-over — CSS `content:` строка переехала в JSX-оверлей `.chat-drop-overlay`),
+  голос (Room/VoiceBar/NsEngineMenu/попап/конфликты), сайдбары/ростер/друзья/DM,
+  UserSettings (8 секций + keybinds-каталог), ServerSettingsPane ЦЕЛИКОМ вкл.
+  PERMISSION_INFO ×30 → `permissions.<BIT>.label/.description` (60 ключей; тест
+  сверяет KNOWN_PERMISSION_BITS ↔ словари), LoginModal, SharePickerModal (2 шага),
+  CreateChannelModal (+AFK-пресеты через `afkTimeoutLabel`), TransferOwnershipModal,
+  Lightbox/VideoModal/AvatarCropDialog/AvatarEditor, PopoutScreen/CaptionBar,
+  MainScreen (UserBar-статусы/PingBadge-тултип), ColorPickerDialog, провижининг
+  (ProvisioningPanel-форма + пайплайн: t-инъекция `runProvisioningPipeline(…,
+  t=enTranslator)`; electron/provisioning передаёт `(k,p)=>tf(currentLang(),k,p)` —
+  смена языка среди прогона перекрашивает следующие шаги; detail-строки И
+  ProvisioningFailure-сообщения переведены), runtime-тосты (`tr(...)` — язык момента
+  вызова; заголовки Call/Voice через ключи), тост-окно (карточки звонка/инвайта;
+  Hide all).
+- **Domain-хвосты с lang-параметром** (дефолт "en", EN-ассерты не тронуты, RU добавлены):
+  `invite-link.ts` formatTtlWords/formatExpiresIn (суффиксы д/ч/мин),
+  `moderation-reason.ts`, `toast-preview.ts` toastBodyFallback,
+  `expression-pack.ts` отчёты (RU-плюрализация паков/стикеров; причины skip-invalid
+  маппятся строка→ключ в ServerSettingsPane.skipReasonOf).
+- **НЕ переводится (осознанно)**: бренд SPACE/space, имена движков (RNNoise/DFN3/…
+  — но описания переводятся), accelerator'ы, имена серверов/каналов/ников, глифы,
+  тултип трея SPACE, **Diagnostics.tsx — скрытая инженерная панель Ctrl+Shift+F12
+  остаётся EN**, wire-дискриминаторы ("Incoming call"/"Connecting…" в bridges.ts —
+  текст рендерится ключами), placeholder-примеры путей/URL (C:\Users\you\…),
+  поисковый токен `from:` (серверный синтаксис), **серверные тексты ошибок — EN**
+  (один сервер на всех; README оговаривает), ошибки readPackArchive (редкие
+  технические). Языки в селекторе — endonym'ами (English/Русский).
+- **Гейты против рассинхрона**: compile-time RU: Dict; test/i18n.test.ts (parity
+  key-множеств, EN без кириллицы, RU plural-полнота one/few/many/other,
+  permissions-каталог ↔ словари, числ. лестница 1/2/5/21/101); финальный греп-аудит
+  (title=/placeholder=, JSX-текст, кириллица вне ru.ts — легитимны только комментарии,
+  endonym «Русский» и pangram в glyph-metrics). Итог: **815 тестов (89 файлов)** +
+  typecheck + build. Security-проход: новые IPC space-i18n:* не несут юзер-данных/
+  путей/команд (union-валидация; get отвечает константой; push main→renderer);
+  словари — статические константы в бандле; KV-ключ client-settings уже существовал.
+
+**Юзер-правки терминов + плейсхолдер-обрезка (2026-10-28, поверх раунда; 821/821 (90 файлов)
++ typecheck + build; смоук pending):** (1) RU-термины юзера: `serverMenu.relogin` «Перевойти»
+→ «Ре-логин»; свои тумблеры микрофона/наушников — «Выкл микрофон»/«Вкл микрофон»
+(`voice.mute/unmute`) и «Выкл наушники»/«Вкл наушники» (`voice.deafen/undeafen`) вместо
+«Заглушить/Оглушить/Слышать» (title = действие по клику, как было); ТЕ ЖЕ КЛЮЧИ ели
+мод-меню карточки пира и мьют-кнопки слайдера громкости — КЛЮЧИ РАЗВЕЛЕН: VolumeRow
+получил `kind: "voice"|"share"` → его мьют-кнопка зовёт `voice.muteVoice/unmuteVoice`
+или `muteShareAudio/unmuteShareAudio` (как попап-слайдеры), мод-меню — НОВЫЕ
+`voice.serverUnmute` («Снять мьют») / `voice.serverUndeafen` («Снять глушение»).
+(2) Плейсхолдер композера «Сообщение #канал…» при длинном имени канала обрезается
+по ширине поля С «…» (юзер-репорт: жёсткий клип/скролл некрасив): НОВАЯ
+`truncateTextToWidth(text, maxWidthPx, measure?)` в glyph-metrics.ts (canvas measureText
+13px Open Sans, кеш контекста, пересоздание по document.fonts.ready; бинарный поиск
+макс. префикса с «…», инъекция измерителя для node-тестов; совсем узкое поле → «…»);
+Composer мерит CONTENT-ширину textarea ResizeObserver'ом (flex-поле живёт с окном) и
+кормит обрезку. Тесты: test/truncate-text.test.ts (6). Серверные тексты и EN не тронуты.
+Security: новых IPC/REST/каналов нет; measureText локален; ключи — статические словари.
+
 ## Раунд 8 доработок (2026-10-27, код готов, СМОУК юзера pending; коммит — по команде)
 
 Семь доработок одной пачкой (модель раунда 7: всё сразу → гейты → подробный смоук-план).
@@ -3498,8 +3583,9 @@ social-aggregate подписан на сторы фоновых сессий �
 
 ## Бэклог (проработка 2026-10-06 — выкладки сохранены, ничего не реализовано)
 
-Приоритет ценость/объём: пинг-индикатор (S) → войс-морфер (M, клиент-only) → game activity (M, wire). Серверные половины пинг-индикатора и activity — oak-server/CLAUDE.md, раздел «Что предстоит реализовать»; там же — рекомендация по git-хостингу (GitHub приватно, аргументы по CI-минутам и Forgejo-компромиссу).
+Приоритет: голосовой фантом при свитче сервера (юзер-решение 2026-10-28 — СЛЕДУЮЩАЯ задача) → далее ценость/объём: войс-морфер (M, клиент-only) → game activity (M, wire). Серверные половины activity — oak-server/CLAUDE.md, раздел «Что предстоит реализовать»; там же — рекомендация по git-хостингу (GitHub приватно, аргументы по CI-минутам и Forgejo-компромиссу).
 
+- **Голосовой фантом при свитче сервера (юзер-репорт 2026-10-28, репорт без диагноза — следующая задача).** Сценарий: юзер сидит в голосовой комнате сервера A → переключается в рейле на сервер B → клиент локально выходит из голоса, но на сервере A юзер ОСТАЁТСЯ виден сидящим в комнате (другие участники видят фантом; сколько живёт — не уточнено). Класс подозрений: switch-путь (switchConnection/промоут-демоут) рвёт голос локально БЕЗ серверной половины выхода — не шлёт `/app/voice.leave` и/или не делает janus destroy сессии A (ср. graceful-close-раунд: destroy — единственный мгновенный убийца фидов; без него сервер чистит по своему WS/Janus-таймауту). Диагностировать по коду свитча + живым логам обеих сторон, проверить оба пути (промоут фоновой и fresh-свитч), посмотреть звонки 1-на-1 на том же свитче (тот же класс?). Сродни «Session-end сигналам» ниже — тот же фантом-класс, другой триггер.
 - **Session-end сигналы (OS-shutdown при спрятанном в трей окне)** — close-to-tray-гвард не отличает выключение Windows от обычного X: preventDefault остаётся, OS сама терминирует процесс жёстко → graceful-teardown голоса не случается, фантом-тайлы у пиров до таймаута Janus (~1 мин), тот же класс, что краш. Юзер принял границу на смоуке раунда A (2026-10-07) и занёс сюда. Закрытие = поймать Windows session-end (`app.on("session-end")` / WM_QUERYENDSESSION-путь Electron, проверить, что реально доставляется в 44.x) и прогнать initiateGracefulQuit (или хотя бы fire-and-forget janus destroy) до терминирования; оценке подлежит и поведение logoff vs shutdown.
 
 - **Пинг-индикатор соединения (клиентская половина) — РЕАЛИЗОВАН 2026-10-07, см. раздел «Пинг-индикатор соединения» выше.** Discord/TS-подобный индикатор «нормальное ли у меня соединение»: RTT по живому STOMP-соединению — SEND `/app/ping` с таймстампом каждые ~20–30 с (серверный echo — см. oak-server/CLAUDE.md; старый сервер без маппинга молча дропает → «нет эха» = unknown, НЕ ошибка) + ПАССИВНЫЕ замеры RTT каждого существующего REST-вызова (request() — уже единая точка). Стабильность: EWMA среднего, дисперсия (джиттер), счётчик подряд потерянных эхо → good/weak/bad/reconnecting (read-watchdog StompClient уже существует — индикатор становится его видимой частью). UI: точка + «42 ms» у userBar, tooltip min/avg/max за минуту; на деградации — заметная плашка. Апгрейд на потом: медиа-RTT в UI звонка через RTCStatsReport (candidate-pair.currentRoundTripTime) — клиент-only.

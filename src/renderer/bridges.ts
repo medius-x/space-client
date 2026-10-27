@@ -357,6 +357,20 @@ export interface UpdatesBridge {
   onState(callback: (event: UpdateStateEvent) => void): void;
 }
 
+/** UI-language bridge (localization round 2026-10-27): the main window
+ *  resolves the setting and pushes the result; main re-labels the tray and
+ *  window titles and broadcasts flips to EVERY renderer (the toast and
+ *  pop-out windows run without bootstrapApp, so their only language source
+ *  is this bridge). */
+export interface I18nBridge {
+  /** Renderer → main: the resolved language ("en" | "ru"). */
+  sync(lang: string): void;
+  /** The aux windows' startup value (main knows the last synced language). */
+  get(): Promise<string>;
+  /** Main → every window: the language flipped (single listener slot). */
+  onLanguage(callback: (lang: string) => void): void;
+}
+
 declare global {
   interface Window {
     spaceCapture?: CaptureBridge;
@@ -368,5 +382,6 @@ declare global {
     spaceTls?: TlsCertBridge;
     spaceProvisioning?: ProvisioningBridge;
     spaceUpdates?: UpdatesBridge;
+    spaceI18n?: I18nBridge;
   }
 }

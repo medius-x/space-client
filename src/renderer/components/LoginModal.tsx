@@ -7,6 +7,7 @@ import { parseInviteLink } from "../../domain/logic/invite-link";
 import { Modal } from "./Modal";
 import { PasswordInput } from "./PasswordInput";
 import { ProvisioningPanel } from "./ProvisioningPanel";
+import { useT } from "../hooks/useT";
 
 /**
  * The add-server dialog as a MODAL over the always-present main window (oak's Add
@@ -24,6 +25,7 @@ import { ProvisioningPanel } from "./ProvisioningPanel";
  * button re-runs the attempt registered here via `tlsRetry`.
  */
 export function LoginModal(): React.JSX.Element {
+  const t = useT();
   const error = useStore(appStore, (state) => state.loginError);
   const busy = useStore(appStore, (state) => state.loginBusy);
   const prefill = useStore(appStore, (state) => state.loginPrefill);
@@ -46,7 +48,7 @@ export function LoginModal(): React.JSX.Element {
     const attempt = () => {
       const normalized = normalizeHostUrl(serverUrl);
       if (!isValidHostUrl(normalized)) {
-        appStore.patch({ loginError: "Server address must start with http:// or https://." });
+        appStore.patch({ loginError: t("login.errAddress") });
         return;
       }
       void startSession(normalized, "login", username.trim(), password);
@@ -65,8 +67,8 @@ export function LoginModal(): React.JSX.Element {
       if (parsedInviteLink === null) {
         appStore.patch({
           loginError: inviteLink.trim().length === 0
-            ? "Paste an invite link to register."
-            : "That invite link does not look valid.",
+            ? t("login.errInviteEmpty")
+            : t("login.errInviteInvalid"),
         });
         return;
       }
@@ -80,11 +82,11 @@ export function LoginModal(): React.JSX.Element {
   };
 
   return (
-    <Modal title="Add a server" onClose={closeLoginForm} locked={provisionRunning}>
+    <Modal title={t("rail.addServer")} onClose={closeLoginForm} locked={provisionRunning}>
       <div className="settings-tabs login-tabs">
-        <button disabled={provisionBusy} className={"settings-tab" + (tab === "create" ? " active" : "")} onClick={() => setTab("create")}>Create</button>
-        <button disabled={provisionBusy} className={"settings-tab" + (tab === "login" ? " active" : "")} onClick={() => setTab("login")}>Log in</button>
-        <button disabled={provisionBusy} className={"settings-tab" + (tab === "register" ? " active" : "")} onClick={() => setTab("register")}>Register</button>
+        <button disabled={provisionBusy} className={"settings-tab" + (tab === "create" ? " active" : "")} onClick={() => setTab("create")}>{t("login.tab.create")}</button>
+        <button disabled={provisionBusy} className={"settings-tab" + (tab === "login" ? " active" : "")} onClick={() => setTab("login")}>{t("login.tab.login")}</button>
+        <button disabled={provisionBusy} className={"settings-tab" + (tab === "register" ? " active" : "")} onClick={() => setTab("register")}>{t("login.tab.register")}</button>
       </div>
       {/* The Create panel stays MOUNTED (hidden, not unmounted) while other
           tabs are open: an in-flight run keeps its step screen and listeners
@@ -95,65 +97,65 @@ export function LoginModal(): React.JSX.Element {
       {tab === "login" ? (
         <>
           <label className="settings-field">
-            <span>Server address</span>
-            <input type="url" value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} placeholder="https://server.host (localhost defaults to http)" autoFocus />
+            <span>{t("login.serverAddress")}</span>
+            <input type="url" value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} placeholder={t("login.addressPlaceholder")} autoFocus />
           </label>
           <label className="settings-field">
-            <span>Username</span>
-            <input type="text" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="Username" autoComplete="username" />
+            <span>{t("login.username")}</span>
+            <input type="text" value={username} onChange={(event) => setUsername(event.target.value)} placeholder={t("login.username")} autoComplete="username" />
           </label>
           <label className="settings-field">
-            <span>Password</span>
+            <span>{t("login.password")}</span>
             <PasswordInput
               value={password}
               onChange={setPassword}
               onEnter={submitLogin}
-              placeholder="Password (8+ chars)"
+              placeholder={t("login.passwordPlaceholder")}
               autoComplete="current-password"
             />
           </label>
           <div className="error-line">{error ?? ""}</div>
           <div className="modal-actions">
-            <button className="ghost" disabled={busy} onClick={closeLoginForm}>Cancel</button>
+            <button className="ghost" disabled={busy} onClick={closeLoginForm}>{t("common.cancel")}</button>
             <button className="primary" disabled={busy} onClick={submitLogin}>
-              {busy ? "Connecting…" : "Log in"}
+              {busy ? t("login.connecting") : t("serverMenu.logIn")}
             </button>
           </div>
         </>
       ) : tab === "register" ? (
         <>
           <label className="settings-field">
-            <span>Invite link</span>
+            <span>{t("login.inviteLink")}</span>
             <input type="text" value={inviteLink} onChange={(event) => setInviteLink(event.target.value)} placeholder="https://server.host/#invite=…" autoFocus />
           </label>
           {parsedInviteLink !== null ? (
             // The address rides the link — confirm where the registration goes, no separate field.
-            <div className="settings-hint">Server: {parsedInviteLink.origin}</div>
+            <div className="settings-hint">{t("login.serverOrigin", { origin: parsedInviteLink.origin })}</div>
           ) : null}
           <label className="settings-field">
-            <span>Nickname</span>
-            <input type="text" value={nickname} maxLength={32} onChange={(event) => setNickname(event.target.value)} placeholder="Same as username if empty" />
+            <span>{t("settings.nicknameHeader")}</span>
+            <input type="text" value={nickname} maxLength={32} onChange={(event) => setNickname(event.target.value)} placeholder={t("login.nicknamePlaceholder")} />
           </label>
           <label className="settings-field">
-            <span>Username</span>
-            <input type="text" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="Username" autoComplete="username" />
+            <span>{t("login.username")}</span>
+            <input type="text" value={username} onChange={(event) => setUsername(event.target.value)} placeholder={t("login.username")} autoComplete="username" />
           </label>
           <label className="settings-field">
-            <span>Password</span>
+            <span>{t("login.password")}</span>
             <PasswordInput
               value={password}
               onChange={setPassword}
               onEnter={submitRegister}
-              placeholder="Password (8+ chars)"
+              placeholder={t("login.passwordPlaceholder")}
               autoComplete="new-password"
             />
           </label>
-          <div className="settings-hint">Ask a member with the "Manage Members" permission for an invite link.</div>
+          <div className="settings-hint">{t("login.inviteHint")}</div>
           <div className="error-line">{error ?? ""}</div>
           <div className="modal-actions">
-            <button className="ghost" disabled={busy} onClick={closeLoginForm}>Cancel</button>
+            <button className="ghost" disabled={busy} onClick={closeLoginForm}>{t("common.cancel")}</button>
             <button className="primary" disabled={busy} onClick={submitRegister}>
-              {busy ? "Connecting…" : "Register"}
+              {busy ? t("login.connecting") : t("login.registerVerb")}
             </button>
           </div>
         </>

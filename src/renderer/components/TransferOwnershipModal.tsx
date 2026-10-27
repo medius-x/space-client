@@ -4,6 +4,7 @@ import type { ConnectionSession } from "../../domain/session/connection-session"
 import { isOutgoingPending, transferCandidates } from "../../domain/logic/ownership-transfer";
 import { Avatar } from "./Avatar";
 import { Modal } from "./Modal";
+import { useT } from "../hooks/useT";
 
 /** The dialog's stage machine (user decision, smoke round): cancelling a live offer
  *  and transferring are FIRST-CLASS separate steps — re-offering to someone else
@@ -28,6 +29,7 @@ export function TransferOwnershipModal({ session, preselectedUserId, onClose }: 
   preselectedUserId?: number | null;
   onClose: () => void;
 }): React.JSX.Element {
+  const t = useT();
   const members = useStore(session.memberStore, (state) => state.members);
   const pending = useStore(session.ownershipStore, (state) => state.pending);
   const selfUserId = session.selfUserId();
@@ -85,13 +87,13 @@ export function TransferOwnershipModal({ session, preselectedUserId, onClose }: 
     members.find((member) => member.userId === userId)?.nickname ?? "#unknown";
 
   return (
-    <Modal title="Transfer ownership" onClose={onClose} elevated>
+    <Modal title={t("serverSettings.transferOwnership")} onClose={onClose} elevated>
       {stage.kind === "cancel" && outgoing !== null ? (
         <>
           <div className="modal-note">
             {stage.thenTransferTo !== null
-              ? `You already have a pending transfer to ${nameOf(outgoing.toUserId)}. Cancel it first?`
-              : `Cancel the pending ownership transfer to ${nameOf(outgoing.toUserId)}?`}
+              ? t("ownership.pendingTo", { name: nameOf(outgoing.toUserId) })
+              : t("ownership.cancelPending", { name: nameOf(outgoing.toUserId) })}
           </div>
           <div className="error-line">{error ?? ""}</div>
           <div className="modal-actions left">
@@ -99,35 +101,31 @@ export function TransferOwnershipModal({ session, preselectedUserId, onClose }: 
                 (nothing is cancelled, nothing new goes out); on a plain cancel dialog
                 it just closes. */}
             <button className="ghost" disabled={busy} onClick={onClose}>
-              {stage.thenTransferTo !== null ? "Keep current transfer" : "Close"}
+              {stage.thenTransferTo !== null ? t("ownership.keepCurrent") : t("common.close")}
             </button>
             <button className="danger" disabled={busy} onClick={() => void cancelThenContinue()}>
-              {stage.thenTransferTo !== null ? "Cancel & continue" : "Cancel transfer"}
+              {stage.thenTransferTo !== null ? t("ownership.cancelAndContinue") : t("ownership.cancelTransfer")}
             </button>
           </div>
         </>
       ) : stage.kind === "confirm" ? (
         <>
           <div className="modal-note">
-            {`Transfer the ownership of this server to ${nameOf(stage.targetUserId)}?`}
+            {t("ownership.confirmNote", { name: nameOf(stage.targetUserId) })}
           </div>
-          <div className="modal-note ownership-warning">
-            You will lose the owner role. Only the new owner can transfer it back.
-          </div>
+          <div className="modal-note ownership-warning">{t("ownership.warning")}</div>
           <div className="error-line">{error ?? ""}</div>
           <div className="modal-actions left">
-            <button className="ghost" onClick={onClose}>Cancel</button>
-            <button className="primary" disabled={busy} onClick={() => void offer(stage.targetUserId)}>Transfer</button>
+            <button className="ghost" onClick={onClose}>{t("common.cancel")}</button>
+            <button className="primary" disabled={busy} onClick={() => void offer(stage.targetUserId)}>{t("ownership.transferVerb")}</button>
           </div>
         </>
       ) : (
         <>
-          <div className="modal-note">
-            Pick the member who will receive the ownership offer.
-          </div>
+          <div className="modal-note">{t("ownership.pickHint")}</div>
           <div className="friend-picker-list">
             {transferCandidates(members, selfUserId ?? -1).length === 0 ? (
-              <div className="settings-empty">No other members.</div>
+              <div className="settings-empty">{t("ownership.noOthers")}</div>
             ) : transferCandidates(members, selfUserId ?? -1).map((member) => (
               <div
                 key={member.userId}
@@ -141,13 +139,13 @@ export function TransferOwnershipModal({ session, preselectedUserId, onClose }: 
           </div>
           <div className="error-line">{error ?? ""}</div>
           <div className="modal-actions left">
-            <button className="ghost" onClick={onClose}>Close</button>
+            <button className="ghost" onClick={onClose}>{t("common.close")}</button>
             <button className="primary" disabled={picked === null} onClick={() => {
               if (picked !== null) {
                 setStage({ kind: "confirm", targetUserId: picked });
               }
             }}>
-              Continue
+              {t("voice.continueVerb")}
             </button>
           </div>
         </>

@@ -381,4 +381,13 @@ describe("expression-pack report builders", () => {
       "Exported 2 emojis and 0 stickers to two.zip · 2 files were unavailable and skipped",
     );
   });
+
+  it("renders the RU import/export reports", () => {
+    expect(
+      formatImportReport({ imported: 38, skippedNames: 3, skippedLimits: 2, invalid: 1, failed: 1 }, 2, "ru"),
+    ).toBe("Импортировано: 38, пропущено 3 (имя занято), 2 пропущено (лимит), некорректных: 1, не удалось: 1 · создано 2 пака");
+    expect(
+      formatExportReport({ emojis: 38, stickers: 45, packs: 3, unavailable: 1, fileName: "cats.zip" }, "ru"),
+    ).toBe("Экспортировано 38 эмодзи и 45 стикеров (3 пака) в файл cats.zip · 1 файл был недоступен и пропущен");
+  });
 });

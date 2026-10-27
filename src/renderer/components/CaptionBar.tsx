@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useT } from "../hooks/useT";
 
 /**
  * The borderless-window caption (oak's WindowChrome): a 32px #1e1f22 bar with
@@ -10,6 +11,7 @@ import { useEffect, useState } from "react";
  * window and the share pop-out (subtitle "Screen share").
  */
 export function CaptionBar({ subtitle }: { subtitle?: string }): React.JSX.Element {
+  const t = useT();
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
@@ -26,13 +28,13 @@ export function CaptionBar({ subtitle }: { subtitle?: string }): React.JSX.Eleme
         {subtitle === undefined ? null : <span className="caption-subtitle">{subtitle}</span>}
       </span>
       <div className="caption-buttons">
-        <button className="caption-button" title="Minimize" onClick={() => window.spaceWindow?.minimize()}>
+        <button className="caption-button" title={t("window.minimize")} onClick={() => window.spaceWindow?.minimize()}>
           <span className="icon mdi-window-minimize" />
         </button>
-        <button className="caption-button" title={maximized ? "Restore" : "Maximize"} onClick={() => window.spaceWindow?.toggleMaximize()}>
+        <button className="caption-button" title={maximized ? t("window.restore") : t("window.maximize")} onClick={() => window.spaceWindow?.toggleMaximize()}>
           <span className={"icon " + (maximized ? "mdi-window-restore" : "mdi-window-maximize")} />
         </button>
-        <button className="caption-button close" title="Close" onClick={() => window.spaceWindow?.close()}>
+        <button className="caption-button close" title={t("common.close")} onClick={() => window.spaceWindow?.close()}>
           <span className="icon mdi-close" />
         </button>
       </div>

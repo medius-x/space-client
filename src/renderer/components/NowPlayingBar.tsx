@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { useStore } from "../hooks/useStore";
 import type { ConnectionSession } from "../../domain/session/connection-session";
+import { useT } from "../hooks/useT";
 
 function formatClock(totalSeconds: number): string {
   const seconds = Math.max(0, Math.floor(totalSeconds));
@@ -11,6 +12,7 @@ function formatClock(totalSeconds: number): string {
  *  oak's bar: play/pause, title, seek (disabled until the duration lands),
  *  clock, a volume slider with a 0 ↔ last-positive MUTE toggle, close. */
 export function NowPlayingBar({ session }: { session: ConnectionSession }): React.JSX.Element | null {
+  const t = useT();
   const state = useStore(session.playback, (current) => current);
   const lastPositiveVolumeRef = useRef(state.volume > 0 ? state.volume : 1);
   if (state.key === null) {
@@ -21,7 +23,7 @@ export function NowPlayingBar({ session }: { session: ConnectionSession }): Reac
     <div className="now-playing">
       <button
         className="ghost icon-button"
-        title={state.playing ? "Pause" : "Play"}
+        title={state.playing ? t("playback.pause") : t("playback.play")}
         onClick={() => {
           if (state.playing) {
             session.playback.pause();
@@ -58,12 +60,12 @@ export function NowPlayingBar({ session }: { session: ConnectionSession }): Reac
       />
       <button
         className="ghost icon-button"
-        title={state.volume === 0 ? "Unmute" : "Mute"}
+        title={state.volume === 0 ? t("playback.unmute") : t("playback.mute")}
         onClick={() => session.playback.setVolume(state.volume === 0 ? lastPositiveVolumeRef.current : 0)}
       >
         <span className={"icon " + (state.volume === 0 ? "mdi-volume-off" : "mdi-volume-high")} />
       </button>
-      <button className="ghost icon-button" title="Stop" onClick={() => session.playback.stop()}>
+      <button className="ghost icon-button" title={t("playback.stop")} onClick={() => session.playback.stop()}>
         <span className="icon mdi-close" />
       </button>
     </div>

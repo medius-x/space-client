@@ -143,4 +143,13 @@ describe("formatTtlWords", () => {
     expect(formatTtlWords(Number.NaN)).toBe("0 min");
     expect(formatTtlWords(Number.POSITIVE_INFINITY)).toBe("0 min");
   });
+
+  it("renders the RU unit suffixes", () => {
+    expect(formatTtlWords(45, "ru")).toBe("45 мин");
+    expect(formatTtlWords(90, "ru")).toBe("1 ч 30 мин");
+    expect(formatTtlWords(43200, "ru")).toBe("30 д");
+    expect(formatExpiresIn(minutesFromNow(45), NOW, "ru")).toBe("45мин");
+    expect(formatExpiresIn(minutesFromNow((2 * 24 + 5) * 60), NOW, "ru")).toBe("2д 5ч");
+    expect(formatExpiresIn(minutesFromNow(0), NOW, "ru")).toBe("истёк");
+  });
 });

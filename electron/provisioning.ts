@@ -20,6 +20,7 @@ import {
   type ProvisioningTransport,
 } from "../src/domain/provisioning/pipeline";
 import { validateProvisioningParams, type ProvisioningParams } from "../src/domain/provisioning/params";
+import { currentLang, tf, type MessageKey, type TranslateParams } from "../src/domain/i18n/i18n";
 
 export type ProvisioningIpcEvent =
   | { kind: "step"; stage: ProvisioningStage | "connect" | "download"; state: "start" | "done" | "log" | "failed"; detail?: string; progress?: string }
@@ -420,8 +421,11 @@ export async function startProvisioningRun(params: ProvisioningParams, hooks: Pr
 
     templateWarningSink = hooks.log;
     const files: ProvisioningFiles = { ...readTemplates(), jarLocalPath: jarSource.localPath };
+    // The step-detail translator reads the CURRENT main-process language, so a
+    // language flip mid-run recolors the steps that have not fired yet.
+    const translate = (key: MessageKey, translateParams?: TranslateParams): string => tf(currentLang(), key, translateParams);
     const outcome = await runProvisioningPipeline(transport, params, files, stepEmit, (bytes) =>
-      crypto.randomBytes(bytes).toString("hex"),
+      crypto.randomBytes(bytes).toString("hex"), translate,
     );
     hooks.onSucceeded(outcome);
     emit({ kind: "succeeded", outcome });

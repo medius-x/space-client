@@ -2,8 +2,10 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../hooks/useStore";
 import { useAttachmentImage } from "../hooks/useAttachmentImage";
 import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
+import { useT } from "../hooks/useT";
+import { currentLang, type Translator } from "../../domain/i18n/i18n";
 import { warmLegacyAttachmentDims } from "../media-dims-warmup";
-import { bodyGlyphWidthPx } from "../glyph-metrics";
+import { bodyGlyphWidthPx, truncateTextToWidth } from "../glyph-metrics";
 import { ackActiveChannel, appStore, forwardCrossInstance, forwardRequestUpload, forwardUploadBytes } from "../runtime";
 import { closeDiscussionForEveryone, closeDiscussionView, openDiscussion, openDraftDiscussion } from "../runtime";
 import { connectionDirectory, settingsStore } from "../runtime";
@@ -173,6 +175,7 @@ function replyPreviewOf(message: Message): string {
 const EMPTY_MESSAGES: readonly Message[] = [];
 
 export function ChatPane({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const t = useT();
   const channels = useStore(session.channelStore, (channels) => channels);
   const activeChannelId = useStore(appStore, (state) => state.activeChannelId);
   const dmMode = useStore(appStore, (state) => state.dmMode);
@@ -483,9 +486,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
     return (
       <div className="chat-pane">
         <div className="chat-empty">
-          {anyVisible
-            ? "You have no permission to watch this chat."
-            : "No text channel — pick one in the sidebar or create it with +."}
+          {anyVisible ? t("chat.noPermission") : t("chat.noTextChannel")}
         </div>
       </div>
     );
@@ -533,6 +534,9 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
         addStagedFiles(files);
       }}
     >
+      {/* The drag-over hint lives in JSX (not a CSS content: string) so it
+          follows the UI language — greppable, no attr(data-) indirection. */}
+      {dragOver ? <div className="chat-drop-overlay">{t("chat.dropFiles")}</div> : null}
       <div className="chat-header">
         {dm === null
           ? <span className="icon mdi-pound" />
@@ -540,9 +544,9 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
         {" "}{viewChannel.name}
         {selectionMode ? (
           <div className="selection-bar">
-            <span>{selection.size} selected</span>
+            <span>{t("chat.selectedCount", { count: selection.size })}</span>
             <button className="ghost" disabled={selection.size === 0}
-              onClick={() => setForwardQueue(messages.filter((message) => selection.has(message.id)))}>Forward</button>
+              onClick={() => setForwardQueue(messages.filter((message) => selection.has(message.id)))}>{t("chat.forwardVerb")}</button>
             <button className="danger" disabled={selection.size === 0}
               onClick={() => {
                 for (const messageId of selection) {
@@ -551,8 +555,8 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
                   });
                 }
                 exitSelection();
-              }}>Delete</button>
-            <button className="ghost" onClick={exitSelection}>Cancel</button>
+              }}>{t("common.delete")}</button>
+            <button className="ghost" onClick={exitSelection}>{t("common.cancel")}</button>
           </div>
         ) : null}
       </div>
@@ -593,9 +597,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
       ) : null}
       <NowPlayingBar session={session} />
       {isDiscussionDraft ? (
-        <div className="discussion-draft-hint">
-          The discussion starts with your first message — nothing is created until you send it.
-        </div>
+        <div className="discussion-draft-hint">{t("chat.discussionDraftHint")}</div>
       ) : (
         <MessageList
           session={session}
@@ -613,7 +615,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
       )}
       {replyTo !== null ? (
         <div className="reply-bar">
-          <span>Replying to <strong>@{nameOf(replyTo.authorUsername)}</strong></span>
+          <span>{t("chat.replyingTo")} <strong>@{nameOf(replyTo.authorUsername)}</strong></span>
           <span className="reply-preview">{replyPreviewOf(replyTo)}</span>
           <button className="ghost" onClick={() => setReplyTo(null)}>×</button>
         </div>
@@ -633,7 +635,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
           {uploading ? (
             <div className="staging-row spinner-row">
               <span className="icon mdi-refresh" />
-              <span className="file-name">Uploading…</span>
+              <span className="file-name">{t("chat.uploading")}</span>
             </div>
           ) : null}
           {capNote !== null ? <div className="staging-skip-note">{capNote}</div> : null}
@@ -649,7 +651,9 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
       {permissions !== null && permissions.sendMessages ? (
         <Composer
           session={session}
-          placeholder={`Message ${chatTitlePrefix}${viewChannel.name}${permissions.attachFiles ? " — paste or drop files to attach" : ""}`}
+          placeholder={t("chat.messagePlaceholder", {
+            channel: `${chatTitlePrefix}${viewChannel.name}`,
+          }) + (permissions.attachFiles ? t("chat.placeholderAttachSuffix") : "")}
           attachEnabled={permissions.attachFiles}
           allowEmptySend={staged.length > 0}
           focusSignal={composerFocusSignal}
@@ -717,7 +721,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
             isDm: dm !== null,
             canStartDiscussion: dm === null && openDiscussionEntry === null && (channelPermissions?.sendMessages ?? false),
             canReact: dm !== null || session.permissionStore.can("ADD_REACTIONS"),
-          })}
+          }, t)}
           onClose={() => setMenu(null)}
         />
       ) : null}
@@ -731,7 +735,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
           }}
         >
           {reactedBy.names.length === 0 ? (
-            <div className="reacted-by-name">Nobody yet</div>
+            <div className="reacted-by-name">{t("chat.nobodyYet")}</div>
           ) : (
             reactedBy.names.map((name) => <div key={name} className="reacted-by-name">{name}</div>)
           )}
@@ -752,7 +756,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
           <input
             className="picker-search"
             type="text"
-            placeholder="Search reactions"
+            placeholder={t("picker.searchReactions")}
             value={reactionQuery}
             onChange={(event) => setReactionQuery(event.target.value)}
             onKeyDown={(event) => {
@@ -764,12 +768,12 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
           />
           <div className="picker-body">
             {recentEntries.length === 0 && builtInMatches.length === 0 && customMatches.length === 0 ? (
-              <div className="picker-empty">Nothing matches.</div>
+              <div className="picker-empty">{t("picker.nothingMatches")}</div>
             ) : (
               <>
                 {recentEntries.length > 0 ? (
                   <div className="picker-section">
-                    <div className="picker-section-title">Latest</div>
+                    <div className="picker-section-title">{t("picker.latest")}</div>
                     <div className="expression-tile-grid">
                       {recentEntries.map((entry) => (
                         <RecentExpressionTile
@@ -784,7 +788,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
                 ) : null}
                 {builtInMatches.length > 0 ? (
                   <div className="picker-section">
-                    <div className="picker-section-title">Built-in</div>
+                    <div className="picker-section-title">{t("picker.builtIn")}</div>
                     <div className="expression-tile-grid">
                       {builtInMatches.map((entry) => (
                         <BuiltInEmojiTile
@@ -798,7 +802,7 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
                 ) : null}
                 {customMatches.length > 0 ? (
                   <div className="picker-section">
-                    <div className="picker-section-title">Custom</div>
+                    <div className="picker-section-title">{t("picker.custom")}</div>
                     <div className="emoji-tile-grid">
                       {customMatches.map((emoji) => (
                         <EmojiTile
@@ -820,30 +824,28 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
         <ForwardDialog session={session} source={forwardQueue} sourceChannel={viewChannel} onClose={() => setForwardQueue(null)} />
       ) : null}
       {deleteTarget !== null ? (
-        <Modal title="Delete message?" onClose={() => setDeleteTarget(null)}>
-          <div className="modal-note">This cannot be undone.</div>
+        <Modal title={t("chat.deleteMessageTitle")} onClose={() => setDeleteTarget(null)}>
+          <div className="modal-note">{t("chat.cannotBeUndone")}</div>
           <div className="modal-actions">
-            <button className="ghost" onClick={() => setDeleteTarget(null)}>Cancel</button>
+            <button className="ghost" onClick={() => setDeleteTarget(null)}>{t("common.cancel")}</button>
             <button className="danger" onClick={() => {
               void session.deleteMessage(deleteTarget.channelId, deleteTarget.id).catch((error: unknown) => {
                 log.warn("chat", `delete message ${deleteTarget.id} failed: ${error instanceof Error ? error.message : String(error)}`);
               });
               setDeleteTarget(null);
-            }}>Delete</button>
+            }}>{t("common.delete")}</button>
           </div>
         </Modal>
       ) : null}
       {closeDiscussionTarget !== null ? (
-        <Modal title="Close discussion?" onClose={() => setCloseDiscussionTarget(null)}>
-          <div className="modal-note">
-            This closes the discussion for everyone and permanently removes its messages.
-          </div>
+        <Modal title={t("chat.closeDiscussionTitle")} onClose={() => setCloseDiscussionTarget(null)}>
+          <div className="modal-note">{t("chat.closeDiscussionNote")}</div>
           <div className="modal-actions">
-            <button className="ghost" onClick={() => setCloseDiscussionTarget(null)}>Cancel</button>
+            <button className="ghost" onClick={() => setCloseDiscussionTarget(null)}>{t("common.cancel")}</button>
             <button className="danger" onClick={() => {
               closeDiscussionForEveryone(closeDiscussionTarget.id);
               setCloseDiscussionTarget(null);
-            }}>Close</button>
+            }}>{t("chat.closeVerb")}</button>
           </div>
         </Modal>
       ) : null}
@@ -863,6 +865,7 @@ function messageMenuItems(
     canStartDiscussion: boolean;
     canReact: boolean;
   },
+  t: Translator,
 ): ContextMenuItem[] {
   const ownUsername = session.username();
   const canManageMessages = session.permissionStore.can("MANAGE_MESSAGES");
@@ -874,13 +877,13 @@ function messageMenuItems(
     return message.delivery === "failed"
       ? [
         {
-          label: "Retry",
+          label: t("chat.retry"),
           action: () => {
             void session.retryPendingMessage(message.channelId, message.id);
           },
         },
         {
-          label: "Remove",
+          label: t("common.remove"),
           danger: true,
           action: () => {
             session.discardPendingMessage(message.channelId, message.id);
@@ -894,17 +897,17 @@ function messageMenuItems(
   // ADD_REACTIONS must not see a context-menu path the server will 403 (live
   // report: the menu item opened the picker, the pick silently did nothing).
   if (extra.canReact) {
-    items.push({ label: "Add reaction…", action: extra.openPicker });
+    items.push({ label: t("chat.addReaction"), action: extra.openPicker });
   }
-  items.push({ label: "Reply", action: () => actions.setReplyTo(message) });
+  items.push({ label: t("chat.reply"), action: () => actions.setReplyTo(message) });
   if ((message.content?.length ?? 0) > 0) {
-    items.push({ label: "Copy text", action: () => void navigator.clipboard.writeText(message.content ?? "").catch(() => undefined) });
+    items.push({ label: t("chat.copyText"), action: () => void navigator.clipboard.writeText(message.content ?? "").catch(() => undefined) });
   }
   // Discord's pin gate: MANAGE_MESSAGES on server channels, ANY participant in a DM
   // (the server's DM branch enforces the same). A 400 means the per-channel cap.
   if (extra.isDm || canManageMessages) {
     items.push({
-      label: message.pinned ? "Unpin" : "Pin",
+      label: message.pinned ? t("chat.unpin") : t("chat.pin"),
       action: () => {
         const request = message.pinned
           ? session.unpinMessage(message.channelId, message.id)
@@ -926,23 +929,23 @@ function messageMenuItems(
   if (extra.canStartDiscussion) {
     const existing = session.discussionsStore.byOrigin(message.id);
     if (existing !== undefined) {
-      items.push({ label: "Open discussion", action: () => openDiscussion(existing) });
+      items.push({ label: t("chat.openDiscussion"), action: () => openDiscussion(existing) });
     } else {
       items.push({
-        label: "Start a discussion",
+        label: t("chat.startDiscussion"),
         action: () => openDraftDiscussion({ channelId: message.channelId, messageId: message.id }),
       });
     }
   }
   if (message.authorUsername === ownUsername) {
-    items.push({ label: "Edit", action: () => actions.beginEdit(message) });
+    items.push({ label: t("chat.edit"), action: () => actions.beginEdit(message) });
   }
-  items.push({ label: "Forward", action: () => actions.beginForward([message]) });
+  items.push({ label: t("chat.forwardVerb"), action: () => actions.beginForward([message]) });
   if (!actions.selectionMode) {
-    items.push({ label: "Select messages", action: extra.beginSelection });
+    items.push({ label: t("chat.selectMessages"), action: extra.beginSelection });
   }
   if (message.authorUsername === ownUsername || canManageMessages) {
-    items.push({ label: "Delete", danger: true, action: extra.confirmDelete });
+    items.push({ label: t("common.delete"), danger: true, action: extra.confirmDelete });
   }
   return items;
 }
@@ -973,6 +976,7 @@ interface MessageListProps {
 // list's own props are unchanged.
 const MessageList = memo(function MessageList(props: MessageListProps): React.JSX.Element {
   const { session, channel, messages, aroundTarget, actions, editing } = props;
+  const t = useT();
   const listRef = useRef<VirtualListHandle | null>(null);
   const nearBottomRef = useRef(true);
   const loadingOlderRef = useRef(false);
@@ -1403,7 +1407,7 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
       }
       if (!session.messageStore.listFor(channel.id).some((message) => message.id === messageId)) {
         pendingJumpRef.current = null; // the backfill cap gave up — say so (oak's toast)
-        notifications.showToast({ title: "space", channelName: "", body: "Message is too far back to jump to" });
+        notifications.showToast({ title: "space", channelName: "", body: t("chat.tooFarBack") });
       }
     })().catch((error: unknown) => {
       log.warn("chat", `jump-to backfill (message ${messageId}) failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -1505,12 +1509,12 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
       renderItem={(message, index) => (
         <>
           {index === 0 && beginReached ? (
-            <div className="begin-marker">Beginning of history</div>
+            <div className="begin-marker">{t("chat.beginningOfHistory")}</div>
           ) : null}
           {index === dividerIndex ? (
             <div
               className="new-messages-divider"
-              title="Jump to the first unread message"
+              title={t("chat.jumpToFirstUnread")}
               onClick={(event) => {
                 event.stopPropagation();
                 const firstUnread = messages[dividerIndex];
@@ -1519,7 +1523,7 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
                 }
               }}
             >
-              <span>↓ New messages ↓</span>
+              <span>↓ {t("chat.newMessages")} ↓</span>
             </div>
           ) : null}
           <MessageRow
@@ -1544,7 +1548,7 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
       {(scrolledUp || jumpToPresent) && messages.length > 0 ? (
         <button
           className="chat-scroll-down"
-          title="Jump to the latest messages"
+          title={t("chat.jumpToLatest")}
           onClick={() => {
             if (belowEndRef.current) {
               // An id-unknown gap sits below — only a tail reload truly lands
@@ -1693,6 +1697,7 @@ function InlineSticker({ session, sticker }: {
  */
 const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.Element {
   const { session, channel, message, startsGroup, editing, highlighted, selected, actions } = props;
+  const t = useT();
   const [draft, setDraft] = useState(message.content ?? "");
   /** Image keys marked for removal in the editor (oak's markedAttachmentKeys). */
   const [removedKeys, setRemovedKeys] = useState<ReadonlySet<string>>(new Set());
@@ -1799,10 +1804,10 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
           images exist, and the pending-removal count once something is marked. */}
       <div className="inline-editor-hint">
         {removedKeys.size > 0
-          ? `${removedKeys.size} image${removedKeys.size > 1 ? "s" : ""} will be removed · enter to save · esc to cancel`
+          ? t("chat.editHintRemoving", { count: removedKeys.size })
           : message.attachments.some((attachment) => isImageFile(attachment.fileName))
-            ? "enter to save · esc to cancel · click × to remove an image"
-            : "enter to save · esc to cancel"}
+            ? t("chat.editHintWithImages")
+            : t("chat.editHint")}
       </div>
     </>
   ) : (
@@ -1829,7 +1834,7 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
               ? <InlineEmoji key={segmentIndex} session={session} name={segment.name} large={segmented.emojiOnly} />
               : <span key={segmentIndex}>{segment.text}</span>,
       )}
-      {message.editedAt !== null ? <span className="message-edited">(edited)</span> : null}
+      {message.editedAt !== null ? <span className="message-edited">{t("chat.edited")}</span> : null}
     </div>
   );
   const attachmentView = (
@@ -1871,7 +1876,7 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
           {canPin ? (
             <button
               className="hover-button"
-              title={message.pinned ? "Unpin" : "Pin"}
+              title={message.pinned ? t("chat.unpin") : t("chat.pin")}
               onClick={(event) => {
                 event.stopPropagation();
                 const request = message.pinned
@@ -1891,7 +1896,7 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
           ) : null}
           <button
             className="hover-button"
-            title="Forward"
+            title={t("chat.forwardVerb")}
             onClick={(event) => {
               event.stopPropagation();
               actions.beginForward([message]);
@@ -1901,7 +1906,7 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
           </button>
           <button
             className="hover-button"
-            title="Reply"
+            title={t("chat.reply")}
             onClick={(event) => {
               event.stopPropagation();
               actions.setReplyTo(message);
@@ -1912,7 +1917,7 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
           {canReact ? (
             <button
               className="hover-button"
-              title="Add reaction"
+              title={t("chat.addReactionHover")}
               onClick={(event) => {
                 event.stopPropagation();
                 const rect = event.currentTarget.getBoundingClientRect();
@@ -1927,19 +1932,19 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
       {startsGroup ? (
         <Avatar session={session} username={message.authorUsername} size={40} />
       ) : (
-        <div className="message-gutter">{formatTimeOfDay(toEpochMs(message.createdAt))}</div>
+        <div className="message-gutter">{formatTimeOfDay(toEpochMs(message.createdAt), currentLang())}</div>
       )}
       <div className="message-body">
         {startsGroup ? (
           <div className="message-meta">
             <span className="message-author" style={{ color: props.authorColor(message.authorUsername) ?? undefined }}>{nameOf(message.authorUsername)}</span>
-            <span className="message-time">{formatHeaderStamp(toEpochMs(message.createdAt), Date.now(), relativeDates)}</span>
+            <span className="message-time">{formatHeaderStamp(toEpochMs(message.createdAt), Date.now(), relativeDates, currentLang())}</span>
             {message.delivery === "failed" ? (
               // The optimistic send's ONLY visible state (user decision: no
               // "sending" marker) — Discord's red retry glyph on the row.
               <span
                 className="message-failed-glyph icon mdi-alert"
-                title="Failed to send — right-click to retry or remove"
+                title={t("chat.failedToSend")}
               />
             ) : null}
           </div>
@@ -1995,7 +2000,7 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
         {props.discussion !== undefined ? (
           <button
             className="message-discussion-tile"
-            title="Open the discussion on this message"
+            title={t("chat.openDiscussionOnMessage")}
             onClick={(event) => {
               event.stopPropagation();
               openDiscussion(props.discussion!);
@@ -2041,6 +2046,7 @@ function DiscussionOriginPanel({ session, discussion, originFull, onCloseRequest
   onPicker(state: { message: Message; x: number; y: number }): void;
   onReactedBy(state: { x: number; y: number; names: readonly string[] }): void;
 }): React.JSX.Element | null {
+  const t = useT();
   const rosterUsers = useStore(session.rosterStore, (state) => state.users);
   const trackedVersion = useStore(session.discussionsStore, (store) => store.version);
   void trackedVersion; // the row below is read imperatively; this re-renders on flips
@@ -2079,25 +2085,25 @@ function DiscussionOriginPanel({ session, discussion, originFull, onCloseRequest
     return (
       <>
         <div className="discussion-origin-panel">
-          <button className="discussion-origin-back" title="Back to the channel" onClick={() => closeDiscussionView()}>
+          <button className="discussion-origin-back" title={t("chat.backToChannel")} onClick={() => closeDiscussionView()}>
             <span className="icon mdi-arrow-left" />
           </button>
           <div className="discussion-origin-body" />
-          <div className="discussion-origin-draft-tag">draft</div>
+          <div className="discussion-origin-draft-tag">{t("chat.draftTag")}</div>
         </div>
         {fullRow}
       </>
     );
   }
   const originTime = row.originCreatedAt !== null
-    ? formatHeaderStamp(new Date(row.originCreatedAt).getTime(), Date.now())
+    ? formatHeaderStamp(new Date(row.originCreatedAt).getTime(), Date.now(), true, currentLang())
     : null;
   return (
     <>
       <div className="discussion-origin-panel">
         <button
           className="discussion-origin-back"
-          title="Back to the channel"
+          title={t("chat.backToChannel")}
           onClick={() => closeDiscussionView()}
         >
           <span className="icon mdi-arrow-left" />
@@ -2115,13 +2121,13 @@ function DiscussionOriginPanel({ session, discussion, originFull, onCloseRequest
               {displayNameOf(rosterUsers, row.originAuthorName)}
               {originTime !== null ? <span className="discussion-origin-time">{originTime}</span> : null}
             </div>
-            <div className="discussion-origin-snippet">{row.originSnippet || "(attachment)"}</div>
+            <div className="discussion-origin-snippet">{row.originSnippet || t("chat.attachmentFallback")}</div>
           </div>
         )}
         <div className="discussion-origin-actions">
           <button
             className="discussion-origin-action"
-            title={row.tracked ? "Unfollow discussion" : "Follow discussion"}
+            title={row.tracked ? t("chat.unfollowDiscussion") : t("chat.followDiscussion")}
             onClick={() => {
               const request = row.tracked
                 ? session.untrackDiscussion(row.id)
@@ -2136,7 +2142,7 @@ function DiscussionOriginPanel({ session, discussion, originFull, onCloseRequest
           {canManageMessages ? (
             <button
               className="discussion-origin-action danger"
-              title="Close discussion for everyone"
+              title={t("chat.closeDiscussionForEveryone")}
               onClick={onCloseRequest}
             >
               <span className="icon mdi-close" />
@@ -2158,8 +2164,9 @@ function QuoteCard({ level, depth, clickable, onJump, nameOf }: {
   /** Resolves the RENDERED name (nickname) from the live roster. */
   nameOf: (username: string) => string;
 }): React.JSX.Element {
+  const t = useT();
   if (level.deleted) {
-    return <div className="quote-card deleted">Original message deleted</div>;
+    return <div className="quote-card deleted">{t("chat.originalDeleted")}</div>;
   }
   return (
     <div className={"quote-card" + (clickable ? " live" : "")}>
@@ -2170,10 +2177,10 @@ function QuoteCard({ level, depth, clickable, onJump, nameOf }: {
         onClick={clickable ? () => onJump(level.messageId) : undefined}
       >
         <span className="icon mdi-reply" />
-        <span className="quote-prefix">Reply to</span>
+        <span className="quote-prefix">{t("chat.replyToPrefix")}</span>
         <span className="quote-author" style={{ color: paletteColor(level.authorUsername) }}>{nameOf(level.authorUsername)}</span>
       </div>
-      {level.forward !== null ? <span className="quote-forward">↗ from {nameOf(level.forward.authorUsername)}</span> : null}
+      {level.forward !== null ? <span className="quote-forward">{t("chat.quoteForwardFrom", { name: nameOf(level.forward.authorUsername) })}</span> : null}
       {level.reply !== null && depth < QUOTE_DEPTH_MAX
         ? <QuoteCard level={level.reply} depth={depth + 1} clickable={clickable} onJump={onJump} nameOf={nameOf} />
         : null}
@@ -2189,19 +2196,20 @@ function QuoteCard({ level, depth, clickable, onJump, nameOf }: {
  * BODY + attachments live INSIDE the card — a forward reads as the quoted original.
  */
 function ForwardCard({ forward, children, nameOf }: { forward: ForwardInfo; children: React.ReactNode; nameOf: (username: string) => string }): React.JSX.Element {
+  const t = useT();
   // Subscribed like MessageList: a relative-dates toggle repaints the stamp.
   const relativeDates = useStore(settingsStore, (settings) => settings.relativeDates);
   return (
     <div className="forward-card">
       <div className="forward-head">
         <span className="icon mdi-forward" />
-        <span className="forward-prefix">Forwarded from</span>
+        <span className="forward-prefix">{t("chat.forwardedFrom")}</span>
         <span className="forward-origin">{forward.serverName} → #{forward.channelName}</span>
-        {!forward.trusted ? <span className="forward-unverified"> · unverified</span> : null}
+        {!forward.trusted ? <span className="forward-unverified">{` · ${t("chat.unverified")}`}</span> : null}
       </div>
       <div className="forward-author-row">
         <span className="forward-author" style={{ color: paletteColor(forward.authorUsername) }}>{nameOf(forward.authorUsername)}</span>
-        <span className="forward-time">{formatHeaderStamp(toEpochMs(forward.createdAt), Date.now(), relativeDates)}</span>
+        <span className="forward-time">{formatHeaderStamp(toEpochMs(forward.createdAt), Date.now(), relativeDates, currentLang())}</span>
       </div>
       {forward.reply !== null ? <QuoteCard level={forward.reply} depth={1} clickable={false} onJump={() => undefined} nameOf={nameOf} /> : null}
       {children}
@@ -2362,6 +2370,7 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
    *  is NOT consumed — Discord's tray behavior). */
   onSendSticker(sticker: Sticker): Promise<void>;
 }): React.JSX.Element {
+  const t = useT();
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2373,6 +2382,28 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
   const pickerButtonRef = useRef<HTMLButtonElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
+  // The placeholder carries the live channel name and can outgrow the field
+  // (user report 2026-10-28): clip it to the textarea's CONTENT width with an
+  // ellipsis instead of the hard clip. A ResizeObserver keeps the clip honest
+  // through window resizes (the field is flex: 1 inside the card).
+  const [fieldWidthPx, setFieldWidthPx] = useState<number | null>(null);
+  useEffect(() => {
+    const node = composerInputRef.current;
+    if (node === null || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[entries.length - 1];
+      if (entry !== undefined) {
+        setFieldWidthPx(entry.contentRect.width);
+      }
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  const fittedPlaceholder = fieldWidthPx === null
+    ? placeholder
+    : truncateTextToWidth(placeholder, fieldWidthPx);
   // A reply armed or files staged want the caret HERE, after any existing
   // draft text (the mention-popup rAF refocus idiom, reused).
   useEffect(() => {
@@ -2677,18 +2708,18 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
             <button
               className={"picker-tab" + (pickerTab === "emoji" ? " active" : "")}
               onClick={() => selectPickerTab("emoji")}
-            >Emoji</button>
+            >{t("picker.tabEmoji")}</button>
             {stickerState.supported ? (
               <button
                 className={"picker-tab" + (pickerTab === "stickers" ? " active" : "")}
                 onClick={() => selectPickerTab("stickers")}
-              >Stickers</button>
+              >{t("picker.tabStickers")}</button>
             ) : null}
           </div>
           <input
             className="picker-search"
             type="text"
-            placeholder={pickerTab === "emoji" ? "Search emojis" : "Search stickers"}
+            placeholder={pickerTab === "emoji" ? t("picker.searchEmojis") : t("picker.searchStickers")}
             value={pickerQuery}
             onChange={(event) => setPickerQuery(event.target.value)}
             onKeyDown={(event) => {
@@ -2701,12 +2732,12 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
           <div className="picker-body">
             {pickerTab === "emoji" ? (
               recentEntries.length === 0 && builtInMatches.length === 0 && emojiMatches.length === 0 ? (
-                <div className="picker-empty">Nothing matches.</div>
+                <div className="picker-empty">{t("picker.nothingMatches")}</div>
               ) : (
                 <>
                   {recentEntries.length > 0 ? (
                     <div className="picker-section">
-                      <div className="picker-section-title">Latest</div>
+                      <div className="picker-section-title">{t("picker.latest")}</div>
                       <div className="expression-tile-grid">
                         {recentEntries.map((entry) => (
                           <RecentExpressionTile
@@ -2723,7 +2754,7 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
                   ) : null}
                   {builtInMatches.length > 0 ? (
                     <div className="picker-section">
-                      <div className="picker-section-title">Built-in</div>
+                      <div className="picker-section-title">{t("picker.builtIn")}</div>
                       <div className="expression-tile-grid">
                         {builtInMatches.map((entry) => (
                           <BuiltInEmojiTile key={entry.slug} entry={entry} onPick={() => applyBuiltInEmoji(entry)} />
@@ -2733,7 +2764,7 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
                   ) : null}
                   {emojiMatches.length > 0 ? (
                     <div className="picker-section">
-                      <div className="picker-section-title">Custom</div>
+                      <div className="picker-section-title">{t("picker.custom")}</div>
                       <div className="emoji-tile-grid">
                         {emojiMatches.map((emoji) => (
                           <EmojiTile key={emoji.id} session={session} emoji={emoji} onPick={() => applyEmoji(emoji.name)} />
@@ -2746,7 +2777,7 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
             ) : (
               stickerPackMatches.length === 0 ? (
                 <div className="picker-empty">
-                  {stickerState.packs.length === 0 ? "No stickers yet." : "Nothing matches."}
+                  {stickerState.packs.length === 0 ? t("picker.noStickersYet") : t("picker.nothingMatches")}
                 </div>
               ) : (
                 stickerPackMatches.map((pack) => (
@@ -2779,7 +2810,7 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
         {attachEnabled ? (
           <button
             className="composer-attach"
-            title="Attach files"
+            title={t("chat.attachFiles")}
             onClick={() => fileInputRef.current?.click()}
           ><span className="icon mdi-paperclip" /></button>
         ) : null}
@@ -2797,7 +2828,7 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
           ref={composerInputRef}
           value={text}
           rows={Math.min(10, Math.max(1, text.split("\n").length))}
-          placeholder={placeholder}
+          placeholder={fittedPlaceholder}
           onChange={(event) => {
             setText(event.target.value);
             updateMentionQuery(event.target.value, event.target.selectionStart);
@@ -2902,15 +2933,15 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
           x={editorMenu.x}
           y={editorMenu.y}
           items={[
-            { label: "Undo", action: () => runEditorVerb("undo") },
-            { label: "Redo", action: () => runEditorVerb("redo") },
+            { label: t("chat.undo"), action: () => runEditorVerb("undo") },
+            { label: t("chat.redo"), action: () => runEditorVerb("redo") },
             { label: "", separator: true, action: () => undefined },
-            { label: "Cut", disabled: !editorMenu.hasSelection, action: () => runEditorVerb("cut") },
-            { label: "Copy", disabled: !editorMenu.hasSelection, action: () => runEditorVerb("copy") },
-            { label: "Paste", disabled: !editorMenu.canPaste, action: () => runEditorVerb("paste") },
-            { label: "Delete", disabled: !editorMenu.hasSelection, action: () => runEditorVerb("delete") },
+            { label: t("chat.cut"), disabled: !editorMenu.hasSelection, action: () => runEditorVerb("cut") },
+            { label: t("chat.copy"), disabled: !editorMenu.hasSelection, action: () => runEditorVerb("copy") },
+            { label: t("chat.paste"), disabled: !editorMenu.canPaste, action: () => runEditorVerb("paste") },
+            { label: t("common.delete"), disabled: !editorMenu.hasSelection, action: () => runEditorVerb("delete") },
             { label: "", separator: true, action: () => undefined },
-            { label: "Select all", disabled: !editorMenu.hasText, action: () => runEditorVerb("selectAll") },
+            { label: t("chat.selectAll"), disabled: !editorMenu.hasText, action: () => runEditorVerb("selectAll") },
           ]}
           onClose={() => setEditorMenu(null)}
         />
@@ -2929,6 +2960,7 @@ function ForwardDialog({ session, source, sourceChannel, onClose }: {
   sourceChannel: Channel;
   onClose(): void;
 }): React.JSX.Element {
+  const t = useT();
   const records = useStore(connectionDirectory, (allRecords) => allRecords);
   const ownChannels = useStore(session.channelStore, (channels) => channels);
   const [targetRecordId, setTargetRecordId] = useState(session.recordId);
@@ -3058,10 +3090,12 @@ function ForwardDialog({ session, source, sourceChannel, onClose }: {
   };
 
   return (
-    <Modal title={`Forward ${source.length === 1 ? "message" : `${source.length} messages`}`} onClose={onClose}>
+    <Modal title={source.length === 1
+      ? t("chat.forwardOneTitle")
+      : t("chat.forwardManyTitle", { count: source.length })} onClose={onClose}>
       <div className="forward-picker">
         <div className="forward-column">
-          <div className="forward-column-title">Server</div>
+          <div className="forward-column-title">{t("common.server")}</div>
           {records.map((record) => (
             <div key={record.id}
               className={"forward-row" + (record.id === targetRecordId ? " chosen" : "")}
@@ -3072,9 +3106,9 @@ function ForwardDialog({ session, source, sourceChannel, onClose }: {
           ))}
         </div>
         <div className="forward-column">
-          <div className="forward-column-title">Channel</div>
-          {targetChannels === null ? <div className="forward-note">Loading channels…</div> : null}
-          {targetChannels?.length === 0 ? <div className="forward-note">No text channels.</div> : null}
+          <div className="forward-column-title">{t("sidebar.channelsTitle")}</div>
+          {targetChannels === null ? <div className="forward-note">{t("chat.loadingChannels")}</div> : null}
+          {targetChannels?.length === 0 ? <div className="forward-note">{t("chat.noTextChannels")}</div> : null}
           {targetChannels?.map((entry) => (
             <div key={entry.id}
               className={"forward-row" + (entry.id === targetChannelId ? " chosen" : "")}
@@ -3084,14 +3118,14 @@ function ForwardDialog({ session, source, sourceChannel, onClose }: {
           ))}
         </div>
       </div>
-      <input type="text" value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Comment (optional)" />
+      <input type="text" value={comment} onChange={(event) => setComment(event.target.value)} placeholder={t("chat.commentOptional")} />
       {crossInstance && hasAttachments ? (
-        <div className="modal-note">Attachments are re-uploaded to the target server — this may take a while.</div>
+        <div className="modal-note">{t("chat.forwardReuploadNote")}</div>
       ) : null}
       <div className="error-line">{error ?? ""}</div>
       <div className="modal-actions">
-        <button className="ghost" onClick={onClose}>Cancel</button>
-        <button className="primary" disabled={busy || targetChannelId === null} onClick={() => void submit()}>Forward</button>
+        <button className="ghost" onClick={onClose}>{t("common.cancel")}</button>
+        <button className="primary" disabled={busy || targetChannelId === null} onClick={() => void submit()}>{t("chat.forwardVerb")}</button>
       </div>
     </Modal>
   );

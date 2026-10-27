@@ -101,6 +101,10 @@ accounts and client trust pins are preserved.
 - Friends, direct messages and group conversations
 - Notifications: per-server modes, always-on-top toasts, in-app sounds
 - Customizable hotkeys — including a global mute that works in games
+- Interface language: English or Russian, switchable in Settings → General —
+  applies instantly, no restart; `System default` follows the OS language.
+  Dates and plural forms follow the language too. Server-side error texts stay
+  in English (one server serves speakers of both)
 - Self-updates from GitHub Releases: the client checks in the background (on
   startup and once a day while idle) and offers the new version with a banner —
   one click downloads and installs it quietly, accounts and settings survive

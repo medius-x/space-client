@@ -3,18 +3,24 @@ import { useStore } from "../hooks/useStore";
 import { joinVoiceGuarded, setActiveChannel } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { Channel } from "../../types";
+import type { Translator } from "../../domain/i18n/i18n";
+import { useT } from "../hooks/useT";
 import { Modal } from "./Modal";
 
-/** The AFK-timeout presets (5 minutes..7 days, Discord's span). */
-export const AFK_TIMEOUT_PRESETS: readonly { minutes: number; label: string }[] = [
-  { minutes: 5, label: "5 min" },
-  { minutes: 15, label: "15 min" },
-  { minutes: 30, label: "30 min" },
-  { minutes: 60, label: "1 hour" },
-  { minutes: 240, label: "4 hours" },
-  { minutes: 1440, label: "1 day" },
-  { minutes: 10080, label: "7 days" },
-];
+/** The AFK-timeout presets (5 minutes..7 days, Discord's span). Bare minute
+ *  counts — the label is localized at render time by {@link afkTimeoutLabel}. */
+export const AFK_TIMEOUT_PRESETS: readonly number[] = [5, 15, 30, 60, 240, 1440, 10080];
+
+/** The human label of an AFK-timeout preset (days > hours > minutes granularity). */
+export function afkTimeoutLabel(t: Translator, minutes: number): string {
+  if (minutes % 1440 === 0) {
+    return t("afkPreset.days", { count: minutes / 1440 });
+  }
+  if (minutes % 60 === 0) {
+    return t("afkPreset.hours", { count: minutes / 60 });
+  }
+  return t("afkPreset.minutes", { count: minutes });
+}
 
 /**
  * The channel-creation dialog — shared by the Sidebar's "+" (the channel panel) and
@@ -31,6 +37,7 @@ export function CreateChannelModal({ session, request, categories, onClose }: {
   categories: readonly Channel[];
   onClose: () => void;
 }): React.JSX.Element {
+  const t = useT();
   const [name, setName] = useState("");
   const [kind, setKind] = useState<"TEXT" | "VOICE" | "CATEGORY">(request.kind);
   // The parent select: the pre-selected category (from the header "+") or None.
@@ -75,22 +82,22 @@ export function CreateChannelModal({ session, request, categories, onClose }: {
   };
 
   return (
-    <Modal title={kind === "CATEGORY" ? "Create category" : "Create channel"} onClose={onClose}>
+    <Modal title={kind === "CATEGORY" ? t("channel.createCategory") : t("sidebar.createChannel")} onClose={onClose}>
       <div className="modal-row">
-        <label className={"kind-choice" + (kind === "TEXT" ? " chosen" : "")} onClick={() => setKind("TEXT")}><span className="icon mdi-pound" /> text</label>
-        <label className={"kind-choice" + (kind === "VOICE" ? " chosen" : "")} onClick={() => setKind("VOICE")}><span className="icon mdi-volume-high" /> voice</label>
+        <label className={"kind-choice" + (kind === "TEXT" ? " chosen" : "")} onClick={() => setKind("TEXT")}><span className="icon mdi-pound" /> {t("channel.kind.text")}</label>
+        <label className={"kind-choice" + (kind === "VOICE" ? " chosen" : "")} onClick={() => setKind("VOICE")}><span className="icon mdi-volume-high" /> {t("channel.kind.voice")}</label>
         {/* Nested categories do not exist — the category's own "+" offers only
             channels (user decision). */}
         {!request.inCategory ? (
-          <label className={"kind-choice" + (kind === "CATEGORY" ? " chosen" : "")} onClick={() => setKind("CATEGORY")}><span className="icon mdi-folder-outline" /> category</label>
+          <label className={"kind-choice" + (kind === "CATEGORY" ? " chosen" : "")} onClick={() => setKind("CATEGORY")}><span className="icon mdi-folder-outline" /> {t("channel.kind.category")}</label>
         ) : null}
       </div>
       {kind !== "CATEGORY" ? (
         <label className="settings-field">
-          <span>Category</span>
+          <span>{t("channel.categoryLabel")}</span>
           <select value={parentId === null ? "" : parentId} onChange={(event) =>
             setParentId(event.target.value === "" ? null : Number(event.target.value))}>
-            <option value="">— no category —</option>
+            <option value="">{t("channel.noCategory")}</option>
             {categories.map((category) => (
               <option key={category.id} value={category.id}>{category.name}</option>
             ))}
@@ -105,15 +112,15 @@ export function CreateChannelModal({ session, request, categories, onClose }: {
             checked={afk}
             onChange={(event) => setAfk(event.target.checked)}
           />
-          <label htmlFor="create-afk-toggle">AFK channel — idle members are moved here</label>
+          <label htmlFor="create-afk-toggle">{t("channel.afkToggle")}</label>
         </div>
       ) : null}
       {kind === "VOICE" && afk ? (
         <label className="settings-field">
-          <span>AFK timeout</span>
+          <span>{t("serverSettings.afkTimeout")}</span>
           <select value={afkTimeoutMinutes} onChange={(event) => setAfkTimeoutMinutes(Number(event.target.value))}>
-            {AFK_TIMEOUT_PRESETS.map((preset) => (
-              <option key={preset.minutes} value={preset.minutes}>{preset.label}</option>
+            {AFK_TIMEOUT_PRESETS.map((presetMinutes) => (
+              <option key={presetMinutes} value={presetMinutes}>{afkTimeoutLabel(t, presetMinutes)}</option>
             ))}
           </select>
         </label>
@@ -128,12 +135,12 @@ export function CreateChannelModal({ session, request, categories, onClose }: {
             void submit();
           }
         }}
-        placeholder={kind === "TEXT" ? "new-channel" : kind === "VOICE" ? "General Voice" : "New Category"}
+        placeholder={kind === "TEXT" ? t("channel.placeholderText") : kind === "VOICE" ? t("channel.placeholderVoice") : t("channel.placeholderCategory")}
       />
       <div className="error-line">{error ?? ""}</div>
       <div className="modal-actions">
-        <button className="ghost" onClick={onClose}>Cancel</button>
-        <button className="primary" disabled={busy || name.trim().length === 0} onClick={() => void submit()}>Create</button>
+        <button className="ghost" onClick={onClose}>{t("common.cancel")}</button>
+        <button className="primary" disabled={busy || name.trim().length === 0} onClick={() => void submit()}>{t("common.create")}</button>
       </div>
     </Modal>
   );

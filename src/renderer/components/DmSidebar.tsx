@@ -11,6 +11,7 @@ import { Avatar } from "./Avatar";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { InstanceTag } from "./InstanceTag";
 import { Modal } from "./Modal";
+import { useT } from "../hooks/useT";
 
 /**
  * The Home-mode sidebar: the Friends entry + the DM list, AGGREGATED across
@@ -21,6 +22,7 @@ import { Modal } from "./Modal";
  * on the open conversation).
  */
 export function DmSidebar({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const t = useT();
   const dms = useStore(session.socialStore, (state) => state.dms);
   const relationships = useStore(session.socialStore, (state) => state.relationships);
   const readStates = useStore(session.readStateStore, (states) => states);
@@ -87,15 +89,15 @@ export function DmSidebar({ session }: { session: ConnectionSession }): React.JS
   const menuItems: ContextMenuItem[] = menuRow === null ? [] : menuRow.dm.type === "GROUP_DM"
     ? [
         // Add member is the OWNER's tool in oak; Rename is everyone's.
-        ...(isOwner ? [{ label: "Add member…", action: () => setAddToGroup(menuRow.dm) }] : []),
-        { label: "Rename…", action: () => setRenameTarget(menuRow.dm) },
+        ...(isOwner ? [{ label: t("dm.addMember"), action: () => setAddToGroup(menuRow.dm) }] : []),
+        { label: t("dm.rename"), action: () => setRenameTarget(menuRow.dm) },
         { label: "", separator: true, action: () => undefined },
-        { label: "Leave group", danger: true, action: () => leaveGroup(menuRow.dm) },
+        { label: t("dm.leaveGroup"), danger: true, action: () => leaveGroup(menuRow.dm) },
         ...(isOwner
-          ? [{ label: "Close group", danger: true, action: () => void session.closeDm(menuRow.dm.id) }]
+          ? [{ label: t("dm.closeGroup"), danger: true, action: () => void session.closeDm(menuRow.dm.id) }]
           : []),
       ]
-    : [{ label: "Close DM", danger: true, action: () => void session.closeDm(menuRow.dm.id) }];
+    : [{ label: t("dm.closeDm"), danger: true, action: () => void session.closeDm(menuRow.dm.id) }];
 
   // A restricted member (RESTRICT_PRIVATE_MESSAGES) cannot start groups either.
   const myDmRestricted = useStore(session.permissionStore, (state) => state.my?.dmRestricted === true);
@@ -103,11 +105,11 @@ export function DmSidebar({ session }: { session: ConnectionSession }): React.JS
   return (
     <>
       <div className="sidebar-section-title">
-        <span>Direct Messages</span>
+        <span>{t("dm.sectionTitle")}</span>
         {!myDmRestricted ? (
           <button
             className="section-add"
-            title="Start a group DM"
+            title={t("dm.startGroup")}
             onClick={() => (friends.length < 2 ? setNotEnoughFriends(true) : setCreateGroup(true))}
           >+</button>
         ) : null}
@@ -117,7 +119,7 @@ export function DmSidebar({ session }: { session: ConnectionSession }): React.JS
         onClick={() => setFriendsTab(appStore.getSnapshot().friendsTab === "ADD_FRIEND" ? "ADD_FRIEND" : appStore.getSnapshot().friendsTab)}
       >
         <span className="icon mdi-account-multiple" />
-        <span className="channel-name">Friends</span>
+        <span className="channel-name">{t("dm.friends")}</span>
       </div>
       {rows.map((row) => {
         const name = dmDisplayName(row.dm, row.selfUsername);
@@ -163,19 +165,19 @@ export function DmSidebar({ session }: { session: ConnectionSession }): React.JS
         <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />
       ) : null}
       {notEnoughFriends ? (
-        <Modal title="Not enough friends" onClose={() => setNotEnoughFriends(false)}>
-          <div className="modal-note">You need at least 2 friends to start a group DM.</div>
+        <Modal title={t("dm.notEnoughFriendsTitle")} onClose={() => setNotEnoughFriends(false)}>
+          <div className="modal-note">{t("dm.notEnoughFriendsNote")}</div>
           <div className="modal-actions">
-            <button className="primary" onClick={() => setNotEnoughFriends(false)}>OK</button>
+            <button className="primary" onClick={() => setNotEnoughFriends(false)}>{t("common.ok")}</button>
           </div>
         </Modal>
       ) : null}
       {createGroup ? (
         <FriendPickerModal
           session={session}
-          title="Start a group DM"
-          hint="Pick at least 2 friends — you are the owner."
-          confirmLabel="Create"
+          title={t("dm.startGroup")}
+          hint={t("dm.startGroupHint")}
+          confirmLabel={t("common.create")}
           minimum={2}
           candidates={friends}
           exclude={[]}
@@ -189,9 +191,9 @@ export function DmSidebar({ session }: { session: ConnectionSession }): React.JS
       {addToGroup !== null ? (
         <FriendPickerModal
           session={session}
-          title="Add to group"
-          hint="Pick a friend to add."
-          confirmLabel="Add"
+          title={t("dm.addToGroupTitle")}
+          hint={t("dm.addToGroupHint")}
+          confirmLabel={t("common.add")}
           minimum={1}
           candidates={friends}
           exclude={addToGroup.participants.map((participant) => participant.id)}
@@ -222,6 +224,7 @@ function FriendPickerModal({ session, title, hint, confirmLabel, minimum, candid
   onClose: () => void;
   onConfirm(selected: readonly Relationship[]): Promise<void>;
 }): React.JSX.Element {
+  const t = useT();
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -268,7 +271,7 @@ function FriendPickerModal({ session, title, hint, confirmLabel, minimum, candid
 
   return (
     <Modal title={title} onClose={onClose}>
-      <div className="modal-note">{pool.length === 0 ? "No friends to pick." : hint}</div>
+      <div className="modal-note">{pool.length === 0 ? t("dm.noFriendsToPick") : hint}</div>
       <div className="friend-picker-list">
         {pool.map((entry) => (
           <label key={entry.userId} className={"friend-picker-row" + (selected.has(entry.userId) ? " chosen" : "")}>
@@ -280,7 +283,7 @@ function FriendPickerModal({ session, title, hint, confirmLabel, minimum, candid
       </div>
       <div className="error-line">{error ?? ""}</div>
       <div className="modal-actions">
-        <button className="ghost" onClick={onClose}>Cancel</button>
+        <button className="ghost" onClick={onClose}>{t("common.cancel")}</button>
         <button className="primary" disabled={busy || selected.size < minimum} onClick={() => void submit()}>
           {confirmLabel}
         </button>
@@ -294,6 +297,7 @@ function RenameGroupModal({ session, dm, onClose }: {
   dm: DmChannel;
   onClose: () => void;
 }): React.JSX.Element {
+  const t = useT();
   const currentName = dm.name.trim().length > 0 ? dm.name : dmDisplayName(dm, session.username());
   const [name, setName] = useState(currentName);
   const [busy, setBusy] = useState(false);
@@ -320,8 +324,8 @@ function RenameGroupModal({ session, dm, onClose }: {
   };
 
   return (
-    <Modal title="Rename group" onClose={onClose}>
-      <div className="modal-note">Enter a new name for this group DM.</div>
+    <Modal title={t("dm.renameGroupTitle")} onClose={onClose}>
+      <div className="modal-note">{t("dm.renameGroupNote")}</div>
       <input
         autoFocus
         type="text"
@@ -335,8 +339,8 @@ function RenameGroupModal({ session, dm, onClose }: {
       />
       <div className="error-line">{error ?? ""}</div>
       <div className="modal-actions">
-        <button className="ghost" onClick={onClose}>Cancel</button>
-        <button className="primary" disabled={busy || name.trim().length === 0} onClick={() => void submit()}>Rename</button>
+        <button className="ghost" onClick={onClose}>{t("common.cancel")}</button>
+        <button className="primary" disabled={busy || name.trim().length === 0} onClick={() => void submit()}>{t("dm.renameVerb")}</button>
       </div>
     </Modal>
   );

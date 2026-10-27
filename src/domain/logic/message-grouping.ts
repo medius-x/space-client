@@ -6,6 +6,8 @@
  * never re-derives grouping inline.
  */
 
+import { tf, type UiLang } from "../i18n/i18n";
+
 export interface GroupableMessage {
   id: number;
   authorUsername: string;
@@ -47,32 +49,51 @@ export function toEpochMs(createdAtIso: string): number {
 
 /** Cached formatters: Intl.DateTimeFormat CONSTRUCTION is the expensive part of
  *  timestamp rendering (locale databases are resolved per instance) — rows used
- *  to build 1-2 of these per render. The cached instance's .format() output is
- *  byte-identical to the one-shot toLocaleTimeString call it replaced. */
-const TIME_OF_DAY_FORMATTER = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit" });
+ *  to build 1-2 of these per render. Since the localization round the cache is
+ *  keyed by the UI language (dates follow the LANGUAGE setting, not the OS —
+ *  otherwise a RU interface shows English months); the key set is the fixed
+ *  two-language catalog, so entries never invalidate. */
+const TIME_OF_DAY_FORMATTERS = new Map<UiLang, Intl.DateTimeFormat>();
+const MONTH_FORMATTERS = new Map<UiLang, Intl.DateTimeFormat>();
 
-/** "14:05" local time for the group head (locale-dependent by design, not unit-tested). */
-export function formatTimeOfDay(epochMs: number): string {
-  return TIME_OF_DAY_FORMATTER.format(epochMs);
+function timeOfDayFormatter(lang: UiLang): Intl.DateTimeFormat {
+  let formatter = TIME_OF_DAY_FORMATTERS.get(lang);
+  if (formatter === undefined) {
+    formatter = new Intl.DateTimeFormat(lang, { hour: "2-digit", minute: "2-digit" });
+    TIME_OF_DAY_FORMATTERS.set(lang, formatter);
+  }
+  return formatter;
 }
 
-/** See TIME_OF_DAY_FORMATTER — same caching rationale for the month name. */
-const MONTH_FORMATTER = new Intl.DateTimeFormat("en", { month: "short" });
+function monthFormatter(lang: UiLang): Intl.DateTimeFormat {
+  let formatter = MONTH_FORMATTERS.get(lang);
+  if (formatter === undefined) {
+    formatter = new Intl.DateTimeFormat(lang, { month: "short" });
+    MONTH_FORMATTERS.set(lang, formatter);
+  }
+  return formatter;
+}
+
+/** "14:05" local time for the group head (locale-dependent by design, not unit-tested). */
+export function formatTimeOfDay(epochMs: number, lang: UiLang = "en"): string {
+  return timeOfDayFormatter(lang).format(epochMs);
+}
 
 /** oak's message-header stamp: "Today at 14:05" / "Yesterday at 14:05" / "Sep 4
- *  at 14:05". relativeDates=false (oak Appearance) always shows the full date. */
-export function formatHeaderStamp(epochMs: number, nowMs: number, relativeDates = true): string {
+ *  at 14:05" (RU: «Сегодня в 14:05»…). relativeDates=false (oak Appearance)
+ *  always shows the full date. */
+export function formatHeaderStamp(epochMs: number, nowMs: number, relativeDates = true, lang: UiLang = "en"): string {
   const date = new Date(epochMs);
   const now = new Date(nowMs);
   const time = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
   const sameDay = (left: Date, right: Date): boolean =>
     left.getFullYear() === right.getFullYear() && left.getMonth() === right.getMonth() && left.getDate() === right.getDate();
   if (relativeDates && sameDay(date, now)) {
-    return `Today at ${time}`;
+    return tf(lang, "dates.todayAt", { time });
   }
   const yesterday = new Date(nowMs - 86_400_000);
   if (relativeDates && sameDay(date, yesterday)) {
-    return `Yesterday at ${time}`;
+    return tf(lang, "dates.yesterdayAt", { time });
   }
-  return `${MONTH_FORMATTER.format(date)} ${date.getDate()} at ${time}`;
+  return tf(lang, "dates.monthDayAt", { month: monthFormatter(lang).format(date), day: date.getDate(), time });
 }

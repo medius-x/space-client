@@ -44,6 +44,7 @@ import { Avatar } from "./Avatar";
 import { ChannelGlyph } from "./ChannelGlyph";
 import { VoiceMarks, VoiceMemberCard } from "./VoiceRoom";
 import { DmSidebar } from "./DmSidebar";
+import { useT } from "../hooks/useT";
 
 /**
  * The channel column (oak's 220px channel-pane). Channel CRUD lives in the
@@ -57,6 +58,7 @@ import { DmSidebar } from "./DmSidebar";
  * PUT /api/channels/order.
  */
 export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const t = useT();
   const channels = useStore(session.channelStore, (channels) => channels);
   const roster = useStore(session.rosterStore, (roster) => roster);
   const readStates = useStore(session.readStateStore, (states) => states);
@@ -339,8 +341,8 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
     }
   };
   const menuItems: ContextMenuItem[] = menu === null ? [] : [
-    { label: "Rename channel", action: () => setRenameTarget(menu.channel) },
-    { label: "Delete channel", danger: true, action: () => setDeleteTarget(menu.channel) },
+    { label: t("sidebar.renameChannel"), action: () => setRenameTarget(menu.channel) },
+    { label: t("sidebar.deleteChannel"), danger: true, action: () => setDeleteTarget(menu.channel) },
   ];
 
   const toggleCollapsed = (categoryId: number): void => {
@@ -371,7 +373,7 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
         data-category-id={categoryId}
         data-drag-channel-id={channel.id}
         data-drag-gap={isDragged ? "true" : undefined}
-        title={channel.locked ? "Locked for you" : undefined}
+        title={channel.locked ? t("sidebar.lockedForYou") : undefined}
         onClick={() => onTextChannelClick(channel)}
         onContextMenu={openMenu(channel)}
         onPointerDown={onDragRowPointerDown({ kind: "channel", channel })}
@@ -384,7 +386,7 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
         {trackedCount > 0 ? (
           <span
             className="channel-badge discussions"
-            title={trackedCount === 1 ? "1 discussion you follow — click to show discussions" : `${trackedCount} discussions you follow — click to show discussions`}
+            title={t("sidebar.trackedDiscussions", { count: trackedCount })}
             onClick={(event) => {
               event.stopPropagation();
               setSidebarDiscussions(true);
@@ -420,7 +422,7 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
         data-drag-list={list}
         data-category-id={categoryId}
         data-drag-gap={isDragged ? "true" : undefined}
-        title={channel.locked ? "Locked for you" : undefined}
+        title={channel.locked ? t("sidebar.lockedForYou") : undefined}
         onClick={() => onVoiceChannelClick(channel)}
         onContextMenu={openMenu(channel)}
         data-drag-channel-id={channel.id}
@@ -434,7 +436,7 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
           {!channel.locked ? (
             <button
               className="voice-invite-button"
-              title="Invite friends to this room"
+              title={t("sidebar.inviteToRoom")}
               onClick={(event) => {
                 // Must not join the room (the block's click target).
                 event.stopPropagation();
@@ -476,13 +478,13 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
             >
               <Avatar session={session} username={username} size={20} />
               <span className="member-name" style={nickColor !== null ? { color: nickColor } : undefined}>
-                {displayNameOf(roster.users, username)}{username === ownUsername ? " (you)" : ""}
+                {displayNameOf(roster.users, username)}{username === ownUsername ? ` ${t("members.you")}` : ""}
               </span>
               <VoiceMarks marks={voiceMarks.get(username)} />
               {shareFeed !== null ? (
                 <button
                   className="voice-watch-button"
-                  title="Watch screen share"
+                  title={t("sidebar.watchShare")}
                   onClick={(event) => {
                     // Must not join the room (the block's click target). The
                     // window opens DIRECTLY (user request 2026-10-05) — the
@@ -528,7 +530,7 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
           {canManageChannels ? (
             <button
               className="section-add"
-              title="Create channel in this category"
+              title={t("sidebar.createInCategory")}
               onClick={(event) => {
                 event.stopPropagation();
                 setCreateRequest({ kind: "TEXT", parentId: group.category.id, inCategory: true });
@@ -540,7 +542,7 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
           <div className="category-children">
             {group.textChannels.map((channel) => textChannelRow(channel, "cat-text", group.category.id))}
             {group.voiceChannels.map((channel) => voiceChannelBlock(channel, "cat-voice", group.category.id))}
-            {empty ? <div className="category-empty">No channels yet</div> : null}
+            {empty ? <div className="category-empty">{t("sidebar.noChannels")}</div> : null}
           </div>
         ) : null}
       </div>
@@ -592,10 +594,10 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
                   section row keeps its fixed 24px. It also closes an open thread
                   view: "back" lands on the last text channel, not just the list. */}
               <div className="sidebar-section-title">
-                <span>Discussions</span>
+                <span>{t("sidebar.discussionsTitle")}</span>
                 <button
                   className="sidebar-back"
-                  title="Back to channels"
+                  title={t("sidebar.backToChannels")}
                   onClick={() => {
                     setSidebarDiscussions(false);
                     closeDiscussionView();
@@ -613,9 +615,9 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
           ) : (
             <>
               <div className="sidebar-section-title">
-                <span>Channels</span>
+                <span>{t("sidebar.channelsTitle")}</span>
                 {canManageChannels ? (
-                  <button className="section-add" title="Create channel" onClick={() => setCreateRequest({ kind: "TEXT", parentId: null, inCategory: false })}>+</button>
+                  <button className="section-add" title={t("sidebar.createChannel")} onClick={() => setCreateRequest({ kind: "TEXT", parentId: null, inCategory: false })}>+</button>
                 ) : null}
               </div>
               {viewGroups.uncategorizedText.map((channel) => textChannelRow(channel, "uncat-text"))}
@@ -680,6 +682,7 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
  * settings — the General section still offers the update either way.
  */
 function UpdateBanner(): React.JSX.Element | null {
+  const t = useT();
   const update = useStore(appStore, (state) => state.update);
   const dismissed = useStore(appStore, (state) => state.updateDismissed);
   const skippedVersion = useStore(settingsStore, (settings) => settings.skippedUpdateVersion);
@@ -703,11 +706,11 @@ function UpdateBanner(): React.JSX.Element | null {
       <div className="update-banner-text">
         <span className="icon mdi-update" />
         {update.status === "downloading" ? (
-          <span>{`Downloading update — ${percent}%`}</span>
+          <span>{t("sidebar.update.downloading", { percent })}</span>
         ) : update.status === "failed" ? (
-          <span>Download failed — check the log and try again</span>
+          <span>{t("sidebar.update.failed")}</span>
         ) : (
-          <span>{`Space ${update.version} is available`}</span>
+          <span>{t("sidebar.update.available", { version: update.version ?? "" })}</span>
         )}
       </div>
       {update.status === "downloading" ? (
@@ -718,23 +721,21 @@ function UpdateBanner(): React.JSX.Element | null {
       ) : null}
       <div className="ownership-banner-actions">
         {update.status === "downloading" ? (
-          <button className="ghost" onClick={() => window.spaceUpdates?.cancelDownload()}>Cancel download</button>
+          <button className="ghost" onClick={() => window.spaceUpdates?.cancelDownload()}>{t("sidebar.update.cancelDownload")}</button>
         ) : (
           <>
-            <button className="primary" onClick={startUpdate}>Update</button>
-            <button className="ghost" onClick={() => dismissUpdateBanner()}>Cancel</button>
-            <button className="ghost" onClick={() => { if (update.version !== null) { skipUpdateVersion(update.version); } }}>Skip this version</button>
+            <button className="primary" onClick={startUpdate}>{t("sidebar.update.updateVerb")}</button>
+            <button className="ghost" onClick={() => dismissUpdateBanner()}>{t("common.cancel")}</button>
+            <button className="ghost" onClick={() => { if (update.version !== null) { skipUpdateVersion(update.version); } }}>{t("sidebar.update.skip")}</button>
           </>
         )}
       </div>
       {confirmOpen ? (
-        <Modal title="Update SPACE" onClose={() => setConfirmOpen(false)}>
-          <div className="modal-note">
-            Updating restarts the client now — an active voice or call session will be dropped.
-          </div>
+        <Modal title={t("sidebar.update.confirmTitle")} onClose={() => setConfirmOpen(false)}>
+          <div className="modal-note">{t("sidebar.update.confirmNote")}</div>
           <div className="modal-actions left">
-            <button className="ghost" onClick={() => setConfirmOpen(false)}>Not now</button>
-            <button className="primary" onClick={() => { setConfirmOpen(false); proceedUpdateDownload(); }}>Update now</button>
+            <button className="ghost" onClick={() => setConfirmOpen(false)}>{t("sidebar.update.notNow")}</button>
+            <button className="primary" onClick={() => { setConfirmOpen(false); proceedUpdateDownload(); }}>{t("sidebar.update.updateNow")}</button>
           </div>
         </Modal>
       ) : null}
@@ -758,6 +759,7 @@ function formatUpdateSpeed(bytesPerSecond: number | null): string {
  * the offer to the sender.
  */
 function OwnershipBanner({ session }: { session: ConnectionSession }): React.JSX.Element | null {
+  const t = useT();
   const pending = useStore(session.ownershipStore, (state) => state.pending);
   const selfUserId = session.selfUserId();
   const [busy, setBusy] = useState(false);
@@ -775,7 +777,7 @@ function OwnershipBanner({ session }: { session: ConnectionSession }): React.JSX
     try {
       if (accept) {
         await session.acceptOwnershipTransfer(pending.id);
-        notifications.showToast({ title: "Server", channelName: "", body: "You are now the owner of this server." });
+        notifications.showToast({ title: t("common.server"), channelName: "", body: t("sidebar.ownership.nowOwner") });
       } else {
         await session.declineOwnershipTransfer(pending.id);
       }
@@ -789,12 +791,12 @@ function OwnershipBanner({ session }: { session: ConnectionSession }): React.JSX
     <div className="ownership-banner">
       <div className="ownership-banner-text">
         <span className="icon mdi-crown" />
-        <span>{`"${pending.fromDisplayName}" offers you ownership of this server`}</span>
+        <span>{t("sidebar.ownership.offer", { name: pending.fromDisplayName })}</span>
       </div>
       <div className="error-line">{error ?? ""}</div>
       <div className="ownership-banner-actions">
-        <button className="primary" disabled={busy} onClick={() => void decide(true)}>Accept</button>
-        <button className="ghost" disabled={busy} onClick={() => void decide(false)}>Decline</button>
+        <button className="primary" disabled={busy} onClick={() => void decide(true)}>{t("friends.accept")}</button>
+        <button className="ghost" disabled={busy} onClick={() => void decide(false)}>{t("friends.decline")}</button>
       </div>
     </div>
   );
@@ -812,6 +814,7 @@ function VoiceInvitePickerModal({ session, channel, onClose }: {
   channel: Channel;
   onClose: () => void;
 }): React.JSX.Element {
+  const t = useT();
   const members = useStore(session.memberStore, (state) => state.members);
   const presence = useStore(session.rosterStore, (state) => state.presence);
   const ownUsername = useStore(appStore, (state) => state.ownUsername);
@@ -834,19 +837,19 @@ function VoiceInvitePickerModal({ session, channel, onClose }: {
   };
 
   return (
-    <Modal title={`Invite to ${channel.name}`} onClose={onClose} narrow>
+    <Modal title={t("sidebar.inviteTo", { channel: channel.name })} onClose={onClose} narrow>
       <input
         autoFocus
         type="text"
         className="invite-picker-search"
-        placeholder="Search members"
+        placeholder={t("sidebar.searchMembers")}
         value={query}
         onChange={(event) => setQuery(event.target.value)}
       />
       <div className="friend-picker-list">
         {shown.length === 0 ? (
           <div className="settings-empty">
-            {candidates.length === 0 ? "Nobody is online." : "No members match."}
+            {candidates.length === 0 ? t("sidebar.nobodyOnline") : t("sidebar.noMembersMatch")}
           </div>
         ) : shown.map((candidate) => (
           <label key={candidate.userId} className="settings-check friend-picker-row">
@@ -869,9 +872,9 @@ function VoiceInvitePickerModal({ session, channel, onClose }: {
         ))}
       </div>
       <div className="modal-actions left">
-        <button className="ghost" onClick={onClose}>Cancel</button>
+        <button className="ghost" onClick={onClose}>{t("common.cancel")}</button>
         <button className="primary" disabled={picked.size === 0} onClick={send}>
-          Invite{picked.size > 0 ? ` (${picked.size})` : ""}
+          {picked.size > 0 ? t("sidebar.inviteWithCount", { count: picked.size }) : t("sidebar.invite")}
         </button>
       </div>
     </Modal>
@@ -889,6 +892,7 @@ function DiscussionsList({ session, channels, discussions }: {
   channels: readonly Channel[];
   discussions: readonly import("../../types").Discussion[];
 }): React.JSX.Element {
+  const t = useT();
   const activeDiscussionId = useStore(appStore, (state) => state.activeDiscussion?.discussionId ?? null);
   const parentName = (parentChannelId: number): string =>
     channels.find((channel) => channel.id === parentChannelId)?.name ?? "#deleted";
@@ -897,7 +901,7 @@ function DiscussionsList({ session, channels, discussions }: {
       {/* No section title here — Sidebar renders the "Discussions" caption with the
           back button (the channels↔discussions switch) above this list. */}
       {discussions.length === 0 ? (
-        <div className="discussions-empty">No tracked discussions — start one from a message's context menu.</div>
+        <div className="discussions-empty">{t("sidebar.discussionsEmpty")}</div>
       ) : (
         <div className="discussions-list">
           {discussions.map((discussion) => (
@@ -911,7 +915,7 @@ function DiscussionsList({ session, channels, discussions }: {
                 <span className="discussion-tile-channel">{parentName(discussion.parentChannelId)}</span>
                 <button
                   className="discussion-tile-untrack"
-                  title="Stop following this discussion"
+                  title={t("sidebar.stopFollowing")}
                   onClick={(event) => {
                     event.stopPropagation();
                     void session.untrackDiscussion(discussion.id).catch((error: unknown) => {
@@ -939,6 +943,7 @@ function RenameChannelModal({ session, channel, onClose }: {
   channel: Channel;
   onClose: () => void;
 }): React.JSX.Element {
+  const t = useT();
   const [name, setName] = useState(channel.name);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -964,7 +969,9 @@ function RenameChannelModal({ session, channel, onClose }: {
   };
 
   return (
-    <Modal title={`Rename ${channel.type === "CATEGORY" ? channel.name : `#${channel.name}`}`} onClose={onClose}>
+    <Modal title={t("sidebar.renameTargetTitle", {
+      target: channel.type === "CATEGORY" ? channel.name : `#${channel.name}`,
+    })} onClose={onClose}>
       <input
         autoFocus
         type="text"
@@ -978,8 +985,8 @@ function RenameChannelModal({ session, channel, onClose }: {
       />
       <div className="error-line">{error ?? ""}</div>
       <div className="modal-actions">
-        <button className="ghost" onClick={onClose}>Cancel</button>
-        <button className="primary" disabled={busy || name.trim().length === 0} onClick={() => void submit()}>Rename</button>
+        <button className="ghost" onClick={onClose}>{t("common.cancel")}</button>
+        <button className="primary" disabled={busy || name.trim().length === 0} onClick={() => void submit()}>{t("dm.renameVerb")}</button>
       </div>
     </Modal>
   );
@@ -990,6 +997,7 @@ function DeleteChannelModal({ session, channel, onClose }: {
   channel: Channel;
   onClose: () => void;
 }): React.JSX.Element {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1009,16 +1017,19 @@ function DeleteChannelModal({ session, channel, onClose }: {
   };
 
   return (
-    <Modal title={`Delete ${channel.type === "CATEGORY" ? `category "${channel.name}"?` : `channel "${channel.name}"?`}`} onClose={onClose}>
+    <Modal
+      title={channel.type === "CATEGORY"
+        ? t("sidebar.deleteCategoryTitle", { name: channel.name })
+        : t("sidebar.deleteChannelTitle", { name: channel.name })}
+      onClose={onClose}
+    >
       <div className="modal-note">
-        {channel.type === "CATEGORY"
-          ? "An empty category is removed for everyone. A non-empty one must be emptied first."
-          : "Its messages will be permanently removed."}
+        {channel.type === "CATEGORY" ? t("sidebar.deleteCategoryNote") : t("sidebar.deleteChannelNote")}
       </div>
       <div className="error-line">{error ?? ""}</div>
       <div className="modal-actions">
-        <button className="ghost" onClick={onClose}>Cancel</button>
-        <button className="danger" disabled={busy} onClick={() => void submit()}>Delete</button>
+        <button className="ghost" onClick={onClose}>{t("common.cancel")}</button>
+        <button className="danger" disabled={busy} onClick={() => void submit()}>{t("common.delete")}</button>
       </div>
     </Modal>
   );

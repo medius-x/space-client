@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { log } from "../../logging";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { Attachment } from "../../types";
+import { useT } from "../hooks/useT";
 
 /**
  * Video player modal — the presigned URL goes straight into <video>; Chromium's
@@ -18,6 +19,7 @@ export function VideoModal({ session, attachment, onClose }: {
   attachment: Attachment;
   onClose(): void;
 }): React.JSX.Element {
+  const t = useT();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const recoveryTriedRef = useRef(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -71,7 +73,7 @@ export function VideoModal({ session, attachment, onClose }: {
     const video = videoRef.current;
     if (video === null || recoveryTriedRef.current || attachment.key === null) {
       log.warn("video", `load failed (no recovery path): src=${video?.src ?? "-"} key=${attachment.key ?? "-"}`);
-      setStatus("link expired — open externally");
+      setStatus(t("video.linkExpired"));
       return;
     }
     recoveryTriedRef.current = true;
@@ -80,7 +82,7 @@ export function VideoModal({ session, attachment, onClose }: {
       const fresh = await session.rest.freshAttachmentLink(attachment.key);
       if (fresh === null) {
         log.warn("video", `load failed, fresh link is null: src=${video.src} key=${attachment.key}`);
-        setStatus("link expired — open externally");
+        setStatus(t("video.linkExpired"));
         return;
       }
       log.info("video", `recovery: ${video.src} -> ${fresh}`);
@@ -90,7 +92,7 @@ export function VideoModal({ session, attachment, onClose }: {
       setStatus(null);
     } catch (error) {
       log.warn("video", `recovery failed: ${error instanceof Error ? error.message : String(error)}`);
-      setStatus("link expired — open externally");
+      setStatus(t("video.linkExpired"));
     }
   };
 
@@ -123,15 +125,15 @@ export function VideoModal({ session, attachment, onClose }: {
             className="ghost"
             disabled={downloadState === "busy"}
             onClick={() => void download()}
-            title="Download"
+            title={t("lightbox.download")}
           >
             <span className={"icon " + (downloadState === "busy"
               ? "mdi-refresh sp-spin"
               : downloadState === "saved" ? "mdi-check" : "mdi-download")} />
           </button>
-          {downloadState === "saved" ? <span className="video-modal-saved">Saved</span> : null}
-          {downloadState === "failed" ? <span className="video-modal-status-inline">Save failed — see the log</span> : null}
-          <button className="ghost" onClick={() => void window.spaceMedia?.openExternal(attachment.url)}>Open in browser</button>
+          {downloadState === "saved" ? <span className="video-modal-saved">{t("serverSettings.savedMarker")}</span> : null}
+          {downloadState === "failed" ? <span className="video-modal-status-inline">{t("video.saveFailed")}</span> : null}
+          <button className="ghost" onClick={() => void window.spaceMedia?.openExternal(attachment.url)}>{t("lightbox.openInBrowser")}</button>
           <button className="ghost" onClick={onClose}>✕</button>
         </div>
       </div>

@@ -8,6 +8,7 @@ import { buildRosterGroups, canActOn, topPosition, type HierarchyView } from "..
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { Modal } from "./Modal";
 import { Avatar } from "./Avatar";
+import { useT } from "../hooks/useT";
 
 /**
  * The member roster as its OWN right-hand column (oak parity: 190px pane next to
@@ -15,6 +16,7 @@ import { Avatar } from "./Avatar";
  * colors, the owner crown; the context menu carries Call + Kick/Ban moderation.
  */
 export function MembersPane({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const t = useT();
   const roster = useStore(session.rosterStore, (state) => state);
   const memberRoster = useStore(session.memberStore, (state) => state);
   const myPermissions = useStore(session.permissionStore, (state) => state.my);
@@ -63,7 +65,7 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
   // rail is red, so are Remove/Ban here).
   const personalMenuItems: ContextMenuItem[] = memberMenu === null ? [] : [
     ...(roster.presence.has(memberMenu.member.username)
-      ? [{ label: "Call", action: () => callUser(memberMenu.member.username) }]
+      ? [{ label: t("members.call"), action: () => callUser(memberMenu.member.username) }]
       : []),
     // Personal actions (user request 2026-10-19): jump into a DM straight from
     // the roster, and befriend strangers without the Friends pane round-trip.
@@ -72,11 +74,11 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
     // DM entry — pending does not gate messaging.
     ...(relationshipByUserId.get(memberMenu.member.userId)?.type !== "BLOCKED"
       ? [{
-          label: "Send message",
+          label: t("members.sendMessage"),
           action: () => {
             openDmWithUser(memberMenu.member.userId)
               .catch((error: unknown) => {
-                window.alert(error instanceof Error ? error.message : "Could not open the direct message.");
+                window.alert(error instanceof Error ? error.message : t("members.dmOpenError"));
               });
           },
         }]
@@ -84,10 +86,10 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
     ...(relationshipByUserId.has(memberMenu.member.userId)
       ? []
       : [{
-          label: "Add friend",
+          label: t("members.addFriend"),
           action: () => {
             session.sendFriendRequest(memberMenu.member.username).catch((error: unknown) => {
-              window.alert(error instanceof Error ? error.message : "Could not send the friend request.");
+              window.alert(error instanceof Error ? error.message : t("members.friendRequestError"));
             });
           },
         }]),
@@ -95,7 +97,7 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
     // right-click a member → invite them THERE (the same live card; an offline
     // target is not offered the entry for the same reason Call hides itself).
     ...(roster.presence.has(memberMenu.member.username) && activeVoiceChannelId !== null
-      ? [{ label: "Voice invite", action: () => session.sendVoiceInvite(activeVoiceChannelId, memberMenu.member.username) }]
+      ? [{ label: t("members.voiceInvite"), action: () => session.sendVoiceInvite(activeVoiceChannelId, memberMenu.member.username) }]
       : []),
   ];
   const memberMenuItems: ContextMenuItem[] = memberMenu === null ? [] : [
@@ -111,7 +113,7 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
       .slice()
       .sort((left, right) => (left.kind === "remove" ? 1 : 0) - (right.kind === "remove" ? 1 : 0))
       .map((entry) => ({
-        ...entry,
+        label: entry.kind === "remove" ? t("members.removeFromServer") : t("members.banVerb"),
         danger: entry.kind === "remove",
         action: () => {
           if (entry.kind === "remove") {
@@ -151,7 +153,9 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
         ))
       ) : (
         <>
-          <div className="pane-title">Online — {roster.users.filter((user) => roster.presence.has(user.username)).length}</div>
+          <div className="pane-title">{t("members.onlineCount", {
+            count: roster.users.filter((user) => roster.presence.has(user.username)).length,
+          })}</div>
           {roster.users.map((user) => (
             <div key={user.id} className="member-row">
               {/* The dot rides EVERY avatar (Discord): green = online, grey = offline. */}
@@ -167,19 +171,17 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
       ) : null}
       {removeTarget !== null ? (
         <ModerationModal
-          verb="Remove"
+          kind="remove"
           session={session}
           member={removeTarget}
-          text={`Remove "${removeTarget.nickname}" from the server? They will be permanently removed and will not be able to rejoin.`}
           onClose={() => setRemoveTarget(null)}
         />
       ) : null}
       {banTarget !== null ? (
         <ModerationModal
-          verb="Ban"
+          kind="ban"
           session={session}
           member={banTarget}
-          text={`Ban "${banTarget.nickname}"? They will no longer be able to log in.`}
           onClose={() => setBanTarget(null)}
         />
       ) : null}
@@ -196,21 +198,23 @@ function MemberRow({ session, member, online, isSelf, nameColor, onMenu }: {
   nameColor: string | null;
   onMenu: (event: React.MouseEvent) => void;
 }): React.JSX.Element {
+  const t = useT();
   return (
     <div className={"member-row" + (online ? "" : " offline")} onContextMenu={onMenu}>
       {/* Discord: the presence dot rides EVERY avatar — green online, grey
           offline (a missing dot read as "no status", live report). */}
       <Avatar session={session} username={member.username} size={36} showPresence online={online} />
       <span className="member-name" style={{ color: nameColor ?? (online ? "var(--sp-text)" : "var(--sp-text-muted)") }}>
-        {member.nickname}{isSelf ? " (you)" : ""}
+        {member.nickname}{isSelf ? ` ${t("members.you")}` : ""}
       </span>
-      {member.owner ? <span className="owner-badge" title="Server owner">👑</span> : null}
+      {member.owner ? <span className="owner-badge" title={t("members.serverOwner")}>👑</span> : null}
     </div>
   );
 }
 
-/** Remove/Ban menu entries — gated by the permission bit AND the hierarchy hint. */
-function moderationEntries(target: ServerMember | null, selfHierarchy: HierarchyView, permissions: readonly string[], roles: readonly Role[]): { kind: "remove" | "ban"; label: string }[] {
+/** Remove/Ban menu entries — gated by the permission bit AND the hierarchy hint;
+ *  the LABELS join at the render site (this stays a pure domain helper). */
+function moderationEntries(target: ServerMember | null, selfHierarchy: HierarchyView, permissions: readonly string[], roles: readonly Role[]): { kind: "remove" | "ban" }[] {
   if (target === null) {
     return [];
   }
@@ -218,23 +222,23 @@ function moderationEntries(target: ServerMember | null, selfHierarchy: Hierarchy
   if (!canActOn(selfHierarchy, targetView)) {
     return [];
   }
-  const items: { kind: "remove" | "ban"; label: string }[] = [];
+  const items: { kind: "remove" | "ban" }[] = [];
   if (permissions.includes(KICK_MEMBERS_PERMISSION)) {
-    items.push({ kind: "remove", label: "Remove from server" });
+    items.push({ kind: "remove" });
   }
   if (permissions.includes(BAN_MEMBERS_PERMISSION)) {
-    items.push({ kind: "ban", label: "Ban" });
+    items.push({ kind: "ban" });
   }
   return items;
 }
 
-function ModerationModal({ verb, session, member, text, onClose }: {
-  verb: "Remove" | "Ban";
+function ModerationModal({ kind, session, member, onClose }: {
+  kind: "remove" | "ban";
   session: ConnectionSession;
   member: ServerMember;
-  text: string;
   onClose: () => void;
 }): React.JSX.Element {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -245,7 +249,7 @@ function ModerationModal({ verb, session, member, text, onClose }: {
     setBusy(true);
     setError(null);
     try {
-      if (verb === "Remove") {
+      if (kind === "remove") {
         await session.removeMember(member.userId);
       } else {
         await session.banMember(member.userId);
@@ -258,12 +262,18 @@ function ModerationModal({ verb, session, member, text, onClose }: {
   };
 
   return (
-    <Modal title={`${verb} member`} onClose={onClose}>
-      <div className="modal-note">{text}</div>
+    <Modal title={kind === "remove" ? t("members.removeMemberTitle") : t("members.banMemberTitle")} onClose={onClose}>
+      <div className="modal-note">
+        {kind === "remove"
+          ? t("members.removeConfirm", { name: member.nickname })
+          : t("members.banConfirm", { name: member.nickname })}
+      </div>
       <div className="error-line">{error ?? ""}</div>
       <div className="modal-actions">
-        <button className="ghost" onClick={onClose}>Cancel</button>
-        <button className="danger" disabled={busy} onClick={() => void submit()}>{verb}</button>
+        <button className="ghost" onClick={onClose}>{t("common.cancel")}</button>
+        <button className="danger" disabled={busy} onClick={() => void submit()}>
+          {kind === "remove" ? t("members.removeVerb") : t("members.banVerb")}
+        </button>
       </div>
     </Modal>
   );

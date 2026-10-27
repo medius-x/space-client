@@ -26,4 +26,12 @@ describe("memberKickReasonText", () => {
     expect(memberKickReasonText({ by: "admin", banned: false }))
       .toBe("You were disconnected by admin. Click the server again to reconnect.");
   });
+
+  it("renders the RU titles and reasons", () => {
+    expect(memberKickTitle({ by: "admin", banned: false, removed: true }, "ru")).toBe("Удалены с сервера");
+    expect(memberKickTitle({ by: "admin", banned: true }, "ru")).toBe("Забанены");
+    expect(memberKickTitle({ by: "admin", banned: false }, "ru")).toBe("Отключены");
+    expect(memberKickReasonText({ by: "admin", banned: true }, "ru"))
+      .toBe("Вас забанил admin. Модератор должен разбанить вас для переподключения.");
+  });
 });

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Modal } from "./Modal";
 import { log } from "../../logging";
+import { useT } from "../hooks/useT";
 
 /**
  * Interactive square crop (move + corner resize) over a chosen image. On Apply
@@ -16,6 +17,7 @@ export function AvatarCropDialog({ imageSourceUrl, onApply, onClose }: {
   onApply(blob: Blob): void;
   onClose(): void;
 }): React.JSX.Element {
+  const t = useT();
   const [imageSize, setImageSize] = useState({ width: BOX, height: BOX });
   const [crop, setCrop] = useState({ x: 40, y: 40, size: 160 });
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -91,7 +93,7 @@ export function AvatarCropDialog({ imageSourceUrl, onApply, onClose }: {
   };
 
   return (
-    <Modal title="Crop avatar" onClose={onClose} bare>
+    <Modal title={t("avatar.cropTitle")} onClose={onClose} bare>
       <div
         className="crop-stage"
         style={{ width: imageSize.width, height: imageSize.height }}
@@ -114,8 +116,8 @@ export function AvatarCropDialog({ imageSourceUrl, onApply, onClose }: {
         </div>
       </div>
       <div className="modal-actions">
-        <button className="ghost" onClick={onClose}>Cancel</button>
-        <button className="primary" onClick={apply}>Apply</button>
+        <button className="ghost" onClick={onClose}>{t("common.cancel")}</button>
+        <button className="primary" onClick={apply}>{t("settings.apply")}</button>
       </div>
     </Modal>
   );

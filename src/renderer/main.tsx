@@ -4,9 +4,24 @@ import { App } from "./App";
 import { PopoutScreen } from "./components/PopoutScreen";
 import { ToastStackScreen } from "./components/ToastStackScreen";
 import { bootstrapApp } from "./runtime";
+import { setLanguage } from "../domain/i18n/i18n";
 import { log } from "../logging";
 import "./styles/global.css";
 import "./styles/icons.css";
+
+/** The aux windows' (toast / pop-out) language source: they run without
+ *  bootstrapApp, so the settings store never loads here — main owns the last
+ *  synced language and broadcasts every flip (localization round 2026-10-27).
+ *  setLanguage is guarded — a repeat of the current value never emits. */
+function installAuxWindowLanguageSync(): void {
+  const apply = (lang: unknown): void => {
+    if (lang === "en" || lang === "ru") {
+      setLanguage(lang);
+    }
+  };
+  void window.spaceI18n?.get().then(apply);
+  window.spaceI18n?.onLanguage(apply);
+}
 
 // Stray renderer failures must reach space.log (logging round, 2026-10-06): the main
 // process already traps uncaughtException/unhandledRejection, the renderer did not —
@@ -91,9 +106,11 @@ if (window.location.hash === "#toasts") {
   // no bootstrap (oak's NotificationToast). Deliberately NOT under StrictMode
   // (like the pop-out): its double-mounted effects would double-subscribe the
   // IPC card sink and every toast would arrive twice (live report).
+  installAuxWindowLanguageSync();
   createRoot(container).render(<ToastStackScreen />);
 } else if (window.location.hash === "#popout") {
   // The share pop-out window: a frame viewer only — no sessions, no bootstrap.
+  installAuxWindowLanguageSync();
   createRoot(container).render(<PopoutScreen />);
 } else {
   // Auto-resume the most recent connection (or land on the login screen).

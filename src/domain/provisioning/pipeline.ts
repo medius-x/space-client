@@ -17,6 +17,7 @@
 import { buildEnvFile, generateEnvSecrets, type RandomHexSource } from "./env-file";
 import { clipProgressLine, formatByteProgress } from "./progress";
 import type { ProvisioningParams } from "./params";
+import { enTranslator, type Translator } from "../i18n/i18n";
 import {
   caddyFileForMode,
   composeImageRefs,
@@ -160,6 +161,11 @@ export async function runProvisioningPipeline(
   files: ProvisioningFiles,
   emit: EmitFn,
   randomHex: RandomHexSource,
+  /** The step-detail translator (localization round): defaults to English so
+   *  the pre-i18n pipeline tests stay green; electron/provisioning.ts passes a
+   *  closure reading the CURRENT main-process language — a language flip
+   *  mid-run recolors the steps that have not fired yet. */
+  t: Translator = enTranslator,
 ): Promise<ProvisioningOutcome> {
   const domainDeployment = params.domain !== null && params.domain.trim().length > 0;
   const publicHost = (domainDeployment ? params.domain! : params.host).trim();
@@ -212,7 +218,7 @@ export async function runProvisioningPipeline(
     const kernel = await must("probe", "uname -s");
     const osName = kernel.stdout.trim();
     if (osName !== "Linux") {
-      throw new ProvisioningFailure("probe", `Only Linux servers are supported (this host runs ${osName}).`);
+      throw new ProvisioningFailure("probe", t("provisioning.err.linuxOnly", { os: osName }));
     }
     const release = await transport.exec(`. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || echo "unknown Linux"`);
     // curl drives the readiness poll and the registration calls below — some
@@ -247,19 +253,19 @@ export async function runProvisioningPipeline(
     if (Number.isFinite(diskFreeMb) && diskFreeMb < DISK_FLOOR_MB) {
       throw new ProvisioningFailure(
         "probe",
-        `not enough disk space: ${Math.round(diskFreeMb / 1024)} GB free on /, at least ${Math.round(DISK_FLOOR_MB / 1024)} GB is required`,
+        t("provisioning.err.disk", { free: Math.round(diskFreeMb / 1024), need: Math.round(DISK_FLOOR_MB / 1024) }),
       );
     }
     if (memoryNumbersKnown && memTotalKb < RAM_FLOOR_KB) {
       throw new ProvisioningFailure(
         "probe",
-        `not enough memory: ${gigabytes(memTotalKb)} RAM, at least ${gigabytes(RAM_FLOOR_KB)} is required`,
+        t("provisioning.err.ram", { ram: gigabytes(memTotalKb), need: gigabytes(RAM_FLOOR_KB) }),
       );
     }
     if (Number.isFinite(cgroupLimitKb) && cgroupLimitKb < RAM_FLOOR_KB) {
       throw new ProvisioningFailure(
         "probe",
-        `the hosting provider caps this machine's memory at ${gigabytes(cgroupLimitKb)} — below the ${gigabytes(RAM_FLOOR_KB)} the stack needs`,
+        t("provisioning.err.cgroup", { cap: gigabytes(cgroupLimitKb), need: gigabytes(RAM_FLOOR_KB) }),
       );
     }
 
@@ -268,10 +274,15 @@ export async function runProvisioningPipeline(
     emit({
       stage: "probe",
       state: "done",
-      detail: `${release.stdout.trim() || "Linux"} · docker ${dockerPresent ? "present" : "missing"}`
-        + (memoryNumbersKnown && Number.isFinite(diskFreeMb)
-          ? ` · ${gigabytes(memTotalKb)} RAM + ${gigabytes(swapTotalKb)} swap · ${Math.round(diskFreeMb / 1024)} GB disk free`
-          : ""),
+      detail: t(memoryNumbersKnown && Number.isFinite(diskFreeMb)
+        ? "provisioning.detail.probeDoneFull"
+        : "provisioning.detail.probeDoneShort", {
+        os: release.stdout.trim() || "Linux",
+        docker: t(dockerPresent ? "provisioning.detail.dockerPresent" : "provisioning.detail.dockerMissing"),
+        ram: memoryNumbersKnown ? gigabytes(memTotalKb) : "",
+        swap: memoryNumbersKnown ? gigabytes(swapTotalKb) : "",
+        disk: Number.isFinite(diskFreeMb) ? String(Math.round(diskFreeMb / 1024)) : "",
+      }),
     });
 
     // ── docker: system refresh + install when absent ─────────────────────
@@ -282,7 +293,7 @@ export async function runProvisioningPipeline(
     // updater, upgrades the system DETERMINISTICALLY, and disables the
     // updater for good — package upgrades on a dedicated OAK server are the
     // owner's deliberate act, never a background one.
-    emit({ stage: "docker", state: "start", detail: "stopping the background updater and upgrading system packages" });
+    emit({ stage: "docker", state: "start", detail: t("provisioning.detail.dockerStart") });
     // No honest percentage exists for apt/docker output — the step surfaces the
     // running command's LAST OUTPUT LINE instead (a moving line separates
     // "slow" from "hung" on a fresh host's multi-minute install).
@@ -311,25 +322,25 @@ export async function runProvisioningPipeline(
       "DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get -y -qq dist-upgrade",
       { timeoutMs: SYSTEM_UPGRADE_TIMEOUT_MS, onOutputLine: dockerLine },
     );
-    emit({ stage: "docker", state: "log", detail: "system packages updated" });
+    emit({ stage: "docker", state: "log", detail: t("provisioning.detail.packagesUpdated") });
     const rebootNeeded = await transport.exec("test -f /var/run/reboot-required && echo yes || echo no");
     if (rebootNeeded.code === 0 && rebootNeeded.stdout.trim() === "yes") {
-      emit({ stage: "docker", state: "log", detail: "a reboot is recommended after the setup (a new kernel arrived)" });
+      emit({ stage: "docker", state: "log", detail: t("provisioning.detail.rebootHint") });
     }
 
     if (!dockerPresent) {
-      emit({ stage: "docker", state: "log", detail: "installing Docker (this can take a few minutes)" });
+      emit({ stage: "docker", state: "log", detail: t("provisioning.detail.installingDocker") });
       await must("docker", "curl -fsSL https://get.docker.com | sh", { timeoutMs: DOCKER_INSTALL_TIMEOUT_MS, onOutputLine: dockerLine });
       // The installer usually starts the daemon; make sure it is enabled too.
       await transport.exec("systemctl enable --now docker 2>/dev/null || service docker start 2>/dev/null || true");
       const verify = await transport.exec("docker compose version");
       if (verify.code !== 0) {
-        throw new ProvisioningFailure("docker", "Docker was installed but does not answer — is the daemon running?");
+        throw new ProvisioningFailure("docker", t("provisioning.err.dockerNoAnswer"));
       }
-      emit({ stage: "docker", state: "done", detail: "system updated, Docker installed" });
+      emit({ stage: "docker", state: "done", detail: t("provisioning.detail.dockerInstalled") });
     }
     if (dockerPresent) {
-      emit({ stage: "docker", state: "done", detail: "system updated, Docker ready" });
+      emit({ stage: "docker", state: "done", detail: t("provisioning.detail.dockerReady") });
     }
 
     // ── layout: /opt/oak + the adopt check ──────────────────────────────
@@ -341,12 +352,12 @@ export async function runProvisioningPipeline(
       stage: "layout",
       state: "done",
       detail: adopt
-        ? "existing deployment found — updating in place (secrets, certificate and volumes are kept)"
-        : "fresh deployment",
+        ? t("provisioning.detail.adoptFound")
+        : t("provisioning.detail.freshDeploy"),
     });
 
     // ── upload: templates + the server jar ──────────────────────────────
-    emit({ stage: "upload", state: "start", detail: "uploading the deployment files" });
+    emit({ stage: "upload", state: "start", detail: t("provisioning.detail.uploadingFiles") });
     // The jar is the one multi-megabyte upload on this step — its REAL byte
     // counter (the SFTP stream knows both numbers) is the step's progress.
     const uploadProgress = progressEmitter("upload");
@@ -365,17 +376,17 @@ export async function runProvisioningPipeline(
     emit({
       stage: "upload",
       state: "done",
-      detail: "uploaded the compose stack and the server jar",
+      detail: t("provisioning.detail.uploadedFiles"),
     });
 
     // ── env: per-deployment secrets (never on adopt) ────────────────────
     emit({ stage: "env", state: "start" });
     if (adopt) {
-      emit({ stage: "env", state: "done", detail: "kept the existing .env (secrets survive re-runs)" });
+      emit({ stage: "env", state: "done", detail: t("provisioning.detail.envKept") });
     } else {
       const secrets = generateEnvSecrets(randomHex);
       await transport.writeFile(`${REMOTE_ROOT}/.env`, buildEnvFile(publicHost, params.host.trim(), secrets));
-      emit({ stage: "env", state: "done", detail: "generated .env with fresh random secrets" });
+      emit({ stage: "env", state: "done", detail: t("provisioning.detail.envGenerated") });
     }
 
     // ── certificate: self-signed on a bare IP, ACME on a domain ─────────
@@ -385,7 +396,7 @@ export async function runProvisioningPipeline(
       emit({
         stage: "certificate",
         state: "done",
-        detail: `${publicHost} — Caddy obtains a Let's Encrypt certificate automatically`,
+        detail: t("provisioning.detail.certAcme", { host: publicHost }),
       });
     } else {
       const existingCert = await transport.exec(`test -f ${CERT_PATH} && echo yes || echo no`);
@@ -396,9 +407,9 @@ export async function runProvisioningPipeline(
         const read = await must("certificate", `openssl x509 -in ${CERT_PATH} -noout -fingerprint -sha256`);
         certFingerprint = parseOpensslFingerprint(read.stdout);
         if (certFingerprint === null) {
-          throw new ProvisioningFailure("certificate", "could not read the existing certificate's fingerprint");
+          throw new ProvisioningFailure("certificate", t("provisioning.err.certRead"));
         }
-        emit({ stage: "certificate", state: "done", detail: "kept the existing certificate (client pins stay valid)" });
+        emit({ stage: "certificate", state: "done", detail: t("provisioning.detail.certKept") });
       } else {
         const san = selfSignedSan(params.host.trim());
         // Key generation goes through `openssl ecparam` — the one-shot
@@ -415,9 +426,9 @@ export async function runProvisioningPipeline(
         const read = await must("certificate", `openssl x509 -in ${CERT_PATH} -noout -fingerprint -sha256`);
         certFingerprint = parseOpensslFingerprint(read.stdout);
         if (certFingerprint === null) {
-          throw new ProvisioningFailure("certificate", "openssl did not report a SHA-256 fingerprint");
+          throw new ProvisioningFailure("certificate", t("provisioning.err.certFingerprint"));
         }
-        emit({ stage: "certificate", state: "done", detail: `self-signed certificate ready (${certFingerprint.slice(0, 16)}…)` });
+        emit({ stage: "certificate", state: "done", detail: t("provisioning.detail.certSelfSigned", { fingerprint: certFingerprint.slice(0, 16) }) });
       }
     }
 
@@ -442,7 +453,7 @@ export async function runProvisioningPipeline(
           + " && ufw allow 2000:2300/udp && ufw allow 55000:55050/udp"
           + " && ufw --force enable",
       );
-      emit({ stage: "firewall", state: "done", detail: "open: SSH, HTTPS (443/9443), TURN and voice media; everything else denied" });
+      emit({ stage: "firewall", state: "done", detail: t("provisioning.detail.firewallDone") });
     }
 
     // ── small-host guard: RAM + swap headroom before lifting the stack ──
@@ -457,7 +468,7 @@ export async function runProvisioningPipeline(
     const MEMORY_FLOOR_KB = 3_000_000;
     const SWAP_TARGET_KB = 2_000_000;
     if (memoryNumbersKnown && memTotalKb + swapTotalKb < MEMORY_FLOOR_KB && swapTotalKb < SWAP_TARGET_KB) {
-      emit({ stage: "compose", state: "log", detail: "low memory host — enlarging the swap file to 2 GB for the start spike" });
+      emit({ stage: "compose", state: "log", detail: t("provisioning.detail.swapEnlarged") });
       await must(
         "compose",
         `swapoff /swapfile 2>/dev/null; rm -f /swapfile; `
@@ -469,7 +480,7 @@ export async function runProvisioningPipeline(
     }
 
     // ── compose: build the images and start the stack ───────────────────
-    emit({ stage: "compose", state: "start", detail: "preparing the stack images (the first run takes a few minutes)" });
+    emit({ stage: "compose", state: "start", detail: t("provisioning.detail.composeStart") });
     // The image list: the bundled manifest's digest-pinned refs, or — for a
     // build without the bundled set — the image: lines of the compose file
     // itself. Every image pulls INDIVIDUALLY (user decision 2026-10-12): one
@@ -483,7 +494,7 @@ export async function runProvisioningPipeline(
     let missingImages = parseMissingImages((await transport.exec(missingCheck)).stdout);
 
     if (missingImages.length === 0) {
-      emit({ stage: "compose", state: "log", detail: "all stack images are in place — the registry is not needed" });
+      emit({ stage: "compose", state: "log", detail: t("provisioning.detail.imagesInPlace") });
     } else {
       // A healthy host PULLS first (fast, with its own wide datacenter
       // channel) — the bundled archives only deploy as the RESCUE for what
@@ -502,7 +513,7 @@ export async function runProvisioningPipeline(
           emit({
             stage: "compose",
             state: "log",
-            detail: `pulled ${refs.length - stillMissing.length} of ${refs.length} missing image(s)`,
+            detail: t("provisioning.detail.imagesPulled", { done: refs.length - stillMissing.length, total: refs.length }),
           });
         }
         return stillMissing;
@@ -512,13 +523,13 @@ export async function runProvisioningPipeline(
         // Self-repair ladder — each step re-pulls ONLY what is still missing.
         const dnsCheck = await transport.exec("getent hosts registry-1.docker.io >/dev/null 2>&1 || echo NO_DNS");
         if (dnsCheck.code === 0 && dnsCheck.stdout.includes("NO_DNS")) {
-          emit({ stage: "compose", state: "log", detail: "the Docker registry does not resolve — adding a public nameserver" });
+          emit({ stage: "compose", state: "log", detail: t("provisioning.detail.dnsFix") });
           await transport.exec("sed -i '1i nameserver 1.1.1.1' /etc/resolv.conf");
           remaining = await pullRound(remaining);
         }
       }
       if (remaining.length > 0) {
-        emit({ stage: "compose", state: "log", detail: "configuring registry mirrors (mirror.gcr.io, then docker.m.daocloud.io)" });
+        emit({ stage: "compose", state: "log", detail: t("provisioning.detail.mirrorsConfigured") });
         await must(
           "compose",
           `python3 -c 'import json, pathlib; target = pathlib.Path("/etc/docker/daemon.json"); `
@@ -544,7 +555,7 @@ export async function runProvisioningPipeline(
         // some networks, live VPS 2026-10-12). Last registry resort: strip
         // the mirrors and pull DIRECT — by now the original Hub-side trouble
         // (an anonymous per-IP rate limit, a 6-hour window) may have passed.
-        emit({ stage: "compose", state: "log", detail: "removing the mirrors and retrying direct" });
+        emit({ stage: "compose", state: "log", detail: t("provisioning.detail.mirrorsRemoved") });
         await must(
           "compose",
           `python3 -c 'import json, pathlib; target = pathlib.Path("/etc/docker/daemon.json"); `
@@ -557,7 +568,7 @@ export async function runProvisioningPipeline(
         remaining = await pullRound(remaining);
       }
       if (remaining.length === 0) {
-        emit({ stage: "compose", state: "log", detail: "images pulled from the registry" });
+        emit({ stage: "compose", state: "log", detail: t("provisioning.detail.imagesFromRegistry") });
       } else if (bundledImages !== null) {
         // Every pull route failed — rescue from the bundled archives: upload
         // ONLY what no route could deliver (writeLocalFile streams, docker
@@ -565,7 +576,7 @@ export async function runProvisioningPipeline(
         emit({
           stage: "compose",
           state: "log",
-          detail: `the registry could not deliver ${remaining.length} image(s) — deploying them from the bundled set`,
+          detail: t("provisioning.detail.bundleRescue", { count: remaining.length }),
         });
         await must("compose", `mkdir -p ${REMOTE_ROOT}/images`);
         const composeProgress = progressEmitter("compose");
@@ -577,7 +588,7 @@ export async function runProvisioningPipeline(
           emit({
             stage: "compose",
             state: "log",
-            detail: `uploading ${ref} (${Math.round(entry.bytes / 1024 / 1024)} MB)`,
+            detail: t("provisioning.detail.uploadingImage", { ref, mb: Math.round(entry.bytes / 1024 / 1024) }),
           });
           await transport.writeLocalFile(
             `${bundledImages.directory}/${entry.archive}`,
@@ -593,11 +604,11 @@ export async function runProvisioningPipeline(
         }
         const recheck = parseMissingImages((await transport.exec(missingCheck)).stdout);
         if (recheck.length > 0) {
-          throw new ProvisioningFailure("compose", `images neither pullable nor bundled: ${recheck.join(", ")}`);
+          throw new ProvisioningFailure("compose", t("provisioning.err.imagesUnavailable", { list: recheck.join(", ") }));
         }
-        emit({ stage: "compose", state: "log", detail: "bundled images deployed — the registry was not needed" });
+        emit({ stage: "compose", state: "log", detail: t("provisioning.detail.bundleDeployed") });
       } else {
-        throw new ProvisioningFailure("compose", `images could not be pulled (${lastPullReason}): ${remaining.join(", ")}`);
+        throw new ProvisioningFailure("compose", t("provisioning.err.imagesFailed", { reason: lastPullReason, list: remaining.join(", ") }));
       }
     }
     // SEQUENTIAL bring-up (user request 2026-10-12): lifting one service at a
@@ -626,7 +637,7 @@ export async function runProvisioningPipeline(
     // Only UNTAGGED images go; tagged ones in use are untouched, and the
     // build cache stays (it is what makes the next rebuild fast).
     await must("compose", "docker image prune -f");
-    emit({ stage: "compose", state: "done", detail: "containers are up" });
+    emit({ stage: "compose", state: "done", detail: t("provisioning.detail.containersUp") });
 
     // ── wait: the server answers over localhost HTTPS ────────────────────
     // The poll runs ON the server (curl -k against https://localhost with the
@@ -642,18 +653,18 @@ export async function runProvisioningPipeline(
     // 2026-10-13: the poll took a 502 for a ready server and register died
     // with "registration failed (HTTP 502)"); only the application's own
     // codes count.
-    emit({ stage: "wait", state: "start", detail: "waiting for the server to come up" });
+    emit({ stage: "wait", state: "start", detail: t("provisioning.detail.waitingServer") });
     const pollCommand = `for attempt in $(seq 1 80); do `
       + `code=$(curl -sko /dev/null -w '%{http_code}' --max-time 3 -H "Host: ${publicHost}" https://localhost/api/server 2>/dev/null); `
       + `if [ -n "$code" ] && [ "$code" != "000" ] && [ "$code" != "502" ] && [ "$code" != "503" ] && [ "$code" != "504" ]; then echo "HTTP $code"; exit 0; fi; `
       + `sleep 5; done; echo 'the server did not answer within 400 seconds'; exit 1`;
     const pollResult = await must("wait", pollCommand, { timeoutMs: READINESS_TIMEOUT_MS });
-    emit({ stage: "wait", state: "done", detail: `server answers (${pollResult.stdout.trim()})` });
+    emit({ stage: "wait", state: "done", detail: t("provisioning.detail.serverAnswers", { code: pollResult.stdout.trim() }) });
 
     // ── register: the OWNER account + the advertised connection info ────
     // Bodies travel as FILES (writeFile), never on the command line — the
     // account password must not appear in any shell history or process list.
-    emit({ stage: "register", state: "start", detail: "creating the owner account" });
+    emit({ stage: "register", state: "start", detail: t("provisioning.detail.creatingOwner") });
     const statusMarker = `-w '\\n__STATUS__%{http_code}'`;
     let ownerReady = false;
 
@@ -675,7 +686,7 @@ export async function runProvisioningPipeline(
     const registerOutcome = parseCurlWithStatus(registerResponse.stdout);
     let accessToken: string | null = null;
     if (registerOutcome === null) {
-      throw new ProvisioningFailure("register", "the server did not answer the registration request");
+      throw new ProvisioningFailure("register", t("provisioning.err.registerNoAnswer"));
     }
     /** Logs the typed credentials in and sets the token; a non-200 login is
      *  NOT fatal (a re-run's admin may carry a different password — the user
@@ -694,17 +705,17 @@ export async function runProvisioningPipeline(
       }
       accessToken = authResponseToken(extractJsonObject(loginOutcome.body));
       if (accessToken === null) {
-        throw new ProvisioningFailure("register", "login succeeded but returned no access token");
+        throw new ProvisioningFailure("register", t("provisioning.err.noToken"));
       }
       return true;
     };
     if (registerOutcome.status === 201) {
-      emit({ stage: "register", state: "log", detail: `account ${params.adminLogin} registered` });
+      emit({ stage: "register", state: "log", detail: t("provisioning.detail.accountRegistered", { login: params.adminLogin }) });
       // The wire register returns the CREATED USER (UserResponse — no token):
       // the access token only ever comes from login (AuthController).
       ownerReady = await loginForToken();
       if (!ownerReady) {
-        throw new ProvisioningFailure("register", "registration succeeded but the login right after it failed");
+        throw new ProvisioningFailure("register", t("provisioning.err.loginAfterRegister"));
       }
     } else if (registerOutcome.status === 409) {
       // An adopt re-run: the account exists — log in with the typed password.
@@ -713,12 +724,18 @@ export async function runProvisioningPipeline(
         stage: "register",
         state: "log",
         detail: ownerReady
-          ? "the account already exists — logged in with the typed password"
-          : "the admin account exists with a DIFFERENT password — automatic login is not possible",
+          ? t("provisioning.detail.loggedInTyped")
+          : t("provisioning.detail.loginMismatch"),
       });
     } else {
       const detail = serverErrorDetail(registerOutcome.body);
-      throw new ProvisioningFailure("register", `registration failed (HTTP ${registerOutcome.status})${detail ? `: ${detail}` : ""}`);
+      throw new ProvisioningFailure(
+        "register",
+        t(detail !== null ? "provisioning.err.registerFailedDetail" : "provisioning.err.registerFailed", {
+          status: registerOutcome.status,
+          detail: detail ?? "",
+        }),
+      );
     }
 
     if (ownerReady && accessToken !== null) {
@@ -744,15 +761,17 @@ export async function runProvisioningPipeline(
       const connectionOutcome = parseCurlWithStatus(connectionResponse.stdout);
       if (connectionOutcome === null || connectionOutcome.status !== 200) {
         const status = connectionOutcome?.status ?? "no answer";
-        throw new ProvisioningFailure("register", `setting the advertised address failed (HTTP ${status})`);
+        throw new ProvisioningFailure("register", t("provisioning.err.addressFailed", { status: String(status) }));
       }
-      emit({ stage: "register", state: "log", detail: `advertised address set to ${publicHost}` });
+      emit({ stage: "register", state: "log", detail: t("provisioning.detail.addressSet", { host: publicHost }) });
     }
     await transport.exec(`rm -f ${REMOTE_ROOT}/.provision-register.json ${REMOTE_ROOT}/.provision-login.json ${REMOTE_ROOT}/.provision-connection.json`);
     emit({
       stage: "register",
       state: "done",
-      detail: ownerReady ? "the server is ready" : "the server is ready — log in with the existing admin password",
+      detail: ownerReady
+        ? t("provisioning.detail.serverReady")
+        : t("provisioning.detail.serverReadyManual"),
     });
 
     return { hostUrl, certFingerprint, ownerReady, adminUsername: params.adminLogin };

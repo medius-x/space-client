@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { hexToHsv, hsvToHex, type Hsv } from "../../domain/logic/color";
 import { Modal } from "./Modal";
+import { useT } from "../hooks/useT";
 
 /**
  * oak's CustomColorDialog: a centered modal picker — an SV square over a hue
@@ -12,6 +13,7 @@ export function ColorPickerDialog({ initialHex, onApply, onClose }: {
   onApply(hex: string): void;
   onClose(): void;
 }): React.JSX.Element {
+  const t = useT();
   const [hsv, setHsv] = useState<Hsv>(() => hexToHsv(initialHex));
   const [hexDraft, setHexDraft] = useState(initialHex.toLowerCase());
   const hueHex = hsvToHex({ hue: hsv.hue, saturation: 1, value: 1 });
@@ -57,7 +59,7 @@ export function ColorPickerDialog({ initialHex, onApply, onClose }: {
   };
 
   return (
-    <Modal title="Custom color" onClose={onClose}>
+    <Modal title={t("colorPicker.title")} onClose={onClose}>
       <div
         className="picker-sv"
         style={{
@@ -98,12 +100,12 @@ export function ColorPickerDialog({ initialHex, onApply, onClose }: {
         />
       </div>
       <div className="modal-actions">
-        <button className="ghost" onClick={onClose}>Cancel</button>
+        <button className="ghost" onClick={onClose}>{t("common.cancel")}</button>
         <button className="primary" onClick={() => {
           applyHexDraft();
           onApply(hsvToHex(hsv));
           onClose();
-        }}>Apply</button>
+        }}>{t("settings.apply")}</button>
       </div>
     </Modal>
   );

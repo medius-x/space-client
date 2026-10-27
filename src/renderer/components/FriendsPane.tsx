@@ -12,11 +12,13 @@ import { socialDirectory } from "../social-aggregate";
 import { mergeFriendRows, type FriendRowModel } from "../../domain/logic/social-aggregation";
 import { dmBlockHintText } from "../../domain/logic/dm-gating";
 import type { ConnectionSession } from "../../domain/session/connection-session";
-import type { RelationshipType, UserSummary } from "../../types";
+import type { UserSummary } from "../../types";
 import { Avatar } from "./Avatar";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { InstanceTag } from "./InstanceTag";
 import { Modal } from "./Modal";
+import { useT } from "../hooks/useT";
+import type { Translator } from "../../domain/i18n/i18n";
 
 /**
  * The Friends pane (oak's four tabs + Add Friend), AGGREGATED across every
@@ -26,21 +28,17 @@ import { Modal } from "./Modal";
  * a REST call followed by the coalesced relationship refresh; the actor gets
  * no push back.
  */
-const TABS: { key: Exclude<FriendsTab, "ADD_FRIEND">; label: string }[] = [
-  { key: "ALL", label: "All" },
-  { key: "ONLINE", label: "Online" },
-  { key: "PENDING", label: "Pending" },
-  { key: "BLOCKED", label: "Blocked" },
-];
+const TABS: Exclude<FriendsTab, "ADD_FRIEND">[] = ["ALL", "ONLINE", "PENDING", "BLOCKED"];
 
-const STATUS_TEXT: Record<RelationshipType, string> = {
-  FRIEND: "Online",
-  BLOCKED: "Blocked",
-  PENDING_INCOMING: "Incoming friend request",
-  PENDING_OUTGOING: "Outgoing friend request",
+const TAB_LABEL_KEYS: Record<Exclude<FriendsTab, "ADD_FRIEND">, "friends.tab.all" | "friends.tab.online" | "friends.tab.pending" | "friends.tab.blocked"> = {
+  ALL: "friends.tab.all",
+  ONLINE: "friends.tab.online",
+  PENDING: "friends.tab.pending",
+  BLOCKED: "friends.tab.blocked",
 };
 
 export function FriendsPane({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const t = useT();
   const tab = useStore(appStore, (state) => state.friendsTab);
   const relationships = useStore(session.socialStore, (state) => state.relationships);
   const presence = useStore(session.rosterStore, (state) => state.presence);
@@ -78,8 +76,8 @@ export function FriendsPane({ session }: { session: ConnectionSession }): React.
     ALL: [{ label: null, rows: friends }],
     ONLINE: [{ label: null, rows: friends.filter((row) => row.online) }],
     PENDING: [
-      { label: "Incoming", rows: rows.filter((row) => row.relationship.type === "PENDING_INCOMING") },
-      { label: "Outgoing", rows: rows.filter((row) => row.relationship.type === "PENDING_OUTGOING") },
+      { label: t("friends.section.incoming"), rows: rows.filter((row) => row.relationship.type === "PENDING_INCOMING") },
+      { label: t("friends.section.outgoing"), rows: rows.filter((row) => row.relationship.type === "PENDING_OUTGOING") },
     ],
     BLOCKED: [{ label: null, rows: rows.filter((row) => row.relationship.type === "BLOCKED") }],
   };
@@ -88,16 +86,16 @@ export function FriendsPane({ session }: { session: ConnectionSession }): React.
   return (
     <div className="friends-pane">
       <div className="friends-header">
-        <span className="friends-title"><span className="icon mdi-account-multiple" /> Friends</span>
+        <span className="friends-title"><span className="icon mdi-account-multiple" /> {t("dm.friends")}</span>
         <div className="friends-tabs">
-          {TABS.map((entry) => (
+          {TABS.map((tabKey) => (
             <button
-              key={entry.key}
-              className={"friends-tab" + (tab === entry.key ? " active" : "")}
-              onClick={() => setFriendsTab(entry.key)}
+              key={tabKey}
+              className={"friends-tab" + (tab === tabKey ? " active" : "")}
+              onClick={() => setFriendsTab(tabKey)}
             >
-              {entry.label}
-              {entry.key === "PENDING" && pendingTotal > 0 ? (
+              {t(TAB_LABEL_KEYS[tabKey])}
+              {tabKey === "PENDING" && pendingTotal > 0 ? (
                 <span className="tab-counter">{pendingTotal}</span>
               ) : null}
             </button>
@@ -106,7 +104,7 @@ export function FriendsPane({ session }: { session: ConnectionSession }): React.
             className={"friends-tab add-friend" + (tab === "ADD_FRIEND" ? " active" : "")}
             onClick={() => setFriendsTab("ADD_FRIEND")}
           >
-            Add Friend
+            {t("friends.addFriendTab")}
           </button>
         </div>
       </div>
@@ -114,7 +112,7 @@ export function FriendsPane({ session }: { session: ConnectionSession }): React.
         {tab === "ADD_FRIEND" ? (
           <AddFriendForm session={session} />
         ) : lists[tab].every((section) => section.rows.length === 0) ? (
-          <div className="friends-empty">{emptyText(tab)}</div>
+          <div className="friends-empty">{emptyText(t, tab)}</div>
         ) : (
           lists[tab].map((section) =>
             section.rows.length === 0 ? null : (
@@ -134,20 +132,21 @@ export function FriendsPane({ session }: { session: ConnectionSession }): React.
   );
 }
 
-function emptyText(tab: Exclude<FriendsTab, "ADD_FRIEND">): string {
+function emptyText(t: Translator, tab: Exclude<FriendsTab, "ADD_FRIEND">): string {
   switch (tab) {
     case "ALL":
-      return "No friends yet.";
+      return t("friends.empty.all");
     case "ONLINE":
-      return "No friends online.";
+      return t("friends.empty.online");
     case "PENDING":
-      return "No pending requests.";
+      return t("friends.empty.pending");
     case "BLOCKED":
-      return "No blocked users.";
+      return t("friends.empty.blocked");
   }
 }
 
 function FriendRow({ session, row }: { session: ConnectionSession; row: FriendRowModel }): React.JSX.Element {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
@@ -171,7 +170,13 @@ function FriendRow({ session, row }: { session: ConnectionSession; row: FriendRo
   };
 
   const relationship = row.relationship;
-  const statusText = relationship.type === "FRIEND" ? (row.online ? "Online" : "Offline") : STATUS_TEXT[relationship.type];
+  const statusText = relationship.type === "FRIEND"
+    ? (row.online ? t("friends.status.online") : t("friends.status.offline"))
+    : relationship.type === "BLOCKED"
+      ? t("friends.status.blocked")
+      : relationship.type === "PENDING_INCOMING"
+        ? t("friends.status.pendingIncoming")
+        : t("friends.status.pendingOutgoing");
   // The DM restriction (RESTRICT_PRIVATE_MESSAGES): the Message button explains
   // itself instead of firing a doomed 403 — either I am barred, or the friend is.
   const myDmRestricted = useStore(session.permissionStore, (state) => state.my?.dmRestricted === true);
@@ -183,8 +188,8 @@ function FriendRow({ session, row }: { session: ConnectionSession; row: FriendRo
   // oak's "⋮" card rows are plain action rows — no danger tint. Both actions
   // open a confirmation first, the REST call fires only on the confirm button.
   const menuItems: ContextMenuItem[] = [
-    { label: "Remove friend", action: () => setConfirmKind("remove") },
-    { label: "Block", action: () => setConfirmKind("block") },
+    { label: t("friends.removeFriend"), action: () => setConfirmKind("remove") },
+    { label: t("friends.block"), action: () => setConfirmKind("block") },
   ];
 
   return (
@@ -210,7 +215,7 @@ function FriendRow({ session, row }: { session: ConnectionSession; row: FriendRo
                 title={messageBlockedTitle}
                 onClick={() => void run(() => openDmWithUser(relationship.userId))}
               >
-                Message
+                {t("friends.message")}
               </button>
               <button className="friend-action" disabled={busy} onClick={(event) => {
                 const rect = event.currentTarget.getBoundingClientRect();
@@ -220,19 +225,19 @@ function FriendRow({ session, row }: { session: ConnectionSession; row: FriendRo
           ) : relationship.type === "PENDING_INCOMING" ? (
             <>
               <button className="friend-action" disabled={busy} onClick={() => void run(() => session.acceptFriendRequest(relationship.userId))}>
-                Accept
+                {t("friends.accept")}
               </button>
               <button className="friend-action" disabled={busy} onClick={() => void run(() => session.removeFriend(relationship.userId))}>
-                Decline
+                {t("friends.decline")}
               </button>
             </>
           ) : relationship.type === "PENDING_OUTGOING" ? (
             <button className="friend-action" disabled={busy} onClick={() => void run(() => session.removeFriend(relationship.userId))}>
-              Cancel
+              {t("common.cancel")}
             </button>
           ) : (
             <button className="friend-action" disabled={busy} onClick={() => void run(() => session.unblockUser(relationship.userId))}>
-              Unblock
+              {t("friends.unblock")}
             </button>
           )}
         </>
@@ -240,7 +245,7 @@ function FriendRow({ session, row }: { session: ConnectionSession; row: FriendRo
         // oak: rows of OTHER instances only offer switching to them — the
         // friend/DM mutations are scoped to that instance's active connection.
         <button className="friend-action" onClick={() => void switchConnection(row.recordId)}>
-          Open {row.serverName}
+          {t("friends.openServer", { server: row.serverName })}
         </button>
       )}
       {menu !== null ? (
@@ -248,16 +253,16 @@ function FriendRow({ session, row }: { session: ConnectionSession; row: FriendRo
       ) : null}
       {confirmKind !== null ? (
         <Modal
-          title={confirmKind === "remove" ? "Remove friend" : "Block"}
+          title={confirmKind === "remove" ? t("friends.removeFriend") : t("friends.block")}
           onClose={() => setConfirmKind(null)}
         >
           <div className="modal-note">
             {confirmKind === "remove"
-              ? `Are you sure you want to permanently remove ${relationship.displayName ?? relationship.username} as a friend?`
-              : `Are you sure you want to block ${relationship.displayName ?? relationship.username}?`}
+              ? t("friends.removeFriendConfirm", { name: relationship.displayName ?? relationship.username })
+              : t("friends.blockConfirm", { name: relationship.displayName ?? relationship.username })}
           </div>
           <div className="modal-actions">
-            <button className="ghost" onClick={() => setConfirmKind(null)}>Cancel</button>
+            <button className="ghost" onClick={() => setConfirmKind(null)}>{t("common.cancel")}</button>
             <button
               className="danger"
               disabled={busy}
@@ -269,7 +274,7 @@ function FriendRow({ session, row }: { session: ConnectionSession; row: FriendRo
                   : session.blockUser(relationship.username));
               }}
             >
-              {confirmKind === "remove" ? "Remove friend" : "Block"}
+              {confirmKind === "remove" ? t("friends.removeFriend") : t("friends.block")}
             </button>
           </div>
         </Modal>
@@ -279,6 +284,7 @@ function FriendRow({ session, row }: { session: ConnectionSession; row: FriendRo
 }
 
 function AddFriendForm({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const t = useT();
   const [username, setUsername] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -310,10 +316,10 @@ function AddFriendForm({ session }: { session: ConnectionSession }): React.JSX.E
       return;
     }
     setBusy(true);
-    setStatus("Sending…");
+    setStatus(t("friends.sending"));
     try {
       await session.sendFriendRequest(trimmed);
-      setStatus(`Friend request sent to ${trimmed}.`); // mutual pending auto-accepts
+      setStatus(t("friends.requestSent", { name: trimmed })); // mutual pending auto-accepts
       setUsername("");
       setSuggestIndex(0);
     } catch (error) {
@@ -325,8 +331,8 @@ function AddFriendForm({ session }: { session: ConnectionSession }): React.JSX.E
 
   return (
     <div className="add-friend-form">
-      <div className="add-friend-title">ADD A FRIEND</div>
-      <div className="add-friend-hint">You can add friends by their nickname.</div>
+      <div className="add-friend-title">{t("friends.addTitle")}</div>
+      <div className="add-friend-hint">{t("friends.addHint")}</div>
       <div className="add-friend-entry">
         {suggestions.length > 0 ? (
           <div className="username-suggest">
@@ -347,7 +353,7 @@ function AddFriendForm({ session }: { session: ConnectionSession }): React.JSX.E
             autoFocus
             type="text"
             value={username}
-            placeholder="Enter a nickname"
+            placeholder={t("friends.addPlaceholder")}
             onChange={(event) => {
               setUsername(event.target.value);
               setSuggestIndex(0);
@@ -373,7 +379,7 @@ function AddFriendForm({ session }: { session: ConnectionSession }): React.JSX.E
             }}
           />
           <button className="primary" disabled={busy || username.trim().length === 0} onClick={() => void submit()}>
-            Send Friend Request
+            {t("friends.sendRequest")}
           </button>
         </div>
       </div>

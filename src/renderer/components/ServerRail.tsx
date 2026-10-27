@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useStore } from "../hooks/useStore";
 import { useAttachmentImage } from "../hooks/useAttachmentImage";
+import { useT } from "../hooks/useT";
 import {
   appStore,
   beginAddServer,
@@ -51,6 +52,7 @@ export function ServerRail({ activeRecordId, session }: {
   activeRecordId: string | null;
   session: ConnectionSession | null;
 }): React.JSX.Element {
+  const t = useT();
   const records = useStore(connectionDirectory, (allRecords) => allRecords);
   const dmMode = useStore(appStore, (state) => state.dmMode);
 
@@ -236,7 +238,7 @@ export function ServerRail({ activeRecordId, session }: {
           />
         );
       })}
-      <div className="rail-wrap" title="Add a server" onClick={beginAddServer}>
+      <div className="rail-wrap" title={t("rail.addServer")} onClick={beginAddServer}>
         <div className="rail-icon add"><span className="icon mdi-plus" /></div>
       </div>
     </nav>
@@ -438,8 +440,9 @@ function useServerBadge(recordId: string, session: ConnectionSession | null): { 
  *  but the button vanishing between offline/online states reads as breakage
  *  (user report 2026-10-08) — it stays in place, inert, with a hint. */
 function DisabledHomeRailButton(): React.JSX.Element {
+  const t = useT();
   return (
-    <div className="rail-wrap home" title="Connect to a server to open your direct messages">
+    <div className="rail-wrap home" title={t("rail.disabledHomeHint")}>
       <div className="rail-icon home"><img className="rail-logo" src="logo.png" alt="" draggable={false} /></div>
     </div>
   );

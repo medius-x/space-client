@@ -1593,8 +1593,10 @@ button.wide-add { width: 100%; }
 
 /* ===== M3: attachments & media ===== */
 
-.chat-pane.drag-over::after {
-  content: "Drop files to attach";
+/* The drop hint element lives in ChatPane's JSX (chat.dropFiles key) — this
+   class carries only the paint; a CSS content: string would dodge the
+   localization and the final grep audit. */
+.chat-drop-overlay {
   position: absolute;
   inset: 8px;
   border: 2px dashed var(--sp-accent);

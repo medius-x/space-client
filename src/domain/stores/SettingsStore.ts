@@ -4,6 +4,7 @@ import { DEFAULT_KEYBINDS, resolveKeybinds, type ActionId } from "../logic/keybi
 import { clampJumboEmojiSize } from "../logic/emoji-picker";
 import { sanitizeRecentExpressions } from "../logic/reaction-picker";
 import type { SavedSharePreset } from "../logic/share-quality";
+import type { LanguageSetting } from "../i18n/i18n";
 
 /**
  * App-wide client settings (oak's SettingsStore — the M7 subset that maps onto
@@ -97,6 +98,12 @@ export interface ClientSettings {
   /** The version the user Skipped in the update banner — it stays hidden for
    *  exactly this version; the next release un-hides itself. */
   skippedUpdateVersion: string | null;
+  /** The UI language (localization round 2026-10-27): "system" resolves per
+   *  navigator at apply time (ru* → ru, else en). The main window's runtime
+   *  subscription mirrors the RESOLVED language into i18n module state, the
+   *  main process (tray/titles) and the aux windows via the spaceI18n bridge;
+   *  main re-reads this KV key on its own when seeding before the first sync. */
+  language: LanguageSetting;
 }
 
 export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
@@ -128,6 +135,7 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   updateCheckOnStartup: true,
   updateCheckDaily: true,
   skippedUpdateVersion: null,
+  language: "system",
 };
 
 const KV_KEY = "client-settings";
@@ -205,6 +213,12 @@ export class SettingsStore extends Emitter {
           ? rest.skippedUpdateVersion
           : null,
       };
+      // The language is a closed union — anything else (hand-edited KV, a
+      // future value) falls back to "system" (the same sanitize as the picker
+      // tab above).
+      if (this.settings.language !== "en" && this.settings.language !== "ru" && this.settings.language !== "system") {
+        this.settings = { ...this.settings, language: "system" };
+      }
     }
     this.loaded = true;
     this.emit();

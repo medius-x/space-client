@@ -5,6 +5,7 @@ import { CaptionBar } from "./CaptionBar";
 import type { NoiseEngineKind } from "../../media/noise-suppression";
 import type { PopoutTarget, PopoutVoiceState } from "../bridges";
 import { log } from "../../logging";
+import { useT } from "../hooks/useT";
 
 function isPopoutTarget(value: unknown): value is PopoutTarget {
   if (value === null || typeof value !== "object") {
@@ -55,6 +56,7 @@ const VOLUME_SYNC_GRACE_MS = 400;
  * window's voice panel (mute/deafen/NS) — presses travel back through IPC.
  */
 export function PopoutScreen(): React.JSX.Element {
+  const t = useT();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const viewerRef = useRef<PopoutViewer | null>(null);
   const [hasVideo, setHasVideo] = useState(false);
@@ -265,28 +267,28 @@ export function PopoutScreen(): React.JSX.Element {
 
   return (
     <div className="popout-frame">
-      <CaptionBar subtitle="Screen share" />
+      <CaptionBar subtitle={t("popout.subtitle")} />
       <div className={"popout-root" + (fullscreen && !toolbarVisible ? " hide-cursor" : "")}>
         {/* display:none while streamless: a DEAD stream leaves the element
             sized (frozen last frame) inside the centering flex — the waiting
             line then sat OFF-CENTER next to it (live report 2026-09-25:
             sharer closed their client). */}
         <video ref={videoRef} autoPlay playsInline style={{ display: hasVideo ? "block" : "none" }} />
-        {hasVideo ? null : <div className="popout-waiting">Waiting for the video…</div>}
+        {hasVideo ? null : <div className="popout-waiting">{t("popout.waiting")}</div>}
         {hasVideo ? (
           <div ref={toolbarRef} className={"popout-toolbar" + (toolbarVisible ? " visible" : "")}>
             {/* The main window's voice panel, mirrored (user request): the same
                 glyphs and on/off semantics; presses travel back via IPC. */}
             <button
               className={"popout-voice-toggle" + (voiceState.muted ? " on" : "")}
-              title={voiceState.muted ? "Unmute" : "Mute"}
+              title={voiceState.muted ? t("voice.unmute") : t("voice.mute")}
               onClick={() => window.spaceWindow?.popoutVoiceAction("toggle-mute")}
             >
               <span className={"icon " + (voiceState.muted ? "mdi-microphone-off" : "mdi-microphone")} />
             </button>
             <button
               className={"popout-voice-toggle" + (voiceState.deafened ? " on" : "")}
-              title={voiceState.deafened ? "Undeafen" : "Deafen"}
+              title={voiceState.deafened ? t("voice.undeafen") : t("voice.deafen")}
               onClick={() => window.spaceWindow?.popoutVoiceAction("toggle-deafen")}
             >
               <span className={"icon " + (voiceState.deafened ? "mdi-headphones-off" : "mdi-headphones")} />
@@ -294,7 +296,7 @@ export function PopoutScreen(): React.JSX.Element {
             <button
               ref={nsButtonRef}
               className={"popout-voice-toggle ns" + (nsEngine !== "off" ? " on" : "")}
-              title="Noise suppression engine"
+              title={t("popout.nsEngine")}
               onClick={(event) => {
                 if (nsMenuAt !== null) {
                   setNsMenuAt(null);
@@ -314,11 +316,11 @@ export function PopoutScreen(): React.JSX.Element {
                 video-only share. */}
             <div className="popout-volume-group">
               <div className="popout-volume-cell">
-                <span className="popout-volume-label">Voice</span>
+                <span className="popout-volume-label">{t("voice.voiceLabel")}</span>
                 <div className="popout-volume-row">
                   <button
                     className="popout-volume-toggle"
-                    title={voiceVolume > 0 ? "Mute voice" : "Unmute voice"}
+                    title={voiceVolume > 0 ? t("voice.muteVoice") : t("voice.unmuteVoice")}
                     onClick={() => {
                       const nextGain = voiceVolume > 0
                         ? 0
@@ -338,7 +340,7 @@ export function PopoutScreen(): React.JSX.Element {
                   <VolumeSliderInput
                     className="popout-volume"
                     value={voiceVolume}
-                    title={`Voice volume — ${Math.round(voiceVolume * 100)}%`}
+                    title={t("voice.voiceVolumeTooltip", { percent: Math.round(voiceVolume * 100) })}
                     onValueChange={(next) => {
                       lastLocalVolumeEditRef.current = Date.now();
                       setVoiceVolumeState(next);
@@ -353,12 +355,12 @@ export function PopoutScreen(): React.JSX.Element {
                 </div>
               </div>
               <div className="popout-volume-cell">
-                <span className="popout-volume-label">Video</span>
+                <span className="popout-volume-label">{t("voice.videoLabel")}</span>
                 <div className="popout-volume-row">
                   <button
                     className="popout-volume-toggle"
                     disabled={!volumeInteractive}
-                    title={volumeInteractive ? (shareVolume > 0 ? "Mute share audio" : "Unmute share audio") : "This share has no audio"}
+                    title={volumeInteractive ? (shareVolume > 0 ? t("voice.muteShareAudio") : t("voice.unmuteShareAudio")) : t("voice.shareNoAudio")}
                     onClick={() => {
                       const nextGain = shareVolume > 0
                         ? 0
@@ -379,7 +381,7 @@ export function PopoutScreen(): React.JSX.Element {
                     className="popout-volume"
                     value={shareVolume}
                     disabled={!volumeInteractive}
-                    title={volumeInteractive ? "Share volume" : "This share has no audio"}
+                    title={volumeInteractive ? t("voice.shareVolumeLabel") : t("voice.shareNoAudio")}
                     onValueChange={(next) => {
                       lastLocalVolumeEditRef.current = Date.now();
                       setShareVolume(next);
@@ -393,7 +395,7 @@ export function PopoutScreen(): React.JSX.Element {
             </div>
             <button
               className="popout-fullscreen"
-              title={fullscreen ? "Exit full screen" : "Full screen"}
+              title={fullscreen ? t("popout.exitFullscreen") : t("voice.fullscreen")}
               onClick={() => window.spaceWindow?.toggleFullscreen()}
             >
               <span className={"icon " + (fullscreen ? "mdi-fullscreen-exit" : "mdi-fullscreen")} />

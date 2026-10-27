@@ -3,6 +3,7 @@ import { useStore } from "../hooks/useStore";
 import { appStore, connectionDirectory, retryConnection, toggleUserSettings } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { ConnectionQualitySnapshot } from "../../domain/logic/connection-quality";
+import type { MessageKey } from "../../domain/i18n/i18n";
 import { ServerRail } from "./ServerRail";
 import { Sidebar } from "./Sidebar";
 import { ChatPane } from "./ChatPane";
@@ -10,8 +11,17 @@ import { FriendsPane } from "./FriendsPane";
 import { RightPane } from "./SearchPane";
 import { VoiceBar, RoomView, CallConflictModal } from "./VoiceRoom";
 import { useDisplayName } from "../hooks/useDisplayName";
+import { useT } from "../hooks/useT";
 import { Diagnostics } from "./Diagnostics";
 import { Avatar } from "./Avatar";
+
+/** The status line's key per STOMP state (labels come from the dictionaries). */
+const STOMP_STATUS_KEYS: Record<string, { key: MessageKey; className: string }> = {
+  off: { key: "userBar.status.off", className: "off" },
+  connecting: { key: "userBar.status.connecting", className: "connecting" },
+  connected: { key: "userBar.status.connected", className: "connected" },
+  lost: { key: "userBar.status.lost", className: "lost" },
+};
 
 const STOMP_STATUS: Record<string, { text: string; className: string }> = {
   off: { text: "Offline", className: "off" },
@@ -100,10 +110,11 @@ export function MainScreen({ session }: { session: ConnectionSession }): React.J
  *  must stay reachable even before the first server exists; a failed server
  *  setup leaves the user a way to pull the logs. */
 export function UserBar({ session }: { session: ConnectionSession | null }): React.JSX.Element {
+  const t = useT();
   if (session === null) {
     return (
       <div className="user-bar empty">
-        <button className="ghost user-bar-button" title="Settings" onClick={toggleUserSettings}>
+        <button className="ghost user-bar-button" title={t("userBar.settings")} onClick={toggleUserSettings}>
           <span className="icon mdi-cog" />
         </button>
       </div>
@@ -113,6 +124,7 @@ export function UserBar({ session }: { session: ConnectionSession | null }): Rea
 }
 
 function ConnectedUserBar({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const t = useT();
   const ownUsername = useStore(appStore, (state) => state.ownUsername) ?? session.username();
   // The rename model: the bar shows the NICKNAME; the login never renders.
   const ownDisplayName = useDisplayName(session, ownUsername);
@@ -125,17 +137,17 @@ function ConnectedUserBar({ session }: { session: ConnectionSession }): React.JS
   const stompCountdown = useStore(appStore, (state) => state.stompCountdown);
   const connectionQuality = useStore(appStore, (state) => state.connectionQuality);
   const voiceConnected = useStore(appStore, (state) => state.activeVoiceChannelId !== null);
-  const base = STOMP_STATUS[stompState] ?? STOMP_STATUS.off!;
+  const base = STOMP_STATUS_KEYS[stompState] ?? STOMP_STATUS_KEYS.off!;
   // oak's label exactly: "Reconnecting in Ns… M/10" while the attempt is
   // scheduled (the per-second countdown), "Reconnecting… M/10" while it flies.
   const status = stompState === "connecting" && stompAttempt > 0
     ? {
       text: stompCountdown !== null
-        ? `Reconnecting in ${stompCountdown}s… ${stompAttempt}/10`
-        : `Reconnecting… ${stompAttempt}/10`,
+        ? t("userBar.reconnectingIn", { seconds: stompCountdown, attempt: stompAttempt })
+        : t("userBar.reconnecting", { attempt: stompAttempt }),
       className: "connecting",
     }
-    : base;
+    : { text: t(base.key), className: base.className };
   const retryable = stompState === "lost" || stompState === "connecting";
   return (
     <div className={"user-bar" + (voiceConnected ? " with-voice" : "")}>
@@ -152,7 +164,7 @@ function ConnectedUserBar({ session }: { session: ConnectionSession }): React.JS
           {retryable ? (
             <button
               className={"user-bar-retry " + status.className}
-              title="Reconnect now"
+              title={t("userBar.reconnectNow")}
               onClick={retryConnection}
             >
               <span className="icon mdi-refresh" />
@@ -160,7 +172,7 @@ function ConnectedUserBar({ session }: { session: ConnectionSession }): React.JS
           ) : <span className="user-bar-retry-slot" />}
         </span>
       </div>
-      <button className="ghost user-bar-button" title="Settings" onClick={toggleUserSettings}>
+      <button className="ghost user-bar-button" title={t("userBar.settings")} onClick={toggleUserSettings}>
         <span className="icon mdi-cog" />
       </button>
     </div>
@@ -171,34 +183,39 @@ function ConnectedUserBar({ session }: { session: ConnectionSession }): React.JS
  *  "unsupported" = this server build predates the /app/ping echo — the REST
  *  request latency keeps the number alive; "probing" = the first ping flies. */
 function PingBadge({ quality }: { quality: ConnectionQualitySnapshot }): React.JSX.Element {
+  const t = useT();
   const millis = quality.state === "unsupported" ? quality.lastRestMillis : quality.lastRttMillis;
   const text = quality.state === "probing" || millis === null
     ? quality.state === "unsupported" ? "—" : "…"
-    : `${millis} ms`;
+    : t("ping.msValue", { ms: millis });
   return (
-    <span className={"ping-badge " + quality.state} title={pingBadgeTitle(quality)}>
+    <span className={"ping-badge " + quality.state} title={pingBadgeTitle(t, quality)}>
       <span className="ping-dot" />
       <span className="ping-text">{text}</span>
     </span>
   );
 }
 
-function pingBadgeTitle(quality: ConnectionQualitySnapshot): string {
+function pingBadgeTitle(t: ReturnType<typeof useT>, quality: ConnectionQualitySnapshot): string {
   if (quality.state === "probing") {
-    return "Measuring connection quality…";
+    return t("ping.measuring");
   }
   if (quality.state === "unsupported") {
     return quality.lastRestMillis === null
-      ? "Ping is not supported by this server build"
-      : `Ping is not supported by this server build — showing request latency (${quality.lastRestMillis} ms)`;
+      ? t("ping.unsupported")
+      : t("ping.unsupportedLatency", { ms: quality.lastRestMillis });
   }
-  const verdict = quality.state === "good" ? "Stable" : quality.state === "weak" ? "Unstable" : "Poor";
+  const verdict = quality.state === "good" ? t("ping.stable") : quality.state === "weak" ? t("ping.unstable") : t("ping.poor");
   const window = quality.windowAvgMillis === null
     ? ""
-    : ` · avg ${Math.round(quality.windowAvgMillis)} / min ${quality.windowMinMillis} / max ${quality.windowMaxMillis} ms (last 60 s)`;
-  const jitter = quality.jitterMillis === null ? "" : ` · jitter ${Math.round(quality.jitterMillis)} ms`;
+    : t("ping.window", {
+      avg: Math.round(quality.windowAvgMillis),
+      min: quality.windowMinMillis ?? 0,
+      max: quality.windowMaxMillis ?? 0,
+    });
+  const jitter = quality.jitterMillis === null ? "" : t("ping.jitter", { ms: Math.round(quality.jitterMillis) });
   const misses = quality.consecutiveMisses > 0
-    ? ` · ${quality.consecutiveMisses} lost ping${quality.consecutiveMisses > 1 ? "s" : ""}`
+    ? t("ping.lostPings", { count: quality.consecutiveMisses })
     : "";
-  return `${verdict} connection — ${quality.lastRttMillis} ms now${window}${jitter}${misses}`;
+  return t("ping.verdictLine", { verdict, rtt: quality.lastRttMillis ?? 0, window, jitter, misses });
 }

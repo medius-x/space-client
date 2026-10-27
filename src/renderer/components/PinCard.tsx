@@ -4,6 +4,7 @@ import { openChannelAtMessage } from "../runtime";
 import { displayNameOf } from "../../domain/logic/display-name";
 import { defaultPinIndex, pinSnippet, stepPinIndex } from "../../domain/logic/pinned-view";
 import type { ConnectionSession } from "../../domain/session/connection-session";
+import { useT } from "../hooks/useT";
 
 /**
  * The channel's pinned-message card, mounted between the chat header and the
@@ -17,6 +18,7 @@ export function PinCard({ session, channelId }: {
   session: ConnectionSession;
   channelId: number;
 }): React.JSX.Element | null {
+  const t = useT();
   const store = useStore(session.pinnedStore, (current) => current);
   const users = useStore(session.rosterStore, (roster) => roster.users);
   const pins = store.listFor(channelId);
@@ -35,14 +37,14 @@ export function PinCard({ session, channelId }: {
     <div className="pin-card">
       <button
         className="pin-card-body"
-        title="Jump to the pinned message"
+        title={t("pins.jumpTooltip")}
         onClick={() => {
           openChannelAtMessage(channelId, pin.id);
         }}
       >
         <span className="icon mdi-pin pin-card-icon" />
         <span className="pin-card-text">
-          <span className="pin-card-by">{`Pinned by ${displayNameOf(users, pin.pinnedBy)}`}</span>
+          <span className="pin-card-by">{t("pins.pinnedBy", { name: displayNameOf(users, pin.pinnedBy) })}</span>
           <span className="pin-card-snippet">{pinSnippet(pin)}</span>
         </span>
       </button>
@@ -50,7 +52,7 @@ export function PinCard({ session, channelId }: {
         <span className="pin-card-nav">
           <button
             className="pin-card-arrow"
-            title="Previous pin"
+            title={t("pins.previous")}
             onClick={() => {
               setIndex((current) => stepPinIndex(current, -1, pins.length));
             }}
@@ -60,7 +62,7 @@ export function PinCard({ session, channelId }: {
           <span className="pin-card-counter">{`${index + 1}/${pins.length}`}</span>
           <button
             className="pin-card-arrow"
-            title="Next pin"
+            title={t("pins.next")}
             onClick={() => {
               setIndex((current) => stepPinIndex(current, 1, pins.length));
             }}

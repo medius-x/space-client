@@ -19,6 +19,7 @@ import type { ConnectionRecord } from "../../domain/session/connection-record";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { Modal } from "./Modal";
 import { PasswordInput } from "./PasswordInput";
+import { useT } from "../hooks/useT";
 
 /**
  * The server dropdown, lifted out of the Sidebar (2026-09-24) so BOTH triggers
@@ -29,6 +30,7 @@ import { PasswordInput } from "./PasswordInput";
  * 2026-09-24); Re-login and Delete work for any saved record directly.
  */
 export function ServerMenu(): React.JSX.Element {
+  const t = useT();
   const session = useStore(sessionBinding, (current) => current);
   const menu = useStore(appStore, (state) => state.serverMenu);
   // Re-evaluate the online gate on every STOMP flip of the ACTIVE record
@@ -48,7 +50,7 @@ export function ServerMenu(): React.JSX.Element {
     ...(canManageServerSettingsOfRecord(menu.recordId)
       ? [
         {
-          label: "Server Settings",
+          label: t("serverMenu.serverSettings"),
           action: () => {
             if (isActiveRecord) {
               openServerSettings();
@@ -67,7 +69,7 @@ export function ServerMenu(): React.JSX.Element {
     ...(recordServerOnline(menu.recordId)
       ? [
         {
-          label: "Account settings",
+          label: t("serverMenu.accountSettings"),
           action: () => {
             if (isActiveRecord) {
               openAccountSettings();
@@ -79,12 +81,12 @@ export function ServerMenu(): React.JSX.Element {
         { label: "", separator: true, action: () => undefined },
       ]
       : []),
-    { label: "Re-login", action: () => {
+    { label: t("serverMenu.relogin"), action: () => {
       if (record !== null) {
         setReloginTarget(record);
       }
     } },
-    { label: "Delete", danger: true, action: () => {
+    { label: t("common.delete"), danger: true, action: () => {
       if (record !== null) {
         setDeleteTarget(record);
       }
@@ -101,17 +103,17 @@ export function ServerMenu(): React.JSX.Element {
         <ReloginModal record={reloginTarget} onClose={() => setReloginTarget(null)} />
       ) : null}
       {deleteTarget !== null ? (
-        <Modal title="Delete server" onClose={() => setDeleteTarget(null)}>
+        <Modal title={t("serverMenu.deleteTitle")} onClose={() => setDeleteTarget(null)}>
           {/* oak's ConfirmDialog wording verbatim. */}
           <div className="modal-note">
-            {`Remove the connection to "${deleteTarget.cachedServerName ?? deleteTarget.hostUrl}"? The account is not affected, you can re-add it later.`}
+            {t("serverMenu.deleteNote", { server: deleteTarget.cachedServerName ?? deleteTarget.hostUrl })}
           </div>
           <div className="modal-actions left">
-            <button className="ghost" onClick={() => setDeleteTarget(null)}>Cancel</button>
+            <button className="ghost" onClick={() => setDeleteTarget(null)}>{t("common.cancel")}</button>
             <button className="danger" onClick={() => {
               void removeConnection(deleteTarget.id);
               setDeleteTarget(null);
-            }}>Delete</button>
+            }}>{t("common.delete")}</button>
           </div>
         </Modal>
       ) : null}
@@ -124,6 +126,7 @@ function ReloginModal({ record, onClose }: {
   record: ConnectionRecord;
   onClose(): void;
 }): React.JSX.Element {
+  const t = useT();
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -146,8 +149,8 @@ function ReloginModal({ record, onClose }: {
   };
 
   return (
-    <Modal title="Re-login" onClose={onClose}>
-      <div className="modal-note">{`Re-enter the password for "${record.username}" on ${serverName}.`}</div>
+    <Modal title={t("serverMenu.relogin")} onClose={onClose}>
+      <div className="modal-note">{t("serverMenu.reloginNote", { user: record.username, server: serverName })}</div>
       <PasswordInput
         autoFocus
         value={password}
@@ -156,8 +159,8 @@ function ReloginModal({ record, onClose }: {
       />
       <div className="error-line">{error ?? ""}</div>
       <div className="modal-actions left">
-        <button className="ghost" onClick={onClose}>Cancel</button>
-        <button className="primary" disabled={busy || password.length === 0} onClick={() => void submit()}>Log in</button>
+        <button className="ghost" onClick={onClose}>{t("common.cancel")}</button>
+        <button className="primary" disabled={busy || password.length === 0} onClick={() => void submit()}>{t("serverMenu.logIn")}</button>
       </div>
     </Modal>
   );

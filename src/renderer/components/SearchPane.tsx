@@ -5,9 +5,11 @@ import type { ConnectionSession } from "../../domain/session/connection-session"
 import { displayNameOf } from "../../domain/logic/display-name";
 import { formatHeaderStamp, toEpochMs } from "../../domain/logic/message-grouping";
 import { flattenForSearch, groupSearchResultsByDay, highlightSegments } from "../../domain/logic/search-results";
+import { currentLang } from "../../domain/i18n/i18n";
 import type { Message } from "../../types";
 import { Avatar } from "./Avatar";
 import { MembersPane } from "./MembersPane";
+import { useT } from "../hooks/useT";
 
 /** The search page size (the server clamps to 25..50). */
 const SEARCH_LIMIT = 25;
@@ -26,6 +28,7 @@ export const MIN_QUERY_CHARS = 2;
  * panel on its own.
  */
 export function RightPane({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const t = useT();
   const searchOpen = useStore(appStore, (state) => state.searchOpen);
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -51,8 +54,8 @@ export function RightPane({ session }: { session: ConnectionSession }): React.JS
           <input
             ref={inputRef}
             value={query}
-            placeholder="Search"
-            title="Search messages (Ctrl+F)"
+            placeholder={t("search.placeholder")}
+            title={t("search.tooltip")}
             onChange={(event) => onQueryChange(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Escape") {
@@ -71,7 +74,7 @@ export function RightPane({ session }: { session: ConnectionSession }): React.JS
           {searchOpen ? (
             <button
               className="search-clear"
-              title="Clear and back to the roster (Esc)"
+              title={t("search.clearTooltip")}
               onClick={() => {
                 setQuery("");
                 appStore.patch({ searchOpen: false });
@@ -82,7 +85,7 @@ export function RightPane({ session }: { session: ConnectionSession }): React.JS
           ) : null}
           <button
             className="search-loupe"
-            title="Search"
+            title={t("search.goTooltip")}
             onClick={() => {
               if (!searchOpen) {
                 appStore.patch({ searchOpen: true });
@@ -118,6 +121,8 @@ export function SearchPane({ session, query, onQueryChange }: {
   query: string;
   onQueryChange(next: string): void;
 }): React.JSX.Element {
+  const t = useT();
+  const lang = currentLang();
   const users = useStore(session.rosterStore, (state) => state.users);
   const channels = useStore(session.channelStore, (state) => state);
   const searchScope = useStore(appStore, (state) => state.searchScope);
@@ -208,7 +213,10 @@ export function SearchPane({ session, query, onQueryChange }: {
     setAuthorFocused(false);
   };
 
-  const groups = useMemo(() => groupSearchResultsByDay(results, searchedAtMs), [results, searchedAtMs]);
+  const groups = useMemo(
+    () => groupSearchResultsByDay(results, searchedAtMs, lang),
+    [results, searchedAtMs, lang],
+  );
   const canLoadMore = searched && results.length < total;
 
   return (
@@ -219,11 +227,11 @@ export function SearchPane({ session, query, onQueryChange }: {
             className="search-scope"
             value={effectiveScope}
             disabled={dmMode}
-            title={dmMode ? "A DM search covers this conversation only" : undefined}
+            title={dmMode ? t("search.dmOnlyScope") : undefined}
             onChange={(event) => setSearchScope(event.target.value === "server" ? "server" : "channel")}
           >
-            <option value="channel">{dmMode ? "This DM" : scopeChannelName !== null ? `#${scopeChannelName}` : "This channel"}</option>
-            {!dmMode ? <option value="server">Everywhere</option> : null}
+            <option value="channel">{dmMode ? t("search.scopeThisDm") : scopeChannelName !== null ? `#${scopeChannelName}` : t("search.scopeThisChannel")}</option>
+            {!dmMode ? <option value="server">{t("search.scopeEverywhere")}</option> : null}
           </select>
           {/* Custom arrow: the native one hugs the box's edge regardless of padding
               (Chromium), so the select goes appearance:none and the glyph is placed
@@ -266,7 +274,7 @@ export function SearchPane({ session, query, onQueryChange }: {
           {authorFilter !== null ? (
             <button
               className="search-author-clear"
-              title="Clear the author filter"
+              title={t("search.clearAuthor")}
               onMouseDown={(event) => event.preventDefault()} // keep the field's focus
               onClick={() => {
                 setAuthorFilter(null);
@@ -293,7 +301,7 @@ export function SearchPane({ session, query, onQueryChange }: {
       </div>
       {error !== null ? <div className="search-error">{error}</div> : null}
       {searched && !loading && error === null ? (
-        <div className="search-total">{total === 0 ? "No results" : `${total} result${total === 1 ? "" : "s"}`}</div>
+        <div className="search-total">{total === 0 ? t("search.noResults") : t("search.resultsCount", { count: total })}</div>
       ) : null}
       <div className="search-results">
         {groups.map((group) => (
@@ -313,7 +321,7 @@ export function SearchPane({ session, query, onQueryChange }: {
         ))}
         {canLoadMore ? (
           <button className="search-load-more" disabled={loading} onClick={() => void runSearch(results[results.length - 1]?.id)}>
-            {loading ? "Loading…" : "Load more"}
+            {loading ? t("search.loading") : t("search.loadMore")}
           </button>
         ) : null}
       </div>
@@ -328,13 +336,14 @@ function SearchResultCard({ session, message, query, showChannel, channels }: {
   showChannel: boolean;
   channels: readonly { id: number; name: string }[];
 }): React.JSX.Element {
+  const t = useT();
   const users = useStore(session.rosterStore, (state) => state.users);
   const authorName = displayNameOf(users, message.authorUsername);
   const preview = flattenForSearch(message.content);
   const segments = highlightSegments(preview, query);
   // A sticker-only hit has no text to highlight — show the same label the reply
   // quote and the toast use, so the card never renders as an empty author-only tile.
-  const stickerLabel = message.sticker !== null ? `[Sticker] ${message.sticker.name}` : null;
+  const stickerLabel = message.sticker !== null ? t("common.stickerLabel", { name: message.sticker.name }) : null;
   const channelName = showChannel ? channels.find((entry) => entry.id === message.channelId)?.name ?? null : null;
   return (
     <button className="search-hit" onClick={() => openChannelAtMessage(message.channelId, message.id)}>
@@ -346,7 +355,7 @@ function SearchResultCard({ session, message, query, showChannel, channels }: {
         <div className="search-hit-body">
           <div className="search-hit-meta">
             <span className="search-hit-author">{authorName}</span>
-            <span className="search-hit-time">{formatHeaderStamp(toEpochMs(message.createdAt), Date.now())}</span>
+            <span className="search-hit-time">{formatHeaderStamp(toEpochMs(message.createdAt), Date.now(), true, currentLang())}</span>
           </div>
           {segments.map((segment, segmentIndex) =>
             segment.hit ? <mark key={segmentIndex}>{segment.text}</mark> : <span key={segmentIndex}>{segment.text}</span>)}

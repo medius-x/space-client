@@ -4,6 +4,9 @@
  * explicitly wants to see WHO was pinged in the preview (user decision,
  * 2026-09-15; oak strips @tokens, we deliberately don't). Pure — unit-tested.
  */
+import type { UiLang } from "../i18n/i18n";
+import { tf } from "../i18n/i18n";
+
 export const TOAST_PREVIEW_MAX_CHARS = 80;
 
 export function toastPreview(content: string | null): string {
@@ -16,15 +19,18 @@ export function toastPreview(content: string | null): string {
 
 /** The one-line body for a message with NO text: a sticker-only message shows the
  *  server's quote label ("[Sticker] cat"), anything else falls back to the
- *  attachment marker. Same format as the server's reply-quote preview. */
+ *  attachment marker. Same format as the server's reply-quote preview. The lang
+ *  parameter defaults to "en" (the pre-i18n test assertions stay green). */
 export function toastBodyFallback(message: {
   content: string | null;
   sticker: { name: string; key?: string; url?: string | null } | null;
-}): string {
+}, lang: UiLang = "en"): string {
   if (message.content !== null && message.content.trim() !== "") {
     return message.content;
   }
-  return message.sticker !== null ? `[Sticker] ${message.sticker.name}` : "(attachment)";
+  return message.sticker !== null
+    ? tf(lang, "common.stickerLabel", { name: message.sticker.name })
+    : tf(lang, "chat.attachmentFallback");
 }
 
 /** One preview segment: a span that pings THE RECIPIENT carries the flag so the

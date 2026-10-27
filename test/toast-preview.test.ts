@@ -33,6 +33,11 @@ describe("toastBodyFallback (the no-text body)", () => {
   it("anything else falls back to the attachment marker", () => {
     expect(toastBodyFallback({ content: null, sticker: null })).toBe("(attachment)");
   });
+
+  it("renders the RU labels", () => {
+    expect(toastBodyFallback({ content: null, sticker: { name: "cat", key: "k", url: null } }, "ru")).toBe("[Стикер] cat");
+    expect(toastBodyFallback({ content: null, sticker: null }, "ru")).toBe("(вложение)");
+  });
 });
 
 describe("toastPreviewSegments", () => {

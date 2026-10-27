@@ -17,6 +17,7 @@ import {
 import { notifications } from "../notifications";
 import { ApiError } from "../../core/rest";
 import type { ClientSettings } from "../../domain/stores/SettingsStore";
+import type { LanguageSetting } from "../../domain/i18n/i18n";
 import { advertisedAddress, DISK_CACHE_CHOICES, diskCacheLabel } from "../../domain/logic/settings-format";
 import { JUMBO_EMOJI_DEFAULT_PX, JUMBO_EMOJI_MAX_PX, JUMBO_EMOJI_MIN_PX } from "../../domain/logic/emoji-picker";
 import { deviceLabelFor, matchDeviceId } from "../../domain/logic/device-match";
@@ -24,9 +25,10 @@ import type { ConnectionSession } from "../../domain/session/connection-session"
 import { DEFAULT_NOTIFICATION_PREFS } from "../../domain/session/connection-record";
 import { CHANGE_NICKNAME_PERMISSION, type NotificationPrefs } from "../../types";
 import { useDisplayName } from "../hooks/useDisplayName";
+import { useT } from "../hooks/useT";
 import { downloadClientLogs } from "../logs-export";
 import { Modal } from "./Modal";
-import { NS_ENGINE_DESCRIPTIONS, NS_ENGINE_LABELS } from "./VoiceRoom";
+import { nsEngineDescription, nsEngineLabel } from "./VoiceRoom";
 import { Avatar } from "./Avatar";
 import { AvatarEditor, userAvatarApi } from "./ProfileModal";
 import { KeybindsSection } from "./KeybindsSection";
@@ -46,15 +48,28 @@ import { PasswordInput } from "./PasswordInput";
 
 type Section = "general" | "account" | "audio" | "video" | "keybinds" | "appearance" | "notifications" | "diagnostics";
 
-const SECTIONS: { key: Section; label: string }[] = [
-  { key: "general", label: "General" },
-  { key: "account", label: "Account" },
-  { key: "audio", label: "Audio" },
-  { key: "video", label: "Video" },
-  { key: "keybinds", label: "Keybinds" },
-  { key: "appearance", label: "Appearance" },
-  { key: "notifications", label: "Notifications" },
-  { key: "diagnostics", label: "Diagnostics" },
+/** The nav labels resolve through the dictionary at render time (the localization
+ *  round): a module-level string map would freeze the language. */
+const SECTION_LABEL_KEYS: Record<Section, "settings.section.general" | "settings.section.account" | "settings.section.audio" | "settings.section.video" | "settings.section.keybinds" | "settings.section.appearance" | "settings.section.notifications" | "settings.section.diagnostics"> = {
+  general: "settings.section.general",
+  account: "settings.section.account",
+  audio: "settings.section.audio",
+  video: "settings.section.video",
+  keybinds: "settings.section.keybinds",
+  appearance: "settings.section.appearance",
+  notifications: "settings.section.notifications",
+  diagnostics: "settings.section.diagnostics",
+};
+
+const SECTIONS: { key: Section }[] = [
+  { key: "general" },
+  { key: "account" },
+  { key: "audio" },
+  { key: "video" },
+  { key: "keybinds" },
+  { key: "appearance" },
+  { key: "notifications" },
+  { key: "diagnostics" },
 ];
 
 /** The sections that stage their edits behind the window-level Apply button.
@@ -80,6 +95,7 @@ function SectionHeading({ title }: { title: string }): React.JSX.Element {
 }
 
 export function UserSettingsModal({ session }: { session: ConnectionSession | null }): React.JSX.Element {
+  const t = useT();
   const scope = useStore(appStore, (state) => state.userSettingsScope);
   const visibleSections = SECTIONS.filter((entry) =>
     scope === "account" ? ACCOUNT_SCOPE_SECTIONS.has(entry.key) : entry.key !== "account");
@@ -96,7 +112,9 @@ export function UserSettingsModal({ session }: { session: ConnectionSession | nu
     session !== null
       ? records.find((entry) => entry.id === session.recordId)?.cachedServerName ?? session.hostUrl()
       : "");
-  const sectionLabel = SECTIONS.find((entry) => entry.key === activeSection)?.label ?? "";
+  const sectionLabel = SECTIONS.find((entry) => entry.key === activeSection) !== undefined
+    ? t(SECTION_LABEL_KEYS[activeSection])
+    : "";
   const headingTitle = scope === "account" && SERVER_SCOPED_SECTIONS.has(activeSection)
     ? `${sectionLabel} — ${serverName}`
     : sectionLabel;
@@ -121,14 +139,14 @@ export function UserSettingsModal({ session }: { session: ConnectionSession | nu
   return (
     <div className="settings-screen">
       <div className="settings-nav">
-        <div className="settings-nav-title">{scope === "account" ? "Account Settings" : "User Settings"}</div>
+        <div className="settings-nav-title">{scope === "account" ? t("settings.accountSettingsTitle") : t("settings.userSettingsTitle")}</div>
         {visibleSections.map((entry) => (
           <button
             key={entry.key}
             className={"settings-nav-item" + (entry.key === activeSection ? " active" : "")}
             onClick={() => selectSection(entry.key)}
           >
-            {entry.label}
+            {t(SECTION_LABEL_KEYS[entry.key])}
           </button>
         ))}
       </div>
@@ -153,7 +171,7 @@ export function UserSettingsModal({ session }: { session: ConnectionSession | nu
             commits the draft; leaving the section without it discards. */}
         {STAGED_SECTIONS.has(activeSection) ? (
           <div className="modal-actions left settings-apply">
-            <button className="primary" disabled={!staged.changed} onClick={staged.commit}>Apply</button>
+            <button className="primary" disabled={!staged.changed} onClick={staged.commit}>{t("settings.apply")}</button>
           </div>
         ) : null}
       </div>
@@ -239,6 +257,7 @@ function useStagedSettings(session: ConnectionSession | null): StagedSettings {
 // ---------------------------------------------------------------------------
 
 function GeneralSection({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const t = useT();
   const ownUsername = useStore(appStore, (state) => state.ownUsername) ?? session.username();
   // The rename model: what General shows is the NICKNAME (the name people see);
   // the login never surfaces here.
@@ -257,16 +276,13 @@ function GeneralSection({ session }: { session: ConnectionSession }): React.JSX.
         api={userAvatarApi(session)}
         preview={<Avatar session={session} username={ownUsername} size={96} />}
         stacked
-        removeTitle="Remove avatar"
-        removeNote="Remove your avatar? This cannot be undone."
+        removeTitle={t("settings.removeAvatarTitle")}
+        removeNote={t("settings.removeAvatarNote")}
       />
       {canChangeNickname ? (
         <>
-          <h3>Nickname</h3>
-          <div className="settings-hint">
-            The name everyone sees next to your messages, in the roster and in voice. Mentions
-            resolve against nicknames — letters, digits, underscore and dash, no spaces.
-          </div>
+          <h3>{t("settings.nicknameHeader")}</h3>
+          <div className="settings-hint">{t("settings.nicknameHint")}</div>
           <NicknameForm session={session} current={ownDisplayName} />
         </>
       ) : null}
@@ -289,6 +305,7 @@ function DeviceSelect({ label, kind, deviceId, deviceLabel, onChange }: {
   deviceLabel: string | null;
   onChange(deviceId: string | null, deviceLabel: string | null): void;
 }): React.JSX.Element {
+  const t = useT();
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   useEffect(() => {
     const refresh = (): void => {
@@ -313,7 +330,7 @@ function DeviceSelect({ label, kind, deviceId, deviceLabel, onChange }: {
           onChange(next, deviceLabelFor(devices, next));
         }}
       >
-        <option value="">System default</option>
+        <option value="">{t("settings.systemDefault")}</option>
         {/* Chromium prepends SYNTHETIC alias rows ("Default - X" / "Communications - X",
             deviceIds "default"/"communications") that point at the same hardware as
             our System default + the real device below — hide them (oak hid the
@@ -327,12 +344,13 @@ function DeviceSelect({ label, kind, deviceId, deviceLabel, onChange }: {
 }
 
 function AudioSection({ staged }: { staged: StagedSettings }): React.JSX.Element {
+  const t = useT();
   const devicesChanged = staged.differs("microphoneDeviceId")
     || staged.differs("speakerDeviceId");
   return (
     <div>
-      <h3>Noise suppression</h3>
-      <label className="settings-field"><span>Engine</span>
+      <h3>{t("settings.nsHeader")}</h3>
+      <label className="settings-field"><span>{t("settings.nsEngineLabel")}</span>
         <select
           value={staged.value("noiseSuppressionEngine")}
           onChange={(event) => staged.set("noiseSuppressionEngine", event.target.value as ClientSettings["noiseSuppressionEngine"])}
@@ -342,21 +360,21 @@ function AudioSection({ staged }: { staged: StagedSettings }): React.JSX.Element
           <option value="dtln">DTLN</option>
           <option value="speex">Speex</option>
           <option value="gate">Gate</option>
-          <option value="off">Off</option>
+          <option value="off">{t("nsEngine.off.label")}</option>
         </select>
       </label>
       {/* The selected engine's one-liner (user request 2026-10-27) — the same
           text the selector card shows on hover, so the choice is informed in
           both places. */}
       <div className="settings-hint">
-        {NS_ENGINE_LABELS[staged.value("noiseSuppressionEngine")]} — {" "}
-        {NS_ENGINE_DESCRIPTIONS[staged.value("noiseSuppressionEngine")]}
+        {nsEngineLabel(t, staged.value("noiseSuppressionEngine"))} — {" "}
+        {nsEngineDescription(t, staged.value("noiseSuppressionEngine"))}
       </div>
       {/* DFN3 only — its native knob has a hard 0..100 ceiling, so a SLIDER
           (user decision), never a free-form number field. */}
       {staged.value("noiseSuppressionEngine") === "deepfilternet3" ? (
         <label className="settings-field">
-          <span>Suppression limit — {staged.value("deepFilterSuppressionLevel")} dB</span>
+          <span>{t("settings.suppressionLimit", { level: staged.value("deepFilterSuppressionLevel") })}</span>
           <input
             type="range"
             min={0}
@@ -368,19 +386,14 @@ function AudioSection({ staged }: { staged: StagedSettings }): React.JSX.Element
         </label>
       ) : null}
       <div className="settings-hint">
-        Runs locally on your microphone before it is sent. DeepFilterNet3 is the default;
-        RNNoise is the lighter alternative; DTLN is the recurrent
-        neural model (heaviest, wideband 16 kHz); Speex is the classic spectral
-        suppressor; Gate only mutes pauses (quiet, not clean). Echo cancellation
-        and auto gain are always on. While voice or a call is live, switching engines
-        rebuilds the chain on the fly; the voice-bar NS button opens the same selector.
+        {t("settings.nsHint")}
         {staged.value("noiseSuppressionEngine") === "deepfilternet3"
-          ? " The limit caps how deeply DeepFilterNet3 may attenuate: 0 is no limit (the strongest suppression), higher values are gentler; it applies live."
+          ? ` ${t("settings.nsLimitHint")}`
           : ""}
       </div>
-      <h3>Devices</h3>
+      <h3>{t("settings.devicesHeader")}</h3>
       <DeviceSelect
-        label="Microphone"
+        label={t("settings.microphoneLabelField")}
         kind="audioinput"
         deviceId={staged.value("microphoneDeviceId")}
         deviceLabel={staged.value("microphoneLabel")}
@@ -390,7 +403,7 @@ function AudioSection({ staged }: { staged: StagedSettings }): React.JSX.Element
         }}
       />
       <DeviceSelect
-        label="Speaker / headphones"
+        label={t("settings.speakerLabelField")}
         kind="audiooutput"
         deviceId={staged.value("speakerDeviceId")}
         deviceLabel={staged.value("speakerLabel")}
@@ -400,20 +413,19 @@ function AudioSection({ staged }: { staged: StagedSettings }): React.JSX.Element
         }}
       />
       {devicesChanged ? (
-        <div className="settings-warning">
-          The microphone takes effect on the next call; the speaker switches immediately.
-        </div>
+        <div className="settings-warning">{t("settings.devicesWarning")}</div>
       ) : null}
     </div>
   );
 }
 
 function VideoSection({ staged }: { staged: StagedSettings }): React.JSX.Element {
+  const t = useT();
   return (
     <div>
-      <h3>Camera</h3>
+      <h3>{t("settings.cameraHeader")}</h3>
       <DeviceSelect
-        label="Default camera"
+        label={t("settings.defaultCamera")}
         kind="videoinput"
         deviceId={staged.value("cameraDeviceId")}
         deviceLabel={staged.value("cameraLabel")}
@@ -423,7 +435,7 @@ function VideoSection({ staged }: { staged: StagedSettings }): React.JSX.Element
         }}
       />
       {staged.differs("cameraDeviceId") ? (
-        <div className="settings-warning">Changes take effect on the next call.</div>
+        <div className="settings-warning">{t("settings.cameraWarning")}</div>
       ) : null}
     </div>
   );
@@ -434,6 +446,7 @@ function VideoSection({ staged }: { staged: StagedSettings }): React.JSX.Element
 // ---------------------------------------------------------------------------
 
 function AccountSection({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const t = useT();
   const canChangeLogin = useStore(session.permissionStore, (state) =>
     state.my?.permissions.includes(CHANGE_NICKNAME_PERMISSION) ?? false);
   const ownUsername = useStore(appStore, (state) => state.ownUsername) ?? session.username();
@@ -441,19 +454,15 @@ function AccountSection({ session }: { session: ConnectionSession }): React.JSX.
 
   return (
     <div>
-      <h3>Change password</h3>
+      <h3>{t("settings.changePasswordHeader")}</h3>
       <div className="settings-hint">
-        Changes the password for {ownDisplayName}. The session stays connected.
+        {t("settings.changePasswordHint", { name: ownDisplayName })}
       </div>
       <PasswordForm />
       {canChangeLogin ? (
         <>
-          <h3>Change login</h3>
-          <div className="settings-hint">
-            The login is your principal: the name you sign in with, and the server's internal handle.
-            It never appears in chat — only you see it, in this window. Changing it rotates your
-            tokens and reconnects the session.
-          </div>
+          <h3>{t("settings.changeLoginHeader")}</h3>
+          <div className="settings-hint">{t("settings.changeLoginHint")}</div>
           <LoginForm current={ownUsername} />
         </>
       ) : null}
@@ -466,6 +475,7 @@ function AccountSection({ session }: { session: ConnectionSession }): React.JSX.
  *  no permissions) and is duplicated in Server Settings → Server (the admin
  *  downloads everything from one place). */
 function ClientLogsRow(): React.JSX.Element {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
 
@@ -474,21 +484,22 @@ function ClientLogsRow(): React.JSX.Element {
       return;
     }
     setBusy(true);
-    setStatus("Preparing…");
+    setStatus(t("settings.preparing"));
     const outcome = await downloadClientLogs();
-    setStatus(outcome === "saved" ? "Saved." : "Export failed — see the log.");
+    setStatus(outcome === "saved" ? t("settings.savedStatus") : t("settings.exportFailed"));
     setBusy(false);
   };
 
   return (
     <div className="modal-actions left">
-      <button disabled={busy} onClick={() => void download()}>Download client logs</button>
+      <button disabled={busy} onClick={() => void download()}>{t("settings.downloadClientLogs")}</button>
       <span className="settings-status">{status ?? ""}</span>
     </div>
   );
 }
 
 function PasswordForm(): React.JSX.Element {
+  const t = useT();
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -497,10 +508,10 @@ function PasswordForm(): React.JSX.Element {
 
   // oak's validation ladder: length → match → must differ from the current one.
   const validation
-    = newPassword.length > 0 && newPassword.length < 8 ? "New password must be at least 8 characters."
-    : confirmPassword.length > 0 && newPassword !== confirmPassword ? "New passwords do not match."
+    = newPassword.length > 0 && newPassword.length < 8 ? t("settings.pwTooShort")
+    : confirmPassword.length > 0 && newPassword !== confirmPassword ? t("settings.pwNoMatch")
     : oldPassword.length > 0 && newPassword.length >= 8 && newPassword === oldPassword
-      ? "New password must be different from the current one."
+      ? t("settings.pwSame")
     : null;
 
   const submit = async (): Promise<void> => {
@@ -508,10 +519,10 @@ function PasswordForm(): React.JSX.Element {
       return;
     }
     setBusy(true);
-    setStatus("Changing…");
+    setStatus(t("settings.changing"));
     try {
       await changeAccountPassword(oldPassword, newPassword);
-      setStatus("Password changed.");
+      setStatus(t("settings.pwChanged"));
       setOldPassword("");
       setNewPassword("");
       setConfirmPassword("");
@@ -524,19 +535,19 @@ function PasswordForm(): React.JSX.Element {
 
   return (
     <div>
-      <label className="settings-field"><span>Current password</span>
+      <label className="settings-field"><span>{t("settings.currentPassword")}</span>
         <PasswordInput value={oldPassword} onChange={setOldPassword} autoComplete="current-password" />
       </label>
-      <label className="settings-field"><span>New password (at least 8 characters)</span>
+      <label className="settings-field"><span>{t("settings.newPassword")}</span>
         <PasswordInput value={newPassword} onChange={setNewPassword} autoComplete="new-password" />
       </label>
-      <label className="settings-field"><span>Confirm new password</span>
+      <label className="settings-field"><span>{t("settings.confirmNewPassword")}</span>
         <PasswordInput value={confirmPassword} onChange={setConfirmPassword} autoComplete="new-password" />
       </label>
       <div className="modal-actions left">
         <button className="primary" disabled={busy || validation !== null || oldPassword.length === 0 || newPassword.length < 8 || newPassword !== confirmPassword}
           onClick={() => void submit()}>
-          Change password
+          {t("settings.changePasswordHeader")}
         </button>
         <span className="settings-status">{validation ?? status ?? ""}</span>
       </div>
@@ -545,13 +556,14 @@ function PasswordForm(): React.JSX.Element {
 }
 
 function LoginForm({ current }: { current: string }): React.JSX.Element {
+  const t = useT();
   const [login, setLogin] = useState(current);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const blocked = inVoiceOrCall();
   const validation
-    = login.length > 0 && (login.length < 3 || login.length > 32) ? "Login must be 3–32 characters."
+    = login.length > 0 && (login.length < 3 || login.length > 32) ? t("settings.loginLength")
     : null;
 
   const submit = async (): Promise<void> => {
@@ -559,16 +571,16 @@ function LoginForm({ current }: { current: string }): React.JSX.Element {
       return;
     }
     setBusy(true);
-    setStatus("Changing…");
+    setStatus(t("settings.changing"));
     try {
       await changeAccountUsername(login.trim());
-      setStatus("Login changed.");
+      setStatus(t("settings.loginChanged"));
     } catch (error: unknown) {
       // oak's friendly verdicts for the two expected refusals.
       if (error instanceof ApiError && error.status === 409) {
-        setStatus("This login is already taken.");
+        setStatus(t("settings.loginTaken"));
       } else if (error instanceof ApiError && error.status === 403) {
-        setStatus("You do not have permission to change your login.");
+        setStatus(t("settings.loginNoPermission"));
       } else {
         setStatus(error instanceof Error ? error.message : String(error));
       }
@@ -579,16 +591,16 @@ function LoginForm({ current }: { current: string }): React.JSX.Element {
 
   return (
     <div>
-      <label className="settings-field"><span>Login</span>
+      <label className="settings-field"><span>{t("settings.loginLabel")}</span>
         <input type="text" value={login} onChange={(event) => setLogin(event.target.value)} />
       </label>
       <div className="modal-actions left">
         <button className="primary" disabled={busy || blocked || validation !== null || login === current}
           onClick={() => void submit()}>
-          Change login
+          {t("settings.changeLoginHeader")}
         </button>
         <span className="settings-status">
-          {blocked ? "Leave voice and calls before changing your login." : validation ?? status ?? ""}
+          {blocked ? t("settings.loginBlocked") : validation ?? status ?? ""}
         </span>
       </div>
     </div>
@@ -598,6 +610,7 @@ function LoginForm({ current }: { current: string }): React.JSX.Element {
 /** The nickname form (General): the DISPLAY name everyone sees — an instant
  *  self-rename through the member endpoint (409 = the nickname is taken). */
 function NicknameForm({ session, current }: { session: ConnectionSession; current: string }): React.JSX.Element {
+  const t = useT();
   const [nickname, setNickname] = useState(current);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -609,13 +622,13 @@ function NicknameForm({ session, current }: { session: ConnectionSession; curren
       return;
     }
     setBusy(true);
-    setStatus("Saving…");
+    setStatus(t("settings.saving"));
     try {
       await session.renameMember(selfId, trimmed);
-      setStatus("Nickname changed.");
+      setStatus(t("settings.nickChanged"));
     } catch (error: unknown) {
       if (error instanceof ApiError && error.status === 409) {
-        setStatus("Nickname is already taken.");
+        setStatus(t("settings.nickTaken"));
       } else {
         setStatus(error instanceof Error ? error.message : String(error));
       }
@@ -629,14 +642,14 @@ function NicknameForm({ session, current }: { session: ConnectionSession; curren
       return;
     }
     setBusy(true);
-    setStatus("Resetting…");
+    setStatus(t("settings.resetting"));
     try {
       await session.resetMemberNickname(selfId);
       setNickname(session.username());
-      setStatus("Nickname reset to your login.");
+      setStatus(t("settings.nickReset"));
     } catch (error: unknown) {
       if (error instanceof ApiError && error.status === 409) {
-        setStatus("Nickname is already taken.");
+        setStatus(t("settings.nickTaken"));
       } else {
         setStatus(error instanceof Error ? error.message : String(error));
       }
@@ -647,15 +660,15 @@ function NicknameForm({ session, current }: { session: ConnectionSession; curren
 
   return (
     <div>
-      <label className="settings-field"><span>Nickname</span>
+      <label className="settings-field"><span>{t("settings.nicknameHeader")}</span>
         <input type="text" value={nickname} onChange={(event) => setNickname(event.target.value)} />
       </label>
       <div className="modal-actions left">
         <button className="primary" disabled={busy || selfId === null || trimmed.length === 0 || trimmed === current}
           onClick={() => void submit()}>
-          Change nickname
+          {t("settings.changeNickname")}
         </button>
-        <button className="ghost" disabled={busy || selfId === null} onClick={() => void resetToLogin()}>Reset to login</button>
+        <button className="ghost" disabled={busy || selfId === null} onClick={() => void resetToLogin()}>{t("settings.resetToLogin")}</button>
         <span className="settings-status">{status ?? ""}</span>
       </div>
     </div>
@@ -670,37 +683,31 @@ function NicknameForm({ session, current }: { session: ConnectionSession; curren
  *  apply to every server — no server context header, no nickname (that lives
  *  in General with the rest of the server-scoped identity). */
 function AppearanceSection({ staged }: { staged: StagedSettings }): React.JSX.Element {
+  const t = useT();
   return (
     <div>
-      <h3>Message input</h3>
+      <h3>{t("settings.messageInputHeader")}</h3>
       <label className="settings-check">
         <input
           type="checkbox"
           checked={staged.value("ctrlEnterSends")}
           onChange={(event) => staged.set("ctrlEnterSends", event.target.checked)}
         />
-        <span>Ctrl+Enter sends the message</span>
+        <span>{t("settings.ctrlEnterSends")}</span>
       </label>
-      <div className="settings-hint">
-        Default: Enter sends, Ctrl+Enter or Shift+Enter insert a newline.
-        With this on, the roles swap — Shift+Enter always stays a newline.
-        Applies to the composer and the inline editor instantly.
-      </div>
-      <h3>Message display</h3>
+      <div className="settings-hint">{t("settings.ctrlEnterHint")}</div>
+      <h3>{t("settings.messageDisplayHeader")}</h3>
       <label className="settings-check">
         <input
           type="checkbox"
           checked={staged.value("relativeDates")}
           onChange={(event) => staged.set("relativeDates", event.target.checked)}
         />
-        <span>Relative dates (Today / Yesterday)</span>
+        <span>{t("settings.relativeDates")}</span>
       </label>
-      <div className="settings-hint">
-        When off, message timestamps always show the date (for example,
-        Aug 20 at 14:05) instead of Today / Yesterday.
-      </div>
-      <h3>Emoji</h3>
-      <label className="settings-field"><span>Jumbo emoji size</span>
+      <div className="settings-hint">{t("settings.relativeDatesHint")}</div>
+      <h3>{t("settings.emojiHeader")}</h3>
+      <label className="settings-field"><span>{t("settings.jumboEmojiSize")}</span>
         <span className="jumbo-size-row">
           <input
             type="range"
@@ -715,13 +722,10 @@ function AppearanceSection({ staged }: { staged: StagedSettings }): React.JSX.El
             className="jumbo-reset"
             disabled={staged.value("emojiJumboSize") === JUMBO_EMOJI_DEFAULT_PX}
             onClick={() => staged.set("emojiJumboSize", JUMBO_EMOJI_DEFAULT_PX)}
-          >Reset to default</button>
+          >{t("settings.resetToDefault")}</button>
         </span>
       </label>
-      <div className="settings-hint">
-        A message made of emojis only renders them at this size.
-        Your own view only — other members keep their own setting.
-      </div>
+      <div className="settings-hint">{t("settings.jumboHint")}</div>
     </div>
   );
 }
@@ -730,41 +734,39 @@ function NotificationsSection({ session, staged }: {
   session: ConnectionSession | null;
   staged: StagedSettings;
 }): React.JSX.Element {
+  const t = useT();
   const record = useStore(connectionDirectory, (records) =>
     (session !== null ? records.find((entry) => entry.id === session.recordId) : undefined) ?? null);
   const prefs = staged.notif ?? record?.notifPrefs ?? DEFAULT_NOTIFICATION_PREFS;
 
   return (
     <div>
-      <h3>Global</h3>
+      <h3>{t("settings.notifGlobalHeader")}</h3>
       <label className="settings-check">
         <input type="checkbox" checked={staged.value("notificationsEnabled")}
           onChange={(event) => staged.set("notificationsEnabled", event.target.checked)} />
-        <span>Enable notifications</span>
+        <span>{t("settings.enableNotifications")}</span>
       </label>
       <label className="settings-check">
         <input type="checkbox" checked={staged.value("soundEnabled")}
           onChange={(event) => staged.set("soundEnabled", event.target.checked)} />
-        <span>Play application sounds</span>
+        <span>{t("settings.playSounds")}</span>
       </label>
-      <div className="settings-hint">
-        Every sound the app makes: the mention/notification ding and the short knocks when
-        someone joins or leaves a voice room. Toasts stay visible when this is off.
-      </div>
+      <div className="settings-hint">{t("settings.soundsHint")}</div>
       <label className="settings-check">
         <input type="checkbox" checked={staged.value("badgeEnabled")}
           onChange={(event) => staged.set("badgeEnabled", event.target.checked)} />
-        <span>Show unread counters</span>
+        <span>{t("settings.showUnread")}</span>
       </label>
-      <label className="settings-field"><span>Toast dismiss time</span>
+      <label className="settings-field"><span>{t("settings.toastDismiss")}</span>
         <select value={staged.value("toastDismissSeconds")}
           onChange={(event) => staged.set("toastDismissSeconds", Number(event.target.value))}>
           {[3, 4, 5, 6, 8, 10, 12, 15].map((seconds) => (
-            <option key={seconds} value={seconds}>{seconds} seconds</option>
+            <option key={seconds} value={seconds}>{t("settings.nSeconds", { count: seconds })}</option>
           ))}
         </select>
       </label>
-      <label className="settings-field"><span>Maximum toasts</span>
+      <label className="settings-field"><span>{t("settings.maxToasts")}</span>
         <select value={staged.value("maxToasts")}
           onChange={(event) => staged.set("maxToasts", Number(event.target.value))}>
           {Array.from({ length: 10 }, (_unused, index) => index + 1).map((count) => (
@@ -772,34 +774,36 @@ function NotificationsSection({ session, staged }: {
           ))}
         </select>
       </label>
-      <label className="settings-field"><span>Ring timeout for outgoing calls</span>
+      <label className="settings-field"><span>{t("settings.ringTimeout")}</span>
         <select value={staged.value("ringTimeoutSeconds")}
           onChange={(event) => staged.set("ringTimeoutSeconds", Number(event.target.value))}>
-          <option value={0}>Off (ring until answered)</option>
+          <option value={0}>{t("settings.ringOff")}</option>
           {[30, 60, 120, 180, 300].map((seconds) => (
-            <option key={seconds} value={seconds}>{seconds < 60 ? `${seconds} seconds` : `${seconds / 60} minute${seconds >= 120 ? "s" : ""}`}</option>
+            <option key={seconds} value={seconds}>
+              {seconds < 60
+                ? t("settings.nSeconds", { count: seconds })
+                : t("settings.nMinutes", { count: seconds / 60 })}
+            </option>
           ))}
         </select>
       </label>
       {session !== null ? (
         <>
-          <h3>Server — {record?.cachedServerName ?? session.hostUrl()}</h3>
-          <label className="settings-field"><span>Show toasts for</span>
+          <h3>{t("settings.notifServerHeader", { server: record?.cachedServerName ?? session.hostUrl() })}</h3>
+          <label className="settings-field"><span>{t("settings.showToastsFor")}</span>
             <select value={prefs.mode}
               onChange={(event) => staged.setNotif({ ...prefs, mode: event.target.value as NotificationPrefs["mode"] })}>
-              <option value="ALL">All messages</option>
-              <option value="MENTIONS">Mentions only</option>
-              <option value="NOTHING">Nothing</option>
+              <option value="ALL">{t("settings.notifModeAll")}</option>
+              <option value="MENTIONS">{t("settings.notifModeMentions")}</option>
+              <option value="NOTHING">{t("settings.notifModeNothing")}</option>
             </select>
           </label>
           <label className="settings-check">
             <input type="checkbox" checked={prefs.suppressEveryoneHere}
               onChange={(event) => staged.setNotif({ ...prefs, suppressEveryoneHere: event.target.checked })} />
-            <span>Suppress @everyone and @here</span>
+            <span>{t("settings.suppressEveryone")}</span>
           </label>
-      <div className="settings-hint">
-        Suppress keeps @everyone/@here out of the red badge (still counted unread).
-      </div>
+      <div className="settings-hint">{t("settings.suppressHint")}</div>
         </>
       ) : null}
     </div>
@@ -813,6 +817,7 @@ function NotificationsSection({ session, staged }: {
  *  for, "Connections" said only what a third of it shows. Client-scoped, so the
  *  ⚙ button opens it for everyone; no server permission is involved. */
 function DiagnosticsSection({ session }: { session: ConnectionSession | null }): React.JSX.Element {
+  const t = useT();
   const records = useStore(connectionDirectory, (allRecords) => allRecords);
   const record = session !== null
     ? records.find((entry) => entry.id === session.recordId) ?? null
@@ -836,36 +841,33 @@ function DiagnosticsSection({ session }: { session: ConnectionSession | null }):
     : null;
   return (
     <div>
-      <div className="settings-hint">Client version: {clientVersion ?? "…"}</div>
+      <div className="settings-hint">{t("settings.clientVersion", { version: clientVersion ?? "…" })}</div>
       {session !== null ? (
         <>
-          <h3>This server</h3>
+          <h3>{t("settings.thisServerHeader")}</h3>
           <div className="settings-hint">{record?.cachedServerName ?? session.hostUrl()}</div>
           {/* The advertised address is what a NEW member types into "Add server". When the
               server has not set one, fall back to the address THIS client is connected by —
               it demonstrably works, unlike the old "not set by the server" dead end. */}
           <div className="settings-hint">
-            Address to enter when connecting: {address ?? (record?.hostUrl ?? session.hostUrl())}
+            {t("settings.addressToEnter", { address: address ?? (record?.hostUrl ?? session.hostUrl()) })}
           </div>
           {/* The compatibility skeleton (2026-10-15): the build the client is talking to —
               the first thing to check when a button is mysteriously missing. Old servers
               predate the field; "unknown" is the honest answer there. */}
           <div className="settings-hint">
-            Server version: {session.serverProfile?.version ?? "unknown"}
+            {t("settings.serverVersion", { version: session.serverProfile?.version ?? t("settings.unknownVersion") })}
           </div>
         </>
       ) : null}
-      <h3>Saved connections</h3>
+      <h3>{t("settings.savedConnections")}</h3>
       {records.map((entry) => (
         <div key={entry.id} className="settings-hint">
           {entry.cachedServerName ?? entry.hostUrl} — {entry.hostUrl}
         </div>
       ))}
-      <h3>Client logs</h3>
-      <div className="settings-hint">
-        The last 24 hours of this client's log file, zipped into the downloads folder —
-        attach it to a bug report.
-      </div>
+      <h3>{t("settings.clientLogsHeader")}</h3>
+      <div className="settings-hint">{t("settings.clientLogsHint")}</div>
       <ClientLogsRow />
     </div>
   );
@@ -878,6 +880,7 @@ function DiagnosticsSection({ session }: { session: ConnectionSession | null }):
 function DownloadsFolderRow(): React.JSX.Element {
   const [folder, setFolder] = useState<string | null>(null);
   const [configured, setConfigured] = useState<string | null>(null);
+  const t = useT();
   const refresh = async (): Promise<void> => {
     const info = await window.spaceMedia?.downloadsInfo();
     if (info !== null && info !== undefined) {
@@ -902,14 +905,14 @@ function DownloadsFolderRow(): React.JSX.Element {
   return (
     <div>
       <div className="settings-hint downloads-folder-path">
-        {folder ?? "…"}{configured === null ? " (default)" : ""}
+        {folder ?? "…"}{configured === null ? t("settings.defaultSuffix") : ""}
       </div>
       <div className="modal-actions left">
-        <button onClick={() => void choose()}>Change folder</button>
+        <button onClick={() => void choose()}>{t("settings.changeFolder")}</button>
         {configured !== null ? (
-          <button className="ghost" onClick={() => void reset()}>Reset to default</button>
+          <button className="ghost" onClick={() => void reset()}>{t("settings.resetToDefault")}</button>
         ) : null}
-        <button className="ghost" onClick={() => void window.spaceMedia?.openDownloadsDir()}>Open folder</button>
+        <button className="ghost" onClick={() => void window.spaceMedia?.openDownloadsDir()}>{t("settings.openFolder")}</button>
       </div>
     </div>
   );
@@ -921,6 +924,8 @@ function DownloadsFolderRow(): React.JSX.Element {
  *  Immediate writes, no Apply step — the same persistedGain category as
  *  Diagnostics. */
 function GeneralClientSection({ session }: { session: ConnectionSession | null }): React.JSX.Element {
+  const t = useT();
+  const language = useStore(settingsStore, (settings) => settings.language);
   const cacheMegabytes = useStore(settingsStore, (state) => state.imageCacheMegabytes);
   const changeCache = (megabytes: number): void => {
     settingsStore.apply({ imageCacheMegabytes: megabytes });
@@ -930,25 +935,28 @@ function GeneralClientSection({ session }: { session: ConnectionSession | null }
   };
   return (
     <div>
-      <h3>Updates</h3>
+      <h3>{t("settings.language.label")}</h3>
+      <select value={language} onChange={(event) => settingsStore.apply({ language: event.target.value as LanguageSetting })}>
+        {/* The options self-name their language (the industry convention);
+            only "System default" translates. */}
+        <option value="system">{t("settings.language.system")}</option>
+        <option value="en">English</option>
+        <option value="ru">Русский</option>
+      </select>
+      <h3>{t("settings.updatesHeader")}</h3>
       <UpdatesSettingsBlock />
-      <h3>Downloads</h3>
-      <div className="settings-hint">
-        Everything this client saves — logs, media from chats, pack exports — lands in this folder.
-      </div>
+      <h3>{t("settings.downloadsHeader")}</h3>
+      <div className="settings-hint">{t("settings.downloadsHint")}</div>
       <DownloadsFolderRow />
-      <h3>Cache</h3>
-      <label className="settings-field"><span>Disk cache size</span>
+      <h3>{t("settings.cacheHeader")}</h3>
+      <label className="settings-field"><span>{t("settings.diskCacheSize")}</span>
         <select value={cacheMegabytes} onChange={(event) => changeCache(Number(event.target.value))}>
           {DISK_CACHE_CHOICES.map((size) => (
             <option key={size} value={size}>{diskCacheLabel(size)}</option>
           ))}
         </select>
       </label>
-      <div className="settings-hint">
-        The disk cache stores avatars and attachments by their stable key; Off keeps
-        everything in memory only (nothing is written to disk).
-      </div>
+      <div className="settings-hint">{t("settings.cacheHint")}</div>
     </div>
   );
 }
@@ -959,6 +967,7 @@ function GeneralClientSection({ session }: { session: ConnectionSession | null }
  *  the mechanism is fully disabled), and a manual Check now that bypasses the
  *  toggles and the idle gate. Immediate writes. */
 function UpdatesSettingsBlock(): React.JSX.Element {
+  const t = useT();
   const update = useStore(appStore, (state) => state.update);
   const checkOnStartup = useStore(settingsStore, (settings) => settings.updateCheckOnStartup);
   const checkDaily = useStore(settingsStore, (settings) => settings.updateCheckDaily);
@@ -974,16 +983,16 @@ function UpdatesSettingsBlock(): React.JSX.Element {
   };
 
   const checkNow = async (): Promise<void> => {
-    setCheckNote("Checking…");
+    setCheckNote(t("settings.checkingNote"));
     const result = await manualUpdateCheck();
     if (result.status === "available" && result.version !== null) {
-      setCheckNote(`Update available: ${result.version}`);
+      setCheckNote(t("settings.updateAvailableNote", { version: result.version }));
     } else if (result.status === "none") {
-      setCheckNote("You are up to date.");
+      setCheckNote(t("settings.upToDateNote"));
     } else if (result.status === "unsupported") {
-      setCheckNote("Updates are not available in development builds.");
+      setCheckNote(t("settings.unsupportedNote"));
     } else {
-      setCheckNote(`Check failed: ${result.message ?? "unknown error"}`);
+      setCheckNote(t("settings.checkFailedNote", { message: result.message ?? "unknown error" }));
     }
   };
 
@@ -991,43 +1000,37 @@ function UpdatesSettingsBlock(): React.JSX.Element {
     <div>
       {update.version !== null ? (
         <div className="update-settings-row">
-          <span>Update available: <b>{`v${update.version}`}</b></span>
+          <span>{t("settings.updateAvailablePrefix")} <b>{`v${update.version}`}</b></span>
           {update.status === "downloading" ? (
-            <span className="settings-hint">{`Downloading — ${Math.round(update.percent ?? 0)}%`}</span>
+            <span className="settings-hint">{t("sidebar.update.downloading", { percent: Math.round(update.percent ?? 0) })}</span>
           ) : update.status === "failed" ? (
-            <span className="settings-hint">Download failed — see the log.</span>
+            <span className="settings-hint">{t("sidebar.update.failed")}</span>
           ) : (
-            <button className="primary" onClick={startUpdate}>Update now</button>
+            <button className="primary" onClick={startUpdate}>{t("sidebar.update.updateNow")}</button>
           )}
         </div>
       ) : null}
       <label className="settings-check">
         <input type="checkbox" checked={checkOnStartup}
           onChange={(event) => settingsStore.apply({ updateCheckOnStartup: event.target.checked })} />
-        <span>Check on startup</span>
+        <span>{t("settings.checkOnStartup")}</span>
       </label>
       <label className="settings-check">
         <input type="checkbox" checked={checkDaily}
           onChange={(event) => settingsStore.apply({ updateCheckDaily: event.target.checked })} />
-        <span>Daily check while running</span>
+        <span>{t("settings.dailyCheck")}</span>
       </label>
-      <div className="settings-hint">
-        The daily check fires only after the computer has been idle for 15 minutes; the
-        banner appears after a check finds a newer version. Turn both toggles off to
-        disable update checks entirely — updates never download without your click.
-      </div>
+      <div className="settings-hint">{t("settings.updatesHint")}</div>
       <div className="modal-actions left">
-        <button onClick={() => void checkNow()}>Check now</button>
+        <button onClick={() => void checkNow()}>{t("settings.checkNow")}</button>
         {checkNote !== null ? <span className="settings-hint">{checkNote}</span> : null}
       </div>
       {confirmOpen ? (
-        <Modal title="Update SPACE" onClose={() => setConfirmOpen(false)}>
-          <div className="modal-note">
-            Updating restarts the client now — an active voice or call session will be dropped.
-          </div>
+        <Modal title={t("sidebar.update.confirmTitle")} onClose={() => setConfirmOpen(false)}>
+          <div className="modal-note">{t("sidebar.update.confirmNote")}</div>
           <div className="modal-actions left">
-            <button className="ghost" onClick={() => setConfirmOpen(false)}>Not now</button>
-            <button className="primary" onClick={() => { setConfirmOpen(false); proceedUpdateDownload(); }}>Update now</button>
+            <button className="ghost" onClick={() => setConfirmOpen(false)}>{t("sidebar.update.notNow")}</button>
+            <button className="primary" onClick={() => { setConfirmOpen(false); proceedUpdateDownload(); }}>{t("sidebar.update.updateNow")}</button>
           </div>
         </Modal>
       ) : null}

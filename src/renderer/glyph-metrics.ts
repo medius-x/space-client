@@ -47,3 +47,60 @@ export function bodyGlyphWidthPx(): number {
   }
   return cachedGlyphPx;
 }
+
+const ELLIPSIS = "…";
+
+/** Measuring 2d context for the 13px body font; undefined = not created yet,
+ *  null = unavailable (no 2d canvas / no DOM — tests, SSR). Re-created once the
+ *  webfont settles so an early fallback-font measurement never sticks. */
+let measureContext: CanvasRenderingContext2D | null | undefined;
+
+function defaultMeasureText(text: string): number {
+  if (measureContext === undefined) {
+    measureContext = null;
+    try {
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("2d");
+      if (context !== null) {
+        context.font = "13px 'Open Sans', sans-serif";
+        measureContext = context;
+        void document.fonts?.ready.then(() => {
+          measureContext = undefined; // re-create with the settled webfont
+        }).catch(() => undefined);
+      }
+    } catch {
+      // no DOM — the glyph-average fallback below stands
+    }
+  }
+  if (measureContext === null) {
+    return text.length * cachedGlyphPx;
+  }
+  return measureContext.measureText(text).width;
+}
+
+/** Clip `text` to `maxWidthPx`, appending an ellipsis when anything was cut —
+ *  the composer's placeholder lane (user report 2026-10-28: a long channel
+ *  name must fade out with a "…" instead of hard-clipping at the field's
+ *  edge). Binary search over the prefix; returns the text as-is when it
+ *  already fits, and a lone "…" when even one character cannot fit. The
+ *  measure function is injectable so node-env tests drive the math. */
+export function truncateTextToWidth(
+  text: string,
+  maxWidthPx: number,
+  measureWidth: (text: string) => number = defaultMeasureText,
+): string {
+  if (text.length === 0 || measureWidth(text) <= maxWidthPx) {
+    return text;
+  }
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const candidate = Math.ceil((low + high) / 2);
+    if (measureWidth(text.slice(0, candidate) + ELLIPSIS) <= maxWidthPx) {
+      low = candidate;
+    } else {
+      high = candidate - 1;
+    }
+  }
+  return low > 0 ? text.slice(0, low) + ELLIPSIS : ELLIPSIS;
+}

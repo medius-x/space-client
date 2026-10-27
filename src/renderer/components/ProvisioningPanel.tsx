@@ -8,6 +8,8 @@ import {
 import type { ProvisioningIpcEvent } from "../bridges";
 import { PasswordInput } from "./PasswordInput";
 import { startSession } from "../runtime";
+import type { MessageKey } from "../../domain/i18n/i18n";
+import { useT } from "../hooks/useT";
 
 /**
  * The Create tab of the Add-a-server dialog (round C): a fresh Ubuntu server
@@ -35,19 +37,20 @@ const STAGE_ORDER = [
 
 type StageId = (typeof STAGE_ORDER)[number];
 
-const STAGE_LABELS: Record<StageId, string> = {
-  download: "Server jar",
-  connect: "SSH connection",
-  probe: "Server check",
-  docker: "Docker",
-  layout: "Deployment directory",
-  upload: "Upload files",
-  env: "Secrets",
-  certificate: "TLS certificate",
-  firewall: "Firewall",
-  compose: "Start the stack",
-  wait: "Wait for the server",
-  register: "Owner account",
+/** Stage → dictionary key (compile-checked: every stage has a label entry). */
+const STAGE_LABEL_KEYS: Record<StageId, MessageKey> = {
+  download: "provisioning.stage.download",
+  connect: "provisioning.stage.connect",
+  probe: "provisioning.stage.probe",
+  docker: "provisioning.stage.docker",
+  layout: "provisioning.stage.layout",
+  upload: "provisioning.stage.upload",
+  env: "provisioning.stage.env",
+  certificate: "provisioning.stage.certificate",
+  firewall: "provisioning.stage.firewall",
+  compose: "provisioning.stage.compose",
+  wait: "provisioning.stage.wait",
+  register: "provisioning.stage.register",
 };
 
 interface StepState {
@@ -67,6 +70,7 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange }: {
    *  main process, but its UI would be gone; live report 2026-10-13). */
   onRunningChange?: (running: boolean) => void;
 }): React.JSX.Element {
+  const t = useT();
   // ── the form ────────────────────────────────────────────────────────────
   const [host, setHost] = useState("");
   const [sshLogin, setSshLogin] = useState("root");
@@ -119,9 +123,9 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange }: {
           },
         }));
         if (event.detail !== undefined) {
-          setLogLines((previous) => [...previous, `${STAGE_LABELS[stage] ?? stage}: ${event.detail}`]);
+          setLogLines((previous) => [...previous, `${t(STAGE_LABEL_KEYS[stage])}: ${event.detail}`]);
         } else if (event.state === "start") {
-          setLogLines((previous) => [...previous, `${STAGE_LABELS[stage] ?? stage}…`]);
+          setLogLines((previous) => [...previous, `${t(STAGE_LABEL_KEYS[stage])}…`]);
         }
         if (event.state === "failed") {
           setPhase("failed");
@@ -168,7 +172,7 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange }: {
       return;
     }
     if (window.spaceProvisioning === undefined) {
-      setError("Provisioning is not available in this build.");
+      setError(t("provisioning.unavailable"));
       return;
     }
     adminPasswordRef.current = effectiveAdminPassword;
@@ -197,7 +201,7 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange }: {
                 <span className={`prov-step-icon ${status === "running" ? "icon mdi-refresh sp-spin" : "icon"}`}>
                   {status === "done" ? "✓" : status === "failed" ? "✕" : status === "pending" ? "○" : ""}
                 </span>
-                <span className="prov-step-label">{STAGE_LABELS[stage]}</span>
+                <span className="prov-step-label">{t(STAGE_LABEL_KEYS[stage])}</span>
                 {step?.progress !== undefined && status === "running"
                   ? <span className="prov-step-progress">{step.progress}</span>
                   : null}
@@ -210,27 +214,22 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange }: {
         </div>
         {phase === "running" ? (
           <>
-            <div className="settings-hint">
-              The first build downloads base images and can take several minutes — keep this window open.
-            </div>
+            <div className="settings-hint">{t("provisioning.firstRunHint")}</div>
             <details className="prov-log">
-              <summary>Details</summary>
+              <summary>{t("provisioning.details")}</summary>
               <div className="prov-log-lines">{logLines.join("\n")}</div>
             </details>
             <div className="modal-actions">
-              <button className="ghost" onClick={() => void window.spaceProvisioning?.cancel()}>Cancel</button>
+              <button className="ghost" onClick={() => void window.spaceProvisioning?.cancel()}>{t("common.cancel")}</button>
             </div>
           </>
         ) : phase === "loggingIn" ? (
-          <div className="settings-hint">The server is ready — logging in as the owner…</div>
+          <div className="settings-hint">{t("provisioning.loggingIn")}</div>
         ) : (
           <>
-            <div className="settings-hint">
-              The server is ready, but its admin account already exists with a different
-              password — open the Log in tab and use that password.
-            </div>
+            <div className="settings-hint">{t("provisioning.needsLogin")}</div>
             <div className="modal-actions">
-              <button className="ghost" onClick={() => setPhase("form")}>Back</button>
+              <button className="ghost" onClick={() => setPhase("form")}>{t("share.back")}</button>
             </div>
           </>
         )}
@@ -240,28 +239,24 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange }: {
 
   return (
     <div className="prov-form">
-      <div className="settings-hint">
-        Set up a brand-new OAK server on a Linux machine over SSH: the client installs
-        Docker, deploys the whole stack with fresh secrets and its own TLS certificate,
-        creates the owner account and logs you in.
-      </div>
+      <div className="settings-hint">{t("provisioning.introHint")}</div>
       <label className="settings-field">
-        <span>Server address (IP or host name)</span>
+        <span>{t("provisioning.hostLabel")}</span>
         <input type="text" value={host} onChange={(event) => setHost(event.target.value)} placeholder="203.0.113.10" autoFocus />
       </label>
       <label className="settings-field">
-        <span>SSH user</span>
+        <span>{t("provisioning.sshUser")}</span>
         <input type="text" value={sshLogin} onChange={(event) => setSshLogin(event.target.value)} placeholder="root" autoComplete="off" />
       </label>
       <label className="settings-field">
-        <span>SSH password</span>
-        <PasswordInput value={sshPassword} onChange={setSshPassword} placeholder="The server account's password" autoComplete="off" />
+        <span>{t("provisioning.sshPassword")}</span>
+        <PasswordInput value={sshPassword} onChange={setSshPassword} placeholder={t("provisioning.sshPasswordHint")} autoComplete="off" />
       </label>
       {/* Server credentials above / Space account below (user request
           2026-10-15): a rule makes the two groups read as separate blocks. */}
       <div className="prov-section-rule" />
       <label className="settings-field">
-        <span>Space account login</span>
+        <span>{t("provisioning.accountLogin")}</span>
         <input
           type="text"
           value={accountLogin}
@@ -271,7 +266,7 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange }: {
         />
       </label>
       <label className="settings-field">
-        <span>Space account nickname</span>
+        <span>{t("provisioning.accountNickname")}</span>
         <input
           type="text"
           value={accountNickname}
@@ -281,7 +276,7 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange }: {
         />
       </label>
       <label className="settings-field">
-        <span>Space account password</span>
+        <span>{t("provisioning.accountPassword")}</span>
         <PasswordInput
           value={accountPassword}
           onChange={setAccountPassword}
@@ -291,41 +286,40 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange }: {
         />
       </label>
       <div className="settings-hint">
-        Empty Space account fields default to {DEFAULT_ACCOUNT_LOGIN} / {DEFAULT_ACCOUNT_LOGIN} /
-        {DEFAULT_ACCOUNT_PASSWORD} — change the password after the first login.
+        {t("provisioning.defaultsHint", { login: DEFAULT_ACCOUNT_LOGIN, password: DEFAULT_ACCOUNT_PASSWORD })}
       </div>
       <details className="prov-advanced">
-        <summary>Advanced</summary>
+        <summary>{t("provisioning.advanced")}</summary>
         <label className="settings-field">
-          <span>SSH port</span>
+          <span>{t("provisioning.sshPort")}</span>
           <input type="text" value={sshPort} onChange={(event) => setSshPort(event.target.value)} placeholder="22" />
         </label>
         <label className="settings-field">
-          <span>Private key file (instead of the password)</span>
+          <span>{t("provisioning.keyFile")}</span>
           <input type="text" value={sshKeyPath} onChange={(event) => setSshKeyPath(event.target.value)} placeholder="C:\Users\you\.ssh\id_ed25519" />
         </label>
         {sshKeyPath.trim().length > 0 ? (
           <label className="settings-field">
-            <span>Key passphrase (leave empty if the key is not encrypted)</span>
-            <PasswordInput value={sshKeyPassphrase} onChange={setSshKeyPassphrase} placeholder="Passphrase of the private key" autoComplete="off" />
+            <span>{t("provisioning.keyPassphrase")}</span>
+            <PasswordInput value={sshKeyPassphrase} onChange={setSshKeyPassphrase} placeholder={t("provisioning.keyPassphraseHint")} autoComplete="off" />
           </label>
         ) : null}
         <label className="settings-field">
-          <span>Domain (optional — a Let's Encrypt certificate instead of a pinned self-signed one)</span>
+          <span>{t("provisioning.domain")}</span>
           <input type="text" value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="oak.example.com" />
         </label>
         <label className="settings-field prov-check">
           <input type="checkbox" checked={firewall} onChange={(event) => setFirewall(event.target.checked)} />
-          <span>Configure the firewall (ufw): SSH, HTTPS, TURN and voice media only</span>
+          <span>{t("provisioning.firewall")}</span>
         </label>
         <label className="settings-field">
-          <span>Server jar override (empty = the jar bundled with this client)</span>
+          <span>{t("provisioning.jarOverride")}</span>
           <input type="text" value={jarPath} onChange={(event) => setJarPath(event.target.value)} placeholder="C:\Users\you\Downloads\oak-server.jar" />
         </label>
       </details>
       <div className="error-line">{error ?? ""}</div>
       <div className="modal-actions">
-        <button className="primary" onClick={submit}>Set up a server…</button>
+        <button className="primary" onClick={submit}>{t("provisioning.setupVerb")}</button>
       </div>
     </div>
   );

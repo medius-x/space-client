@@ -1,4 +1,5 @@
 import { useStore } from "../hooks/useStore";
+import { useT } from "../hooks/useT";
 import { appStore, decideTlsCertificate } from "../runtime";
 import { Modal } from "./Modal";
 
@@ -13,6 +14,7 @@ import { Modal } from "./Modal";
  * a BACKGROUND session with the login form closed.
  */
 export function TlsTrustModal(): React.JSX.Element {
+  const t = useT();
   const tlsPrompt = useStore(appStore, (state) => state.tlsPrompt);
   const tlsRetry = useStore(appStore, (state) => state.tlsRetry);
   if (tlsPrompt === null) {
@@ -20,17 +22,17 @@ export function TlsTrustModal(): React.JSX.Element {
   }
   return (
     <Modal
-      title={tlsPrompt.changedPinned ? "Server certificate changed" : "Server certificate fingerprint"}
+      title={tlsPrompt.changedPinned ? t("tls.changedTitle") : t("tls.fingerprintTitle")}
       onClose={() => void decideTlsCertificate(tlsPrompt, false)}
       elevated
     >
       <div className="modal-note">
         {tlsPrompt.changedPinned
-          ? `${tlsPrompt.hostname} presented a certificate that differs from the remembered one — the server was probably reinstalled. If in doubt, verify the fingerprint below with the server owner before connecting.`
-          : `${tlsPrompt.hostname} uses its own certificate. Connect as usual, or verify the fingerprint below with the server owner first.`}
+          ? t("tls.changedNote", { host: tlsPrompt.hostname })
+          : t("tls.selfSignedNote", { host: tlsPrompt.hostname })}
       </div>
       <label className="settings-field">
-        <span>Fingerprint (SHA-256)</span>
+        <span>{t("tls.fingerprintLabel")}</span>
         <input
           type="text"
           readOnly
@@ -40,7 +42,7 @@ export function TlsTrustModal(): React.JSX.Element {
         />
       </label>
       <div className="modal-actions">
-        <button className="ghost" onClick={() => void decideTlsCertificate(tlsPrompt, false)}>Cancel</button>
+        <button className="ghost" onClick={() => void decideTlsCertificate(tlsPrompt, false)}>{t("common.cancel")}</button>
         <button
           className="primary"
           onClick={() => {
@@ -49,7 +51,7 @@ export function TlsTrustModal(): React.JSX.Element {
             });
           }}
         >
-          Connect
+          {t("tls.connect")}
         </button>
       </div>
     </Modal>

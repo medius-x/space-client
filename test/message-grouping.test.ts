@@ -76,10 +76,14 @@ describe("timestamp formatters (cached Intl instances)", () => {
   // days, so the arithmetic must stay inside one local day on ANY host tz.
   const now = new Date(2026, 9, 19, 12, 0, 0).getTime(); // Oct 19 2026, local noon
 
-  it("formatTimeOfDay matches the one-shot toLocaleTimeString it replaced", () => {
+  it("formatTimeOfDay matches a one-shot Intl format of the UI language", () => {
+    // Since the localization round the locale follows the UI LANGUAGE setting
+    // (default en), not the host OS — compare against the same Intl source.
     const sample = new Date(2026, 9, 19, 14, 5).getTime();
     expect(formatTimeOfDay(sample))
-      .toBe(new Date(sample).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+      .toBe(new Intl.DateTimeFormat("en", { hour: "2-digit", minute: "2-digit" }).format(sample));
+    expect(formatTimeOfDay(sample, "ru"))
+      .toBe(new Intl.DateTimeFormat("ru", { hour: "2-digit", minute: "2-digit" }).format(sample));
   });
 
   it("formatHeaderStamp renders Today/Yesterday and the full date for older days", () => {
@@ -89,6 +93,16 @@ describe("timestamp formatters (cached Intl instances)", () => {
     const oldStamp = new Date(2026, 8, 4, 9, 30).getTime();
     expect(formatHeaderStamp(oldStamp, now)).toMatch(/^[A-Z][a-z]{2} \d{1,2} at \d{2}:\d{2}$/);
     expect(formatHeaderStamp(oldStamp, now)).toMatch(/^Sep 4 at \d{2}:\d{2}$/);
+  });
+
+  it("formatHeaderStamp localizes to Russian", () => {
+    expect(formatHeaderStamp(now - 2 * HOUR, now, true, "ru")).toMatch(/^Сегодня в \d{2}:\d{2}$/);
+    expect(formatHeaderStamp(now - 26 * HOUR, now, true, "ru")).toMatch(/^Вчера в \d{2}:\d{2}$/);
+    // «4 сент. в 09:30» — the RU month abbreviation comes from Intl, so build
+    // the expectation from the same source rather than hard-coding it.
+    const oldStamp = new Date(2026, 8, 4, 9, 30).getTime();
+    const ruMonth = new Intl.DateTimeFormat("ru", { month: "short" }).format(new Date(oldStamp));
+    expect(formatHeaderStamp(oldStamp, now, true, "ru")).toBe(`${new Date(oldStamp).getDate()} ${ruMonth} в 09:30`);
   });
 
   it("relativeDates=false always shows the full date", () => {

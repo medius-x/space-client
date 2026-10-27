@@ -20,6 +20,7 @@ import {
   type ShareQuality,
 } from "../../domain/logic/share-quality";
 import { Modal } from "./Modal";
+import { useT } from "../hooks/useT";
 
 type PickerTab = "screen" | "window" | "camera";
 
@@ -42,6 +43,7 @@ export function SharePickerModal({ onTarget, onClose }: {
   onTarget(target: ShareTarget): void;
   onClose(): void;
 }): React.JSX.Element {
+  const t = useT();
   const [step, setStep] = useState<1 | 2>(1);
   const [tab, setTab] = useState<PickerTab>("screen");
   const [sources, setSources] = useState<CaptureSourceInfo[]>([]);
@@ -131,7 +133,7 @@ export function SharePickerModal({ onTarget, onClose }: {
       }
       setCameras(devices
         .filter((device) => device.kind === "videoinput")
-        .map((device, index) => ({ deviceId: device.deviceId, label: device.label || `Camera ${index + 1}` })));
+        .map((device, index) => ({ deviceId: device.deviceId, label: device.label || t("share.cameraN", { index: index + 1 }) })));
       setCamerasLoading(false);
     }).catch(() => {
       if (!cancelled) {
@@ -307,7 +309,7 @@ export function SharePickerModal({ onTarget, onClose }: {
       && entry.preset.height === comboValue.height
       && entry.preset.bitrate === comboValue.bitrate)?.key ?? "custom";
   const selectedComboLabel = selectedComboKey === "custom"
-    ? "Custom"
+    ? t("share.custom")
     : presetLabel(comboEntries.find((entry) => entry.key === selectedComboKey)!.preset);
 
   const resolutionChoices = useMemo(
@@ -315,13 +317,13 @@ export function SharePickerModal({ onTarget, onClose }: {
     [sourceSize.width, sourceSize.height]);
 
   return (
-    <Modal title={step === 1 ? "Share your screen" : "Quality"} onClose={onClose}>
+    <Modal title={step === 1 ? t("share.title") : t("share.qualityTitle")} onClose={onClose}>
       {step === 1 ? (
         <>
           <div className="modal-row picker-tabs">
-            <button className={"kind-choice" + (tab === "screen" ? " chosen" : "")} onClick={() => { setTab("screen"); setSelected(null); }}><span className="icon mdi-monitor" /> Screens</button>
-            <button className={"kind-choice" + (tab === "window" ? " chosen" : "")} onClick={() => { setTab("window"); setSelected(null); }}><span className="icon mdi-application" /> Windows</button>
-            <button className={"kind-choice" + (tab === "camera" ? " chosen" : "")} onClick={() => { setTab("camera"); setSelected(null); }}><span className="icon mdi-video" /> Camera</button>
+            <button className={"kind-choice" + (tab === "screen" ? " chosen" : "")} onClick={() => { setTab("screen"); setSelected(null); }}><span className="icon mdi-monitor" /> {t("share.tab.screen")}</button>
+            <button className={"kind-choice" + (tab === "window" ? " chosen" : "")} onClick={() => { setTab("window"); setSelected(null); }}><span className="icon mdi-application" /> {t("share.tab.window")}</button>
+            <button className={"kind-choice" + (tab === "camera" ? " chosen" : "")} onClick={() => { setTab("camera"); setSelected(null); }}><span className="icon mdi-video" /> {t("share.tab.camera")}</button>
           </div>
           <div className="error-line">{error ?? ""}</div>
           {tab === "camera" ? (
@@ -331,15 +333,15 @@ export function SharePickerModal({ onTarget, onClose }: {
                   {previewStream !== null ? (
                     <CameraPreviewVideo stream={previewStream} />
                   ) : previewFailed ? (
-                    <span className="picker-preview-note">Camera preview unavailable</span>
+                    <span className="picker-preview-note">{t("share.cameraPreviewUnavailable")}</span>
                   ) : (
                     <span className="picker-loading"><span className="icon mdi-refresh" /></span>
                   )}
                 </div>
               ) : null}
               <div className="picker-list">
-                {camerasLoading ? <div className="picker-loading"><span className="icon mdi-refresh" /> Looking for cameras…</div> : null}
-                {!camerasLoading && cameras.length === 0 ? <div className="modal-note">No cameras found.</div> : null}
+                {camerasLoading ? <div className="picker-loading"><span className="icon mdi-refresh" /> {t("share.lookingCameras")}</div> : null}
+                {!camerasLoading && cameras.length === 0 ? <div className="modal-note">{t("share.noCameras")}</div> : null}
                 {cameras.map((camera) => (
                   <div
                     key={camera.deviceId}
@@ -353,8 +355,8 @@ export function SharePickerModal({ onTarget, onClose }: {
             </>
           ) : (
             <div className="picker-grid">
-              {sourcesLoading ? <div className="picker-loading"><span className="icon mdi-refresh" /> Looking for {tab === "screen" ? "screens" : "windows"}…</div> : null}
-              {!sourcesLoading && error === null && tabSources.length === 0 ? <div className="modal-note">No {tab === "screen" ? "screens" : "windows"} found.</div> : null}
+              {sourcesLoading ? <div className="picker-loading"><span className="icon mdi-refresh" /> {t("share.lookingSources", { kind: t(tab === "screen" ? "share.kind.screens" : "share.kind.windows") })}</div> : null}
+              {!sourcesLoading && error === null && tabSources.length === 0 ? <div className="modal-note">{t("share.noSources", { kind: t(tab === "screen" ? "share.kind.screens" : "share.kind.windows") })}</div> : null}
               {tabSources.map((source) => (
                 <div
                   key={source.id}
@@ -373,15 +375,15 @@ export function SharePickerModal({ onTarget, onClose }: {
             </div>
           )}
           <div className="modal-actions">
-            <button className="ghost" onClick={onClose}>Cancel</button>
-            <button className="primary" disabled={selected === null} onClick={goStepTwo}>Next</button>
+            <button className="ghost" onClick={onClose}>{t("common.cancel")}</button>
+            <button className="primary" disabled={selected === null} onClick={goStepTwo}>{t("share.next")}</button>
           </div>
         </>
       ) : (
         <>
           <div className="quality-step">
             <div className="quality-row">
-              <span className="quality-row-label">Preset</span>
+              <span className="quality-row-label">{t("share.preset")}</span>
               <div className="quality-select-wrap" ref={presetMenuRef}>
                 <button
                   type="button"
@@ -400,7 +402,7 @@ export function SharePickerModal({ onTarget, onClose }: {
                         setPresetMenuOpen(false);
                       }}
                     >
-                      <span className="quality-preset-label">Custom</span>
+                      <span className="quality-preset-label">{t("share.custom")}</span>
                       {selectedComboKey === "custom" ? <span className="icon mdi-check quality-preset-check" /> : null}
                     </div>
                     {comboEntries.map((entry) => (
@@ -418,7 +420,7 @@ export function SharePickerModal({ onTarget, onClose }: {
                           <button
                             type="button"
                             className="quality-preset-delete"
-                            title={`Delete preset "${entry.preset.name}"`}
+                            title={t("share.deletePreset", { name: entry.preset.name })}
                             onClick={(event) => {
                               event.stopPropagation(); // the row's click would choose it
                               deletePreset(entry.preset);
@@ -434,21 +436,21 @@ export function SharePickerModal({ onTarget, onClose }: {
               </div>
             </div>
             <SegmentRow
-              label="Frame rate"
+              label={t("share.frameRate")}
               choices={FPS_CHOICES}
               describe={(fps) => String(fps)}
               active={(fps) => segmentState.fps === fps}
               onChoose={(fps) => chooseSegment({ fps })}
             />
             <SegmentRow
-              label="Resolution"
+              label={t("share.resolution")}
               choices={resolutionChoices}
               describe={(choice) => choice.label}
               active={(choice) => segmentState.width === choice.width && segmentState.height === choice.height}
               onChoose={(choice) => chooseSegment({ width: choice.width, height: choice.height })}
             />
             <SegmentRow
-              label="Bitrate"
+              label={t("share.bitrate")}
               choices={BITRATE_CHOICES_MBPS}
               describe={(mbps) => formatBitrate(mbps * 1_000_000)}
               active={(mbps) => segmentState.bitrate === mbps * 1_000_000}
@@ -458,7 +460,7 @@ export function SharePickerModal({ onTarget, onClose }: {
               <input
                 type="text"
                 value={presetName}
-                placeholder="Preset name"
+                placeholder={t("share.presetName")}
                 onChange={(event) => setPresetName(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
@@ -466,29 +468,27 @@ export function SharePickerModal({ onTarget, onClose }: {
                   }
                 }}
               />
-              <button className="primary" disabled={presetName.trim().length === 0} onClick={savePreset}>Save</button>
+              <button className="primary" disabled={presetName.trim().length === 0} onClick={savePreset}>{t("common.save")}</button>
             </div>
             {audioCheckboxVisible ? (
               <label
                 className="quality-audio"
-                title={tab === "screen"
-                  ? "Share the sound of what you are sharing — the whole desktop minus this client's own sounds"
-                  : "Share the sound of what you are sharing — only that application's audio"}
+                title={tab === "screen" ? t("share.audioHintScreen") : t("share.audioHintWindow")}
               >
                 <input
                   type="checkbox"
                   checked={includeAudio}
                   onChange={(event) => setIncludeAudio(event.target.checked)}
                 />
-                {tab === "screen" ? "Include desktop audio" : "Include application audio"}
+                {tab === "screen" ? t("share.includeDesktopAudio") : t("share.includeAppAudio")}
               </label>
             ) : null}
-            <div className="quality-summary">Streaming at {describeQuality(currentQuality)}</div>
+            <div className="quality-summary">{t("share.streamingAt", { quality: describeQuality(currentQuality) })}</div>
           </div>
           <div className="modal-actions">
-            <button className="ghost" title="Back to sources" onClick={() => setStep(1)}><span className="icon mdi-chevron-left" /> Back</button>
-            <button className="ghost" onClick={onClose}>Cancel</button>
-            <button className="primary" onClick={share}>Share</button>
+            <button className="ghost" title={t("share.backToSources")} onClick={() => setStep(1)}><span className="icon mdi-chevron-left" /> {t("share.back")}</button>
+            <button className="ghost" onClick={onClose}>{t("common.cancel")}</button>
+            <button className="primary" onClick={share}>{t("share.shareVerb")}</button>
           </div>
         </>
       )}

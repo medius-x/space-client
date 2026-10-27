@@ -1,4 +1,6 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
+import type { UiLang } from "../i18n/i18n";
+import { tf } from "../i18n/i18n";
 
 /**
  * Pure logic of the expression-pack exchange (export/import of custom emojis
@@ -566,22 +568,23 @@ export function tallyRuntimeOutcome(
 }
 
 /** "Imported 38, skipped 3 (name exists), 2 skipped (limit), 1 invalid, 1 failed · created 2 packs" —
- *  only the non-zero segments render. */
-export function formatImportReport(counts: ImportReportCounts, packsCreated: number): string {
-  const segments: string[] = [`Imported ${counts.imported}`];
+ *  only the non-zero segments render. The lang parameter defaults to "en" (the
+ *  pre-i18n test assertions stay green); the component passes currentLang(). */
+export function formatImportReport(counts: ImportReportCounts, packsCreated: number, lang: UiLang = "en"): string {
+  const segments: string[] = [tf(lang, "expression.importedCount", { count: counts.imported })];
   if (counts.skippedNames > 0) {
-    segments.push(`skipped ${counts.skippedNames} (name exists)`);
+    segments.push(tf(lang, "expression.skippedNames", { count: counts.skippedNames }));
   }
   if (counts.skippedLimits > 0) {
-    segments.push(`${counts.skippedLimits} skipped (limit)`);
+    segments.push(tf(lang, "expression.skippedLimits", { count: counts.skippedLimits }));
   }
   if (counts.invalid > 0) {
-    segments.push(`${counts.invalid} invalid`);
+    segments.push(tf(lang, "expression.invalidCount", { count: counts.invalid }));
   }
   if (counts.failed > 0) {
-    segments.push(`${counts.failed} failed`);
+    segments.push(tf(lang, "expression.failedCount", { count: counts.failed }));
   }
-  const suffix = packsCreated > 0 ? ` · created ${packsCreated} ${packsCreated === 1 ? "pack" : "packs"}` : "";
+  const suffix = packsCreated > 0 ? ` · ${tf(lang, "expression.createdPacks", { count: packsCreated })}` : "";
   return `${segments.join(", ")}${suffix}`;
 }
 
@@ -594,13 +597,18 @@ export interface ExportReportInput {
 }
 
 /** "Exported 38 emojis and 45 stickers (3 packs) to cats.zip · 2 files were unavailable and skipped". */
-export function formatExportReport(result: ExportReportInput): string {
-  const packsPart = result.packs > 0 ? ` (${result.packs} ${result.packs === 1 ? "pack" : "packs"})` : "";
-  let text =
-    `Exported ${result.emojis} ${result.emojis === 1 ? "emoji" : "emojis"} and ` +
-    `${result.stickers} ${result.stickers === 1 ? "sticker" : "stickers"}${packsPart} to ${result.fileName}`;
+export function formatExportReport(result: ExportReportInput, lang: UiLang = "en"): string {
+  const packsPart = result.packs > 0
+    ? ` (${tf(lang, "expression.nPacks", { count: result.packs })})`
+    : "";
+  let text = tf(lang, "expression.exportedLine", {
+    emojis: tf(lang, "expression.nEmojis", { count: result.emojis }),
+    stickers: tf(lang, "expression.nStickers", { count: result.stickers }),
+    packsPart,
+    file: result.fileName,
+  });
   if (result.unavailable > 0) {
-    text += ` · ${result.unavailable} ${result.unavailable === 1 ? "file was" : "files were"} unavailable and skipped`;
+    text += ` · ${tf(lang, "expression.unavailableFiles", { count: result.unavailable })}`;
   }
   return text;
 }
