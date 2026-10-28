@@ -1556,6 +1556,10 @@ async function createWindow(): Promise<void> {
       contextIsolation: true, // default on modern Electron — pinned explicitly
       sandbox: true, // default — pinned explicitly
       nodeIntegration: false,
+      // Dev banner smoke (--space-fake-update): the flag must reach the SANDBOXED
+      // preload, and additionalArguments is the one channel that crosses that
+      // boundary — the preload reads it back from its own process.argv.
+      additionalArguments: process.argv.includes("--space-fake-update") ? ["--space-fake-update"] : [],
       autoplayPolicy: "no-user-gesture-required",
       // Keepalive timers, long-polls and audio meters must survive minimizing the window.
       backgroundThrottling: false,

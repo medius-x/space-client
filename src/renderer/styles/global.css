@@ -2870,8 +2870,19 @@ button.wide-add { width: 100%; }
   font-size: 12px;
 }
 .ownership-banner-text .icon { font-size: 16px; color: var(--sp-yellow); flex-shrink: 0; }
-.ownership-banner-actions { display: flex; gap: 8px; }
-.ownership-banner-actions button { padding: 4px 10px; font-size: 12px; }
+.ownership-banner-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.ownership-banner-actions button { padding: 4px 10px; font-size: 12px; white-space: nowrap; }
+/* The update banner's FIXED button grid (pads/font size ride the ownership
+   class above): Update and Cancel are equal halves of one row, and Skip spans
+   both columns — so Update+Cancel+gap is exactly as wide as Skip. The lone
+   buttons of the downloading/downloaded states span the full row too. */
+.update-banner-actions { display: grid; grid-template-columns: 1fr 1fr; }
+.update-banner-actions .update-wide { grid-column: 1 / -1; }
+/* The banner's ghost buttons carry a visible outline at rest — on the narrow
+   card they must read as buttons, not floating text (the global .ghost is
+   borderless until hover). box-sizing keeps them the same height as the
+   primary neighbor. */
+.update-banner-actions button.ghost { border: 1px solid var(--sp-control); }
 .ownership-banner .error-line { min-height: 14px; font-size: 11px; }
 
 /* The client self-update banner (2026-10-20): the ownership-banner card idiom

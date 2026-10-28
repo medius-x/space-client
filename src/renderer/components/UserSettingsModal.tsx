@@ -8,6 +8,7 @@ import {
   inVoiceOrCall,
   manualUpdateCheck,
   proceedUpdateDownload,
+  restartForUpdateNow,
   roomAudio,
   settingsStore,
   toggleUserSettings,
@@ -975,11 +976,17 @@ function UpdatesSettingsBlock(): React.JSX.Element {
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   const startUpdate = (): void => {
+    proceedUpdateDownload();
+  };
+
+  // The restart (unlike the download) drops a live voice/call session — it
+  // confirms first, exactly like the banner's Restart now.
+  const startRestart = (): void => {
     if (updateInterruptsMedia()) {
       setConfirmOpen(true);
       return;
     }
-    proceedUpdateDownload();
+    restartForUpdateNow();
   };
 
   const checkNow = async (): Promise<void> => {
@@ -1005,6 +1012,8 @@ function UpdatesSettingsBlock(): React.JSX.Element {
             <span className="settings-hint">{t("sidebar.update.downloading", { percent: Math.round(update.percent ?? 0) })}</span>
           ) : update.status === "failed" ? (
             <span className="settings-hint">{t("sidebar.update.failed")}</span>
+          ) : update.status === "downloaded" ? (
+            <button className="primary" onClick={startRestart}>{t("sidebar.update.restartNow")}</button>
           ) : (
             <button className="primary" onClick={startUpdate}>{t("sidebar.update.updateNow")}</button>
           )}
@@ -1030,7 +1039,7 @@ function UpdatesSettingsBlock(): React.JSX.Element {
           <div className="modal-note">{t("sidebar.update.confirmNote")}</div>
           <div className="modal-actions left">
             <button className="ghost" onClick={() => setConfirmOpen(false)}>{t("sidebar.update.notNow")}</button>
-            <button className="primary" onClick={() => { setConfirmOpen(false); proceedUpdateDownload(); }}>{t("sidebar.update.updateNow")}</button>
+            <button className="primary" onClick={() => { setConfirmOpen(false); restartForUpdateNow(); }}>{t("sidebar.update.updateNow")}</button>
           </div>
         </Modal>
       ) : null}

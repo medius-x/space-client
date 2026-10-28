@@ -27,6 +27,7 @@
     "start:tools": "npm run build && electron . --space-devtools",
     "start2:tools": "npm run build && electron . --space-instance=b --space-devtools",
     "start3:tools": "npm run build && electron . --space-instance=c --space-devtools",
+    "start:fakeupdate": "npm run build && electron . --space-fake-update",
     "df3:glue": "node scripts/extract-df3-glue.mjs",
     "ns:vendor": "node scripts/vendor-ns-engines.mjs"
   },

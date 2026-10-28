@@ -358,6 +358,10 @@ export type UpdateStateEvent =
 /** Self-update bridge (2026-10-20): the checks and the user-initiated download
  *  ride IPC; every byte of update traffic starts from an explicit click. */
 export interface UpdatesBridge {
+  /** Dev banner smoke (--space-fake-update): true when the app was launched
+   *  with the flag — runtime seeds a fake "update available" so the banner's
+   *  layout can be checked in dev (the real updater is packaged-only). */
+  readonly fakeUpdateAvailable: boolean;
   check(): Promise<UpdateCheckResult>;
   /** The client's own version — package.json in dev, the exe version when
    *  packaged (Diagnostics, user request 2026-10-27). */

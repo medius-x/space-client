@@ -252,6 +252,10 @@ contextBridge.exposeInMainWorld("spaceIdle", {
  *  "space-updates:state" (single listener slot — removeAllListeners keeps a
  *  remount from stacking a second one, the toast-channel precedent). */
 contextBridge.exposeInMainWorld("spaceUpdates", {
+  /** Dev banner smoke (--space-fake-update): arrives through the renderer's
+   *  argv (additionalArguments) — the updater itself is packaged-only, so the
+   *  banner is previewed against a seeded fake version instead. */
+  fakeUpdateAvailable: process.argv.includes("--space-fake-update"),
   check(): Promise<unknown> {
     return ipcRenderer.invoke("space-updates:check");
   },

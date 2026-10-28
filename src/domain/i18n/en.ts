@@ -265,6 +265,8 @@ export const EN = {
   "sidebar.update.available": "Space {version} is available",
   "sidebar.update.downloading": "Downloading update — {percent}%",
   "sidebar.update.failed": "Download failed — check the log and try again",
+  "sidebar.update.downloaded": "Update downloaded — restart to install",
+  "sidebar.update.restartNow": "Restart now",
   "sidebar.update.cancelDownload": "Cancel download",
   "sidebar.update.updateVerb": "Update",
   "sidebar.update.skip": "Skip this version",

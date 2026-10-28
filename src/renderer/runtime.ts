@@ -216,7 +216,7 @@ export interface AppState {
 
 /** The self-update snapshot the banner and the General section render. */
 export interface UpdateFlowState {
-  status: "idle" | "available" | "downloading" | "failed";
+  status: "idle" | "available" | "downloading" | "downloaded" | "failed";
   version: string | null;
   percent: number | null;
   bytesPerSecond: number | null;
@@ -3737,7 +3737,20 @@ async function runUpdateCheck(): Promise<UpdateCheckResult> {
  *  (updateDismissed=false — Cancel only meant "until the next check"), anything
  *  else clears it — UNLESS a download is running (a stray manual check
  *  mid-download must not eat its progress). */
+/** The seeded version of the dev banner smoke — a version that will never
+ *  exist, so Skip cannot poison the real feed bookkeeping. */
+const FAKE_UPDATE_VERSION = "99.0.0";
+/** Set by startUpdateChecks when --space-fake-update is active: the whole
+ *  update flow (download progress → downloaded → restart) is simulated locally
+ *  because the real updater is packaged-only. */
+let fakeUpdateMode = false;
+
 function applyUpdateCheckResult(result: UpdateCheckResult): void {
+  // The dev banner smoke outranks real check results: dev checks answer
+  // "unsupported" and would wipe the seeded banner seconds after it appeared.
+  if (appStore.getSnapshot().update.version === FAKE_UPDATE_VERSION) {
+    return;
+  }
   if (result.status === "available" && result.version !== null) {
     appStore.patch({
       update: { status: "available", version: result.version, percent: null, bytesPerSecond: null },
@@ -3751,8 +3764,9 @@ function applyUpdateCheckResult(result: UpdateCheckResult): void {
 }
 
 /** The updater's lifecycle events: download progress, the finished download
- *  (the install fires right away — the user consented at the Update click), a
- *  cancel, a failure. */
+ *  (the banner switches to "downloaded" and waits — the install fires ONLY from
+ *  the Restart now click; a restart must never ambush the user), a cancel, a
+ *  failure. */
 function installUpdateStateListener(): void {
   window.spaceUpdates?.onState((event: UpdateStateEvent) => {
     if (event.kind === "downloading") {
@@ -3766,7 +3780,11 @@ function installUpdateStateListener(): void {
         },
       });
     } else if (event.kind === "downloaded") {
-      installUpdateNow(event.version);
+      const previous = appStore.getSnapshot().update;
+      appStore.patch({
+        update: { status: "downloaded", version: event.version ?? previous.version, percent: 100, bytesPerSecond: null },
+        updateDismissed: false, // the restart offer outranks an earlier Cancel — the bytes are already on disk
+      });
     } else if (event.kind === "canceled") {
       const previous = appStore.getSnapshot().update;
       appStore.patch({
@@ -3781,11 +3799,11 @@ function installUpdateStateListener(): void {
   });
 }
 
-/** The automatic install after a completed download: leave voice/call first
- *  (the tray-Quit recipe — the peers' tiles drop at once, not on Janus's own
+/** The install after the Restart now click: leave voice/call first (the
+ *  tray-Quit recipe — the peers' tiles drop at once, not on Janus's own
  *  timeout), then the silent NSIS installer takes over and relaunches the app. */
 function installUpdateNow(version: string | null): void {
-  log.info("update", `v${version ?? "?"} downloaded — installing (app restarts)`);
+  log.info("update", `v${version ?? "?"} — restart requested, installing (app relaunches)`);
   void teardownVoice();
   void teardownCall();
   window.setTimeout(() => window.spaceUpdates?.install(), 900);
@@ -3798,8 +3816,20 @@ function installUpdateNow(version: string | null): void {
  *  all; the manual Check now button bypasses this scheduler entirely. */
 function startUpdateChecks(): void {
   installUpdateStateListener();
+  // Dev banner smoke (--space-fake-update / npm run start:fake-update): the
+  // real updater is packaged-only, so the banner's LAYOUT (three buttons in a
+  // ~200px sidebar card, RU labels included) is checked against a seeded fake
+  // "available". Real probes are armed OFF in this mode — the startup check
+  // answers "unsupported" in dev and would wipe the banner 15 s in.
+  const fakeUpdate = window.spaceUpdates?.fakeUpdateAvailable === true;
+  fakeUpdateMode = fakeUpdate;
+  if (fakeUpdate) {
+    window.setTimeout(() => {
+      appStore.patch({ update: { status: "available", version: FAKE_UPDATE_VERSION, percent: null, bytesPerSecond: null }, updateDismissed: false });
+    }, 2_000);
+  }
   lastUpdateCheckAt = Date.now(); // the daily clock starts at boot
-  if (settingsStore.getSnapshot().updateCheckOnStartup) {
+  if (!fakeUpdate && settingsStore.getSnapshot().updateCheckOnStartup) {
     window.setTimeout(() => void runUpdateCheck(), 15_000);
   }
   window.setInterval(() => {
@@ -3829,7 +3859,40 @@ export function updateInterruptsMedia(): boolean {
 /** Start the user-initiated download (the interrupt confirm, when needed, is
  *  the caller's — both the banner and the General section render it). */
 export function proceedUpdateDownload(): void {
+  if (fakeUpdateMode) {
+    runFakeUpdateDownload();
+    return;
+  }
   void window.spaceUpdates?.download();
+}
+
+/** The dev smoke's stand-in for the real download: a short scripted progress
+ *  walk ending in the "downloaded" state, so the restart banner is checkable
+ *  without a packaged build. */
+function runFakeUpdateDownload(): void {
+  let fakePercent = 0;
+  appStore.patch({ update: { status: "downloading", version: FAKE_UPDATE_VERSION, percent: 0, bytesPerSecond: 4_200_000 } });
+  const fakeTimer = window.setInterval(() => {
+    fakePercent = Math.min(100, fakePercent + 25);
+    if (fakePercent < 100) {
+      appStore.patch({ update: { status: "downloading", version: FAKE_UPDATE_VERSION, percent: fakePercent, bytesPerSecond: 4_200_000 } });
+      return;
+    }
+    window.clearInterval(fakeTimer);
+    appStore.patch({ update: { status: "downloaded", version: FAKE_UPDATE_VERSION, percent: 100, bytesPerSecond: null } });
+  }, 700);
+}
+
+/** The banner's Restart now — the ONLY path that installs a downloaded
+ *  update. In the dev smoke it resets the flow back to "available" instead
+ *  (nothing is really on disk), so the whole cycle can be replayed. */
+export function restartForUpdateNow(): void {
+  if (fakeUpdateMode) {
+    log.info("update", "dev smoke: restart clicked — replaying the flow");
+    appStore.patch({ update: { status: "available", version: FAKE_UPDATE_VERSION, percent: null, bytesPerSecond: null } });
+    return;
+  }
+  installUpdateNow(appStore.getSnapshot().update.version);
 }
 
 /** The banner's Cancel — re-arms on the next "available" report. */

@@ -11,6 +11,7 @@ import {
   openDiscussion,
   openServerMenu,
   proceedUpdateDownload,
+  restartForUpdateNow,
   roomAudio,
   setActiveChannel,
   setSidebarDiscussions,
@@ -674,12 +675,14 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
 /**
  * The client self-update banner (2026-10-20, under the server header — the
  * ownership-banner card idiom): "Space X is available" with Update / Cancel /
- * Skip this version. Update CONFIRMS first when a voice/call session is live
- * (declining keeps the banner); during the download the card becomes a
- * progress bar with a Cancel-download button, and a finished download installs
- * automatically (silent install, the app relaunches itself). Cancel only hides
- * the card until the next check re-arms it; Skip persists the version in
- * settings — the General section still offers the update either way.
+ * Skip this version in a FIXED grid (Update and Cancel are equal halves of a
+ * row; Skip spans it — exactly as wide as Update+Cancel+gap). Downloading is a
+ * progress bar with a Cancel-download button; a finished download switches to
+ * "Update downloaded" + Restart now, and the restart happens ONLY from that
+ * click (it confirms first when a voice/call session is live). Cancel only
+ * hides the card until the next check re-arms it (the downloaded offer ignores
+ * it — the bytes are already on disk); Skip persists the version in settings —
+ * the General section still offers the update either way.
  */
 function UpdateBanner(): React.JSX.Element | null {
   const t = useT();
@@ -688,16 +691,22 @@ function UpdateBanner(): React.JSX.Element | null {
   const skippedVersion = useStore(settingsStore, (settings) => settings.skippedUpdateVersion);
   const [confirmOpen, setConfirmOpen] = useState(false);
 
-  if (dismissed || !shouldShowUpdateBanner(update.version, skippedVersion) || update.status === "idle") {
+  if (update.status === "idle") {
+    return null;
+  }
+  // "downloaded" ignores Cancel: the bytes are already on disk and the restart
+  // offer must stay reachable — only the Restart now click (or a fresh check
+  // cycle) moves the flow on.
+  if (update.status !== "downloaded" && (dismissed || !shouldShowUpdateBanner(update.version, skippedVersion))) {
     return null;
   }
 
-  const startUpdate = (): void => {
+  const startRestart = (): void => {
     if (updateInterruptsMedia()) {
       setConfirmOpen(true);
       return;
     }
-    proceedUpdateDownload();
+    restartForUpdateNow();
   };
 
   const percent = Math.round(update.percent ?? 0);
@@ -709,6 +718,8 @@ function UpdateBanner(): React.JSX.Element | null {
           <span>{t("sidebar.update.downloading", { percent })}</span>
         ) : update.status === "failed" ? (
           <span>{t("sidebar.update.failed")}</span>
+        ) : update.status === "downloaded" ? (
+          <span>{t("sidebar.update.downloaded")}</span>
         ) : (
           <span>{t("sidebar.update.available", { version: update.version ?? "" })}</span>
         )}
@@ -719,14 +730,16 @@ function UpdateBanner(): React.JSX.Element | null {
           <span className="update-progress-note">{formatUpdateSpeed(update.bytesPerSecond)}</span>
         </div>
       ) : null}
-      <div className="ownership-banner-actions">
+      <div className="ownership-banner-actions update-banner-actions">
         {update.status === "downloading" ? (
-          <button className="ghost" onClick={() => window.spaceUpdates?.cancelDownload()}>{t("sidebar.update.cancelDownload")}</button>
+          <button className="ghost update-wide" onClick={() => window.spaceUpdates?.cancelDownload()}>{t("sidebar.update.cancelDownload")}</button>
+        ) : update.status === "downloaded" ? (
+          <button className="primary update-wide" onClick={startRestart}>{t("sidebar.update.restartNow")}</button>
         ) : (
           <>
-            <button className="primary" onClick={startUpdate}>{t("sidebar.update.updateVerb")}</button>
+            <button className="primary" onClick={proceedUpdateDownload}>{t("sidebar.update.updateVerb")}</button>
             <button className="ghost" onClick={() => dismissUpdateBanner()}>{t("common.cancel")}</button>
-            <button className="ghost" onClick={() => { if (update.version !== null) { skipUpdateVersion(update.version); } }}>{t("sidebar.update.skip")}</button>
+            <button className="ghost update-wide" onClick={() => { if (update.version !== null) { skipUpdateVersion(update.version); } }}>{t("sidebar.update.skip")}</button>
           </>
         )}
       </div>
@@ -735,7 +748,7 @@ function UpdateBanner(): React.JSX.Element | null {
           <div className="modal-note">{t("sidebar.update.confirmNote")}</div>
           <div className="modal-actions left">
             <button className="ghost" onClick={() => setConfirmOpen(false)}>{t("sidebar.update.notNow")}</button>
-            <button className="primary" onClick={() => { setConfirmOpen(false); proceedUpdateDownload(); }}>{t("sidebar.update.updateNow")}</button>
+            <button className="primary" onClick={() => { setConfirmOpen(false); restartForUpdateNow(); }}>{t("sidebar.update.updateNow")}</button>
           </div>
         </Modal>
       ) : null}

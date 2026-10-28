@@ -270,6 +270,8 @@ export const RU: Dict = {
   "sidebar.update.available": "Доступна Space {version}",
   "sidebar.update.downloading": "Загрузка обновления — {percent}%",
   "sidebar.update.failed": "Не удалось загрузить — проверьте лог и попробуйте ещё раз",
+  "sidebar.update.downloaded": "Обновление загружено — перезапустите, чтобы установить",
+  "sidebar.update.restartNow": "Перезапустить сейчас",
   "sidebar.update.cancelDownload": "Отменить загрузку",
   "sidebar.update.updateVerb": "Обновить",
   "sidebar.update.skip": "Пропустить эту версию",
