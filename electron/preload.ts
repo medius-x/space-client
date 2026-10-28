@@ -86,6 +86,34 @@ contextBridge.exposeInMainWorld("spaceNet", {
   },
 });
 
+/** Server-backup bridge (backup round 2026-10-28): MAIN streams the (possibly
+ *  gigabyte) archive to disk with progress pushes; the retention sweep keeps
+ *  the newest N files of one server. */
+contextBridge.exposeInMainWorld("spaceBackup", {
+  info(): Promise<unknown> {
+    return ipcRenderer.invoke("space-backup:info");
+  },
+  chooseFolder(): Promise<unknown> {
+    return ipcRenderer.invoke("space-backup:chooseFolder");
+  },
+  chooseArchive(): Promise<unknown> {
+    return ipcRenderer.invoke("space-backup:chooseArchive");
+  },
+  openFolder(): Promise<unknown> {
+    return ipcRenderer.invoke("space-backup:openFolder");
+  },
+  download(url: string, fileName: string, bearer: string, target?: "backup" | "temp"): Promise<unknown> {
+    return ipcRenderer.invoke("space-backup:download", url, fileName, bearer, target ?? "backup");
+  },
+  prune(prefix: string, keepCount: number): Promise<unknown> {
+    return ipcRenderer.invoke("space-backup:prune", prefix, keepCount);
+  },
+  onProgress(callback: (event: { fileName: string; receivedBytes: number; totalBytes: number | null }) => void): void {
+    ipcRenderer.removeAllListeners("space-backup:progress");
+    ipcRenderer.on("space-backup:progress", (_event, progress) => callback(progress));
+  },
+});
+
 /** Toast-window bridge (oak's NotificationToast): the MAIN window sends cards,
  *  the TOAST window reports clicks/geometry and receives them. */
 contextBridge.exposeInMainWorld("spaceToast", {

@@ -90,6 +90,7 @@ export type ProvisioningStage =
   | "firewall"
   | "compose"
   | "wait"
+  | "restore"
   | "register";
 
 export interface ProvisioningStepEvent {
@@ -115,6 +116,11 @@ export interface ProvisioningOutcome {
   ownerReady: boolean;
   /** The registered Space account login (the automatic login's username). */
   adminUsername: string;
+  /** True when the deployment RESTORED a backup archive instead of registering
+   *  (backup round 2026-10-28): accounts and conversations come from the
+   *  archive, the owner's password is known to the user alone — the finish
+   *   phase is needsLogin, no automatic login is attempted. */
+  restored: boolean;
 }
 
 /** A step failure carrying the stage it died on (for the UI's step list). */
@@ -348,6 +354,17 @@ export async function runProvisioningPipeline(
     await must("layout", `mkdir -p ${REMOTE_ROOT}/caddy/certs ${REMOTE_ROOT}/janus`);
     const existingCompose = await transport.readFile(`${REMOTE_ROOT}/docker-compose.yml`);
     const adopt = existingCompose !== null;
+    // Restore mode (backup round 2026-10-28): the archive loads at oak's FIRST
+    // boot — an adopted server already booted with its own data, and silently
+    // replacing it with the archive is exactly the kind of surprise this flow
+    // must never pull. Restores go to a FRESH machine.
+    const restoreArchivePath = params.backupArchivePath !== null && params.backupArchivePath.trim().length > 0
+      ? params.backupArchivePath.trim()
+      : null;
+    if (restoreArchivePath !== null && adopt) {
+      throw new ProvisioningFailure("layout", t("provisioning.err.restoreAdopt"));
+    }
+    const restoreMode = restoreArchivePath !== null;
     emit({
       stage: "layout",
       state: "done",
@@ -385,7 +402,12 @@ export async function runProvisioningPipeline(
       emit({ stage: "env", state: "done", detail: t("provisioning.detail.envKept") });
     } else {
       const secrets = generateEnvSecrets(randomHex);
-      await transport.writeFile(`${REMOTE_ROOT}/.env`, buildEnvFile(publicHost, params.host.trim(), secrets));
+      // restoreMode arms the one-shot restore block in the file (the runner
+      // reads OAK_RESTORE_FILE at boot and rewrites the advertised address to
+      // OAK_RESTORE_PUBLIC_HOST — no REST token exists at that point).
+      await transport.writeFile(
+        `${REMOTE_ROOT}/.env`,
+        buildEnvFile(publicHost, params.host.trim(), secrets, restoreMode ? publicHost : null));
       emit({ stage: "env", state: "done", detail: t("provisioning.detail.envGenerated") });
     }
 
@@ -616,7 +638,11 @@ export async function runProvisioningPipeline(
     // OOM-killed the 2 GB VPS. The order front-loads the dependencies
     // (compose would raise them implicitly anyway); each `up` is idempotent,
     // so re-runs and partial stacks just continue where they stopped.
-    const START_ORDER = ["postgres", "minio", "minio-init", "janus", "coturn", "oak", "caddy"];
+    const START_ORDER = restoreMode
+      // Restore mode: oak starts in the RESTORE step, after the archive is in
+      // place — its first boot is the one that loads the data.
+      ? ["postgres", "minio", "minio-init", "janus", "coturn", "caddy"]
+      : ["postgres", "minio", "minio-init", "janus", "coturn", "oak", "caddy"];
     // The per-service `up` prints one status line per container — surfacing it
     // shows the bring-up ORDER living ("Building oak…", "Started oak-janus").
     const composeLineProgress = progressEmitter("compose");
@@ -639,6 +665,57 @@ export async function runProvisioningPipeline(
     await must("compose", "docker image prune -f");
     emit({ stage: "compose", state: "done", detail: t("provisioning.detail.containersUp") });
 
+    // The readiness poll command (shared by the normal wait and the restore
+    // leg — see the comment at the wait step below for the Host header and the
+    // proxy-code exclusions).
+    const pollCommand = `for attempt in $(seq 1 80); do `
+      + `code=$(curl -sko /dev/null -w '%{http_code}' --max-time 3 -H "Host: ${publicHost}" https://localhost/api/server 2>/dev/null); `
+      + `if [ -n "$code" ] && [ "$code" != "000" ] && [ "$code" != "502" ] && [ "$code" != "503" ] && [ "$code" != "504" ]; then echo "HTTP $code"; exit 0; fi; `
+      + `sleep 5; done; echo 'the server did not answer within 400 seconds'; exit 1`;
+
+    if (restoreMode && restoreArchivePath !== null) {
+      // ── restore: upload the archive, boot oak on it, watch the marker ──
+      // oak was deliberately left out of START_ORDER: its FIRST boot is the
+      // one that loads the data (RestoreRunner). The runner logs RESTORE
+      // COMPLETED / RESTORE FAILED: … — a failed boot behind Caddy would
+      // otherwise look like an eternal 502 wait-timeout with no cause.
+      emit({ stage: "restore", state: "start", detail: t("provisioning.detail.restoreUploading") });
+      await must("restore", `mkdir -p ${REMOTE_ROOT}/restore`);
+      const restoreProgress = progressEmitter("restore");
+      await transport.writeLocalFile(restoreArchivePath, `${REMOTE_ROOT}/restore/backup.zip`, (bytesSent, bytesTotal) => {
+        const text = formatByteProgress(bytesSent, bytesTotal);
+        if (text.length > 0) {
+          restoreProgress(`backup.zip ${text}`);
+        }
+      });
+      emit({ stage: "restore", state: "log", detail: t("provisioning.detail.restoreBooting") });
+      await must("restore", `cd ${REMOTE_ROOT} && docker compose up -d --build oak`, {
+        timeoutMs: COMPOSE_UP_TIMEOUT_MS,
+        onOutputLine: composeLine,
+      });
+      emit({ stage: "restore", state: "log", detail: t("provisioning.detail.restoreWaiting") });
+      const markerCommand = `for attempt in $(seq 1 90); do `
+        + `LOG=$(docker logs --tail 300 oak-server 2>&1); `
+        + `if echo "$LOG" | grep -q 'RESTORE FAILED'; then echo "$LOG" | grep 'RESTORE FAILED' | tail -1; exit 1; fi; `
+        + `if echo "$LOG" | grep -q 'RESTORE COMPLETED'; then echo COMPLETED; exit 0; fi; `
+        + `sleep 5; done; echo 'the restore marker did not appear within 450 seconds'; exit 1`;
+      const markerResult = await transport.exec(markerCommand, { timeoutMs: READINESS_TIMEOUT_MS });
+      if (markerResult.code !== 0) {
+        const reason = (markerResult.stdout.trim() || markerResult.stderr.trim()).split("\n").pop() ?? "";
+        throw new ProvisioningFailure("restore", t("provisioning.err.restoreFailed", { reason }));
+      }
+      emit({ stage: "restore", state: "done", detail: t("provisioning.detail.restoreDone") });
+
+      // oak is up and answering by now; the plain readiness poll still guards
+      // the HTTPS entry before the user connects.
+      emit({ stage: "wait", state: "start", detail: t("provisioning.detail.waitingServer") });
+      const restorePoll = await must("wait", pollCommand, { timeoutMs: READINESS_TIMEOUT_MS });
+      emit({ stage: "wait", state: "done", detail: t("provisioning.detail.serverAnswers", { code: restorePoll.stdout.trim() }) });
+      // Accounts and passwords come from the archive; the owner's password is
+      // known to the USER alone — the finish phase is needsLogin, no register.
+      return { hostUrl, certFingerprint, ownerReady: false, adminUsername: params.adminLogin, restored: true };
+    }
+
     // ── wait: the server answers over localhost HTTPS ────────────────────
     // The poll runs ON the server (curl -k against https://localhost with the
     // PUBLIC Host header): it measures the stack itself, immune to the
@@ -654,10 +731,6 @@ export async function runProvisioningPipeline(
     // with "registration failed (HTTP 502)"); only the application's own
     // codes count.
     emit({ stage: "wait", state: "start", detail: t("provisioning.detail.waitingServer") });
-    const pollCommand = `for attempt in $(seq 1 80); do `
-      + `code=$(curl -sko /dev/null -w '%{http_code}' --max-time 3 -H "Host: ${publicHost}" https://localhost/api/server 2>/dev/null); `
-      + `if [ -n "$code" ] && [ "$code" != "000" ] && [ "$code" != "502" ] && [ "$code" != "503" ] && [ "$code" != "504" ]; then echo "HTTP $code"; exit 0; fi; `
-      + `sleep 5; done; echo 'the server did not answer within 400 seconds'; exit 1`;
     const pollResult = await must("wait", pollCommand, { timeoutMs: READINESS_TIMEOUT_MS });
     emit({ stage: "wait", state: "done", detail: t("provisioning.detail.serverAnswers", { code: pollResult.stdout.trim() }) });
 
@@ -774,7 +847,7 @@ export async function runProvisioningPipeline(
         : t("provisioning.detail.serverReadyManual"),
     });
 
-    return { hostUrl, certFingerprint, ownerReady, adminUsername: params.adminLogin };
+    return { hostUrl, certFingerprint, ownerReady, adminUsername: params.adminLogin, restored: false };
   } catch (error) {
     // A failed register step leaves the credential FILES behind (rm normally
     // runs on the success path) — best-effort scrub on EVERY failure; the

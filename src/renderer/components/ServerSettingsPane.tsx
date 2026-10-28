@@ -6,9 +6,13 @@ import {
   closeServerSettings,
   openOwnershipTransfer,
   setServerSettingsSection,
+  settingsStore,
 } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import { connectionDirectory } from "../runtime";
+import { downloadBuiltBackup, takeBackupAndDownload, takeMigrationBackup } from "../backup-run";
+import { BACKUP_KEEP_MAX, BACKUP_KEEP_MIN, clampBackupKeepCount } from "../../domain/logic/backup-files";
+import { ProvisioningPanel } from "./ProvisioningPanel";
 import { formatExportReport, formatImportReport, planPackImport, type ImportDecision } from "../../domain/logic/expression-pack";
 import {
   catalogSnapshotOf,
@@ -19,6 +23,8 @@ import {
   type ParsedPackArchive,
 } from "../expression-exchange";
 import type {
+  BackupEstimate,
+  BackupStatus,
   Channel,
   ChannelOverride,
   ChannelType,
@@ -3588,6 +3594,360 @@ function ServerStorageSection({ session }: { session: ConnectionSession }): Reac
         <button disabled={logsBusy} onClick={() => void downloadClientArchive()}>{t("settings.downloadClientLogs")}</button>
         <span className="settings-status">{logsStatus ?? ""}</span>
       </div>
+
+      <BackupSection session={session} />
     </div>
   );
+}
+
+/**
+ * The backup block of the Server tab (backup round, 2026-10-28). Gated STRICTER than the
+ * tab itself: OWNER or ADMINISTRATOR only — the archive carries EVERY conversation, so a
+ * narrow MANAGE_SERVER holder must not see it (the server enforces the same on every
+ * endpoint). The periodic backup is CLIENT-side by design: the schedule and the retention
+ * live on this computer, the server keeps only the latest built archive.
+ */
+function BackupSection({ session }: { session: ConnectionSession }): React.JSX.Element | null {
+  const t = useT();
+  const isAdmin = useStore(session.permissionStore, (state) =>
+    state.my?.owner === true || state.my?.permissions.includes("ADMINISTRATOR"));
+  const [status, setStatus] = useState<BackupStatus | null>(null);
+  const [flowBusy, setFlowBusy] = useState(false);
+  const [flowStatus, setFlowStatus] = useState<string | null>(null);
+  const [flowError, setFlowError] = useState<string | null>(null);
+  const [confirmEstimate, setConfirmEstimate] = useState<BackupEstimate | null>(null);
+  const [progress, setProgress] = useState<{ receivedBytes: number; totalBytes: number | null } | null>(null);
+  const [folder, setFolder] = useState<{ folder: string; configured: string | null } | null>(null);
+  const [migrateOpen, setMigrateOpen] = useState(false);
+
+  const settings = useStore(settingsStore, (snapshot) => snapshot);
+  const schedule = settings.backupSchedules[session.recordId] ?? { enabled: false, minuteOfDay: 180 };
+  const [timeDraft, setTimeDraft] = useState(minuteOfDayToHHmm(schedule.minuteOfDay));
+
+  // Own states, Health-idiom: a backup failure must not read as a storage-policy failure.
+  const refresh = (): void => {
+    void session.rest.getBackupStatus()
+      .then((next) => {
+        setStatus(next);
+      })
+      .catch(() => undefined); // the server may predate the round — the block simply stays empty
+  };
+
+  useEffect(refresh, [session]);
+  // Poll while a pass builds (the GC-polling idiom).
+  useEffect(() => {
+    if (status === null || !status.running) {
+      return;
+    }
+    const timer = window.setInterval(refresh, 2000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh is a stable shape over session only
+  }, [status, session]);
+  // Live download progress (the single onProgress listener slot belongs to this component).
+  useEffect(() => {
+    window.spaceBackup?.onProgress((event) => {
+      setProgress({ receivedBytes: event.receivedBytes, totalBytes: event.totalBytes });
+    });
+  }, []);
+  useEffect(() => {
+    void window.spaceBackup?.info().then((info) => setFolder(info ?? null));
+  }, []);
+
+  if (!isAdmin) {
+    return null;
+  }
+
+  const applySchedule = (next: { enabled?: boolean; minuteOfDay?: number }): void => {
+    settingsStore.apply({
+      backupSchedules: {
+        ...settings.backupSchedules,
+        [session.recordId]: {
+          enabled: next.enabled ?? schedule.enabled,
+          minuteOfDay: next.minuteOfDay ?? schedule.minuteOfDay,
+        },
+      },
+    });
+  };
+
+  const startBackup = async (): Promise<void> => {
+    if (flowBusy) {
+      return;
+    }
+    setFlowError(null);
+    setFlowStatus(t("backup.building"));
+    setFlowBusy(true);
+    const result = await takeBackupAndDownload(session);
+    setFlowBusy(false);
+    setProgress(null);
+    if (result.ok) {
+      setFlowStatus(t("backup.savedTo", { path: result.downloadedPath ?? "?" }));
+    } else {
+      setFlowStatus(null);
+      setFlowError(result.error ?? "unknown");
+    }
+    refresh();
+  };
+
+  const downloadLatest = async (): Promise<void> => {
+    if (flowBusy) {
+      return;
+    }
+    setFlowError(null);
+    setFlowStatus(t("backup.downloadingUnknown", { done: "" }));
+    setFlowBusy(true);
+    const result = await downloadBuiltBackup(session);
+    setFlowBusy(false);
+    setProgress(null);
+    if (result.ok) {
+      setFlowStatus(t("backup.savedTo", { path: result.downloadedPath ?? "?" }));
+    } else {
+      setFlowStatus(null);
+      setFlowError(result.error ?? "unknown");
+    }
+  };
+
+  const askAndStart = async (): Promise<void> => {
+    setFlowError(null);
+    try {
+      const estimate = await session.rest.getBackupEstimate();
+      setConfirmEstimate(estimate);
+    } catch (estimateError: unknown) {
+      // An old server without the endpoint: fall straight through to the flow.
+      void startBackup();
+      setFlowError(estimateError instanceof Error ? estimateError.message : String(estimateError));
+    }
+  };
+
+  const lastRun = status?.lastRun ?? null;
+  const totalEstimateBytes = confirmEstimate === null
+    ? 0
+    : confirmEstimate.objectBytes + confirmEstimate.approxDatabaseBytes;
+
+  return (
+    <>
+      <h3 style={{ marginTop: 20 }}>{t("backup.header")}</h3>
+      <div className="settings-hint">
+        {status?.running === true
+          ? t("backup.building")
+          : lastRun === null
+            ? t("backup.never")
+            : lastRun.error !== null
+              ? t("backup.lastFailed", { message: lastRun.error })
+              : t("backup.latest", {
+                size: formatBytes(lastRun.sizeBytes),
+                when: formatTimeOfDay(new Date(lastRun.finishedAt ?? lastRun.startedAt).getTime(), currentLang()),
+                rows: lastRun.totalRows,
+                objects: lastRun.objectCount,
+              })}
+      </div>
+      {lastRun !== null && lastRun.error === null && lastRun.failedObjects > 0 ? (
+        <div className="settings-warning">{t("backup.failedObjects", { count: lastRun.failedObjects })}</div>
+      ) : null}
+      <div className="modal-actions left">
+        <button className="primary" disabled={flowBusy || status?.running === true} onClick={() => void askAndStart()}>
+          {t("backup.backUpNow")}
+        </button>
+        <button disabled={flowBusy || lastRun === null || lastRun.error !== null} onClick={() => void downloadLatest()}>
+          {t("backup.downloadLatest")}
+        </button>
+        <span className="settings-status">
+          {progress !== null
+            ? (progress.totalBytes !== null
+              ? t("backup.downloadingProgress", {
+                done: formatBytes(progress.receivedBytes),
+                total: formatBytes(progress.totalBytes),
+              })
+              : t("backup.downloadingUnknown", { done: formatBytes(progress.receivedBytes) }))
+            : flowStatus ?? ""}
+        </span>
+      </div>
+      {flowError !== null ? <div className="settings-warning">{flowError}</div> : null}
+
+      <div className="settings-hint" style={{ marginTop: 12 }}>{t("backup.scheduleHeader")}</div>
+      <div className="settings-hint">{t("backup.scheduleHint")}</div>
+      <div className="modal-actions left">
+        <label className="settings-check">
+          <input
+            type="checkbox"
+            checked={schedule.enabled}
+            onChange={(event) => applySchedule({ enabled: event.target.checked })}
+          />
+          {" "}{t("backup.scheduleEnabled")}
+        </label>
+        <label>
+          {t("backup.at")}
+          {" "}
+          <input
+            type="time"
+            value={timeDraft}
+            disabled={!schedule.enabled}
+            onChange={(event) => {
+              setTimeDraft(event.target.value);
+              const minute = hhmmToMinuteOfDay(event.target.value);
+              if (minute !== null) {
+                applySchedule({ minuteOfDay: minute });
+              }
+            }}
+          />
+        </label>
+        <label>
+          {t("backup.keepCopies")}
+          {" "}
+          <input
+            className="settings-number"
+            type="number"
+            min={BACKUP_KEEP_MIN}
+            max={BACKUP_KEEP_MAX}
+            value={settings.backupKeepCount}
+            onChange={(event) => {
+              const parsed = Number(event.target.value);
+              if (Number.isFinite(parsed)) {
+                settingsStore.apply({ backupKeepCount: clampBackupKeepCount(parsed) });
+              }
+            }}
+          />
+        </label>
+      </div>
+
+      <div className="settings-hint" style={{ marginTop: 12 }}>{t("backup.folderHeader")}</div>
+      <div className="settings-hint">{folder !== null ? folder.folder : ""}</div>
+      <div className="modal-actions left">
+        <button onClick={() => {
+          void window.spaceBackup?.chooseFolder().then((chosen) => {
+            if (chosen !== null) {
+              settingsStore.apply({ backupFolder: chosen });
+              void window.spaceBackup?.info().then((info) => setFolder(info ?? null));
+            }
+          });
+        }}>{t("backup.chooseFolder")}</button>
+        {folder?.configured != null ? (
+          <button onClick={() => {
+            settingsStore.apply({ backupFolder: null });
+            void window.spaceBackup?.info().then((info) => setFolder(info ?? null));
+          }}>{t("backup.resetFolder")}</button>
+        ) : null}
+        <button onClick={() => void window.spaceBackup?.openFolder()}>{t("backup.openFolder")}</button>
+      </div>
+
+      <div className="settings-hint" style={{ marginTop: 12 }}>{t("backup.migrateHeader")}</div>
+      <div className="settings-hint">{t("backup.migrateHint")}</div>
+      <div className="modal-actions left">
+        <button onClick={() => setMigrateOpen(true)}>{t("backup.migrateButton")}</button>
+      </div>
+      {migrateOpen ? <MigrateModal session={session} onClose={() => setMigrateOpen(false)} /> : null}
+
+      {confirmEstimate !== null ? (
+        <Modal title={t("backup.confirmTitle")} onClose={() => setConfirmEstimate(null)}>
+          <div className="modal-note">{t("backup.confirmBody", { size: formatBytes(totalEstimateBytes) })}</div>
+          <div className="modal-note">{t("backup.confirmNote")}</div>
+          <div className="modal-actions">
+            <button className="ghost" onClick={() => setConfirmEstimate(null)}>{t("common.cancel")}</button>
+            <button className="primary" onClick={() => {
+              setConfirmEstimate(null);
+              void startBackup();
+            }}>{t("backup.confirmVerb")}</button>
+          </div>
+        </Modal>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * The Migrate dialog (backup round 2026-10-28, user requirement #3): the provisioning
+ * window AS AT SERVER CREATION, but without the owner account fields — they come from
+ * the archive. Two phases before it: take a FRESH backup of the CURRENT server (the
+ * token is right here) and stream it to the OS temp dir (a one-shot file, never part
+ * of the retention set), then run the provisioning pipeline with it fixed as the
+ * restore archive. The finish hands back to the user: log in on the new machine with
+ * THIS server's owner password.
+ */
+function MigrateModal({ session, onClose }: { session: ConnectionSession; onClose: () => void }): React.JSX.Element {
+  const t = useT();
+  const [phase, setPhase] = useState<"form" | "taking" | "panel">("form");
+  const [takingNote, setTakingNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<{ receivedBytes: number; totalBytes: number | null } | null>(null);
+  const [pipelineRunning, setPipelineRunning] = useState(false);
+  const [archivePath, setArchivePath] = useState<string | null>(null);
+
+  // The single onProgress listener slot: this dialog owns it while it is open
+  // (the BackupSection underneath re-subscribes on its own next mount).
+  useEffect(() => {
+    window.spaceBackup?.onProgress((event) => {
+      setProgress({ receivedBytes: event.receivedBytes, totalBytes: event.totalBytes });
+    });
+  }, []);
+
+  const startMigration = async (): Promise<void> => {
+    setError(null);
+    setProgress(null);
+    setPhase("taking");
+    setTakingNote(t("backup.migrateTaking"));
+    const result = await takeMigrationBackup(session);
+    if (!result.ok) {
+      setPhase("form");
+      setTakingNote(null);
+      setError(result.error ?? "unknown");
+      return;
+    }
+    setArchivePath(result.downloadedPath ?? null);
+    setTakingNote(null);
+    setProgress(null);
+    setPhase("panel");
+  };
+
+  return (
+    <Modal
+      title={t("backup.migrateTitle")}
+      onClose={onClose}
+      elevated
+      locked={phase === "taking" || pipelineRunning}
+    >
+      {phase === "form" ? (
+        <>
+          <div className="modal-note">{t("provisioning.migrateIntro")}</div>
+          {error !== null ? <div className="settings-warning">{error}</div> : null}
+          <div className="modal-actions">
+            <button className="ghost" onClick={onClose}>{t("common.cancel")}</button>
+            <button className="primary" onClick={() => void startMigration()}>{t("provisioning.migrateVerb")}</button>
+          </div>
+        </>
+      ) : phase === "taking" ? (
+        <div className="modal-note">
+          {takingNote}
+          {progress !== null
+            ? (progress.totalBytes !== null
+              ? " " + t("backup.downloadingProgress", { done: formatBytes(progress.receivedBytes), total: formatBytes(progress.totalBytes) })
+              : " " + t("backup.downloadingUnknown", { done: formatBytes(progress.receivedBytes) }))
+            : ""}
+        </div>
+      ) : (
+        <ProvisioningPanel
+          mode="migrate"
+          archivePath={archivePath}
+          onDone={onClose}
+          onRunningChange={setPipelineRunning}
+        />
+      )}
+    </Modal>
+  );
+}
+
+function minuteOfDayToHHmm(minuteOfDay: number): string {
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return `${pad(Math.floor(minuteOfDay / 60))}:${pad(minuteOfDay % 60)}`;
+}
+
+function hhmmToMinuteOfDay(value: string): number | null {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
+  if (match === null) {
+    return null;
+  }
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59) {
+    return null;
+  }
+  return hours * 60 + minutes;
 }

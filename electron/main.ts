@@ -2,6 +2,7 @@ import { isSystemAudioAvailable, startSystemAudio, stopSystemAudio } from "./sys
 import { getClientSize, isWindowConfirmedDead, watchSourceLiveness } from "./window-liveness";
 import { cancelProvisioningRun, startProvisioningRun } from "./provisioning";
 import { installUpdateIpc } from "./updates";
+import { installBackupIpc } from "./backups";
 import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeTheme, net, powerMonitor, protocol, safeStorage, screen, session, shell, Tray } from "electron";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -1081,6 +1082,19 @@ ipcMain.on("space-afk:arm", (_event, armed: unknown) => {
 installUpdateIpc({
   emit: (event) => sendToMainWindow("space-updates:state", event),
   log: (line) => appendLog(line),
+});
+
+// ---------------------------------------------------------------------------
+// Server-backup downloads (backup round 2026-10-28): the archive may be
+// gigabytes, so MAIN streams it to disk (the renderer would buffer it whole);
+// retention pruning rides the same bridge (electron/backups.ts).
+// ---------------------------------------------------------------------------
+installBackupIpc({
+  emit: (event) => sendToMainWindow("space-backup:progress", event),
+  log: (line) => appendLog(line),
+  kvRead: (key) => kvRead(key),
+  downloadsRoot: () => app.getPath("downloads"),
+  tempRoot: () => app.getPath("temp"),
 });
 
 // ---------------------------------------------------------------------------

@@ -46,6 +46,7 @@ describe("provisioning params validation", () => {
       adminNickname: null,
       adminPassword: "longenough",
       jarPath: null,
+      backupArchivePath: null,
     };
     expect(validateProvisioningParams(params)).toBeNull();
     expect(validateProvisioningParams({ ...params, host: "bad host" })).toContain("address");
@@ -89,6 +90,7 @@ describe("provisioning params validation", () => {
       adminNickname: null,
       adminPassword: "longenough",
       jarPath: null,
+      backupArchivePath: null,
     };
     expect(provisionedHostUrl(params)).toBe("https://oak.example.com");
     expect(provisionedHostUrl({ ...params, domain: null })).toBe("https://203.0.113.10");

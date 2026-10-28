@@ -385,6 +385,15 @@ export async function startProvisioningRun(params: ProvisioningParams, hooks: Pr
     hooks.sendEvent({ kind: "failed", stage: "connect", message: validation });
     return false;
   }
+  // The optional restore archive must exist BEFORE the run starts (backup
+  // round 2026-10-28) — failing 15 minutes into a deployment over a typo'd
+  // path is the worst possible place to discover it.
+  if (params.backupArchivePath !== null && params.backupArchivePath.trim().length > 0) {
+    if (!fs.existsSync(params.backupArchivePath.trim()) || !fs.statSync(params.backupArchivePath.trim()).isFile()) {
+      hooks.sendEvent({ kind: "failed", stage: "connect", message: `backup archive not found: ${params.backupArchivePath.trim()}` });
+      return false;
+    }
+  }
 
   const emit = (event: ProvisioningIpcEvent): void => {
     hooks.sendEvent(event);

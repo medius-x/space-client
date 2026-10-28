@@ -1,5 +1,6 @@
 import { Emitter } from "../domain/lib/store";
 import { log } from "../logging";
+import { startBackupScheduleTicking } from "./backup-schedule";
 import { MemoryTokenStorage } from "../core/auth";
 import { ApiError, RestClient } from "../core/rest";
 import { JanusClient } from "../core/janus";
@@ -1567,6 +1568,7 @@ export async function bootstrapApp(): Promise<void> {
   installPopoutVoiceActionListener(); // the pop-out's mirrored voice-panel buttons land here
   installAppClosingListener(); // the forestalled window close leaves voice/call cleanly
   startUpdateChecks(); // client self-update: startup + daily-in-idle probes
+  startBackupScheduleTicking(); // the client-side periodic server backup (one-minute tick)
   applyUiLanguage(); // i18n boot: resolve, repaint, mirror into main + the aux windows
   settingsStore.subscribe(applyUiLanguage); // a language flip repoints tray/titles and repaints live
   settingsStore.subscribe(pushPopoutVoiceState); // an NS engine flip recolors the pop-out's button

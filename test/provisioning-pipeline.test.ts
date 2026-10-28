@@ -27,6 +27,7 @@ function baseParams(overrides: Partial<ProvisioningParams> = {}): ProvisioningPa
     adminNickname: null,
     adminPassword: "hunter2222",
     jarPath: null,
+    backupArchivePath: null,
     ...overrides,
   };
 }
@@ -652,5 +653,91 @@ describe("provisioning pipeline", () => {
     // Completion clears the slot: done events carry no progress text.
     const uploadDone = events.find((event) => event.stage === "upload" && event.state === "done");
     expect(uploadDone?.progress).toBeUndefined();
+  });
+
+  // ── restore mode (backup round 2026-10-28) ────────────────────────────────
+
+  it("restores a backup archive instead of registering an owner", async () => {
+    const transport = new FakeProvisioningTransport();
+    scriptHappyPath(transport);
+    // The restore marker poll sees the runner's success line.
+    transport.respond("RESTORE COMPLETED", { stdout: "COMPLETED\n" });
+    const { events, emit } = collectEvents();
+
+    const outcome = await runProvisioningPipeline(
+      transport,
+      baseParams({ backupArchivePath: "C:/Users/me/Downloads/SPACE/backup/server-backup-host-1.zip" }),
+      baseFiles(),
+      emit,
+      fixedRandomHex,
+    );
+
+    // The finish is a MANUAL login: accounts come from the archive.
+    expect(outcome.restored).toBe(true);
+    expect(outcome.ownerReady).toBe(false);
+
+    // Stage order: restore replaces register entirely.
+    const doneStages = events.filter((event) => event.state === "done").map((event) => event.stage);
+    expect(doneStages).toEqual([
+      "probe", "docker", "layout", "upload", "env", "certificate", "compose", "restore", "wait",
+    ]);
+    expect(events.some((event) => event.stage === "register")).toBe(false);
+
+    // oak does NOT start with the stack — its first boot IS the restore.
+    expect(transport.commandWith("docker compose up -d --build oak")).toContain("cd /opt/oak");
+    const composeOakCommands = transport.commands.filter((command) => command.includes("docker compose up -d --build oak"));
+    expect(composeOakCommands).toHaveLength(1); // the restore step's own bring-up only
+
+    // The archive rides the same streaming path as the jar, into ./restore.
+    expect(transport.writes.some((write) =>
+      write.path === "/opt/oak/restore/backup.zip"
+      && write.contents.includes("server-backup-host-1.zip"))).toBe(true);
+
+    // The .env arms the one-shot restore and rewrites the advertised address.
+    const envFile = transport.writeToFile("/opt/oak/.env");
+    expect(envFile).toContain("OAK_RESTORE_FILE=/restore/backup.zip");
+    expect(envFile).toContain("OAK_RESTORE_PUBLIC_HOST=203.0.113.10");
+    expect(envFile).toContain("OAK_RESTORE_PUBLIC_PORT=443");
+
+    // The marker poll watches oak-server's log.
+    expect(transport.commandWith("docker logs --tail 300 oak-server")).not.toBeNull();
+  });
+
+  it("fails the restore step with the server's own reason when the marker says FAILED", async () => {
+    const transport = new FakeProvisioningTransport();
+    scriptHappyPath(transport);
+    // Later registrations win: the marker poll reports the runner's failure.
+    transport.respond("RESTORE FAILED", {
+      code: 1,
+      stdout: "[restore] RESTORE FAILED: backup schema version '16' does not match this server's schema version '17'\n",
+    });
+    const { events, emit } = collectEvents();
+
+    await expect(runProvisioningPipeline(
+      transport,
+      baseParams({ backupArchivePath: "C:/backups/old.zip" }),
+      baseFiles(),
+      emit,
+      fixedRandomHex,
+    )).rejects.toThrow(ProvisioningFailure);
+
+    const failure = events.find((event) => event.state === "failed");
+    expect(failure?.stage).toBe("restore");
+  });
+
+  it("refuses a restore onto an adopted (already deployed) server", async () => {
+    const transport = new FakeProvisioningTransport();
+    scriptHappyPath(transport);
+    // An existing compose file makes the layout step an ADOPT.
+    transport.files.set("/opt/oak/docker-compose.yml", "services: {}");
+    const { emit } = collectEvents();
+
+    await expect(runProvisioningPipeline(
+      transport,
+      baseParams({ backupArchivePath: "C:/backups/archive.zip" }),
+      baseFiles(),
+      emit,
+      fixedRandomHex,
+    )).rejects.toThrow(ProvisioningFailure);
   });
 });

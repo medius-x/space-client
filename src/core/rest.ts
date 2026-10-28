@@ -34,6 +34,8 @@ import type {
   StorageGcRun,
   StoragePolicy,
   StorageStatus,
+  BackupEstimate,
+  BackupStatus,
   UserRenamedResponse,
   UserResponse,
   UserSummary,
@@ -684,6 +686,36 @@ export class RestClient {
   /** Fires one GC pass NOW; the run itself is background — poll getStorageStatus(). */
   async triggerStorageGc(): Promise<StorageGcRun> {
     return this.request<StorageGcRun>("/api/server/storage/run", { method: "POST" });
+  }
+
+  // --- server backup (backup round 2026-10-28; OWNER-or-ADMINISTRATOR on the server) ---
+
+  /** Fires one backup pass NOW (202; poll getBackupStatus for the result). */
+  async runServerBackup(): Promise<BackupStatus> {
+    return this.request<BackupStatus>("/api/server/backup/run", { method: "POST" });
+  }
+
+  /** Whether a pass runs + the latched report of the last one. */
+  async getBackupStatus(): Promise<BackupStatus> {
+    return this.request<BackupStatus>("/api/server/backup/status", { method: "GET" });
+  }
+
+  /** Byte-size preview for the "Back up now?" confirmation (no archive is read). */
+  async getBackupEstimate(): Promise<BackupEstimate> {
+    return this.request<BackupEstimate>("/api/server/backup/estimate", { method: "GET" });
+  }
+
+  /** The archive URL for the MAIN-process file downloader (it carries the Bearer
+   *  itself — an archive may be gigabytes, downloadBytes would buffer it in the
+   *  renderer's heap). */
+  backupFileUrl(): string {
+    return `${this.baseUrl}/api/server/backup/file`;
+  }
+
+  /** The CURRENT access token, for the main-process backup download (IPC-local;
+   *  the server still decides authorization from it). */
+  currentAccessToken(): string | null {
+    return this.tokenStorage.load()?.token ?? null;
   }
 
   /** Live status of the backing services (postgres/minio/janus/coturn) — the

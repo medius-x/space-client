@@ -94,6 +94,11 @@ accounts and client trust pins are preserved.
 - Per-role restriction of direct messages
 - Storage housekeeping with high/low disk watermarks
 - Service health panel; server and client log export for problem reports
+- Full-instance backups: one archive with every conversation, account and
+  attachment, downloaded to your computer on demand or daily while the client
+  runs; restoring one onto a fresh server (the Create dialog) brings the whole
+  community up as if it had been created there, and the Migrate button redeploys
+  this server's latest state to a new machine in a single flow
 
 ### Client
 
@@ -131,8 +136,9 @@ accounts and client trust pins are preserved.
   working on a VPS with restricted or rate-limited registry access, fully
   offline if it has to
 - Updates re-run the same flow on top of an existing installation
-- Server data lives in Docker volumes under `/opt/oak` — back up that directory
-  and you have your community
+- Backups are built in: Server Settings → Server builds a full archive (chats,
+  accounts, attachments) straight to your computer, and Migrate deploys a fresh
+  server from it — no manual volume copying
 
 ## Limitations
 

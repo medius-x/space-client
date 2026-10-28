@@ -287,6 +287,9 @@ export interface ProvisioningFormParams {
   adminNickname: string | null;
   adminPassword: string;
   jarPath: string | null;
+  /** Local path to a backup archive (backup round 2026-10-28): the deployment
+   *  restores it instead of registering a fresh owner. Null = normal setup. */
+  backupArchivePath: string | null;
 }
 
 /** One pipeline stage report; "connect" and "download" are main-side stages
@@ -294,7 +297,7 @@ export interface ProvisioningFormParams {
 export interface ProvisioningStepIpcEvent {
   kind: "step";
   stage: "connect" | "download" | "probe" | "docker" | "layout" | "upload" | "env"
-    | "certificate" | "firewall" | "compose" | "wait" | "register";
+    | "certificate" | "firewall" | "compose" | "wait" | "restore" | "register";
   state: "start" | "done" | "log" | "failed";
   detail?: string;
   /** Live progress of the active step (byte counter / last output line). */
@@ -312,6 +315,10 @@ export interface ProvisioningOutcomeIpc {
    *  re-run) — the user logs in manually with the old one. */
   ownerReady: boolean;
   adminUsername: string;
+  /** True when the deployment RESTORED a backup archive: accounts come from
+   *  the archive, the owner's password is the user's alone — the finish phase
+   *  is needsLogin, no automatic login is attempted. */
+  restored: boolean;
 }
 
 export type ProvisioningIpcEvent =
@@ -371,6 +378,33 @@ export interface I18nBridge {
   onLanguage(callback: (lang: string) => void): void;
 }
 
+/** The result of a main-process backup download. */
+export type BackupDownloadOutcome =
+  | { ok: true; path: string; bytes: number }
+  | { ok: false; error: string };
+
+/** Server-backup bridge (backup round 2026-10-28): MAIN streams the (possibly
+ *  gigabyte) archive straight to the backup folder — the renderer's heap never
+ *  sees the bytes — and prunes old copies by the retention policy. */
+export interface BackupsBridge {
+  /** The effective backup folder + whether the user configured it. */
+  info(): Promise<{ folder: string; configured: string | null } | null>;
+  /** The OS folder picker for a custom backup folder; null = canceled. */
+  chooseFolder(): Promise<string | null>;
+  /** The OS file picker for a backup ARCHIVE (the provisioning restore field). */
+  chooseArchive(): Promise<string | null>;
+  /** Reveal the backup folder in the OS file manager; returns the folder. */
+  openFolder(): Promise<string | null>;
+  /** Stream one archive to disk; the Bearer rides IPC (a local corridor of one
+   *  app — the authorization decision stays the server's). Target "temp" serves
+   *  the migration one-shot (the OS temp dir, no retention). */
+  download(url: string, fileName: string, bearer: string, target?: "backup" | "temp"): Promise<BackupDownloadOutcome>;
+  /** Keep the newest N files of one server's prefix; returns the deleted names. */
+  prune(prefix: string, keepCount: number): Promise<string[]>;
+  /** Live download progress (~4 Hz, main window only). */
+  onProgress(callback: (event: { fileName: string; receivedBytes: number; totalBytes: number | null }) => void): void;
+}
+
 declare global {
   interface Window {
     spaceCapture?: CaptureBridge;
@@ -383,5 +417,6 @@ declare global {
     spaceProvisioning?: ProvisioningBridge;
     spaceUpdates?: UpdatesBridge;
     spaceI18n?: I18nBridge;
+    spaceBackup?: BackupsBridge;
   }
 }

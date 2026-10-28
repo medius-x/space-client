@@ -3119,6 +3119,11 @@ button.wide-add { width: 100%; }
 .prov-check { flex-direction: row !important; align-items: center; gap: 8px !important; }
 .prov-check input { width: auto; }
 .prov-check span { text-transform: none !important; font-weight: 400 !important; font-size: 12px !important; color: var(--sp-text-muted) !important; }
+/* The restore-archive field (backup round): a path input with a picker button
+   beside it, one row — the field label above stays the settings-field idiom. */
+.prov-archive-row { display: flex; gap: 6px; align-items: center; }
+.prov-archive-row input { flex: 1; min-width: 0; }
+.prov-archive-row button { flex: none; }
 .prov-steps { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
 .prov-step { display: flex; align-items: baseline; gap: 8px; font-size: 13px; color: var(--sp-text); }
 .prov-step-pending { color: var(--sp-text-dim); }

@@ -4,6 +4,7 @@ import { DEFAULT_KEYBINDS, resolveKeybinds, type ActionId } from "../logic/keybi
 import { clampJumboEmojiSize } from "../logic/emoji-picker";
 import { sanitizeRecentExpressions } from "../logic/reaction-picker";
 import type { SavedSharePreset } from "../logic/share-quality";
+import { clampBackupKeepCount } from "../logic/backup-files";
 import type { LanguageSetting } from "../i18n/i18n";
 
 /**
@@ -104,6 +105,23 @@ export interface ClientSettings {
    *  main process (tray/titles) and the aux windows via the spaceI18n bridge;
    *  main re-reads this KV key on its own when seeding before the first sync. */
   language: LanguageSetting;
+  /** The server-backup folder override (backup round 2026-10-28): null = the
+   *  default <downloads>/SPACE/backup; an absolute path puts every archive in
+   *  its own place. The MAIN process reads the same KV key when downloading. */
+  backupFolder: string | null;
+  /** How many archives of one server the retention sweep keeps (1..30). */
+  backupKeepCount: number;
+  /** Per-server-record backup schedule (CLIENT-side by design: the periodic
+   *  backup fires only while a client is running — the server stores nothing).
+   *  Keyed by connection record id; the schedule lives "on this computer". */
+  backupSchedules: Record<string, BackupSchedule>;
+}
+
+export interface BackupSchedule {
+  enabled: boolean;
+  /** Minute of the local day (0..1439) — fires on the first minute-tick at or
+   *  after it while the client runs; no catch-up when it was off. */
+  minuteOfDay: number;
 }
 
 export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
@@ -136,9 +154,35 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   updateCheckDaily: true,
   skippedUpdateVersion: null,
   language: "system",
+  backupFolder: null,
+  backupKeepCount: 1,
+  backupSchedules: {},
 };
 
 const KV_KEY = "client-settings";
+
+/** Drops anything that is not a valid per-record backup schedule entry
+ *  (hand-edited KV: non-objects, minute out of range, junk keys). */
+function sanitizeBackupSchedules(raw: unknown): Record<string, BackupSchedule> {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return {};
+  }
+  const clean: Record<string, BackupSchedule> = {};
+  for (const [recordId, entry] of Object.entries(raw as Record<string, unknown>)) {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      continue;
+    }
+    const candidate = entry as Record<string, unknown>;
+    const minuteOfDay = typeof candidate.minuteOfDay === "number" && Number.isFinite(candidate.minuteOfDay)
+      ? Math.round(candidate.minuteOfDay)
+      : -1;
+    if (minuteOfDay < 0 || minuteOfDay > 1439) {
+      continue;
+    }
+    clean[recordId] = { enabled: candidate.enabled === true, minuteOfDay };
+  }
+  return clean;
+}
 
 /** The selectable engine catalog (mirrors media/noise-suppression's union —
  *  domain cannot import from media, an accepted literal duplication). */
@@ -219,6 +263,17 @@ export class SettingsStore extends Emitter {
       if (this.settings.language !== "en" && this.settings.language !== "ru" && this.settings.language !== "system") {
         this.settings = { ...this.settings, language: "system" };
       }
+      // Backup prefs (backup round 2026-10-28): the folder is an absolute path
+      // or nothing, the retention count clamps to 1..30, and the per-record
+      // schedule map drops anything that is not a valid entry (hand-edited KV).
+      this.settings = {
+        ...this.settings,
+        backupFolder: typeof rest.backupFolder === "string" && rest.backupFolder.length > 0
+          ? rest.backupFolder
+          : null,
+        backupKeepCount: clampBackupKeepCount(rest.backupKeepCount),
+        backupSchedules: sanitizeBackupSchedules(rest.backupSchedules),
+      };
     }
     this.loaded = true;
     this.emit();

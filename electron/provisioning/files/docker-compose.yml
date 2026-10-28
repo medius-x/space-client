@@ -167,9 +167,20 @@ services:
       TURN_LISTEN_PORT: ${TURN_LISTEN_PORT:-34780}
       TURN_STATIC_AUTH_SECRET: ${TURN_STATIC_AUTH_SECRET:?set in /opt/oak/.env}
       TURN_REALM: ${TURN_REALM:-oak.local}
+      # One-shot restore from a backup archive (backup round 2026-10-28): the
+      # provisioning flow uploads it to /opt/oak/restore and OAK_RESTORE_FILE
+      # points the boot-time RestoreRunner at it; the runner renames the file
+      # to *.done once applied, so restarts never replay it.
+      OAK_RESTORE_FILE: ${OAK_RESTORE_FILE:-}
+      OAK_RESTORE_PUBLIC_HOST: ${OAK_RESTORE_PUBLIC_HOST:-}
+      OAK_RESTORE_PUBLIC_PORT: ${OAK_RESTORE_PUBLIC_PORT:-443}
+      OAK_RESTORE_PUBLIC_SCHEME: ${OAK_RESTORE_PUBLIC_SCHEME:-https}
     volumes:
       # The rolling file log (read by GET /api/server/logs) survives re-creates.
       - oak-server-logs:/root/.oak-server
+      # The restore archive lands here (see OAK_RESTORE_FILE above); empty and
+      # harmless on deployments without a restore.
+      - ./restore:/restore
 
   # ─────────────────────── Caddy TLS entry point ───────────────────────
   # Terminates TLS and routes: https://<host> → oak (REST + /ws) with /janus*

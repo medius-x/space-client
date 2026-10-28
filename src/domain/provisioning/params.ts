@@ -37,6 +37,12 @@ export interface ProvisioningParams {
   /** Local path to the oak-server jar. Null = the bundled jar / the latest
    *  GitHub release artifact (the source ladder). */
   jarPath: string | null;
+  /** Local path to a backup archive (backup round 2026-10-28): the deployment
+   *  RESTORES it instead of registering a fresh owner — every conversation,
+   *  account and attachment of the original machine comes up "as if created
+   *  there"; the finish phase is needsLogin (the archive's owner password is
+   *  known to the user, not to this client). Null = a normal fresh setup. */
+  backupArchivePath: string | null;
 }
 
 /** The one-password defaults the Create form falls back to (user decision,

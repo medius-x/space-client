@@ -387,6 +387,35 @@ export interface ServerHealth {
   services: ServerHealthEntry[];
 }
 
+/** Backup block wire (backup round 2026-10-28, OWNER-or-ADMINISTRATOR gated):
+ *  the server builds the archive on demand — no schedule, no retention on its
+ *  side — and streams it as a zip; both the periodic and the button-driven
+ *  download live on the CLIENT. */
+export interface BackupRunInfo {
+  startedAt: string;
+  finishedAt: string | null;
+  sizeBytes: number;
+  flywayVersion: string | null;
+  appVersion: string | null;
+  totalRows: number;
+  objectCount: number;
+  objectBytes: number;
+  failedObjects: number;
+  error: string | null;
+}
+
+export interface BackupStatus {
+  running: boolean;
+  lastRun: BackupRunInfo | null;
+}
+
+/** GET /api/server/backup/estimate — the size preview of a future archive. */
+export interface BackupEstimate {
+  objectBytes: number;
+  objectCount: number;
+  approxDatabaseBytes: number;
+}
+
 /** GET /api/channels/{id}/permissions/me — override-aware, per channel. The `stream`
  *  bit feeds the voice share/camera gate (security round 6); it is client-side only —
  *  the gateway has no video mute, so the button hiding IS the enforcement. */

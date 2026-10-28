@@ -5,7 +5,90 @@ Electron + TypeScript **спайк-клиент** OAK-сервера. Цель �
 звук через `getDisplayMedia` и браузерный APM. После спайка — решение о полной переписи
 клиента. Полный план: `C:\Users\Home\.claude\plans\goofy-leaping-sutton.md`.
 
-## Свитч сервера при живом голосе: чистый выход + подтверждение (2026-10-28, код готов — 821/821 + typecheck + build; смоук pending; коммит — по команде)
+## Бэкап сервера + restore при провижининге + Migrate (2026-10-28, код готов: сервер 538/538 mvn, клиент 830/830 + typecheck + build; смоук pending; коммит — по команде)
+
+Реализация проработки фичи C (см. блок C в «Проработке фич» ниже — юзер-решения там).
+Деплой парный: сервер первым (новые эндпоинты + RestoreRunner), клиент следом.
+
+- **Сервер (oak-server)**: `BackupService` (dump-writer `BackupDumpSql` — чистый SQL-генератор,
+  `SET session_replication_role=replica` → TRUNCATE всех 18 таблиц (КРОМЕ flyway_schema_history и
+  refresh_tokens — миграция = честный ре-логин: новый .env убивает JWT) → INSERT'ы → setval
+  `<table>_id_seq` (user_roles без id — скип) + объекты MinIO STORED; одна REPEATABLE READ-сессия
+  = консистентный снапшот; manifest.json {flywayVersion (SELECT по installed_rank DESC — строковый
+  max врёт «9»>«17»), appVersion, serverName, счётчики}; single-slot tmp-файл
+  (`oak.backup.dir`, дефолт tmpdir/oak-backup) + АТОМАРНЫЙ rename). REST `/api/server/backup`:
+  POST /run (202, daemon-нить; 409 при running/занятом GC-локе), GET /status (поллинг, GC-идиома),
+  GET /estimate (точная сумма листинга бакета + pg_relation_size без индексов — H2 без pg_catalog
+  → 0), GET /file (СТРИМ FileSystemResource + Content-Length — НЕ byte[], у логов кап 48 МБ
+  in-memory). **Гейт всех — `requireAdministrator`** (новый хелпер AuthorizationService: бит
+  ADMINISTRATOR, овнер через OWNER→ALL; узкий MANAGE_SERVER НЕ проходит — юзер-решение, тестом
+  закреплено). **Кросс-лок с GC** (`StorageMaintenanceLock`, ReentrantLock-компонент): оба берут
+  tryAcquire, release в finally; GC-тик при занятом локе ДЕФЕРРИТ (окно догона расширено до
+  CATCHUP_TICKS=6 тиков ≈ час, день латчится ПОСЛЕ успешного старта — прежде пропуск тика молча
+  съедал ночную чистку); `StorageController.runNow` → `startManualRun()` (синхронные предчеки →
+  чистый 409, гонка старта — WARN в нити).
+- **RestoreRunner** (oak-server, ApplicationRunner @Order(-100) — ДО RoleSeeder(0); сидеры
+  идемпотентно проходят поверх): env `oak.restore.file` (+ `public-host/port/scheme`); ZipFile
+  random-access: manifest-гейт Flyway-версий (несовпадение = громкий отказ — грабля V16 в
+  Permission.java:22), data.sql.gz → ПОТОКОВЫЙ сплиттер (`BackupDumpSql.splitSqlStatements`:
+  посимвольный автомат, литералы с ';' и \n внутри, ''-эскейп, line-comments; гигабайтные дампы
+  не в памяти) → одна транзакция; objects/* → putObject (прощающий: битый объект = WARN+скип,
+  зеркально backup-стороне); адресный патч server_profile из env (провижининг знает адрес — без
+  REST-токена); rename архива `.done` (рестарт не реплеит); ЛОГ-МАРКЕРЫ `RESTORE COMPLETED` /
+  `RESTORE FAILED: …` — их грепает провижининг-шаг (упавший контекст за Caddy иначе = вечный 502).
+- **Клиент — блок «Бэкапы» в Server Settings → Server** (гейт my.owner||ADMINISTRATOR-бит,
+  Health-идиома отдельных стейтов): Latest backup + [Снять бэкап] (estimate → ConfirmModal «≈ N
+  (вложения точно + база сверху)» → 202 → поллинг → АВТОскачивание) + [Скачать последний];
+  «Автоматический бэкап (на этом компьютере)»: off/daily at HH:mm + Keep copies (дефолт 1, 1..30)
+  + папка (дефолт <Downloads>/SPACE/backup, OS-пикер + Reset + Open). **Расписание КЛИЕНТСКОЕ**
+  (`renderer/backup-schedule.ts`, тик 60 c в bootstrapApp): per-record map
+  `ClientSettings.backupSchedules {enabled, minuteOfDay}`; срабатывает при живом клиенте в
+  минуту времени, день латчится в памяти, догона НЕТ (юзер-решение). Папка/retention — ГЛОБАЛЬНЫЕ
+  (`backupFolder`, `backupKeepCount`) — осознанное упрощение против per-record-плана проработки.
+- **Скачивание**: НОВЫЙ мост `spaceBackup` (electron/backups.ts): MAIN стримит URL в файл
+  (гигабайты — не ArrayBuffer в рендерере, без таймаута), прогресс ~4 Гц (single-slot
+  onProgress — листенер у активной поверхности, MigrateModal перехватывает на время);
+  Bearer по IPC (локальный коридор одного приложения, авторизация решает сервер по принципалу);
+  имена basename (path-traversal закрыт), папка из KV main (не из запроса); target "temp" —
+  миграционный one-shot в os.tmpdir/space-migrate без retention. Retention `prune(prefix,
+  keepCount)`: префикс `server-backup-<host>-` санитизируется `^[\w.-]+$` (не путь), чистая
+  функция `backupFilesToPrune` (сорт по штамп-имени, чужие файлы не тронуты) + тесты
+  (backup-files.test.ts, 9). REST: runServerBackup/getBackupStatus/getBackupEstimate/
+  backupFileUrl + `currentAccessToken()` (для main-качалки).
+- **Провижининг-restore**: ProvisioningParams += `backupArchivePath` (main проверяет
+  существование ДО прогона); поле в Advanced с OS-пикером (space-backup:chooseArchive); пайплайн:
+  restore-режим (архив задан) → env += `OAK_RESTORE_FILE=/restore/backup.zip` +
+  `OAK_RESTORE_PUBLIC_HOST/PORT/SCHEME` (buildEnvFile += restoreHost-блок), START_ORDER БЕЗ oak
+  (первый boot oak = сам restore), restore-шаг: mkdir + writeLocalFile архива (прогресс-строка) →
+  `compose up oak` → ПОЛЛ docker logs oak-server на маркеры COMPLETED/FAILED (500 c) → провал =
+  ProvisioningFailure с ПРИЧИНОЙ из лога сервера → wait → исход `{restored: true, ownerReady:
+  false}` — фаза needsLoginRestored («войдите паролем исходного владельца»), register НЕ
+  выполняется. Restore на ADOPT (живой compose) = честный отказ (данные живого сервера не
+  подменяем молча). Compose-шаблоны СИНХРОННО в обоих местах (env/ + electron/provisioning/files/):
+  oak += volumes `./restore:/restore` + env OAK_RESTORE_* (пустые = обычный старт).
+- **Migrate-модалка** (Server Settings → Server → Бэкапи → Перенос): Modal elevated + locked на
+  время съёмки/прогона; фазы: form → taking (СВЕЖИЙ бэкап текущего сервера через
+  `takeMigrationBackup`: run/poll + temp-скачивание, БЕЗ retention) → panel:
+  `ProvisioningPanel mode="migrate"` (НОВЫЕ пропсы mode/archivePath/onDone): без полей Space
+  account, архив фиксирован (поле скрыто, note про свежесть), кнопка «Перенести», needsLogin-Back
+  закрывает модалку. ProvisioningPanel в LoginModal-вкладке Create не изменился (mode="setup").
+- **Тесты**: сервер BackupDumpSqlTest (3: sqlValue/экранирование/стейтменты + splitSql-литералы-
+  комментарии) + BackupIntegrationTest (2: гейт-лестница вкл. MANAGE_SERVER-403 и 401; полный
+  прогон → статус → скачивание → zip с data.sql.gz/TRUNCATE/INSERT) — 538/538 (было 533);
+  клиент backup-files.test.ts (9) + provisioning-pipeline.test.ts += 3 (restore-режим:
+  стадии/stage-order без register/.env-блок/маркер-полл; FAILED-причина; adopt-отказ) —
+  830/830 + typecheck + build.
+- **Security-проход (обязательный раунд)**: гейт всех серверных эндпоинтов — requireAdministrator
+  (явный бит, интеграционным тестом); файл отдачи — фиксированный путь, не из запроса; IPC
+  download — url http(s) + basename + папка серверной стороной; prune-prefix — не путь;
+  оценок/инъекций нет (SQL генерим сами, исполняем на целевой машине того же владельца).
+  ЗАДОКУМЕНТИРОВАННЫЕ ГРАНИЦЫ: (1) restore-архив = доверенный ввод уровня jar-override —
+  подменённый архив исполняет произвольный SQL на НОВОЙ машине (фишинговая угроза; владелец сам
+  выбирает файл и держит SSH-креды цели); (2) backupArchivePath расширяет существующий
+  renderer→main локальный file-read класс (jarPath/sshKeyPath — прецедент раунда C). Новых
+  REST/STOMP-поверхностей нет; STOMP-каналы не менялись.
+
+
 
 Юзер-репорт: смена сервера из голосовой комнаты → «переподключает», панель умирает не сразу,
 а на ПРЕЖНЕМ сервере юзер остаётся висеть в комнате (фантом). Решение юзера: выбрасывание при
@@ -4565,7 +4648,7 @@ estimateSize`); (3) `itemKey` был голый `String(message.id)`, а id со
 |---|---|---|---|
 | A | Очистка аттачментами без сноса сообщений | M (3 фазы) | клиентский tombstone обязателен — иначе «вечный loading» |
 | B | Bot API | M (4-5 фаз) | модель токена; остальное фундаментом готово |
-| C | Бэкап/restore сервера | L (3 независимых куска) | тест цикла restore между версиями на живом VPS |
+| C | Бэкап/restore сервера | ПЕРЕРАБОТАНО 2026-10-28 под юзер-требования — см. блок C ниже (старая трёхкусковая выкладка заменена) | тест полного цикла backup→restore на живом стенде |
 | D | Локализация RU/EN | XL механика, L сложность (4-6 фаз) | ~600 строк без потерь, ~110 тест-ассертов, плюрализация |
 | — | D&D Beyond профиль | ОТКЛОНЕНО | публичного API нет, только ToS-нарушающий скрейпинг |
 
@@ -4634,37 +4717,146 @@ echo-бота на node без зависимостей + ссылка из READ
 бот-токен не JWT — переименование бота его не гасит (в отличие от access-JWT);
 идемпотентность-кеш пер-юзер — ботам можно и нужно слать с ключом.
 
-### C. Бэкап сервера + restore при установке (миграция между хостингами)
+### C. Бэкап сервера + restore при провижининге + Migrate (ПЕРЕРАБОТАНО 2026-10-28 под юзер-требования; разведка 3 агентами того же дня; НЕ реализовано — старт по команде)
 
-Контекст: состояние = 5 named volumes (oak-postgres-data, oak-minio-data,
-oak-caddy-data/config, oak-server-logs) + /opt/oak (compose, `.env`-секреты, серт,
-jar). Механизмов нет вообще. После установки клиент имеет к серверу ТОЛЬКО REST
-(SSH-креды не персистим), в oak-контейнере нет ни docker-клиента, ни pg_dump —
-отсюда архитектура из трёх независимых кусков:
+Юзер-требования (2026-10-28): (1) бэкап сервера НА ЛОКАЛЬНЫЙ КОМПЬЮТЕР (архив = все
+переписки + вложения), по кнопке И периодически по времени «как очистка», дефолт
+выключено, настройка в Server Settings → Server; бэкап не конфликтует с очисткой при
+совпадении времени; (2) при провижининге — опциональный путь к архиву, который после
+раскатки заливается и подхватывается «как будто всё создано там изначально»; (3) кнопка
+Migrate в Server Settings → Server — окно КАК при создании сервера, но БЕЗ полей
+ника/логина/пароля овнера, кнопка внизу «Migrate»; (4) доступ — только овнеру и админу.
 
-- **(a) Ночной авто-бэкап НА сервере** (S, 1 фаза): provisioning-шаг ставит
-  `/opt/oak/scripts/backup.sh` + cron/systemd-timer; v1-скрипт = stop-stack бэкап
-  (compose stop → pg_dump -Fc через docker exec postgres + tar volumes + конфиг
-  /opt/oak → compose start) — консистентность важнее ночного окна простоя;
-  `/opt/oak/backups/oak-YYYYMMDD-HHmm.tar.gz` + retention N.
-- **(b) «Back up now» из клиента** (M, 1-2 фазы): SSH-флоу с формой кредов (как
-  provisioning) — новый backup-режим пайплайна: коннект → запуск backup.sh →
-  SFTP-download архива (инверсия writeLocalFile, onProgress уже есть) → saveFile.
-  Точка входа — ServerMenu («Back up server…»), НЕ Server Settings (там только REST).
-- **(c) Restore при установке** (M, 2 фазы): опция «Restore from backup» в
-  ProvisioningPanel (файл-пикер архива): свежая машина → SFTP-заливка → volume-импорты
-  ДО первого up (docker volume create + tar -x; пустая структура не должна создаться)
-  + pg_restore после старта postgres, до старта oak (START_ORDER уже последовательный)
-  + `.env`/серт из архива (adopt-паттерн «не трогать») → compose up → Flyway сам
-  дотащит схему дампа старой версии (миграции append-only) → register-ветка: овнер
-  есть → 409 → логин существующим паролем (пароль из бэкапа неизвестен — юзер вводит)
-  → PATCH /api/server/connection на новый адрес (механика register-шага).
+**Юзер-решения развилок (2026-10-28):** периодика — ТОЛЬКО ПРИ ЖИВОМ КЛИЕНТЕ
+(серверное расписание/retention НЕ делаем: выключен клиент в момент времени = бэкапа
+нет, догона при старте нет); restore — ТОЛЬКО ТА ЖЕ ВЕРСИЯ схемы (manifest несёт
+Flyway-версию; несовпадение = честный отказ; аргумент — грабля V16 задокументирована
+в Permission.java:22 «restored backup would need the same cleanup re-run»); Migrate —
+архив = СВЕЖИЙ бэкап, автоматически снимается с текущего сервера перед деплоем;
+«админ» = держатель бита **ADMINISTRATOR** (юзер-уточнение: ADMINISTRATOR ≠
+MANAGE_SERVER — первый бит-джокер, сервер short-circuit'ит его в Permissions.ALL;
+второй — узкий бит профиля сервера). Итоговый гейт: **OWNER || ADMINISTRATOR** — ЯВНАЯ
+проверка бита (узкий MANAGE_SERVER-держатель не проходит, хотя обычные
+requireServer(MANAGE_SERVER)-гейты — проходят; нужен новый хелпер AuthorizationService,
+овнер и так проходит через ALL).
 
-Отдельно задокументировать в restore-UI: смена IP/домена = серт тот же, но hostname
-другой → TOFU-диалог заново (пины по hostname); `.env` из бэкапа обязателен
-(JWT/MinIO/Janus/TURN секреты — иначе пины и подписи умрут); oak-server-logs volume
-НЕ бэкапим; Janus stateless. Самое дорогое в (c) — не код, а живой тест цикла
-«бэкап старой версии → restore на свежую машину» на VPS.
+**Формат архива** `backup-<…>.zip`: `manifest.json` {formatVersion 1, flywayVersion,
+appVersion, serverName, createdAt, счётчики таблиц/объектов} + `data.sql.gz` —
+САМОДОСТАТОЧНЫЙ restore-скрипт: `SET session_replication_role = replica` (гасит FK/
+триггеры — порядок вставки неважен) → TRUNCATE всех таблиц, КРОМЕ flyway_schema_history
+→ INSERT'ы всех таблиц, КРОМЕ refresh_tokens (миграция = честный ре-логин: JWT-секрет
+нового .env убивает access-JWT, refresh сознательно не переносим) → setval всех
+`*_id_seq` sequence (identity-колонки на каждой таблице, V1+миграции) + `objects/<MinIO
+key>` — ПОЛНЫЙ листинг бакета oak-attachments (все 6 префиксов: attachments/,
+avatars/, avatars/originals/, server-avatars/, custom-emojis/, stickers/; текущий
+listByPrefix покрывает только 3), STORED (медиа уже сжато). SQL-экранирование JDBC-типов
+(числа/строки/bool/timestamp/text-json) — чистый юнит-тестируемый writer. DDL в дампе
+НЕ нужен: restore идёт на сервере ТОЙ ЖЕ версии, схема уже создана Flyway.
+
+**Сборка на сервере** (новый BackupService oak-server): `POST /api/server/backup/run`
+→ 202, сборка в фоновой daemon-нити (паттерн GC-run StorageController); повторный → 409
+по running; `GET /api/server/backup/status` → {running, lastRun {createdAt, sizeBytes,
+flywayVersion, tableRows, objectCount}, error} — поллинг (GC-идиома, пушей нет);
+`GET /api/server/backup/file` → СТРИМ из файла с Content-Length (НЕ byte[] — у
+ServerLogsService кап 48 МБ in-memory, бэкап может быть гигабайтным; писать в
+single-slot временный файл java.io.tmpdir, перезапись, без retention — сервер ничего
+не хранит по юзер-решению). Все три — гейт OWNER||ADMINISTRATOR. Плюс быстрый
+`GET /api/server/backup/estimate` → {objectBytes (ТОЧНАЯ сумма size по листингу
+бакета — метаданные, без байтов), approxDatabaseBytes (Σ pg_relation_size всех таблиц
+без индексов — оценка сверху SQL-дампа; gzip даст меньше), objectCount} — отвечает за
+секунды; UI показывает оценку ПЕРЕД ручной съёмкой (юзер-запрос 2026-10-28:
+ConfirmModal «Backup size ≈ N (M вложений + K база) — продолжить?» → только потом
+run); периодика и Migrate-фаза съёмки диалог НЕ спрашивают (в Migrate оценка едет в
+прогресс-строку скачивания). Настроек бэкапа НА
+СЕРВЕРЕ НЕТ (периодика клиентская) → ServerProfile не трогаем, миграции БД нет.
+
+**Кросс-лок с GC** (юзер-требование «не конфликтовать при одном времени»; сейчас в
+проекте НИКАКОГО кросс-задачного лока нет): общий maintenance-лок (новый компонент,
+ReentrantLock): GC-тик, не взявший лок, ПРОПУСКАЕТ окно не латча день (следующий тик
+PT10M догонит); backup-run при занятом GC → 409, клиент повторит; лок держится всю
+длительность backup (иначе GC снесёт сообщения/аттачи посреди SELECT-дампа и листинга).
+
+**Restore при старте** (новый RestoreRunner, ApplicationRunner с @Order ВЫШЕ
+RoleSeeder @Order(0); Flyway уже создал схему в Boot-lifecycle, сидеры идемпотентны и
+отработают поверх как no-op): env `oak.restore.file` (+ `oak.restore.public-host/
+port/scheme` — провижининг знает адрес новой машины; раннер ПОСЛЕ накатки патчит
+server_profile сам, REST-токенов не нужно). Шаги: zip → manifest-проверка версии
+(SELECT max(version) FROM flyway_schema_history WHERE success — несовпадение = отказ
+с внятным текстом) → data.sql (TRUNCATE+INSERT+setval) → putObject всех objects
+(обёртку getObject/putObject дописать в MinioAttachmentService — SDK 8.5.14 умеет,
+кодовой обёртки нет; листинг-прецедент listByPrefix) → адресный патч → rename архива
+`.done` → ЛОГ-МАРКЕРЫ «RESTORE COMPLETED» / «RESTORE FAILED: <причина>» (при отказе
+контекст не поднимается; провижининг-шаг читает docker logs и эмитит причину юзеру,
+иначе wait молча таймаутит на 502).
+
+**Провижининг**: ProvisioningParams += `backupArchivePath: string | null` (валидация
+в main: файл существует; байты через рендерер НЕ идут — путь → Ssh2Transport.
+writeLocalFile, тот же путь что jar, 4 МБ чанки + байтовый прогресс). UI: поле
+«Restore from backup (optional)» c OS-диалогом файла (dialog.showOpenDialog openFile
+— прецедент папки загрузок). Пайплайн: архив задан → после compose-up-периферии и
+ЗАЛИВКИ: SFTP → /opt/oak/restore/backup.zip; compose-шаблон (env/ + electron/
+provisioning/files/ СИНХРОННО) += bind-маунт `./restore:/restore` у oak-сервиса;
+.env += OAK_RESTORE_FILE + OAK_RESTORE_PUBLIC_ADDRESS (publicHost = domain ?? host,
+порт 443, scheme https); затем up oak → wait → проверка маркера RESTORE COMPLETED в
+docker logs → исход **needsLogin** (овнер и пароли восстановлены из архива, но клиент
+пароль не знает — юзер логинится; register-шаг НЕ выполняется). Архив НЕ задан →
+прежний register-путь без изменений. Смена IP/домена = TOFU-диалог заново (пины по
+hostname) — задокументировать в финальном экране Migrate.
+
+**Клиент — блок «Backup & migration» в Server Settings → Server** (гейт
+`my.owner || бит ADMINISTRATOR` из permissionStore — отдельные стейты по
+Health-идиоме, не смешивать с storage/логами): строка «Latest backup» (время/размер/
+версия или «never») + [Back up now] (СПЕРВА estimate → ConfirmModal «Backup size ≈
+N» → 202 → поллинг статуса до готовности →
+АВТОскачивание) + [Download] (архив уже собран); настройка «Automatic backup: off /
+daily at HH:mm» — КЛИЕНТСКАЯ, per-record сервера (персист ЛОКАЛЬНО в ClientSettings:
+map recordId → {enabled, minuteOfDay, folder|null, keepCount}, санация в load; в
+UI честная подпись про «on this computer»; тик-проверка раз в минуту в живом клиенте,
+день латчим). **ПАПКА И RETENTION (юзер-дополнение 2026-10-28):** бэкапы пишутся в
+дефолт `<Downloads>/SPACE/backup` (создаётся при первом сохранении,
+resolveDownloadsDir-идиома), можно задать свою папку (OS-диалог выбора папки +
+Reset — прецедент папки загрузок General); «Keep copies: N» (ДЕФОЛТ 1, диапазон
+1..30) — после КАЖДОГО скачивания в backup-папку (кнопочного И по расписанию — кнопка
+тоже автоскачивает, триггер единственное отличие; осознанное расширение юзер-слова
+«автоматического» на все скачивания, иначе кнопочные копии копились бы вечно) чистка:
+файлы ЭТОГО сервера по маске `server-backup-<host>-<stamp>.zip` (штамп
+YYYYMMDD-HHmmss — сорт-безопасен), сорт по штампу, старейшие сверх N удаляются —
+чистая функция pruneOldBackups + тесты; чужие серверы и неротируемые файлы в папке
+НЕ трогаем (маска с host). Скачивание: НОВАЯ IPC «main качает URL стримом в файл
+backup-папки с прогрессом» — downloadBytes/authedBytes грузят ArrayBuffer в память
+рендерера (для гигабайтных архивов нельзя) и таймаут 120 с; Bearer едет по IPC
+(локальный коридор одного приложения — security-проход зафиксировать); прогресс —
+IPC-события в UI.
+
+**Migrate-модалка**: кнопка [Migrate to a new machine…] → Modal elevated z-110
+(TransferOwnershipModal-прецедент «модалка ИЗ Server Settings») с ProvisioningPanel
+mode="migrate": поля Host/SSH/Advanced (порт/ключ/passphrase/domain/firewall), БЕЗ
+полей Space account; кнопка «Migrate» (provisioning.setupVerb → отдельный ключ).
+Фазы прогона: (1) съёмка свежего бэкапа с ТЕКУЩЕГО сервера (токен овнера уже есть;
+новый UI-этап с поллингом статуса) + скачивание ВО ВРЕМЕННЫЙ файл main-процесса (НЕ
+в backup-папку — разовый архив не участвует в retention, удаляется после заливки); (2)
+provisioning-прогон с restore-шагом, архив = только что скачанный. ProvisioningPanel
+самодостаточен (пропы-колбэки, к LoginModal не привязан) — mode-проп не ломает вкладку
+Create; прогоны по-прежнему один одновременно (main-гвард).
+
+**Фазы (каждая с гейтами mvn test / npm test + typecheck + build):** (1) сервер:
+BackupService (dump-writer + MinIO полный листинг + getObject) + REST run/status/file
++ гейт OWNER||ADMIN + кросс-лок с GC; (2) сервер: RestoreRunner (manifest-гейт версий,
+putObject, адресный патч, лог-маркеры, шов для H2-тестов — session_replication_role
+pg-specific); (3) клиент: REST-методы + IPC-скачивание в файл + блок Server Settings
+(кнопка/поллинг/прогресс/скачивание) + клиентское расписание per-record; (4)
+провижининг: params/UI-поле архива + шаг restore + compose/env/шаблоны-маунт (СИНХРОННО
+два места) + needsLogin-финал; (5) Migrate-модалка (mode-проп + фаза съёмки). Смоук
+обязателен: полный цикл backup (живой сервер с данными) → restore на свежий стек →
+сверка переписок/вложений/аккаунтов → Migrate end-to-end.
+
+**Риски/границы:** invite-секреты и ВСЁ содержимое сервера едут в архиве (гейт
+OWNER||ADMINISTRATOR — осознанно, овнер их и так видит в UI); большие сервера — долгая
+сборка/отдача (прогресс в UI, без таймаута на отдаче, GC-лок держится всё время);
+архив версии N не ресторится на N+1 (задокументированное ограничение v1; провижининг
+льёт jar той же версии — почти всегда выполнено); сид @everyone/ROLE-репары отработают
+поверх восстановленных данных идемпотентно; Janus stateless, oak-server-logs не
+бэкапим; H2-тесты restore потребуют SQL-шва (pg-специфика).
 
 ### D. Локализация RU/EN + выбор языка в настройках
 
