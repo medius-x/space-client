@@ -35,6 +35,10 @@ export interface ExecResult {
   code: number;
   stdout: string;
   stderr: string;
+  /** Set when the remote process died to a SIGNAL (the kernel OOM killer
+   *  leaves no error line — live 2026-10-28); null for ordinary exits and
+   *  optional so fake transports can omit it. */
+  signal?: string | null;
 }
 
 /** The SSH seam — implemented by Ssh2Transport in the main process. */
@@ -42,6 +46,13 @@ export interface ProvisioningTransport {
   /** onOutputLine fires per COMPLETE line of the command's combined output —
    *  the pipeline surfaces it as the step's live progress text. */
   exec(command: string, options?: { timeoutMs?: number; onOutputLine?: (line: string) => void }): Promise<ExecResult>;
+  /** Re-establishes the connection after a drop using the SAME credentials;
+   *  false when it cannot (or the run was cancelled). Optional seam — fake
+   *  transports implement it only when a test exercises the resume ladder. */
+  reconnect?(): Promise<boolean>;
+  /** True while the underlying connection is alive (a resume skips the
+   *  reconnect when the drop killed only the channel). */
+  isConnected?(): boolean;
   writeFile(remotePath: string, contents: string | Uint8Array): Promise<void>;
   readFile(remotePath: string): Promise<string | null>;
   /** Streams a LOCAL file to the remote path (the image archives: hundreds of
@@ -150,6 +161,23 @@ const IMAGE_LOAD_TIMEOUT_MS = 300_000;
 /** One image, one pull — a big layer set on a slow path can take minutes. */
 const SINGLE_PULL_TIMEOUT_MS = 600_000;
 
+// Connection-loss resilience (live 2026-10-28: a network drop 50 s into a
+// dist-upgrade killed the run, while the server-side apt kept running and
+// finished fine 5.5 minutes later). The interrupted command is re-run after a
+// bounded reconnect — every step here is idempotent by design (the same
+// contract that makes the whole run user-restartable), so a resume is a
+// re-entry, never a duplicate side effect.
+const CONNECTION_RESUME_ATTEMPTS = 3;
+const RECONNECT_BACKOFF_MS = [2_000, 5_000, 10_000];
+/** A re-run of an interrupted apt/dpkg command must first wait out the GHOST
+ *  of the dropped session: the old apt keeps running server-side after the
+ *  channel dies and holds the dpkg lock — a naive re-run would fail on
+ *  "could not get lock" instantly (the live incident: ghost ran 5.5 min). */
+const GHOST_PACKAGE_WAIT_MS = 600_000;
+const GHOST_PACKAGE_POLL_MS = 5_000;
+const GHOST_PACKAGE_CHECK = "pgrep -x apt-get >/dev/null 2>&1 || pgrep -x dpkg >/dev/null 2>&1";
+const GHOST_PACKAGE_TRIGGER = /apt|dpkg|get\.docker/;
+
 /** Parses the missing-check output ("MISSING ref" per line). */
 function parseMissingImages(stdout: string): string[] {
   return stdout
@@ -159,7 +187,37 @@ function parseMissingImages(stdout: string): string[] {
     .filter((line) => line.length > 0);
 }
 
+/** Turns a failed exec into the failure text the user sees. The output TAIL
+ *  alone hides the class of death (live 2026-10-28: a dist-upgrade killed by
+ *  a signal surfaced as a bare "Reading database … 55%" apt progress line);
+ *  the exit status names it — a signal is the kernel's signature (SIGKILL on
+ *  a small VPS is typically the OOM killer), and a missing status means the
+ *  ssh channel died before the process could report one. */
+export function describeExecFailure(result: ExecResult): string {
+  const tail = (result.stderr.trim() || result.stdout.trim())
+    .split("\n")
+    .slice(-8)
+    .join(" | ");
+  if (typeof result.signal === "string" && result.signal.length > 0) {
+    const oomHint = result.signal === "SIGKILL" ? " (typically the kernel OOM killer)" : "";
+    return `the command was killed by ${result.signal}${oomHint}${tail ? ` · ${tail}` : ""}`;
+  }
+  if (result.code === -1) {
+    return `the ssh channel closed without an exit status${tail ? ` · ${tail}` : ""}`;
+  }
+  return tail ? `${tail} · exit code ${result.code}` : `exit code ${result.code}`;
+}
+
 type EmitFn = (event: ProvisioningStepEvent) => void;
+
+/** Thrown by the transport when the SSH CONNECTION (not the command) died —
+ *  no exit status, no signal. The pipeline answers it with a bounded
+ *  reconnect + idempotent re-run instead of failing the whole deployment. */
+export class ConnectionLostError extends Error {
+  constructor(message = "the ssh connection was lost during the command") {
+    super(message);
+  }
+}
 
 export async function runProvisioningPipeline(
   transport: ProvisioningTransport,
@@ -172,19 +230,84 @@ export async function runProvisioningPipeline(
    *  closure reading the CURRENT main-process language — a language flip
    *  mid-run recolors the steps that have not fired yet. */
   t: Translator = enTranslator,
+  /** The pause seam of the resume ladder (reconnect backoff, ghost polling) —
+   *  tests inject an instant no-op instead of waiting real seconds. */
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 ): Promise<ProvisioningOutcome> {
   const domainDeployment = params.domain !== null && params.domain.trim().length > 0;
   const publicHost = (domainDeployment ? params.domain! : params.host).trim();
   const hostUrl = `https://${publicHost}`;
 
-  /** The failure's ROOT is often a few lines above the tail (a failed image
-   *  pull reads as "No such image" only at the end — live VPS 2026-10-12),
-   *  so keep a generous tail of the output. */
-  const failureReason = (result: ExecResult): string =>
-    (result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`)
-      .split("\n")
-      .slice(-8)
-      .join(" | ");
+  /** Waits out a GHOST package manager left running by the dropped session —
+   *  bounded, best-effort: a check that itself loses the connection simply
+   *  returns, and the ladder's next iteration deals with the drop. */
+  const waitForGhostPackages = async (stage: ProvisioningStage): Promise<void> => {
+    const deadline = Date.now() + GHOST_PACKAGE_WAIT_MS;
+    let announced = false;
+    while (Date.now() < deadline) {
+      let ghostAlive: boolean;
+      try {
+        const result = await transport.exec(GHOST_PACKAGE_CHECK, { timeoutMs: 30_000 });
+        ghostAlive = result.code === 0;
+      } catch {
+        return;
+      }
+      if (!ghostAlive) {
+        return;
+      }
+      if (!announced) {
+        announced = true;
+        emit({ stage, state: "log", detail: t("provisioning.detail.ghostWait") });
+      }
+      await sleep(GHOST_PACKAGE_POLL_MS);
+    }
+  };
+
+  /** Runs an operation and RESUMES it across an ssh drop: visible reconnect
+   *  line → bounded backoff → reconnect with the same credentials → (for apt/
+   *  dpkg commands) wait for the ghost of the killed session → idempotent
+   *  re-run. Exhausted budget = an honest failure with its own message. */
+  const resumeOnDrop = async <T>(
+    stage: ProvisioningStage,
+    operation: () => Promise<T>,
+    commandForGhostCheck?: string,
+  ): Promise<T> => {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await operation();
+      } catch (error) {
+        if (!(error instanceof ConnectionLostError)) {
+          throw error;
+        }
+        if (attempt >= CONNECTION_RESUME_ATTEMPTS) {
+          throw new ProvisioningFailure(stage, t("provisioning.err.connectionDropped"));
+        }
+      }
+      emit({
+        stage,
+        state: "log",
+        detail: t("provisioning.detail.reconnecting", { attempt: attempt + 1, total: CONNECTION_RESUME_ATTEMPTS }),
+      });
+      await sleep(RECONNECT_BACKOFF_MS[Math.min(attempt, RECONNECT_BACKOFF_MS.length - 1)] ?? RECONNECT_BACKOFF_MS[RECONNECT_BACKOFF_MS.length - 1]!);
+      if (transport.isConnected?.() !== true) {
+        const reconnected = transport.reconnect ? await transport.reconnect() : false;
+        if (!reconnected) {
+          throw new ProvisioningFailure(stage, t("provisioning.err.connectionDropped"));
+        }
+      }
+      if (commandForGhostCheck !== undefined && GHOST_PACKAGE_TRIGGER.test(commandForGhostCheck)) {
+        await waitForGhostPackages(stage);
+      }
+    }
+  };
+
+  /** A plain exec with the same drop-resume as must() (no exit-code gate) —
+   *  the pipeline's bare probe/read commands ride the same ladder. */
+  const run = (
+    stage: ProvisioningStage,
+    command: string,
+    options?: { timeoutMs?: number; onOutputLine?: (line: string) => void },
+  ): Promise<ExecResult> => resumeOnDrop(stage, () => transport.exec(command, options), command);
 
   /** Runs a command; a non-zero exit raises with the stage's name attached. */
   const must = async (
@@ -192,12 +315,26 @@ export async function runProvisioningPipeline(
     command: string,
     options?: { timeoutMs?: number; onOutputLine?: (line: string) => void },
   ): Promise<ExecResult> => {
-    const result = await transport.exec(command, options);
+    const result = await run(stage, command, options);
     if (result.code !== 0) {
-      throw new ProvisioningFailure(stage, failureReason(result));
+      throw new ProvisioningFailure(stage, describeExecFailure(result));
     }
     return result;
   };
+
+  /** writeFile/writeLocalFile with the same drop-resume: SFTP writes are
+   *  idempotent overwrites, so a re-run heals a truncated remote file. */
+  const mustWrite = (
+    stage: ProvisioningStage,
+    remotePath: string,
+    contents: string | Uint8Array,
+  ): Promise<void> => resumeOnDrop(stage, () => transport.writeFile(remotePath, contents));
+  const mustUpload = (
+    stage: ProvisioningStage,
+    localPath: string,
+    remotePath: string,
+    onProgress?: (bytesSent: number, bytesTotal: number) => void,
+  ): Promise<void> => resumeOnDrop(stage, () => transport.writeLocalFile(localPath, remotePath, onProgress));
 
   /** Rate-limited progress text for the ACTIVE step (user decision
    *  2026-10-15): per-chunk callbacks must not flood the IPC. Unchanged text
@@ -226,7 +363,7 @@ export async function runProvisioningPipeline(
     if (osName !== "Linux") {
       throw new ProvisioningFailure("probe", t("provisioning.err.linuxOnly", { os: osName }));
     }
-    const release = await transport.exec(`. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || echo "unknown Linux"`);
+    const release = await run("probe", `. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || echo "unknown Linux"`);
     // curl drives the readiness poll and the registration calls below — some
     // minimal cloud images ship without it.
     await must("probe", "command -v curl >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq curl)", {
@@ -241,11 +378,11 @@ export async function runProvisioningPipeline(
     // small-host swap guard below.
     const DISK_FLOOR_MB = 5_120;
     const RAM_FLOOR_KB = 1_200_000;
-    const diskResult = await transport.exec("df -Pm / | awk 'NR==2 {print $4}'");
+    const diskResult = await run("probe", "df -Pm / | awk 'NR==2 {print $4}'");
     // parseInt (not Number): an EMPTY output parses to NaN and the check is
     // skipped, while Number("") would read as 0 and refuse a healthy host.
     const diskFreeMb = Number.parseInt(diskResult.stdout.trim(), 10);
-    const meminfo = await transport.exec("awk '/^MemTotal|^SwapTotal/ {print $2}' /proc/meminfo");
+    const meminfo = await run("probe", "awk '/^MemTotal|^SwapTotal/ {print $2}' /proc/meminfo");
     const [memTotalKb, swapTotalKb] = meminfo.stdout.trim().split(/\s+/).map((value) => Number.parseInt(value, 10));
     const memoryNumbersKnown = memTotalKb !== undefined && swapTotalKb !== undefined
       && Number.isFinite(memTotalKb) && Number.isFinite(swapTotalKb);
@@ -253,7 +390,7 @@ export async function runProvisioningPipeline(
     // memory limit — inside a capped VM the kernel OOM killer looks exactly
     // like missing RAM (the suspicion checked by hand on the live VPS,
     // 2026-10-13), so the cap counts against the same floor.
-    const cgroupLimit = await transport.exec("cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max");
+    const cgroupLimit = await run("probe", "cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max");
     const cgroupLimitKb = Number.parseInt(cgroupLimit.stdout.trim(), 10);
     const gigabytes = (kb: number): string => `${(kb / 1_000_000).toFixed(1)} GB`;
     if (Number.isFinite(diskFreeMb) && diskFreeMb < DISK_FLOOR_MB) {
@@ -275,7 +412,7 @@ export async function runProvisioningPipeline(
       );
     }
 
-    const dockerProbe = await transport.exec("docker --version && docker compose version");
+    const dockerProbe = await run("probe", "docker --version && docker compose version");
     const dockerPresent = dockerProbe.code === 0;
     emit({
       stage: "probe",
@@ -329,7 +466,7 @@ export async function runProvisioningPipeline(
       { timeoutMs: SYSTEM_UPGRADE_TIMEOUT_MS, onOutputLine: dockerLine },
     );
     emit({ stage: "docker", state: "log", detail: t("provisioning.detail.packagesUpdated") });
-    const rebootNeeded = await transport.exec("test -f /var/run/reboot-required && echo yes || echo no");
+    const rebootNeeded = await run("docker", "test -f /var/run/reboot-required && echo yes || echo no");
     if (rebootNeeded.code === 0 && rebootNeeded.stdout.trim() === "yes") {
       emit({ stage: "docker", state: "log", detail: t("provisioning.detail.rebootHint") });
     }
@@ -338,8 +475,8 @@ export async function runProvisioningPipeline(
       emit({ stage: "docker", state: "log", detail: t("provisioning.detail.installingDocker") });
       await must("docker", "curl -fsSL https://get.docker.com | sh", { timeoutMs: DOCKER_INSTALL_TIMEOUT_MS, onOutputLine: dockerLine });
       // The installer usually starts the daemon; make sure it is enabled too.
-      await transport.exec("systemctl enable --now docker 2>/dev/null || service docker start 2>/dev/null || true");
-      const verify = await transport.exec("docker compose version");
+      await run("docker", "systemctl enable --now docker 2>/dev/null || service docker start 2>/dev/null || true");
+      const verify = await run("docker", "docker compose version");
       if (verify.code !== 0) {
         throw new ProvisioningFailure("docker", t("provisioning.err.dockerNoAnswer"));
       }
@@ -352,7 +489,7 @@ export async function runProvisioningPipeline(
     // ── layout: /opt/oak + the adopt check ──────────────────────────────
     emit({ stage: "layout", state: "start" });
     await must("layout", `mkdir -p ${REMOTE_ROOT}/caddy/certs ${REMOTE_ROOT}/janus`);
-    const existingCompose = await transport.readFile(`${REMOTE_ROOT}/docker-compose.yml`);
+    const existingCompose = await resumeOnDrop("layout", () => transport.readFile(`${REMOTE_ROOT}/docker-compose.yml`));
     const adopt = existingCompose !== null;
     // Restore mode (backup round 2026-10-28): the archive loads at oak's FIRST
     // boot — an adopted server already booted with its own data, and silently
@@ -378,13 +515,13 @@ export async function runProvisioningPipeline(
     // The jar is the one multi-megabyte upload on this step — its REAL byte
     // counter (the SFTP stream knows both numbers) is the step's progress.
     const uploadProgress = progressEmitter("upload");
-    await transport.writeFile(`${REMOTE_ROOT}/docker-compose.yml`, files.composeFile);
-    await transport.writeFile(`${REMOTE_ROOT}/Dockerfile.server`, files.dockerfileServer);
-    await transport.writeFile(`${REMOTE_ROOT}/janus/Dockerfile`, files.janusDockerfile);
-    await transport.writeFile(`${REMOTE_ROOT}/janus/janus.jcfg`, files.janusConfig);
-    await transport.writeFile(`${REMOTE_ROOT}/janus/janus.transport.http.jcfg`, files.janusHttpConfig);
-    await transport.writeFile(`${REMOTE_ROOT}/caddy/Caddyfile`, caddyFileForMode(files.caddyFileTemplate, domainDeployment));
-    await transport.writeLocalFile(files.jarLocalPath, `${REMOTE_ROOT}/oak-server.jar`, (bytesSent, bytesTotal) => {
+    await mustWrite("upload", `${REMOTE_ROOT}/docker-compose.yml`, files.composeFile);
+    await mustWrite("upload", `${REMOTE_ROOT}/Dockerfile.server`, files.dockerfileServer);
+    await mustWrite("upload", `${REMOTE_ROOT}/janus/Dockerfile`, files.janusDockerfile);
+    await mustWrite("upload", `${REMOTE_ROOT}/janus/janus.jcfg`, files.janusConfig);
+    await mustWrite("upload", `${REMOTE_ROOT}/janus/janus.transport.http.jcfg`, files.janusHttpConfig);
+    await mustWrite("upload", `${REMOTE_ROOT}/caddy/Caddyfile`, caddyFileForMode(files.caddyFileTemplate, domainDeployment));
+    await mustUpload("upload", files.jarLocalPath, `${REMOTE_ROOT}/oak-server.jar`, (bytesSent, bytesTotal) => {
       const text = formatByteProgress(bytesSent, bytesTotal);
       if (text.length > 0) {
         uploadProgress(`oak-server.jar ${text}`);
@@ -405,7 +542,8 @@ export async function runProvisioningPipeline(
       // restoreMode arms the one-shot restore block in the file (the runner
       // reads OAK_RESTORE_FILE at boot and rewrites the advertised address to
       // OAK_RESTORE_PUBLIC_HOST — no REST token exists at that point).
-      await transport.writeFile(
+      await mustWrite(
+        "env",
         `${REMOTE_ROOT}/.env`,
         buildEnvFile(publicHost, params.host.trim(), secrets, restoreMode ? publicHost : null));
       emit({ stage: "env", state: "done", detail: t("provisioning.detail.envGenerated") });
@@ -421,7 +559,7 @@ export async function runProvisioningPipeline(
         detail: t("provisioning.detail.certAcme", { host: publicHost }),
       });
     } else {
-      const existingCert = await transport.exec(`test -f ${CERT_PATH} && echo yes || echo no`);
+      const existingCert = await run("certificate", `test -f ${CERT_PATH} && echo yes || echo no`);
       const hasCert = existingCert.code === 0 && existingCert.stdout.trim() === "yes";
       if (adopt && hasCert) {
         // Regenerating would invalidate every client's pinned fingerprint —
@@ -513,7 +651,7 @@ export async function runProvisioningPipeline(
       ? bundledImages.manifest.map((entry) => entry.ref)
       : composeImageRefs(files.composeFile);
     const missingCheck = `for IMAGE in ${pullList.map((ref) => `'${ref}'`).join(" ")}; do docker image inspect "$IMAGE" >/dev/null 2>&1 || echo "MISSING $IMAGE"; done`;
-    let missingImages = parseMissingImages((await transport.exec(missingCheck)).stdout);
+    let missingImages = parseMissingImages((await run("compose", missingCheck)).stdout);
 
     if (missingImages.length === 0) {
       emit({ stage: "compose", state: "log", detail: t("provisioning.detail.imagesInPlace") });
@@ -525,10 +663,10 @@ export async function runProvisioningPipeline(
       const pullRound = async (refs: string[]): Promise<string[]> => {
         const stillMissing: string[] = [];
         for (const ref of refs) {
-          const result = await transport.exec(`docker pull '${ref}'`, { timeoutMs: SINGLE_PULL_TIMEOUT_MS });
+          const result = await run("compose", `docker pull '${ref}'`, { timeoutMs: SINGLE_PULL_TIMEOUT_MS });
           if (result.code !== 0) {
             stillMissing.push(ref);
-            lastPullReason = failureReason(result);
+            lastPullReason = describeExecFailure(result);
           }
         }
         if (stillMissing.length < refs.length) {
@@ -543,10 +681,10 @@ export async function runProvisioningPipeline(
       let remaining = await pullRound(missingImages);
       if (remaining.length > 0) {
         // Self-repair ladder — each step re-pulls ONLY what is still missing.
-        const dnsCheck = await transport.exec("getent hosts registry-1.docker.io >/dev/null 2>&1 || echo NO_DNS");
+        const dnsCheck = await run("compose", "getent hosts registry-1.docker.io >/dev/null 2>&1 || echo NO_DNS");
         if (dnsCheck.code === 0 && dnsCheck.stdout.includes("NO_DNS")) {
           emit({ stage: "compose", state: "log", detail: t("provisioning.detail.dnsFix") });
-          await transport.exec("sed -i '1i nameserver 1.1.1.1' /etc/resolv.conf");
+          await run("compose", "sed -i '1i nameserver 1.1.1.1' /etc/resolv.conf");
           remaining = await pullRound(remaining);
         }
       }
@@ -612,7 +750,8 @@ export async function runProvisioningPipeline(
             state: "log",
             detail: t("provisioning.detail.uploadingImage", { ref, mb: Math.round(entry.bytes / 1024 / 1024) }),
           });
-          await transport.writeLocalFile(
+          await mustUpload(
+            "compose",
             `${bundledImages.directory}/${entry.archive}`,
             `${REMOTE_ROOT}/images/${entry.archive}`,
             (bytesSent, bytesTotal) => {
@@ -624,7 +763,7 @@ export async function runProvisioningPipeline(
           );
           await must("compose", `gunzip -c ${REMOTE_ROOT}/images/${entry.archive} | docker load`, { timeoutMs: IMAGE_LOAD_TIMEOUT_MS });
         }
-        const recheck = parseMissingImages((await transport.exec(missingCheck)).stdout);
+        const recheck = parseMissingImages((await run("compose", missingCheck)).stdout);
         if (recheck.length > 0) {
           throw new ProvisioningFailure("compose", t("provisioning.err.imagesUnavailable", { list: recheck.join(", ") }));
         }
@@ -682,7 +821,7 @@ export async function runProvisioningPipeline(
       emit({ stage: "restore", state: "start", detail: t("provisioning.detail.restoreUploading") });
       await must("restore", `mkdir -p ${REMOTE_ROOT}/restore`);
       const restoreProgress = progressEmitter("restore");
-      await transport.writeLocalFile(restoreArchivePath, `${REMOTE_ROOT}/restore/backup.zip`, (bytesSent, bytesTotal) => {
+      await mustUpload("restore", restoreArchivePath, `${REMOTE_ROOT}/restore/backup.zip`, (bytesSent, bytesTotal) => {
         const text = formatByteProgress(bytesSent, bytesTotal);
         if (text.length > 0) {
           restoreProgress(`backup.zip ${text}`);
@@ -699,7 +838,7 @@ export async function runProvisioningPipeline(
         + `if echo "$LOG" | grep -q 'RESTORE FAILED'; then echo "$LOG" | grep 'RESTORE FAILED' | tail -1; exit 1; fi; `
         + `if echo "$LOG" | grep -q 'RESTORE COMPLETED'; then echo COMPLETED; exit 0; fi; `
         + `sleep 5; done; echo 'the restore marker did not appear within 450 seconds'; exit 1`;
-      const markerResult = await transport.exec(markerCommand, { timeoutMs: READINESS_TIMEOUT_MS });
+      const markerResult = await run("restore", markerCommand, { timeoutMs: READINESS_TIMEOUT_MS });
       if (markerResult.code !== 0) {
         const reason = (markerResult.stdout.trim() || markerResult.stderr.trim()).split("\n").pop() ?? "";
         throw new ProvisioningFailure("restore", t("provisioning.err.restoreFailed", { reason }));
@@ -750,7 +889,7 @@ export async function runProvisioningPipeline(
         ? { nickname: params.adminNickname }
         : {}),
     });
-    await transport.writeFile(`${REMOTE_ROOT}/.provision-register.json`, registerBody);
+    await mustWrite("register", `${REMOTE_ROOT}/.provision-register.json`, registerBody);
     const registerResponse = await must(
       "register",
       `curl -sk -X POST https://localhost/api/auth/register -H "Host: ${publicHost}" `
@@ -766,7 +905,7 @@ export async function runProvisioningPipeline(
      *  then logs in manually; returns whether the automatic login worked). */
     const loginForToken = async (): Promise<boolean> => {
       const loginBody = JSON.stringify({ username: params.adminLogin, password: params.adminPassword });
-      await transport.writeFile(`${REMOTE_ROOT}/.provision-login.json`, loginBody);
+      await mustWrite("register", `${REMOTE_ROOT}/.provision-login.json`, loginBody);
       const loginResponse = await must(
         "register",
         `curl -sk -X POST https://localhost/api/auth/login -H "Host: ${publicHost}" `
@@ -824,7 +963,7 @@ export async function runProvisioningPipeline(
         connectionPort: 443,
         connectionScheme: "https",
       });
-      await transport.writeFile(`${REMOTE_ROOT}/.provision-connection.json`, connectionBody);
+      await mustWrite("register", `${REMOTE_ROOT}/.provision-connection.json`, connectionBody);
       const connectionResponse = await must(
         "register",
         `curl -sk -X PATCH https://localhost/api/server/connection -H "Host: ${publicHost}" `
@@ -838,7 +977,7 @@ export async function runProvisioningPipeline(
       }
       emit({ stage: "register", state: "log", detail: t("provisioning.detail.addressSet", { host: publicHost }) });
     }
-    await transport.exec(`rm -f ${REMOTE_ROOT}/.provision-register.json ${REMOTE_ROOT}/.provision-login.json ${REMOTE_ROOT}/.provision-connection.json`);
+    await run("register", `rm -f ${REMOTE_ROOT}/.provision-register.json ${REMOTE_ROOT}/.provision-login.json ${REMOTE_ROOT}/.provision-connection.json`);
     emit({
       stage: "register",
       state: "done",
@@ -851,10 +990,11 @@ export async function runProvisioningPipeline(
   } catch (error) {
     // A failed register step leaves the credential FILES behind (rm normally
     // runs on the success path) — best-effort scrub on EVERY failure; the
-    // connection may already be gone, and then there is nothing to scrub.
-    await transport.exec(
-      `rm -f ${REMOTE_ROOT}/.provision-register.json ${REMOTE_ROOT}/.provision-login.json ${REMOTE_ROOT}/.provision-connection.json`,
-    );
+    // connection may already be gone, and then there is nothing to scrub
+    // (a throw here must never REPLACE the failure being reported).
+    await transport
+      .exec(`rm -f ${REMOTE_ROOT}/.provision-register.json ${REMOTE_ROOT}/.provision-login.json ${REMOTE_ROOT}/.provision-connection.json`)
+      .catch(() => undefined);
     if (error instanceof ProvisioningFailure) {
       emit({ stage: error.stage, state: "failed", detail: error.message });
     }

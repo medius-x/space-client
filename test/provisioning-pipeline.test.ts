@@ -740,4 +740,94 @@ describe("provisioning pipeline", () => {
       fixedRandomHex,
     )).rejects.toThrow(ProvisioningFailure);
   });
+
+  // ── connection-loss resume ladder (live 2026-10-28: a network drop 50 s into
+  // a dist-upgrade killed the run while the server-side apt kept running) ────
+  const instantSleep = async (): Promise<void> => undefined;
+
+  it("resumes an interrupted dist-upgrade after the connection drops", async () => {
+    const transport = new FakeProvisioningTransport();
+    scriptHappyPath(transport);
+    transport.dropNextExec("dist-upgrade");
+    // The ghost check must report NO surviving package manager (the fake's
+    // unmatched default is code 0 = "alive" — which would loop the wait).
+    transport.respond("pgrep", { code: 1 });
+    const { events, emit } = collectEvents();
+
+    const outcome = await runProvisioningPipeline(
+      transport, baseParams(), baseFiles(), emit, fixedRandomHex, undefined, instantSleep,
+    );
+
+    expect(outcome.ownerReady).toBe(true);
+    expect(transport.reconnects).toBe(1);
+    // The interrupted apt command ran twice (drop + idempotent re-run), and the
+    // ghost check preceded the re-run.
+    expect(transport.commands.filter((command) => command.includes("dist-upgrade"))).toHaveLength(2);
+    expect(transport.commandWith("pgrep")).not.toBeNull();
+    // The resume is VISIBLE, not a silent miracle.
+    const reconnectLine = events.find((event) => event.state === "log"
+      && event.detail !== undefined && event.detail.includes("reconnecting"));
+    expect(reconnectLine?.stage).toBe("docker");
+  });
+
+  it("waits out a ghost package manager before re-running the interrupted apt command", async () => {
+    const transport = new FakeProvisioningTransport();
+    scriptHappyPath(transport);
+    transport.dropNextExec("dist-upgrade");
+    // First ghost poll sees apt alive, the rest see it gone (later
+    // registrations are checked FIRST, so the one-shot must be registered
+    // AFTER the baseline to take precedence).
+    transport.respond("pgrep", { code: 1 });
+    transport.respondOnce("pgrep", { code: 0 });
+    const { events, emit } = collectEvents();
+
+    const outcome = await runProvisioningPipeline(
+      transport, baseParams(), baseFiles(), emit, fixedRandomHex, undefined, instantSleep,
+    );
+
+    expect(outcome.ownerReady).toBe(true);
+    expect(transport.commands.filter((command) => command.includes("dist-upgrade"))).toHaveLength(2);
+    const ghostLine = events.find((event) => event.state === "log"
+      && event.detail !== undefined && event.detail.includes("package operation"));
+    expect(ghostLine?.stage).toBe("docker");
+  });
+
+  it("fails with its own message after the reconnect budget is exhausted", async () => {
+    const transport = new FakeProvisioningTransport();
+    scriptHappyPath(transport);
+    // Four drops: three resumed attempts, the fourth exhausts the budget.
+    for (let dropIndex = 0; dropIndex < 4; dropIndex += 1) {
+      transport.dropNextExec("dist-upgrade");
+    }
+    transport.respond("pgrep", { code: 1 });
+    const { events, emit } = collectEvents();
+
+    await expect(runProvisioningPipeline(
+      transport, baseParams(), baseFiles(), emit, fixedRandomHex, undefined, instantSleep,
+    )).rejects.toThrow(ProvisioningFailure);
+
+    expect(transport.reconnects).toBe(3);
+    const failure = events.find((event) => event.state === "failed");
+    expect(failure?.stage).toBe("docker");
+    expect(failure?.detail).toContain("kept dropping");
+  });
+
+  it("resumes an interrupted archive upload without waiting for package managers", async () => {
+    const transport = new FakeProvisioningTransport();
+    scriptHappyPath(transport);
+    // The JAR upload loses the connection once — the retry re-uploads from
+    // scratch (an idempotent overwrite), no ghost check involved.
+    transport.localUploadDrops = 1;
+    const { events, emit } = collectEvents();
+
+    const outcome = await runProvisioningPipeline(
+      transport, baseParams(), baseFiles(), emit, fixedRandomHex, undefined, instantSleep,
+    );
+
+    expect(outcome.ownerReady).toBe(true);
+    expect(transport.commands.filter((command) => command.includes("(writeLocalFile C:/bundled/oak-server.jar)")))
+      .toHaveLength(2);
+    expect(transport.reconnects).toBe(1);
+    expect(transport.commandWith("pgrep")).toBeNull();
+  });
 });

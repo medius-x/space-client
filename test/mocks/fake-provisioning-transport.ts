@@ -3,7 +3,7 @@
  * responses are matched by substring/regex (first registered wins), and the
  * file side is a plain in-memory map so adopt checks see prior writes.
  */
-import type { ExecResult, ProvisioningTransport } from "../../src/domain/provisioning/pipeline";
+import { ConnectionLostError, type ExecResult, type ProvisioningTransport } from "../../src/domain/provisioning/pipeline";
 
 export interface ScriptedResponse {
   code?: number;
@@ -19,8 +19,23 @@ export class FakeProvisioningTransport implements ProvisioningTransport {
   readonly writes: { path: string; contents: string }[] = [];
   readonly files = new Map<string, string>();
   closed = false;
+  /** Resume-ladder observability: how many times the pipeline reconnected. */
+  reconnects = 0;
+  /** How many of the NEXT writeLocalFile calls lose the connection (each
+   *  consumed throw = one ConnectionLostError for the ladder to resume). */
+  localUploadDrops = 0;
 
+  private readonly pendingDrops: (string | RegExp | null)[] = [];
   private readonly handlers: { match: string | RegExp; response: ScriptedResponse; once: boolean }[] = [];
+  /** Models the real transport's liveness: a scripted drop takes the fake
+   *  OFFLINE until reconnect() is called — the ladder must reconnect first. */
+  private offlineUntilReconnect = false;
+
+  /** Makes the NEXT matching exec lose the ssh connection (null match = the
+   *  next exec whatever it is) — the resume ladder's entry point. */
+  dropNextExec(match: string | RegExp | null = null): void {
+    this.pendingDrops.push(match);
+  }
 
   /** Registers a response for commands containing the match. Later
    *  registrations are checked FIRST — a test can script a baseline and then
@@ -41,6 +56,13 @@ export class FakeProvisioningTransport implements ProvisioningTransport {
     options?: { timeoutMs?: number; onOutputLine?: (line: string) => void },
   ): Promise<ExecResult> {
     this.commands.push(command);
+    const dropIndex = this.pendingDrops.findIndex((match) =>
+      match === null || (match instanceof RegExp ? match.test(command) : command.includes(match)));
+    if (dropIndex >= 0) {
+      this.pendingDrops.splice(dropIndex, 1);
+      this.offlineUntilReconnect = true;
+      throw new ConnectionLostError();
+    }
     if (this.closed) {
       return { code: 255, stdout: "", stderr: "connection closed" };
     }
@@ -80,6 +102,11 @@ export class FakeProvisioningTransport implements ProvisioningTransport {
     onProgress?: (bytesSent: number, bytesTotal: number) => void,
   ): Promise<void> {
     this.commands.push(`(writeLocalFile ${localPath})`);
+    if (this.localUploadDrops > 0) {
+      this.localUploadDrops -= 1;
+      this.offlineUntilReconnect = true;
+      throw new ConnectionLostError();
+    }
     this.writes.push({ path: remotePath, contents: `(local archive ${localPath})` });
     // A plausible transfer trace: halfway, then complete (the real transport
     // counts the streamed chunks — the pipeline only formats the numbers).
@@ -87,6 +114,16 @@ export class FakeProvisioningTransport implements ProvisioningTransport {
       onProgress(40 * 1024 * 1024, 80 * 1024 * 1024);
       onProgress(80 * 1024 * 1024, 80 * 1024 * 1024);
     }
+  }
+
+  async reconnect(): Promise<boolean> {
+    this.reconnects += 1;
+    this.offlineUntilReconnect = false;
+    return true;
+  }
+
+  isConnected(): boolean {
+    return !this.closed && !this.offlineUntilReconnect;
   }
 
   close(): void {

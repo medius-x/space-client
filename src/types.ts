@@ -407,13 +407,18 @@ export interface BackupRunInfo {
 export interface BackupStatus {
   running: boolean;
   lastRun: BackupRunInfo | null;
+  /** False once the archive has been delivered in full — the server deletes its copy
+   *  after a complete download (absent on old servers: treated as true). */
+  fileAvailable?: boolean;
 }
 
-/** GET /api/server/backup/estimate — the size preview of a future archive. */
+/** GET /api/server/backup/estimate — the size preview of a future archive plus the free
+ *  space of the server's archive disk (the confirmation blocks a pass the disk cannot hold). */
 export interface BackupEstimate {
   objectBytes: number;
   objectCount: number;
   approxDatabaseBytes: number;
+  availableBytes: number;
 }
 
 /** GET /api/channels/{id}/permissions/me — override-aware, per channel. The `stream`

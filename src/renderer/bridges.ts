@@ -290,6 +290,10 @@ export interface ProvisioningFormParams {
   /** Local path to a backup archive (backup round 2026-10-28): the deployment
    *  restores it instead of registering a fresh owner. Null = normal setup. */
   backupArchivePath: string | null;
+  /** True ONLY for the Migrate flow: the archive was taken by the run's own
+   *  backup step into the OS temp dir and is ONE-SHOT — the main process
+   *  deletes it when the run ends any way (success, failure, cancel). */
+  migrationArchive?: boolean;
 }
 
 /** One pipeline stage report; "connect" and "download" are main-side stages
@@ -401,6 +405,10 @@ export interface BackupsBridge {
   download(url: string, fileName: string, bearer: string, target?: "backup" | "temp"): Promise<BackupDownloadOutcome>;
   /** Keep the newest N files of one server's prefix; returns the deleted names. */
   prune(prefix: string, keepCount: number): Promise<string[]>;
+  /** Delete ONE file from the migration temp dir (a full path or a bare name —
+   *  only the basename is used). The migration flow's one-shot cleanup when the
+   *  user cancels before the SSH run starts. */
+  deleteTemp(name: string): Promise<boolean>;
   /** Live download progress (~4 Hz, main window only). */
   onProgress(callback: (event: { fileName: string; receivedBytes: number; totalBytes: number | null }) => void): void;
 }

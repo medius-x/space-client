@@ -1,6 +1,6 @@
 import { log } from "../logging";
 import { sessionBinding, settingsStore } from "./runtime";
-import { takeBackupAndDownload } from "./backup-run";
+import { takeScheduledBackup } from "./backup-run";
 
 /**
  * The CLIENT-side periodic backup (backup round 2026-10-28 — user decision: the schedule
@@ -47,7 +47,7 @@ async function fireIfDue(): Promise<void> {
   }
   firedOn.set(session.recordId, today);
   log.info("backup", `scheduled pass for ${session.recordId} at ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`);
-  const result = await takeBackupAndDownload(session);
+  const result = await takeScheduledBackup(session);
   if (result.ok) {
     log.info("backup", `scheduled backup saved → ${result.downloadedPath ?? "?"}`);
   } else {

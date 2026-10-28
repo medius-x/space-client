@@ -43,6 +43,12 @@ export interface ProvisioningParams {
    *  there"; the finish phase is needsLogin (the archive's owner password is
    *  known to the user, not to this client). Null = a normal fresh setup. */
   backupArchivePath: string | null;
+  /** True ONLY for the Migrate flow: the archive was taken by the run's own
+   *  backup step into the OS temp dir and is ONE-SHOT (user decision
+   *  2026-10-28) — the main process deletes it when the run ends any way
+   *  (success, failure, cancel). The Create flow's user-picked archive is
+   *  never touched. Optional: absent = a normal (persistent) archive. */
+  migrationArchive?: boolean;
 }
 
 /** The one-password defaults the Create form falls back to (user decision,

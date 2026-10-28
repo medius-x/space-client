@@ -12,6 +12,7 @@ import * as path from "node:path";
 import * as crypto from "node:crypto";
 import { app, net } from "electron";
 import {
+  ConnectionLostError,
   runProvisioningPipeline,
   type ProvisioningFiles,
   type ProvisioningOutcome,
@@ -41,6 +42,12 @@ export interface ProvisioningHooks {
  *  publishes it). The bundled jar next to the templates is the default. */
 const PROVISIONING_JAR_URL = "https://github.com/medius-x/oak-server/releases/latest/download/oak-server.jar";
 const JAR_DOWNLOAD_TIMEOUT_MS = 300_000;
+/** No upload byte for this long = the link silently stopped delivering while
+ *  ssh2 still considers the connection healthy (live 2026-10-28: a 79 MB jar
+ *  upload froze mid-flight for good; the connection-level keepalive kept
+ *  passing). Generous on purpose — crawling links move a 4 MB chunk in well
+ *  under this. */
+const UPLOAD_STALL_TIMEOUT_MS = 300_000;
 
 // Dev (npm run dev AND the unpacked `npm start`): the templates live in the
 // project tree next to this source file. Packaged: electron-builder's
@@ -109,15 +116,38 @@ function appendTemplateLog(line: string): void {
 // The ssh2 transport
 // ---------------------------------------------------------------------------
 
+/** The cancel path's own error: must NOT be classified as a connection loss —
+ *  the resume ladder would flash "reconnecting" at a user who just asked to
+ *  STOP (live 2026-10-28). */
+class CancelledByUserError extends Error {
+  constructor() {
+    super("cancelled by the user");
+  }
+}
+
 interface ExecOutcome {
   code: number;
   stdout: string;
   stderr: string;
+  /** The signal that killed the remote process, when it died to one (the
+   *  OOM killer's SIGKILL carries no error line — live 2026-10-28); null for
+   *  ordinary exits. */
+  signal: string | null;
 }
 
 export class Ssh2Transport implements ProvisioningTransport {
-  private readonly connection = new Client();
+  private connection = new Client();
   private connected = false;
+  private connectParams: ProvisioningParams | null = null;
+  /** Set by close() — the user cancelled (or the run ended); a resume must
+   *  never reconnect against the user's will. */
+  private closedByUser = false;
+  /** In-flight operations, rejectable ON DEMAND: connection.end() only QUEUES
+   *  a DISCONNECT — on a stalled or half-dead link the pending exec/SFTP
+   *  promises would sit until TCP gives up (live 2026-10-28: the user
+   *  hammered Cancel for a minute over a hung upload and nothing moved).
+   *  close() rejects them all immediately. */
+  private readonly pendingForceRejects = new Set<() => void>();
 
   static async connect(params: ProvisioningParams): Promise<Ssh2Transport> {
     const transport = new Ssh2Transport();
@@ -125,7 +155,16 @@ export class Ssh2Transport implements ProvisioningTransport {
     return transport;
   }
 
+  /** Registers a rejector for force-cancellation; returns its unregister. */
+  private registerForceReject(forceReject: () => void): () => void {
+    this.pendingForceRejects.add(forceReject);
+    return () => {
+      this.pendingForceRejects.delete(forceReject);
+    };
+  }
+
   private openConnection(params: ProvisioningParams): Promise<void> {
+    this.connectParams = params;
     return new Promise((resolve, reject) => {
       const onFailure = (error: Error): void => {
         this.connected = false;
@@ -136,12 +175,23 @@ export class Ssh2Transport implements ProvisioningTransport {
         resolve();
       });
       this.connection.once("error", onFailure);
+      // A dropped link fires 'close' with no error — the connected flag must
+      // die with it, or a later exec would hang on a dead socket.
+      this.connection.once("close", () => {
+        this.connected = false;
+        this.sftpHandle = null;
+      });
       const connectOptions: Record<string, unknown> = {
         host: params.host.trim(),
         port: params.sshPort,
         username: params.sshLogin.trim(),
+        // A PATIENT keepalive (live 2026-10-28): the stock 3×15 s tolerance
+        // tore the connection down while the server was merely quiet under a
+        // heavy package unpack. 10 misses give a loaded box 150 s of grace;
+        // a genuinely dead link still fails within the step's own timeout.
         readyTimeout: 20_000,
         keepaliveInterval: 15_000,
+        keepaliveCountMax: 10,
       };
       if (params.sshPassword !== null && params.sshPassword.length > 0) {
         connectOptions.password = params.sshPassword;
@@ -159,9 +209,9 @@ export class Ssh2Transport implements ProvisioningTransport {
   async exec(
     command: string,
     options?: { timeoutMs?: number; onOutputLine?: (line: string) => void },
-  ): Promise<{ code: number; stdout: string; stderr: string }> {
+  ): Promise<ExecOutcome> {
     if (!this.connected) {
-      return { code: -1, stdout: "", stderr: "connection closed" };
+      throw new ConnectionLostError("connection closed before the command started");
     }
     // Line reassembly for the live progress: apt/docker/compose emit complete
     // lines; a trailing partial chunk stays buffered until its newline, and a
@@ -186,7 +236,9 @@ export class Ssh2Transport implements ProvisioningTransport {
         lineBuffer = lineBuffer.slice(carriageIndex + 1);
       }
     };
+    let unregisterForceReject: () => void = () => undefined;
     const outcome = await new Promise<ExecOutcome>((resolve, reject) => {
+      unregisterForceReject = this.registerForceReject(() => reject(new Error("cancelled by the user")));
       this.connection.exec(command, (error, stream) => {
         if (error) {
           reject(error);
@@ -194,6 +246,15 @@ export class Ssh2Transport implements ProvisioningTransport {
         }
         let stdout = "";
         let stderr = "";
+        // ssh2 reports a signalled death as exit(null, signal, …) — remember
+        // it, so the failure reason can NAME the killer class (a killed apt
+        // prints no error line of its own; live 2026-10-28).
+        let killedBySignal: string | null = null;
+        stream.on("exit", (code: number | null, signal?: string) => {
+          if (code === null && typeof signal === "string" && signal.length > 0) {
+            killedBySignal = signal;
+          }
+        });
         stream.on("data", (chunk: Buffer) => {
           const text = chunk.toString("utf8");
           stdout += text;
@@ -212,7 +273,15 @@ export class Ssh2Transport implements ProvisioningTransport {
           }
         });
         stream.on("close", (code: number | null) => {
-          resolve({ code: code ?? -1, stdout, stderr });
+          if (code === null && killedBySignal === null) {
+            // No exit status and no signal: the CHANNEL died with the
+            // connection, the command's fate is unknown. The live incident
+            // (2026-10-28): apt kept running server-side and finished fine —
+            // the pipeline resumes such commands on a fresh channel.
+            reject(new ConnectionLostError());
+            return;
+          }
+          resolve({ code: code ?? -1, signal: killedBySignal, stdout, stderr });
         });
         const timeout = options?.timeoutMs;
         if (timeout !== undefined) {
@@ -226,37 +295,59 @@ export class Ssh2Transport implements ProvisioningTransport {
     }).catch((error: unknown) => {
       // A cancelled run closes the connection — surface it as a plain failure.
       throw error instanceof Error ? error : new Error(String(error));
+    }).finally(() => {
+      unregisterForceReject();
     });
     return outcome;
   }
 
   async writeFile(remotePath: string, contents: string | Uint8Array): Promise<void> {
     if (!this.connected) {
-      throw new Error("connection closed");
+      throw new ConnectionLostError("connection closed before the write started");
     }
     const sftp = await this.openSftp();
+    let unregisterForceReject: () => void = () => undefined;
     await new Promise<void>((resolve, reject) => {
+      unregisterForceReject = this.registerForceReject(() => reject(new CancelledByUserError()));
       const writeStream = sftp.createWriteStream(remotePath);
       writeStream.on("close", () => resolve());
       writeStream.on("error", reject);
       writeStream.end(contents);
+    }).catch((error: unknown) => {
+      throw this.toConnectionLoss(error);
+    }).finally(() => {
+      unregisterForceReject();
     });
   }
 
   async readFile(remotePath: string): Promise<string | null> {
     if (!this.connected) {
-      return null;
+      throw new ConnectionLostError("connection closed before the read started");
     }
     const sftp = await this.openSftp();
-    return await new Promise<string | null>((resolve) => {
+    let unregisterForceReject: () => void = () => undefined;
+    const contents = await new Promise<string | null>((resolve, reject) => {
+      unregisterForceReject = this.registerForceReject(() => reject(new CancelledByUserError()));
       let data = "";
       const readStream = sftp.createReadStream(remotePath, { encoding: "utf8" });
       readStream.on("data", (chunk: string) => {
         data += chunk;
       });
       readStream.on("end", () => resolve(data));
-      readStream.on("error", () => resolve(null));
+      readStream.on("error", () => {
+        // A missing file and a dead connection are different failures: only
+        // the latter must reach the resume ladder (a null means "no compose
+        // file" to the adopt check — silence here would flip adopt to fresh).
+        if (!this.connected) {
+          reject(new ConnectionLostError());
+        } else {
+          resolve(null);
+        }
+      });
+    }).finally(() => {
+      unregisterForceReject();
     });
+    return contents;
   }
 
   async writeLocalFile(
@@ -265,10 +356,11 @@ export class Ssh2Transport implements ProvisioningTransport {
     onProgress?: (bytesSent: number, bytesTotal: number) => void,
   ): Promise<void> {
     if (!this.connected) {
-      throw new Error("connection closed");
+      throw new ConnectionLostError("connection closed before the upload started");
     }
     const sftp = await this.openSftp();
     const bytesTotal = fs.statSync(localPath).size;
+    let unregisterForceReject: () => void = () => undefined;
     await new Promise<void>((resolve, reject) => {
       // LARGE chunks on both ends: Node's default 64 KB read chunks serialize
       // against the SFTP backpressure one round-trip at a time — on a ~200 ms
@@ -276,10 +368,41 @@ export class Ssh2Transport implements ProvisioningTransport {
       // writeFile path (the jar) flew (live report 2026-10-12). 4 MB chunks
       // let ssh2 pipeline its writes and fill the channel.
       const writeStream = sftp.createWriteStream(remotePath, { highWaterMark: 4 * 1024 * 1024 });
-      writeStream.on("close", () => resolve());
-      writeStream.on("error", reject);
+      // STALL WATCHDOG (live 2026-10-28): the link can silently stop
+      // delivering while ssh2 still considers the connection healthy — the
+      // upload then hangs forever (no error, no close, keepalives passing).
+      // No byte for UPLOAD_STALL_TIMEOUT → reject as a connection loss; the
+      // pipeline's resume ladder reconnects and restarts the file from zero.
+      let stallTimer: NodeJS.Timeout | null = null;
+      const clearStallTimer = (): void => {
+        if (stallTimer !== null) {
+          clearTimeout(stallTimer);
+          stallTimer = null;
+        }
+      };
+      const armStallTimer = (): void => {
+        clearStallTimer();
+        stallTimer = setTimeout(() => {
+          readStream.destroy();
+          reject(new ConnectionLostError(
+            `the upload of ${remotePath} stalled — no bytes delivered for ${Math.round(UPLOAD_STALL_TIMEOUT_MS / 1000)} s`));
+        }, UPLOAD_STALL_TIMEOUT_MS);
+      };
+      writeStream.on("close", () => {
+        clearStallTimer();
+        resolve();
+      });
+      writeStream.on("error", (error: Error) => {
+        clearStallTimer();
+        reject(error);
+      });
       let bytesSent = 0;
       const readStream = fs.createReadStream(localPath, { highWaterMark: 4 * 1024 * 1024 });
+      unregisterForceReject = this.registerForceReject(() => {
+        clearStallTimer();
+        readStream.destroy();
+        reject(new CancelledByUserError());
+      });
       // The REAL delivery pace: pipe backpressure pauses the disk reads to the
       // network's tempo, so counting read chunks tracks the wire (within one
       // chunk) instead of racing ahead of it.
@@ -288,10 +411,57 @@ export class Ssh2Transport implements ProvisioningTransport {
         // the stream typings' default.
         bytesSent += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.length;
         onProgress?.(bytesSent, bytesTotal);
+        armStallTimer();
       });
-      readStream.on("error", reject);
+      readStream.on("error", (error) => {
+        clearStallTimer();
+        reject(error);
+      });
       readStream.pipe(writeStream);
+      armStallTimer();
+    }).catch((error: unknown) => {
+      throw this.toConnectionLoss(error);
+    }).finally(() => {
+      unregisterForceReject();
     });
+  }
+
+  /** Re-establishes the connection with the SAME credentials after a drop.
+   *  False when the run was cancelled (close() — a resume must not fight the
+   *  user) or the server is unreachable; the ladder's budget does the rest. */
+  async reconnect(): Promise<boolean> {
+    if (this.closedByUser || this.connectParams === null) {
+      return false;
+    }
+    try {
+      this.connection.end();
+    } catch {
+      // already dead — the point is a FRESH client below
+    }
+    this.connected = false;
+    this.sftpHandle = null;
+    this.connection = new Client();
+    try {
+      await this.openConnection(this.connectParams);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  isConnected(): boolean {
+    return this.connected;
+  }
+
+  /** ssh2 surfaces a connection death inside SFTP streams as a generic stream
+   *  error — reclassify it when the connection is gone so the pipeline's
+   *  resume ladder sees ConnectionLostError instead of failing the run. The
+   *  user's cancel keeps its own class: the ladder must not try to resume. */
+  private toConnectionLoss(error: unknown): unknown {
+    if (this.connected || error instanceof CancelledByUserError) {
+      return error;
+    }
+    return new ConnectionLostError(error instanceof Error ? error.message : undefined);
   }
 
   private sftpHandle: import("ssh2").SFTPWrapper | null = null;
@@ -313,9 +483,19 @@ export class Ssh2Transport implements ProvisioningTransport {
   }
 
   close(): void {
+    this.closedByUser = true;
     this.connected = false;
     this.sftpHandle = null;
     this.connection.end();
+    // end() only QUEUES a DISCONNECT — on a stalled or half-dead link the
+    // in-flight operations would sit until TCP gives up on its retries
+    // (live 2026-10-28: a hung 79 MB upload ignored a minute of Cancel
+    // clicks). Reject every pending operation NOW.
+    const forceRejects = [...this.pendingForceRejects];
+    this.pendingForceRejects.clear();
+    for (const forceReject of forceRejects) {
+      forceReject();
+    }
   }
 }
 
@@ -372,6 +552,25 @@ async function resolveJarSource(jarPath: string | null, emit: (event: Provisioni
   return { localPath: tempPath, cleanup: () => void fs.promises.unlink(tempPath).catch(() => undefined) };
 }
 
+/** The migrate flow's one-shot archive (user decision 2026-10-28): deleted when
+ *  the run ends ANY way — success, failure, user cancel. The path is only ever
+ *  touched when it lies INSIDE the migration temp dir: the Create flow's
+ *  user-picked archive must never be removed by a run. */
+function deleteMigrationArchive(params: ProvisioningParams, log: (line: string) => void): void {
+  if (params.migrationArchive !== true || params.backupArchivePath === null) {
+    return;
+  }
+  const resolved = path.resolve(params.backupArchivePath.trim());
+  const migrateDir = path.resolve(path.join(app.getPath("temp"), "space-migrate"));
+  const relative = path.relative(migrateDir, resolved);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    return;
+  }
+  fs.promises.unlink(resolved)
+    .then(() => log(`migration archive removed: ${path.basename(resolved)}`))
+    .catch((error: unknown) => log(`could not remove the migration archive: ${error instanceof Error ? error.message : String(error)}`));
+}
+
 /** Starts the run; every outcome travels through hooks.sendEvent. */
 export async function startProvisioningRun(params: ProvisioningParams, hooks: ProvisioningHooks): Promise<boolean> {
   if (activeRun !== null) {
@@ -405,11 +604,16 @@ export async function startProvisioningRun(params: ProvisioningParams, hooks: Pr
     }
   };
   const stepEmit = (event: ProvisioningStepEvent): void => {
+    lastStage = event.stage;
     emit({ kind: "step", ...event });
   };
 
   let transport: Ssh2Transport | null = null;
   let jarCleanup: (() => void) | null = null;
+  // The last stage the pipeline touched — a cancel/failure surfacing without
+  // its own stage (transport-level errors) is reported against THE step the
+  // user was watching, not a phantom "connect".
+  let lastStage = "connect";
   cancellationRequested = false;
   activeRun = { transport: null as unknown as Ssh2Transport };
   try {
@@ -441,14 +645,18 @@ export async function startProvisioningRun(params: ProvisioningParams, hooks: Pr
     hooks.log(`[provisioning] deployment ready at ${outcome.hostUrl}`);
     return true;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const stage = error instanceof Error && "stage" in error ? String((error as { stage: unknown }).stage) : "connect";
+    // A cancelled run reports CANCELLATION, whatever the transport error
+    // underneath (the force-reject may surface as a stall or a connection
+    // loss — the user asked to stop, not to hear about the network).
+    const message = cancellationRequested ? "cancelled by the user" : error instanceof Error ? error.message : String(error);
+    const stage = error instanceof Error && "stage" in error ? String((error as { stage: unknown }).stage) : lastStage;
     emit({ kind: "failed", stage, message });
     hooks.log(`[provisioning] FAILED (${stage}): ${message}`);
     return false;
   } finally {
     jarCleanup?.();
     transport?.close();
+    deleteMigrationArchive(params, hooks.log);
     activeRun = null;
     cancellationRequested = false;
   }

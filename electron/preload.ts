@@ -108,6 +108,9 @@ contextBridge.exposeInMainWorld("spaceBackup", {
   prune(prefix: string, keepCount: number): Promise<unknown> {
     return ipcRenderer.invoke("space-backup:prune", prefix, keepCount);
   },
+  deleteTemp(name: string): Promise<unknown> {
+    return ipcRenderer.invoke("space-backup:deleteTemp", name);
+  },
   onProgress(callback: (event: { fileName: string; receivedBytes: number; totalBytes: number | null }) => void): void {
     ipcRenderer.removeAllListeners("space-backup:progress");
     ipcRenderer.on("space-backup:progress", (_event, progress) => callback(progress));

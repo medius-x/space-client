@@ -220,4 +220,25 @@ export function installBackupIpc(deps: BackupsIpcDeps): void {
     }
     return doomed;
   });
+
+  // The migration one-shot's cleanup: delete ONE file from the migration temp
+  // dir. Only the basename of the argument is used and only the space-migrate
+  // dir is touched — a hostile renderer can neither walk paths nor delete
+  // anything outside the migration scratch space.
+  ipcMain.handle("space-backup:deleteTemp", (_event, name: unknown): Promise<boolean> => {
+    const safeName = typeof name === "string" ? path.basename(name).trim() : "";
+    if (safeName.length === 0) {
+      return Promise.resolve(false);
+    }
+    const target = path.join(deps.tempRoot(), "space-migrate", safeName);
+    return fsp.rm(target, { force: true })
+      .then(() => {
+        log(`deleted the migration temp archive "${safeName}"`);
+        return true;
+      })
+      .catch((error: unknown) => {
+        log(`could not delete the migration temp archive "${safeName}": ${error instanceof Error ? error.message : String(error)}`);
+        return false;
+      });
+  });
 }

@@ -712,6 +712,13 @@ export class RestClient {
     return `${this.baseUrl}/api/server/backup/file`;
   }
 
+  /** Deletes the undelivered archive without downloading it (an interrupted download
+   *  leaves the transfer buffer on the server; the "delete archive" button clears it).
+   *  Idempotent 204. */
+  async discardBackupArchive(): Promise<void> {
+    await this.request<unknown>("/api/server/backup/file", { method: "DELETE" });
+  }
+
   /** The CURRENT access token, for the main-process backup download (IPC-local;
    *  the server still decides authorization from it). */
   currentAccessToken(): string | null {

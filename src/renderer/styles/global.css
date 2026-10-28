@@ -495,6 +495,32 @@ input[type="text"], input[type="password"], input[type="url"] {
   font-family: inherit;
   width: 100%;
 }
+/* The native time picker (color-scheme:dark renders it dark) in the project's
+   input skin; fixed width — a time field never spans a whole form row (the
+   backup schedule row and the storage screen's nightly time share it). */
+input[type="time"] {
+  background: var(--sp-darkest);
+  border: 1px solid var(--sp-control);
+  border-radius: 4px;
+  color: var(--sp-text);
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  width: 116px;
+}
+/* Numeric inputs wear the SAME skin (user nitpick 2026-10-28: "Keep copies" must match
+   the neighbouring "Time" field); a number field never spans a row either. The
+   invite-TTL input overrides the width locally (128px — the words rendering hangs below). */
+input[type="number"] {
+  background: var(--sp-darkest);
+  border: 1px solid var(--sp-control);
+  border-radius: 4px;
+  color: var(--sp-text);
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  width: 116px;
+}
 input:focus { outline: none; border-color: var(--sp-accent); }
 
 .error-line { color: var(--sp-red); font-size: 13px; min-height: 18px; }
@@ -3300,6 +3326,12 @@ input[type="checkbox"]:disabled { opacity: 0.5; cursor: default; }
 .settings-field > span:has(+ input:disabled) { color: var(--sp-text-dim); }
 .settings-check { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
 .settings-hint { font-size: 12px; color: var(--sp-text-dim); margin: 6px 0 10px; max-width: 520px; }
+/* Subsection heading inside a settings block (backup round 2026-10-28): bold
+   12px stands out from the dim hint lines without the weight of a full h3. */
+.settings-subhead { font-size: 12px; font-weight: 700; color: var(--sp-text); margin: 18px 0 4px; }
+/* The backup schedule body greys out when its toggle is off — the visual is
+   the message (same intent as the storage screen's disabled time input). */
+.backup-schedule-controls.off { opacity: 0.5; }
 
 /* Password fields: the visibility toggle rides inside the field's right edge
    (PasswordInput renders every password input in the app through it). */

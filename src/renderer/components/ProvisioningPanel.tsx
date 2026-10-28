@@ -5,7 +5,10 @@ import {
   validateProvisioningParams,
   type ProvisioningParams,
 } from "../../domain/provisioning/params";
+import { humanByteSize } from "../../domain/logic/file-size";
+import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { ProvisioningIpcEvent } from "../bridges";
+import { takeMigrationBackup } from "../backup-run";
 import { PasswordInput } from "./PasswordInput";
 import { startSession } from "../runtime";
 import type { MessageKey } from "../../domain/i18n/i18n";
@@ -21,6 +24,7 @@ import { useT } from "../hooks/useT";
  */
 
 const STAGE_ORDER = [
+  "backup",
   "download",
   "connect",
   "probe",
@@ -40,6 +44,7 @@ type StageId = (typeof STAGE_ORDER)[number];
 
 /** Stage → dictionary key (compile-checked: every stage has a label entry). */
 const STAGE_LABEL_KEYS: Record<StageId, MessageKey> = {
+  backup: "provisioning.stage.backup",
   download: "provisioning.stage.download",
   connect: "provisioning.stage.connect",
   probe: "provisioning.stage.probe",
@@ -64,7 +69,7 @@ interface StepState {
   progress?: string;
 }
 
-export function ProvisioningPanel({ onBusyChange, onRunningChange, mode = "setup", archivePath = null, onDone }: {
+export function ProvisioningPanel({ onBusyChange, onRunningChange, mode = "setup", session = null, onDone }: {
   onBusyChange?: (busy: boolean) => void;
   /** The strict "an SSH run is in flight" signal (busy also covers the
    *  automatic login): while true, the surrounding dialog is LOCKED — a stray
@@ -72,12 +77,13 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange, mode = "setup
    *  main process, but its UI would be gone; live report 2026-10-13). */
   onRunningChange?: (running: boolean) => void;
   /** "migrate" (backup round 2026-10-28): the Migrate dialog's embedding — no
-   *  Space-account fields (the accounts come from the archive), the archive
-   *  path is FIXED to the migration's fresh backup, the button reads Migrate
+   *  Space-account fields (the accounts come from the archive), the run takes
+   *  its own fresh backup AS THE FIRST STEP (user decision, same day: nothing
+   *  downloads before the migration actually starts), the button reads Migrate
    *  and the finish hands control back to the embedding dialog. */
   mode?: "setup" | "migrate";
-  /** The pre-set archive path in migrate mode (never editable there). */
-  archivePath?: string | null;
+  /** The CURRENT server's session — migrate mode takes its backup through it. */
+  session?: ConnectionSession | null;
   /** Migrate mode's finish hook: the needsLogin "back" closes the dialog. */
   onDone?: () => void;
 }): React.JSX.Element {
@@ -96,14 +102,19 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange, mode = "setup
   const [firewall, setFirewall] = useState(true);
   const [jarPath, setJarPath] = useState("");
   /** Restore mode (backup round 2026-10-28): an archive path turns the run
-   *  into a migration — no register step, the finish is a manual login. In
-   *  migrate mode the path comes FIXED from the embedding dialog (the fresh
-   *  backup it just took) and the field stays hidden. */
-  const [backupArchivePath, setBackupArchivePath] = useState(mode === "migrate" ? (archivePath ?? "") : "");
+   *  into a restore — no register step, the finish is a manual login. In
+   *  migrate mode the field stays hidden: the archive is TAKEN by the run
+   *  itself as its first step, and its path never passes through the form. */
+  const [backupArchivePath, setBackupArchivePath] = useState("");
   /** Whether the RUNNING/finished run was a restore (drives the step filter
    *  and the finish text — outlives the form fields like the password ref). */
   const restoreArmedRef = useRef(false);
   const [restoredOutcome, setRestoredOutcome] = useState(false);
+  /** Migrate mode's backup step (user decision 2026-10-28): the archive is
+   *  taken HERE, before the main-process run starts — Cancel during this
+   *  window aborts the flow instead of tearing an SSH connection. */
+  const backupStepLiveRef = useRef(false);
+  const backupCancelledRef = useRef(false);
 
   // ── the run ─────────────────────────────────────────────────────────────
   const [phase, setPhase] = useState<"form" | "running" | "loggingIn" | "needsLogin" | "failed">("form");
@@ -169,13 +180,39 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange, mode = "setup
     });
   }, []);
 
+  // Migrate mode: the backup step's download progress rides the single onProgress
+  // listener slot while that step is live (the locked dialog owns the slot for the
+  // whole run).
+  useEffect(() => {
+    if (mode !== "migrate") {
+      return;
+    }
+    window.spaceBackup?.onProgress((event) => {
+      setSteps((previous) => {
+        const step = previous.backup;
+        if (step === undefined || step.state === "done" || step.state === "failed") {
+          return previous;
+        }
+        return {
+          ...previous,
+          backup: {
+            ...step,
+            progress: event.totalBytes !== null
+              ? `${humanByteSize(event.receivedBytes)} / ${humanByteSize(event.totalBytes)}`
+              : humanByteSize(event.receivedBytes),
+          },
+        };
+      });
+    });
+  }, [mode]);
+
   const submit = (): void => {
     // The Space account falls back to the admin/admin/password defaults for
     // empty fields (user decision) — the one-password setup path.
     const effectiveAdminLogin = accountLogin.trim().length > 0 ? accountLogin.trim() : DEFAULT_ACCOUNT_LOGIN;
     const effectiveAdminNickname = accountNickname.trim().length > 0 ? accountNickname.trim() : null;
     const effectiveAdminPassword = accountPassword.length > 0 ? accountPassword : DEFAULT_ACCOUNT_PASSWORD;
-    const params: ProvisioningParams = {
+    const baseParams: ProvisioningParams = {
       host,
       sshPort: Number(sshPort),
       sshLogin,
@@ -188,9 +225,9 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange, mode = "setup
       adminNickname: effectiveAdminNickname,
       adminPassword: effectiveAdminPassword,
       jarPath: jarPath.trim().length > 0 ? jarPath.trim() : null,
-      backupArchivePath: backupArchivePath.trim().length > 0 ? backupArchivePath.trim() : null,
+      backupArchivePath: null,
     };
-    const validation = validateProvisioningParams(params);
+    const validation = validateProvisioningParams(baseParams);
     if (validation !== null) {
       setError(validation);
       return;
@@ -200,12 +237,66 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange, mode = "setup
       return;
     }
     adminPasswordRef.current = effectiveAdminPassword;
-    restoreArmedRef.current = params.backupArchivePath !== null;
     setError(null);
-    setSteps({});
     setLogLines([]);
+    if (mode !== "migrate") {
+      const params: ProvisioningParams = {
+        ...baseParams,
+        backupArchivePath: backupArchivePath.trim().length > 0 ? backupArchivePath.trim() : null,
+      };
+      restoreArmedRef.current = params.backupArchivePath !== null;
+      setSteps({});
+      setPhase("running");
+      void window.spaceProvisioning.start(params);
+      return;
+    }
+    if (session === null) {
+      setError(t("provisioning.unavailable"));
+      return;
+    }
+    // MIGRATE (user decision 2026-10-28): the fresh backup is taken AS THE RUN'S
+    // FIRST STEP — nothing downloads before the user actually starts the
+    // migration. The archive is one-shot: the main process deletes it when the
+    // run ends any way; a CANCEL during this step aborts here, before any SSH.
+    restoreArmedRef.current = false;
+    backupCancelledRef.current = false;
+    backupStepLiveRef.current = true;
+    setSteps({ backup: { state: "start" } });
     setPhase("running");
-    void window.spaceProvisioning.start(params);
+    void runMigrationBackupStep(baseParams, session);
+  };
+
+  /** The migrate run's first step: take a fresh backup of the current server,
+   *  then hand its local path to the main-process pipeline. Cancelled → back to
+   *  the form with the temp file deleted; failed → the form carries the error. */
+  const runMigrationBackupStep = async (baseParams: ProvisioningParams,
+                                        activeSession: ConnectionSession): Promise<void> => {
+    const result = await takeMigrationBackup(activeSession, () => backupCancelledRef.current);
+    if (backupCancelledRef.current) {
+      // Backed out before the SSH run: delete whatever landed in the temp dir
+      // (a FINISHED download too — it is a one-shot file), return to the form.
+      if (result.ok && result.downloadedPath !== undefined) {
+        void window.spaceBackup?.deleteTemp(result.downloadedPath);
+      }
+      backupStepLiveRef.current = false;
+      setPhase("form");
+      setSteps({});
+      return;
+    }
+    backupStepLiveRef.current = false;
+    if (!result.ok) {
+      setSteps((previous) => ({ ...previous, backup: { state: "failed" } }));
+      setError(result.error ?? "backup failed");
+      setPhase("failed");
+      return;
+    }
+    setSteps((previous) => ({ ...previous, backup: { state: "done" } }));
+    restoreArmedRef.current = true;
+    void window.spaceProvisioning?.start({
+      ...baseParams,
+      backupArchivePath: result.downloadedPath ?? null,
+      migrationArchive: true,
+    });
   };
 
   if (phase === "running" || phase === "loggingIn" || phase === "needsLogin") {
@@ -213,7 +304,8 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange, mode = "setup
       <div className="prov-progress">
         <div className="prov-steps">
           {STAGE_ORDER
-            .filter((stage) => (stage !== "firewall" || firewall)
+            .filter((stage) => (stage !== "backup" || mode === "migrate")
+              && (stage !== "firewall" || firewall)
               && (stage !== "restore" || restoreArmedRef.current)
               && (stage !== "register" || !restoreArmedRef.current))
             .map((stage) => {
@@ -249,7 +341,16 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange, mode = "setup
               <div className="prov-log-lines">{logLines.join("\n")}</div>
             </details>
             <div className="modal-actions">
-              <button className="ghost" onClick={() => void window.spaceProvisioning?.cancel()}>{t("common.cancel")}</button>
+              <button className="ghost" onClick={() => {
+                // While the backup step is live there is no SSH run to tear —
+                // the flag stops the flow, the temp file is cleaned up, the
+                // form returns (no failure reported).
+                if (backupStepLiveRef.current) {
+                  backupCancelledRef.current = true;
+                  return;
+                }
+                void window.spaceProvisioning?.cancel();
+              }}>{t("common.cancel")}</button>
             </div>
           </>
         ) : phase === "loggingIn" ? (

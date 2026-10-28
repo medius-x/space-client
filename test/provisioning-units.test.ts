@@ -14,6 +14,7 @@ import {
   parseOpensslFingerprint,
   selfSignedSan,
 } from "../src/domain/provisioning/artifacts";
+import { describeExecFailure } from "../src/domain/provisioning/pipeline";
 
 describe("provisioning params validation", () => {
   it("accepts IPs, hostnames and localhost", () => {
@@ -188,5 +189,47 @@ describe("provisioning artifacts", () => {
       "    image: ${SOME_IMAGE}",
     ].join("\n");
     expect(composeImageRefs(compose)).toEqual(["postgres:16-alpine"]);
+  });
+});
+
+describe("describeExecFailure", () => {
+  it("names the signal and the OOM hint when the command was killed by SIGKILL", () => {
+    const reason = describeExecFailure({
+      code: -1,
+      signal: "SIGKILL",
+      stdout: "Unpacking gcc-14-base:amd64 ...\n(Reading database ... 55%",
+      stderr: "",
+    });
+    expect(reason).toContain("killed by SIGKILL");
+    expect(reason).toContain("OOM killer");
+    // The output tail still rides along for context.
+    expect(reason).toContain("Reading database ... 55%");
+  });
+
+  it("names a non-KILL signal without the OOM hint", () => {
+    const reason = describeExecFailure({ code: -1, signal: "SIGTERM", stdout: "", stderr: "" });
+    expect(reason).toContain("killed by SIGTERM");
+    expect(reason).not.toContain("OOM");
+  });
+
+  it("reports a missing exit status as a channel death", () => {
+    const reason = describeExecFailure({ code: -1, signal: null, stdout: "partial output", stderr: "" });
+    expect(reason).toContain("ssh channel closed without an exit status");
+    expect(reason).toContain("partial output");
+  });
+
+  it("appends the exit code to an ordinary failure tail (stderr wins)", () => {
+    const reason = describeExecFailure({
+      code: 100,
+      stdout: "progress noise",
+      stderr: "E: Unable to fetch some archives",
+    });
+    expect(reason).toContain("E: Unable to fetch some archives");
+    expect(reason).toContain("exit code 100");
+    expect(reason).not.toContain("progress noise");
+  });
+
+  it("falls back to the bare exit code when there is no output", () => {
+    expect(describeExecFailure({ code: 2, stdout: "", stderr: "" })).toBe("exit code 2");
   });
 });
