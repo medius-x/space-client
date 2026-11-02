@@ -185,6 +185,15 @@ electron-updater'а, НЕ latest-full-bundled.yml). Существующие 0.3
   resources/provisioning/files только шаблоны + manifest.json + kit.json);
   full-bundled = 737 МБ. Выигрыш 703→134 МБ (5.2×). README переведён на
   честные цифры (~135/~735 МБ).
+- **Релиз 0.4.1 ВЫПУЩЕН, канальный смоук ЗАКРЫТ (2026-11-03).** Первый ручной
+  чейнджлог (release-notes/v0.4.1.md — кумулятивный с 0.3.0: light/full-bundled,
+  прямая миграция, автологин-фикс, баннер). Смоук на двух машинах: dev
+  full-bundled 0.4.0→0.4.1 (app-update.yml `channel: full-bundled`, kit "full",
+  pending/SPACE-Full-Bundled-Setup-0.4.1.exe байт-в-байт, установка 1015 МБ) и
+  игровая 0.3.0-full→0.4.1-light ОДНИМ шагом (нет channel-строки, kit "light",
+  jar/archives снесены, ~430 МБ) — юзер сверил все маркеры. Нюанс релиза: тег
+  v0.4.1 случайно уехал в client-репо раньше серверных ассетов (гонка cwd в
+  цепочке push) — прогон отменён, тег снят, повтор в правильном порядке.
 
 ## Бэкап сервера + restore при провижининге + Migrate (2026-10-28, код готов: сервер 538/538 mvn, клиент 830/830 + typecheck + build; смоук pending; коммит — по команде)
 
