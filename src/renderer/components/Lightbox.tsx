@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useAttachmentImage } from "../hooks/useAttachmentImage";
+import { useStore } from "../hooks/useStore";
+import { downloadsStore } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { Attachment } from "../../types";
 import { log } from "../../logging";
@@ -59,6 +61,13 @@ export function Lightbox({ session, images, startIndex, onForwardBegin, onClose 
     session,
     attachment !== null && attachment.key !== null ? { key: attachment.key, url: attachment.url } : null,
   );
+  // Once this machine holds the file, the toolbar's Download flips to a
+  // "Show in folder" reveal (the registry survives restarts; a file gone
+  // from disk self-heals the button back on click).
+  const savedPath = useStore(
+    downloadsStore,
+    (entries) => (attachment !== null && attachment.key !== null ? entries[attachment.key] ?? null : null),
+  );
 
   // A new image starts from the fitted, centered state (also the dbl-click reset).
   const reset = () => {
@@ -109,6 +118,7 @@ export function Lightbox({ session, images, startIndex, onForwardBegin, onClose 
       const bytes = new Uint8Array(await session.rest.downloadBytes(fresh));
       const saved = await window.spaceMedia?.saveFile(attachment.fileName, bytes);
       if (saved !== null && saved !== undefined) {
+        downloadsStore.markDownloaded(attachment.key, saved);
         setSavedFlash(true); // the click's only visible receipt (user report 2026-10-19)
         window.setTimeout(() => setSavedFlash(false), 2000);
       }
@@ -116,6 +126,16 @@ export function Lightbox({ session, images, startIndex, onForwardBegin, onClose 
       log.warn("lightbox", `download failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const showInFolder = async () => {
+    if (attachment === null || attachment.key === null || savedPath === null) {
+      return;
+    }
+    const outcome = await window.spaceMedia?.showInFolder(savedPath);
+    if (outcome === "missing") {
+      downloadsStore.forget(attachment.key); // deleted/moved — back to Download
     }
   };
 
@@ -290,8 +310,13 @@ export function Lightbox({ session, images, startIndex, onForwardBegin, onClose 
             </button>
           </>
         ) : null}
-        <button className="ghost" disabled={busy} onClick={() => void download()} title={t("lightbox.download")}>
-          <span className={"icon " + (savedFlash ? "mdi-check" : busy ? "mdi-refresh sp-spin" : "mdi-download")} />
+        <button
+          className="ghost"
+          disabled={busy}
+          onClick={() => (savedPath !== null ? void showInFolder() : void download())}
+          title={savedFlash ? t("lightbox.downloaded") : savedPath !== null ? t("lightbox.showInFolder") : t("lightbox.download")}
+        >
+          <span className={"icon " + (savedFlash ? "mdi-check" : busy ? "mdi-refresh sp-spin" : savedPath !== null ? "mdi-folder-open-outline" : "mdi-download")} />
         </button>
         {onForwardBegin !== undefined ? (
           <button className="ghost" onClick={() => { onForwardBegin(); onClose(); }} title={t("lightbox.forwardImage")}><span className="icon mdi-forward" /></button>

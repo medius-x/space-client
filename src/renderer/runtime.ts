@@ -40,6 +40,7 @@ import { isDailyCheckDue, isIdleEnoughForUpdateCheck } from "../domain/logic/upd
 import { memberKickReasonText, memberKickTitle } from "../domain/logic/moderation-reason";
 import type { TlsUntrustedEvent, UpdateCheckResult, UpdateStateEvent } from "./bridges";
 import { DEFAULT_CLIENT_SETTINGS, SettingsStore, type ClientSettings } from "../domain/stores/SettingsStore";
+import { DownloadsStore } from "../domain/stores/DownloadsStore";
 import { currentLang, resolveUiLanguage, setLanguage, t as tr } from "../domain/i18n/i18n";
 import {
   acceleratorFromKeyboardEvent,
@@ -310,6 +311,9 @@ export const roomAudio = new RoomAudio();
 export const connectionDirectory = new ConnectionDirectory();
 /** App-wide client settings (instant-apply, KV-persisted) — M7. */
 export const settingsStore = new SettingsStore();
+/** Which attachments this machine already holds (attachment key → saved
+ *  path) — flips save buttons to "Show in folder" across restarts. */
+export const downloadsStore = new DownloadsStore();
 
 /** Per-action outcome of the OS chord registration, as main reports it ("taken" =
  *  another process holds the chord — a second dev instance or a foreign app).
@@ -1557,6 +1561,7 @@ function applyUiLanguage(): void {
 /** App entry: load the directory, auto-resume the most recently used connection. */
 export async function bootstrapApp(): Promise<void> {
   await settingsStore.load();
+  await downloadsStore.load();
   watchNoiseSettings(); // an engine pick rebuilds the detour while voice/call is live
   watchDeviceSettings(); // device picks re-resolve (hashes die across restarts)
   installHotkeys(); // global OS chords + the window keydown (local binds)

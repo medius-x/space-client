@@ -4,6 +4,8 @@ import { log } from "../../logging";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { Attachment } from "../../types";
 import { useT } from "../hooks/useT";
+import { useStore } from "../hooks/useStore";
+import { downloadsStore } from "../runtime";
 
 /**
  * Video player modal — the presigned URL goes straight into <video>; Chromium's
@@ -25,6 +27,12 @@ export function VideoModal({ session, attachment, onClose }: {
   const [status, setStatus] = useState<string | null>(null);
   const [downloadState, setDownloadState] = useState<"idle" | "busy" | "saved" | "failed">("idle");
   const savedResetTimerRef = useRef<number | null>(null);
+  // The machine-wide download registry: once saved, the toolbar's Download
+  // flips to a "Show in folder" reveal (self-healing back on a vanished file).
+  const savedPath = useStore(
+    downloadsStore,
+    (entries) => (attachment.key !== null ? entries[attachment.key] ?? null : null),
+  );
   useEffect(() => () => {
     if (savedResetTimerRef.current !== null) {
       window.clearTimeout(savedResetTimerRef.current);
@@ -58,6 +66,7 @@ export function VideoModal({ session, attachment, onClose }: {
       const saved = await window.spaceMedia?.saveFile(attachment.fileName, bytes);
       setDownloadState(saved !== null && saved !== undefined ? "saved" : "failed");
       if (saved !== null && saved !== undefined) {
+        downloadsStore.markDownloaded(attachment.key, saved);
         if (savedResetTimerRef.current !== null) {
           window.clearTimeout(savedResetTimerRef.current);
         }
@@ -66,6 +75,16 @@ export function VideoModal({ session, attachment, onClose }: {
     } catch (error: unknown) {
       log.warn("video", `download failed: ${error instanceof Error ? error.message : String(error)}`);
       setDownloadState("failed");
+    }
+  };
+
+  const showInFolder = async (): Promise<void> => {
+    if (attachment.key === null || savedPath === null) {
+      return;
+    }
+    const outcome = await window.spaceMedia?.showInFolder(savedPath);
+    if (outcome === "missing") {
+      downloadsStore.forget(attachment.key); // deleted/moved — back to Download
     }
   };
 
@@ -124,12 +143,12 @@ export function VideoModal({ session, attachment, onClose }: {
           <button
             className="ghost"
             disabled={downloadState === "busy"}
-            onClick={() => void download()}
-            title={t("lightbox.download")}
+            onClick={() => (savedPath !== null ? void showInFolder() : void download())}
+            title={savedPath !== null ? t("lightbox.showInFolder") : t("lightbox.download")}
           >
             <span className={"icon " + (downloadState === "busy"
               ? "mdi-refresh sp-spin"
-              : downloadState === "saved" ? "mdi-check" : "mdi-download")} />
+              : downloadState === "saved" ? "mdi-check" : savedPath !== null ? "mdi-folder-open-outline" : "mdi-download")} />
           </button>
           {downloadState === "saved" ? <span className="video-modal-saved">{t("serverSettings.savedMarker")}</span> : null}
           {downloadState === "failed" ? <span className="video-modal-status-inline">{t("video.saveFailed")}</span> : null}

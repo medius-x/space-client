@@ -63,6 +63,9 @@ contextBridge.exposeInMainWorld("spaceMedia", {
   saveFile(fileName: string, bytes: Uint8Array): Promise<unknown> {
     return ipcRenderer.invoke("space-file:save", fileName, bytes);
   },
+  showInFolder(savedPath: string): Promise<unknown> {
+    return ipcRenderer.invoke("space-file:showInFolder", savedPath);
+  },
   /** The downloads folder (Diagnostics): effective dir + picker + reveal. */
   downloadsInfo(): Promise<unknown> {
     return ipcRenderer.invoke("space-file:downloadsInfo");

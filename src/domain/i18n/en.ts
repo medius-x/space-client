@@ -606,6 +606,8 @@ export const EN = {
   "lightbox.previous": "Previous",
   "lightbox.next": "Next",
   "lightbox.download": "Download",
+  "lightbox.downloaded": "Saved",
+  "lightbox.showInFolder": "Show in folder",
   "lightbox.forwardImage": "Forward the image",
   "lightbox.openInBrowser": "Open in browser",
   "lightbox.copied": "Copied",

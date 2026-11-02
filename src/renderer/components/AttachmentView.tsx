@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../hooks/useStore";
+import { downloadsStore } from "../runtime";
 import { useAttachmentImage } from "../hooks/useAttachmentImage";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import {
@@ -362,9 +363,11 @@ function AudioCardView({ session, attachment }: {
 /** A plain (non-media) file: the audio-card geometry with a DOWNLOAD button
  *  instead of play — the click saves through the OS dialog (the lightbox's
  *  fresh-link → bytes → saveFile recipe), never the system browser (user
- *  decision: downloading stays in the client). The name row carries the file
- *  name with its extension and the sender-measured size (absent on rows from
- *  before the wire field). */
+ *  decision: downloading stays in the client). Once saved, the button stays
+ *  a "Show in folder" reveal (the download registry is machine-wide and
+ *  persists across restarts; a vanished file self-heals back to Download).
+ *  The name row carries the file name with its extension and the
+ *  sender-measured size (absent on rows from before the wire field). */
 function FileCardView({ session, attachment }: {
   session: ConnectionSession;
   attachment: Attachment;
@@ -372,6 +375,7 @@ function FileCardView({ session, attachment }: {
   const [busy, setBusy] = useState(false);
   /** Download receipt (user report 2026-10-19: no visible feedback at all). */
   const [savedFlash, setSavedFlash] = useState(false);
+  const savedPath = useStore(downloadsStore, (entries) => entries[attachment.key] ?? null);
 
   const download = async (): Promise<void> => {
     if (busy) {
@@ -386,6 +390,7 @@ function FileCardView({ session, attachment }: {
         const bytes = new Uint8Array(await session.rest.downloadBytes(fresh));
         const saved = await window.spaceMedia?.saveFile(attachment.fileName, bytes);
         if (saved !== null && saved !== undefined) {
+          downloadsStore.markDownloaded(attachment.key, saved);
           setSavedFlash(true);
           window.setTimeout(() => setSavedFlash(false), 2000);
         }
@@ -398,15 +403,25 @@ function FileCardView({ session, attachment }: {
     }
   };
 
+  const showInFolder = async (): Promise<void> => {
+    if (savedPath === null) {
+      return;
+    }
+    const outcome = await window.spaceMedia?.showInFolder(savedPath);
+    if (outcome === "missing") {
+      downloadsStore.forget(attachment.key); // deleted/moved — back to Download
+    }
+  };
+
   return (
     <div className="file-card">
       <button
         className="file-download"
         disabled={busy}
-        title={savedFlash ? "Saved to the downloads folder" : "Download file"}
-        onClick={() => void download()}
+        title={savedFlash ? "Saved to the downloads folder" : savedPath !== null ? "Show in folder" : "Download file"}
+        onClick={() => (savedPath !== null ? void showInFolder() : void download())}
       >
-        <span className={"icon " + (savedFlash ? "mdi-check" : busy ? "mdi-refresh sp-spin" : "mdi-download")} />
+        <span className={"icon " + (savedFlash ? "mdi-check" : busy ? "mdi-refresh sp-spin" : savedPath !== null ? "mdi-folder-open-outline" : "mdi-download")} />
       </button>
       <div className="file-card-body">
         <div className="file-name" title={attachment.fileName}>{attachment.fileName}</div>

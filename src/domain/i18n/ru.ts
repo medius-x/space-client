@@ -598,6 +598,8 @@ export const RU: Dict = {
   "lightbox.previous": "Предыдущее",
   "lightbox.next": "Следующее",
   "lightbox.download": "Скачать",
+  "lightbox.downloaded": "Сохранено",
+  "lightbox.showInFolder": "Показать в папке",
   "lightbox.forwardImage": "Переслать изображение",
   "lightbox.openInBrowser": "Открыть в браузере",
   "lightbox.copied": "Скопировано",

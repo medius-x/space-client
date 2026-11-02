@@ -632,6 +632,27 @@ ipcMain.handle("space-file:openDownloadsDir", () => {
   return dir;
 });
 
+/** "Show in folder" for an already-downloaded attachment (user request
+ *  2026-11-03): Explorer opens with the file SELECTED. The path is only
+ *  honored inside the EFFECTIVE downloads folder — a hostile renderer must
+ *  not aim the Explorer at arbitrary filesystem locations (the same trust
+ *  boundary as space-file:save's basename-only rule). */
+ipcMain.handle("space-file:showInFolder", (_event, savedPath: unknown) => {
+  if (typeof savedPath !== "string" || savedPath.length === 0 || !path.isAbsolute(savedPath)) {
+    return "rejected";
+  }
+  const dir = resolveDownloadsDir();
+  const normalized = path.normalize(savedPath);
+  if (normalized !== dir && !normalized.startsWith(dir + path.sep)) {
+    return "rejected";
+  }
+  if (!fs.existsSync(normalized)) {
+    return "missing"; // deleted/moved since the download — the renderer self-heals the button
+  }
+  void shell.showItemInFolder(normalized);
+  return "shown";
+});
+
 ipcMain.handle("space-kv:merge", (_event, key: unknown, partial: unknown) => {
   if (typeof key !== "string" || typeof partial !== "object" || partial === null) {
     return null;
