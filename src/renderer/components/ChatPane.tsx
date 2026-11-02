@@ -1118,6 +1118,15 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
     if (aroundTarget === null || !messages.some((message) => message.id === aroundTarget)) {
       return;
     }
+    // The around window REPLACED the list, so any "begin of channel" latch
+    // from the list it replaced is void — a REPEATED jump (re-armed on an
+    // already-around channel: the store flag never transitions, it is set
+    // unconditionally) must resurrect scroll-up even when the reader had
+    // paged an earlier window all the way to the real top (live report
+    // 2026-11-03: pin 4/4 → scrolled to the begin, pin 3/4 → same, pin 4/4
+    // again → older messages never loaded).
+    hasOlderRef.current = true;
+    setBeginReached(false);
     appStore.patch({ activeAround: null }); // consumed — a later channel re-entry must not re-jump
     firstLayoutRef.current = false; // the window IS the layout — no divider/bottom open
     const around = session.messageStore.isAroundWithoutTail(channel.id);
@@ -1135,13 +1144,19 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
 
   // oak's BeginOfChannel latch: a short initial page IS the whole history — the
   // marker rides above everything without a guaranteed-empty pagination probe.
+  // NEVER for an around window: it is legitimately short (cut at the BOTTOM
+  // when the jump target sits near the tail, or at the top near the begin) and
+  // mistaking that cut for "all of history" killed scroll-up after a jump
+  // (live report 2026-11-03). The real begin latches in loadOlder on the first
+  // short RAW page — one probe only when the reader actually reaches the top.
   useEffect(() => {
     if (!beginReached && hasOlderRef.current && !loadingOlderRef.current
+      && !aroundActive
       && messages.length > 0 && messages.length < HISTORY_PAGE) {
       hasOlderRef.current = false;
       setBeginReached(true);
     }
-  }, [messages, beginReached]);
+  }, [messages, beginReached, aroundActive]);
 
   // First layout: open on the divider when unread exists, else on the bottom.
   useEffect(() => {
