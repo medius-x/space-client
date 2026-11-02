@@ -1005,7 +1005,7 @@ describe("provisioning pipeline", () => {
 
     const failure = events.find((event) => event.state === "failed");
     expect(failure?.stage).toBe("compose");
-    expect(failure?.detail).toContain("full-bundle installer");
+    expect(failure?.detail).toContain("full-bundled installer");
   });
 
   // ── The direct server-to-server migration leg (2026-11-02) ────────────────

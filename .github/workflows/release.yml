@@ -5,10 +5,10 @@
 #   - SPACE-Setup-<v>.exe (light, ~50 MB) — the DEFAULT download; the server
 #     kit is fetched at provisioning time (the server pulls from GitHub, the
 #     client relays over SFTP as the fallback). Update feed: latest.yml.
-#   - SPACE-Full-Bundle-Setup-<v>.exe (full-bundle, ~700 MB) — the offline
+#   - SPACE-Full-Bundled-Setup-<v>.exe (full-bundled, ~700 MB) — the offline
 #     variant with the jar + the six docker-image archives bundled (user
 #     decision 2026-10-13, kept as this variant's own promise). Update feed:
-#     full-bundle.yml (electron-updater's canonical <channel>.yml).
+#     full-bundled.yml (electron-updater's canonical <channel>.yml).
 #
 # The kit pieces come from the oak-server release of the SAME tag. The image
 # archives are too big for git: `npm run images:sync` builds them on the dev
@@ -55,7 +55,7 @@ jobs:
           }
 
       - name: Config equivalence gate — the two builders must not drift
-        # electron-builder-full-bundle.yml duplicates the base config on
+        # electron-builder-full-bundled.yml duplicates the base config on
         # purpose (only extraResources/channel/artifactName may differ). This
         # gate fails the release when a critical field changes in ONE file —
         # a silent drift would break one of the two update channels.
@@ -72,7 +72,7 @@ jobs:
             'oneClick: true'
           )
           foreach ($line in $critical) {
-            foreach ($file in @('electron-builder.yml', 'electron-builder-full-bundle.yml')) {
+            foreach ($file in @('electron-builder.yml', 'electron-builder-full-bundled.yml')) {
               if (-not (Select-String -Path $file -SimpleMatch $line -Quiet)) {
                 Write-Error "$file is missing the critical line '$line' — the two builder configs drifted apart"
                 exit 1
@@ -110,20 +110,20 @@ jobs:
       - name: Build the FULL-BUNDLE installer
         # First the heavy build, WITH the whole kit in the tree. --publish
         # never: this workflow uploads the artifacts itself; the flag still
-        # emits the full-bundle.yml feed and the blockmap next to the exe.
+        # emits the full-bundled.yml feed and the blockmap next to the exe.
         run: npm run dist:full -- --publish never
 
-      - name: Stage the full-bundle artifacts away
+      - name: Stage the full-bundled artifacts away
         shell: pwsh
         run: |
           $version = "${env:GITHUB_REF_NAME}".TrimStart('v')
           New-Item -ItemType Directory -Force -Path release-full | Out-Null
           foreach ($file in @(
-            "release/SPACE Full Bundle Setup $version.exe",
-            "release/SPACE Full Bundle Setup $version.exe.blockmap",
-            "release/full-bundle.yml"
+            "release/SPACE Full Bundled Setup $version.exe",
+            "release/SPACE Full Bundled Setup $version.exe.blockmap",
+            "release/full-bundled.yml"
           )) {
-            if (-not (Test-Path $file)) { Write-Error "missing full-bundle artifact: $file"; exit 1 }
+            if (-not (Test-Path $file)) { Write-Error "missing full-bundled artifact: $file"; exit 1 }
             Move-Item $file "release-full/" -Force
           }
           # The second electron-builder run must not mistake the staged
@@ -151,7 +151,7 @@ jobs:
           $tag = "${env:GITHUB_REF_NAME}"
           $version = $tag.TrimStart('v')
           # electron-builder writes DASHED names into the update feeds
-          # ("SPACE-Setup-<version>.exe", "SPACE-Full-Bundle-Setup-<version>.exe");
+          # ("SPACE-Setup-<version>.exe", "SPACE-Full-Bundled-Setup-<version>.exe");
           # GitHub asset names must match those EXACTLY or the updater's
           # download 404s — so the local files (built with spaces) are mirrored
           # to the canonical names before upload. Both feeds + blockmaps ride
@@ -159,12 +159,12 @@ jobs:
           $lightExe = "release/SPACE-Setup-$version.exe"
           Copy-Item "release/SPACE Setup $version.exe" $lightExe -Force
           Copy-Item "release/SPACE Setup $version.exe.blockmap" "$lightExe.blockmap" -Force
-          $fullExe = "release-full/SPACE-Full-Bundle-Setup-$version.exe"
-          Copy-Item "release-full/SPACE Full Bundle Setup $version.exe" $fullExe -Force
-          Copy-Item "release-full/SPACE Full Bundle Setup $version.exe.blockmap" "$fullExe.blockmap" -Force
+          $fullExe = "release-full/SPACE-Full-Bundled-Setup-$version.exe"
+          Copy-Item "release-full/SPACE Full Bundled Setup $version.exe" $fullExe -Force
+          Copy-Item "release-full/SPACE Full Bundled Setup $version.exe.blockmap" "$fullExe.blockmap" -Force
           $artifacts = @(
             $lightExe, "$lightExe.blockmap", "release/latest.yml",
-            $fullExe, "$fullExe.blockmap", "release-full/full-bundle.yml"
+            $fullExe, "$fullExe.blockmap", "release-full/full-bundled.yml"
           )
           foreach ($artifact in $artifacts) {
             if (-not (Test-Path $artifact)) { Write-Error "missing release artifact: $artifact"; exit 1 }
@@ -174,8 +174,17 @@ jobs:
           if (-not (Select-String -Path "release/latest.yml" -SimpleMatch "SPACE-Setup-$version.exe" -Quiet)) {
             Write-Error "latest.yml does not reference SPACE-Setup-$version.exe"; exit 1
           }
-          if (-not (Select-String -Path "release-full/full-bundle.yml" -SimpleMatch "SPACE-Full-Bundle-Setup-$version.exe" -Quiet)) {
-            Write-Error "full-bundle.yml does not reference SPACE-Full-Bundle-Setup-$version.exe"; exit 1
+          if (-not (Select-String -Path "release-full/full-bundled.yml" -SimpleMatch "SPACE-Full-Bundled-Setup-$version.exe" -Quiet)) {
+            Write-Error "full-bundled.yml does not reference SPACE-Full-Bundled-Setup-$version.exe"; exit 1
           }
-          gh release create "$tag" $artifacts --title "$tag" --generate-notes --verify-tag `
-            || gh release upload "$tag" $artifacts --clobber
+          # Release notes: a handwritten changelog lives at release-notes/v<version>.md
+          # (see that directory's README) and becomes the release body; without one the
+          # release falls back to GitHub's auto-generated commit list.
+          $notesFile = "release-notes/v$version.md"
+          if (Test-Path $notesFile) {
+            gh release create "$tag" $artifacts --title "$tag" --notes-file $notesFile --verify-tag `
+              || gh release upload "$tag" $artifacts --clobber
+          } else {
+            gh release create "$tag" $artifacts --title "$tag" --generate-notes --verify-tag `
+              || gh release upload "$tag" $artifacts --clobber
+          }

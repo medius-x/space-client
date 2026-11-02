@@ -6,7 +6,7 @@
 # own promise). Keep this file in sync with electron-builder.yml — the release
 # workflow asserts the critical fields match (the differences are exactly:
 # extraResources without the light filter, the full kit marker, the
-# full-bundle channel and the artifact name).
+# full-bundled channel and the artifact name).
 #
 # Build: npm run dist:full. The release workflow builds BOTH installers into
 # the same GitHub Release, each with its own update feed.
@@ -24,16 +24,16 @@ npmRebuild: false
 asarUnpack:
   - node_modules/koffi/**
 
-# The full-bundle update channel: electron-builder writes `channel:
-# full-bundle` into this artifact's app-update.yml, so electron-updater asks
-# for full-bundle.yml (the canonical <channel>.yml name) — a full-bundle
-# install updates full-bundle, a light install updates light, neither ever
+# The full-bundled update channel: electron-builder writes `channel:
+# full-bundled` into this artifact's app-update.yml, so electron-updater asks
+# for full-bundled.yml (the canonical <channel>.yml name) — a full-bundled
+# install updates full-bundled, a light install updates light, neither ever
 # crosses over. Same GitHub repo as the default feed.
 publish:
   provider: github
   owner: medius-x
   repo: space-client
-  channel: full-bundle
+  channel: full-bundled
 
 extraResources:
   # The whole kit: templates + manifest.json + the jar + the six image
@@ -64,4 +64,4 @@ nsis:
   # outside its own directories (userData for KV/logs, temp for provisioning).
   perMachine: false
   # The dashed mirror of this name is what the feed references.
-  artifactName: "SPACE Full Bundle Setup ${version}.exe"
+  artifactName: "SPACE Full Bundled Setup ${version}.exe"

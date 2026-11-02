@@ -765,7 +765,7 @@ export const EN = {
   "provisioning.err.imagesUnavailable": "images neither pullable nor bundled: {list}",
   "provisioning.err.imagesFailed": "images could not be pulled ({reason}): {list}",
   "provisioning.err.jarUnavailable": "the server jar could not be delivered: GitHub is unreachable from both the server and this computer, and this build bundles no jar",
-  "provisioning.err.imagesUnavailableLight": "images could not be delivered: {list} — the server needs access to GitHub (directly or through this computer), or use the full-bundle installer",
+  "provisioning.err.imagesUnavailableLight": "images could not be delivered: {list} — the server needs access to GitHub (directly or through this computer), or use the full-bundled installer",
   "provisioning.detail.migrationFallback": "the direct transfer is unavailable — routing the archive through this computer",
   "provisioning.detail.restoreDirectPull": "the new server pulls the archive straight from the old one",
   "provisioning.err.migrationDigest": "the downloaded archive does not match the digest the server reported — take the migration again",

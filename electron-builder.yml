@@ -3,8 +3,8 @@
 # of ~700 MB). The server jar and the docker-image archives are fetched at
 # provisioning time: the server pulls them from GitHub itself, and the client
 # relays them over SFTP only when the server cannot reach GitHub. The full
-# variant with the bundled kit is electron-builder-full-bundle.yml (dist:full,
-# the full-bundle update channel).
+# variant with the bundled kit is electron-builder-full-bundled.yml (dist:full,
+# the full-bundled update channel).
 #
 # The app payload is the electron-vite output (out/main + out/preload +
 # out/renderer bundles) plus the production node_modules — main-bundle externals
@@ -35,8 +35,8 @@ asarUnpack:
 # (emitted from this publish block) and checks this repo's GitHub Releases for
 # latest.yml + the blockmap — no token, the repo is public. The owner/repo pair
 # mirrors the git remote (medius-x/space-client). No channel here: this is the
-# DEFAULT feed, so the light installer updates light — the full-bundle channel
-# is defined in electron-builder-full-bundle.yml.
+# DEFAULT feed, so the light installer updates light — the full-bundled channel
+# is defined in electron-builder-full-bundled.yml.
 publish:
   provider: github
   owner: medius-x

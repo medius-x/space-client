@@ -108,15 +108,15 @@ hashFile читает только temp/downloads; PEM сверяется с п�
 
 Реализация Темы 1. Юзер-решения сверх проработки: light — ОСНОВНОЙ дистрибутив
 под текущим именем (`SPACE-Setup-<v>.exe`, фид latest.yml); полный —
-**full-bundle** (`SPACE-Full-Bundle-Setup-<v>.exe`, `publish.channel:
-full-bundle` → фид `full-bundle.yml` — каноническое `<channel>.yml`
-electron-updater'а, НЕ latest-full-bundle.yml). Существующие 0.3.0-full при
+**full-bundled** (`SPACE-Full-Bundle-Setup-<v>.exe`, `publish.channel:
+full-bundled` → фид `full-bundled.yml` — каноническое `<channel>.yml`
+electron-updater'а, НЕ latest-full-bundled.yml). Существующие 0.3.0-full при
 обновлении на 0.4.0 получают light-комплект (NSIS сносит каталог, −590 МБ) —
 осознанно. Рантайм-ветвления канала в коде НЕТ — channel зашит в app-update.yml
 артефакта, updates.ts не тронут.
 
 - **Единая лестница большого контента** (jar и образы, симметрично): (1)
-  сервер сам качает с GitHub; (2) фолбэк через клиента — full-bundle заливает
+  сервер сам качает с GitHub; (2) фолбэк через клиента — full-bundled заливает
   ВШИТОЕ, light качает с GitHub на диск и заливает. Jar: Advanced-override
   всегда побеждает. Образы: missing-check → docker pull (digest) → DNS-fix →
   зеркала gcr/daocloud → снятие зеркал → СЕРВЕР-GitHub → терминал (вшитые
@@ -134,7 +134,7 @@ electron-updater'а, НЕ latest-full-bundle.yml). Существующие 0.3.
   reachable ТОЛЬКО при спарсенном Content-Length — без expected-размера нет
   honest done-условия. wget НЕ используется: probe-этап гарантирует curl.
 - **Терминальный этап** ветвится по `files.images !== null`, kit-маркер —
-  только тексты провала (light: «нужен GitHub или full-bundle-установщик») и
+  только тексты провала (light: «нужен GitHub или full-bundled-установщик») и
   README-обещания; дев-машина/легаси с kit=full без tar.gz ведут себя как
   light, НЕ падают.
 - **Контракты**: `ProvisioningFiles` = {jarOverridePath, jarBundledPath,
@@ -152,12 +152,12 @@ electron-updater'а, НЕ latest-full-bundle.yml). Существующие 0.3.
   клиентские докачки (jar/образы) чистятся в finally прогона.
 - **Сборка**: electron-builder.yml = light (extraResources filter
   `!**/*.tar.gz`, `!oak-server.jar` + kit-light.json → provisioning/files/
-  kit.json); electron-builder-full-bundle.yml — полный дубль (channel
-  full-bundle, artifactName «SPACE Full Bundle Setup», kit-full.json); скрипт
+  kit.json); electron-builder-full-bundled.yml — полный дубль (channel
+  full-bundled, artifactName «SPACE Full Bundled Setup», kit-full.json); скрипт
   `dist:full`; release.yml: fetch kit → full-билд → вынос артефактов в
   release-full/ (+снос release/) → чистка jar/tar.gz (manifest.json ОСТАЁТСЯ)
   → light-билд → зеркалирование пробел→дефис ×2 → upload 2 exe + 2 blockmap +
-  latest.yml + full-bundle.yml + проверка, что оба фида ссылаются на дефисные
+  latest.yml + full-bundled.yml + проверка, что оба фида ссылаются на дефисные
   имена; CI-гейт эквивалентности критичных строк двух конфигов (дрейф = один
   из каналов молча умирает).
 - **Маркеры**: electron/provisioning/kit-light.json / kit-full.json (git);
@@ -165,9 +165,17 @@ electron-updater'а, НЕ latest-full-bundle.yml). Существующие 0.3.
 - Гейты: 849/849 + typecheck + build. Смоук: dist:dir-light без архивов →
   провижининг до GitHub-этапа; канальный смоук 0.4.1 после релиза (обе
   машины + 0.3.0-full → light). README переписан (light основной,
-  full-bundle «для оффлайна», честное ограничение GitHub).
+  full-bundled «для оффлайна», честное ограничение GitHub).
 - Тема 2 (миграция server-to-server) — следующим раундом, downloadOnServer
   реюзируется (контракт уже несёт headerFile/cacertFile для токен-ветки).
+- **Правки перед релизом 0.4.0 (юзер, 2026-11-03):** (а) внешнее имя полного
+  дистрибутива переименовано full-**bundled** (канал `full-bundled` → фид
+  `full-bundled.yml`, артефакт `SPACE-Full-Bundled-Setup-<v>.exe`, конфиг
+  `electron-builder-full-bundled.yml` — внутренний маркер kit.json остался
+  "full"); (б) **ручной чейнджлог релизов**: `release-notes/v<версия>.md` в
+  репо становится телом GitHub-релиза (release.yml --notes-file; нет файла →
+  прежние авто-ноты); практика — с v0.4.1 (0.4.0 вышел с авто-нотами как
+  смоук-релиз); конвенция — в release-notes/README.md.
 
 ## Бэкап сервера + restore при провижининге + Migrate (2026-10-28, код готов: сервер 538/538 mvn, клиент 830/830 + typecheck + build; смоук pending; коммит — по команде)
 

@@ -764,7 +764,7 @@ export const RU: Dict = {
   "provisioning.err.imagesUnavailable": "образы недоступни ни из реестра, ни из вшитого набора: {list}",
   "provisioning.err.imagesFailed": "не удалось скачать образы ({reason}): {list}",
   "provisioning.err.jarUnavailable": "jar сервера доставить не удалось: GitHub недостижим ни с сервера, ни с этого компьютера, а вшитого jar в этой сборке нет",
-  "provisioning.err.imagesUnavailableLight": "образы доставить не удалось: {list} — серверу нужен доступ к GitHub (напрямую или через этот компьютер), либо используйте full-bundle-установщик",
+  "provisioning.err.imagesUnavailableLight": "образы доставить не удалось: {list} — серверу нужен доступ к GitHub (напрямую или через этот компьютер), либо используйте full-bundled-установщик",
   "provisioning.detail.migrationFallback": "прямая передача недоступна — качаю архив через этот компьютер",
   "provisioning.detail.restoreDirectPull": "новый сервер забирает архив напрямую со старого",
   "provisioning.err.migrationDigest": "скачанный архив не совпадает с контрольной суммой сервера — повторите миграцию",
