@@ -14,7 +14,7 @@ Grab the latest `SPACE Setup <version>.exe` from
 [Releases](../../releases) and run it — a per-user install, no administrator
 rights required. Windows 10 or later.
 
-This is the standard (light) build, ~50 MB. When you set up a server, the
+This is the standard (light) build, ~135 MB. When you set up a server, the
 machine itself downloads the OAK stack (~600 MB of Docker images plus the
 server jar) straight from GitHub — and if it cannot reach GitHub, SPACE relays
 the missing pieces through your computer. Either way, no registry access is
@@ -22,7 +22,7 @@ strictly required.
 
 Need a fully offline install instead? Take `SPACE Full Bundled Setup
 <version>.exe` from the same Releases page: it bundles the entire server kit
-(~700 MB) and can provision a server with no Internet access at all.
+(~735 MB) and can provision a server with no Internet access at all.
 
 > The installers are not code-signed, so Windows SmartScreen will ask for
 > confirmation the first time ("More info" → "Run anyway"). Each build updates
