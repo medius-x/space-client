@@ -5,6 +5,10 @@
 export class FakeMediaStream {
   constructor(private readonly tracks: unknown[] = []) {}
 
+  getTracks(): { id: string; kind: string; enabled: boolean; stop(): void }[] {
+    return this.tracks as never;
+  }
+
   getAudioTracks(): { id: string; kind: string; enabled: boolean; stop(): void }[] {
     return this.tracks.filter((track) => (track as { kind?: string }).kind === "audio") as never;
   }

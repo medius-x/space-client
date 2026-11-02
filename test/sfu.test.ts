@@ -69,6 +69,49 @@ describe("SfuSession", () => {
     resetFakePeerConnections();
   });
 
+  it("a hung microphone open fails after the cap — and a late recovery cannot leak a captured mic", async () => {
+    // Live report 2026-10-30: a wedged WASAPI driver hung getUserMedia forever,
+    // leaving the voice bar on "Connecting" with zero errors until a PC reboot.
+    vi.useFakeTimers();
+    try {
+      const { janus } = makeJanus();
+      const { callbacks } = makeCallbacks();
+      const states: { state: string; detail: string | null }[] = [];
+      callbacks.onState = (state, detail) => states.push({ state, detail: detail ?? null });
+      let releaseMic: (stream: MediaStream) => void = () => undefined;
+      const wedgedSource = {
+        getUserMedia: () => new Promise<MediaStream>((resolve) => {
+          releaseMic = resolve;
+        }),
+      };
+      const session = new SfuSession({
+        room: { janusUrl: "http://x", roomId: 5, token: null, pin: null },
+        username: "alice",
+        janus,
+        publisherHandleId: 42,
+        mediaSource: wedgedSource,
+        peerConnectionImpl: FakePeerConnection as unknown as typeof RTCPeerConnection,
+        callbacks,
+      });
+
+      const startPromise = session.start();
+      const rejection = expect(startPromise).rejects.toThrow("microphone did not respond");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejection;
+      expect(states).toContainEqual({ state: "failed", detail: "microphone not responding" });
+
+      // The device recovered AFTER we gave up: the stray stream's tracks must
+      // be stopped, or the mic stays captured (busy light) until a reboot.
+      const lateTrack = fakeTrack("audio-late");
+      const lateStop = vi.spyOn(lateTrack, "stop");
+      releaseMic(new MediaStream([lateTrack] as unknown as MediaStreamTrack[]));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(lateStop).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("defers the subscriber join until a wanted stream exists — never joins empty", async () => {
     const { janus, sends, attaches } = makeJanus();
     const { callbacks } = makeCallbacks();

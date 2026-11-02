@@ -103,6 +103,22 @@ export interface SfuSessionOptions {
 
 const ICE_GATHERING_TIMEOUT_MS = 2_000;
 
+/** Chromium has NO cap of its own on opening an audio device — a wedged WASAPI
+ *  driver (live report 2026-10-30: re-entering a voice room left the bar on
+ *  "Connecting" forever; a process restart did not cure it, only a PC reboot
+ *  did) hangs getUserMedia forever, with no rejection to catch. This cap turns
+ *  the hang into an honest "failed" with a readable cause. */
+const MIC_OPEN_TIMEOUT_MS = 10_000;
+
+/** The getUserMedia race's rejection — its own class so the catch below can
+ *  tell "the device did not answer" from every device-level DOMException. */
+class MicOpenTimedOutError extends Error {
+  constructor() {
+    super(`microphone did not respond within ${MIC_OPEN_TIMEOUT_MS / 1000} s`);
+    this.name = "MicOpenTimedOutError";
+  }
+}
+
 /** The videoroom's REMB ceiling for our publisher. Janus defaults a room to
  *  1 Mbps (oak-server's ensureRoom creates rooms without a `bitrate`), and
  *  the gateway tells the browser's encoder about it via REMB — every picker
@@ -243,6 +259,35 @@ export class SfuSession {
   // Publisher
   // ---------------------------------------------------------------------------
 
+  /** getUserMedia under the {@link MIC_OPEN_TIMEOUT_MS} cap. A LATE resolve
+   *  (the device recovered after we already failed) has its tracks stopped —
+   *  a recovered-but-unclaimed mic must not stay captured forever. */
+  private async openMic(constraints: MediaTrackConstraints): Promise<MediaStream> {
+    let gaveUp = false;
+    return new Promise<MediaStream>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        gaveUp = true;
+        reject(new MicOpenTimedOutError());
+      }, MIC_OPEN_TIMEOUT_MS);
+      void this.mediaSource.getUserMedia({ audio: constraints }).then((stream) => {
+        if (gaveUp) {
+          for (const track of stream.getTracks()) {
+            track.stop();
+          }
+          log.warn("sfu", "microphone opened AFTER the timeout — capture discarded");
+          return;
+        }
+        clearTimeout(timer);
+        resolve(stream);
+      }, (error: unknown) => {
+        if (!gaveUp) {
+          clearTimeout(timer);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+    });
+  }
+
   /**
    * Mic up + join + publish. The mic rides m-line 0 (addTrack order fixes mindex —
    * share-audio classification on the subscriber side depends on it).
@@ -261,8 +306,13 @@ export class SfuSession {
       ...(this.microphoneDeviceId !== null ? { deviceId: { exact: this.microphoneDeviceId } } : {}),
     };
     try {
-      micStream = await this.mediaSource.getUserMedia({ audio: micConstraints });
+      micStream = await this.openMic(micConstraints);
     } catch (error: unknown) {
+      if (error instanceof MicOpenTimedOutError) {
+        log.error("sfu", "microphone open timed out — the audio device is wedged (replug the headset or reboot the machine)");
+        this.callbacks.onState("failed", "microphone not responding");
+        throw error;
+      }
       // Chromium scopes media device ids PER ORIGIN: an id saved by another
       // window kind (dev server vs packaged file://) — or a yanked USB mic —
       // makes the exact constraint unsatisfiable. Fall back to the system
@@ -271,7 +321,7 @@ export class SfuSession {
         log.warn("sfu", "saved microphone unavailable in this window — using the system default");
         try {
           const { deviceId: _dropped, ...defaultConstraints } = micConstraints;
-          micStream = await this.mediaSource.getUserMedia({ audio: defaultConstraints });
+          micStream = await this.openMic(defaultConstraints);
         } catch (fallbackError: unknown) {
           log.error("sfu", `microphone unavailable: ${fallbackError instanceof DOMException ? fallbackError.name : String(fallbackError)}`);
           this.callbacks.onState("failed", "microphone unavailable");
