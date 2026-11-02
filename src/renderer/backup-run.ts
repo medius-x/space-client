@@ -35,6 +35,9 @@ export interface BackupFlowResult {
   /** True when the flow stopped because the CALLER asked it to (the migration's
    *  backup step checks the flag between its phases) — not a failure to report. */
   cancelled?: boolean;
+  /** The built archive's SHA-256 when the server reported one (the migration
+   *  verifies the transferred/downloaded bytes against it). */
+  archiveSha256?: string;
 }
 
 /** Asks the flow to stop at the next phase boundary (poll iterations, before the
@@ -75,6 +78,14 @@ export async function takeMigrationBackup(session: ConnectionSession,
   if (shouldAbort?.() === true) {
     return { ok: false, error: "cancelled by the user", cancelled: true };
   }
+  return await downloadMigrationArchive(session);
+}
+
+/** Downloads the ALREADY-BUILT archive into the OS temp dir as the migration's
+ *  one-shot file — the fallback leg of the direct transfer (2026-11-02): the
+ *  archive was taken moments ago, the pass is NOT re-fired, only the bytes
+ *  travel through this computer. */
+export async function downloadMigrationArchive(session: ConnectionSession): Promise<BackupFlowResult> {
   const record = connectionDirectory.get(session.recordId);
   const hostUrl = record?.hostUrl ?? "http://server";
   const bearer = session.rest.currentAccessToken();
@@ -92,9 +103,11 @@ export async function takeMigrationBackup(session: ConnectionSession,
 
 /** Fires a backup pass and polls it to completion (the shared head of both
  *  download flows). The optional abort check stops the flow between poll
- *  iterations (the migration's Cancel while its backup step is live). */
-async function waitForBuiltBackup(session: ConnectionSession,
-                                  shouldAbort?: BackupAbortCheck): Promise<BackupFlowResult> {
+ *  iterations (the migration's Cancel while its backup step is live). Exported
+ *  for the migration source step (2026-11-02): the direct server-to-server
+ *  leg needs the BUILT archive without downloading it. */
+export async function waitForBuiltBackup(session: ConnectionSession,
+                                         shouldAbort?: BackupAbortCheck): Promise<BackupFlowResult> {
   let status;
   try {
     status = await session.rest.runServerBackup();
@@ -128,7 +141,7 @@ async function waitForBuiltBackup(session: ConnectionSession,
   if (report.error !== null) {
     return { ok: false, error: report.error };
   }
-  return { ok: true };
+  return { ok: true, archiveSha256: report.archiveSha256 ?? undefined };
 }
 
 /** Downloads the archive the server has ALREADY built (the "Download latest"

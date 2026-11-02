@@ -22,6 +22,7 @@
     "images:sync": "node scripts/sync-server-images.mjs",
     "images:publish": "node scripts/publish-server-images.mjs",
     "dist": "npm run build && electron-builder --win",
+    "dist:full": "npm run build && electron-builder --win --config electron-builder-full-bundle.yml",
     "dist:dir": "npm run build && electron-builder --dir",
     "profile": "node scripts/capture-profile.mjs",
     "start:tools": "npm run build && electron . --space-devtools",

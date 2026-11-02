@@ -5,6 +5,170 @@ Electron + TypeScript **спайк-клиент** OAK-сервера. Цель �
 звук через `getDisplayMedia` и браузерный APM. После спайка — решение о полной переписи
 клиента. Полный план: `C:\Users\Home\.claude\plans\goofy-leaping-sutton.md`.
 
+## Смоук-фикс провижининга: гонка токенов при автологине на переустановленный сервер (2026-11-02, живой репорт dev2; 852/852 + typecheck)
+
+Симптом: провижининг отработал штатно, автологин УМИРАЛ через полсекунды —
+«session expired → back to login» (юзер вручную входил после). Лог: 18:29:47.110
+«logged in» → 47.753 «refresh rejected (401)». Корень: запись на host+admin
+СУЩЕСТВОВАЛА (сервер переустановлен на том же IP, серт сменился, пин
+перепинен) → автологин пошёл по re-login-ветке (rotate семьи) И параллельно
+жила ФОНОВАЯ сессия этой записи (поднялась при старте клиента, всё время
+провижининга ретраилась к мёртвому серверу) — openSession ПРОДВИНУЛ её в
+активную; её RestClient держал СТАРУЮ пару в памяти, при подъёме сервера
+сделала silent-refresh старым refresh → 401 (токен новой базе неизвестен) →
+`tokenStorage.clear()` СТЁР только что записанную НОВУЮ пару + onSessionExpired
+→ логин-экран. Двойной фикс: (1) `RestClient.doRefresh` — при 401 на refresh,
+если в хранилище уже лежит ДРУГОЙ refresh (семья заменена поверх нашей),
+НЕ чистить/НЕ expired — молча вернуться: retry запроса перечитает storage и
+продолжит на новой паре (тест rest.test.ts «stale-token refresh does NOT wipe
+a family that a re-login already replaced»); (2) `startSession` existing-ветка
+гасит живую сессию записи ДО applyTokens (активную — teardownSession, фоновую
+— disposeBackgroundSession) — зомби со старыми токенами больше не живёт.
+Стоимость: in-memory чаты записи при re-login умирают (было и так — expired
+их убивал). Прочее из смоука: провижининг на живом VPS (переустановка поверх,
+TOFU-диалог на сменившийся серт в wait-этапе) — штатно.
+
+## Миграция server-to-server по одноразовому токену (2026-11-02, Тема 2 проработки 2026-10-29; клиент 851/851 + typecheck + build, сервер 546/546; ДЕПЛОЙ ПАРНЫЙ — сервер первым; смоук pending; коммит — по команде)
+
+Вариант B: новый сервер сам тянет бэкап со старого (curl + одноразовый токен),
+комп = control plane; fallback через компьютер остаётся навсегда (легаси-сервер
+без capability, старый за NAT, провал пробы). Ключевые решения сверх проработки
+(аудит фиксы): TTL токена 2 ЧАСА (расход на restore-стадии после 15–40 мин
+прогона — 30 минут истекали бы посреди); PEM серта старого сервера захватывает
+КЛИЕНТ одноразовым `session.setCertificateVerifyProc` (сервер серт Caddy не
+читает — в контейнере; сверка с TOFU-пином записи, домен/CA → PEM не нужен);
+Range/206 на /file обязателен (без него curl -C - после обрыва = ошибка 33 и
+перекачка гигабайт с нуля).
+
+**Сервер (oak-server, 546/546)**: `BackupService` — SHA-256 архива считается
+DigestOutputStream'ом В ПРОЦЕССЕ записи (lastRun.archiveSha256, wire append-only);
+`openArchiveForDelivery(start, length)` — Range-отдача (skip+RangeDeliveryStream:
+лимит чтения = length, EOF не даёт телу превысить Content-Length; deliver-and-
+delete следует ХВОСТУ: удаление только когда дочитан последний байт файла И свой
+range; средний range файл не трогает). `BackupController`: парсер одиночного
+`Range: bytes=` (мусор/multi → IGNORE → 200 full по RFC 9110; за-концом/suffix-0 →
+416 + `bytes */size`; суффикс bytes=-N поддержан; Accept-Ranges на 200 и 206).
+`MigrationTransferService` — in-memory single-slot токен (32B SecureRandom →
+base64url, SHA-256-хеш в памяти, constant-time сравнение, TTL 2 ч, новая выдача
+вытесняет старую, ленивый TTL-reject без @Scheduled, Clock-шейм для тестов);
+многоразовый до ревока/TTL — «одноразовость» даёт deliver-and-delete архива,
+probe и рендж-ретраи токен не гасят; beginTransfer/endTransfer — слот одной
+отдачи (429 на параллельную). Endpoints: POST/DELETE `/api/server/backup/
+migration-transfer` (Bearer, requireAdministrator, 409 без архива, ответ
+{token, expiresAt, archiveSha256, archiveBytes} — publicHost УБРАН из ответа:
+клиент знает базу старого сервера лучше); GET `/api/server/backup/transfer/
+{status,file}` — permitAll в SecurityConfig (прецедент /api/auth/**), ВЕСЬ гейт
+в контроллере: заголовок `X-Space-Migration-Token` → 401/404/429/206/200;
+transfer/file повторяет стриминг+Range download'а, слот освобождается в
+TransferStream.close() (и при обрыве). `ServerCapabilities.FEATURES +=
+"server-migration"`. Тесты: MigrationTransferIntegrationTest (гейты, probe не
+гасит токен, 206-range, digest совпадает, deliver-and-delete, ревок),
+MigrationTransferServiceTest (TTL/вытеснение/слот), BackupIntegrationTest
++= 3 (206-кейсы/416/fallback-full/sha256-матч).
+
+**Клиент (851/851)**: `params.ts` — `migrationTransfer` (sourceUrl https-only,
+token base64url, sha hex-64, bytes>0, certificatePem; взаимоисключение с
+backupArchivePath в валидации; все поля едут в shell — чарсеты часть границы).
+`pipeline.ts` restore-стадия: ветка прямой передачи — writeFile `.migration-auth`
+(0600; Ssh2Transport.writeFile += mode-опция) + `old-ca.pem` (0600, при PEM) →
+clearForeignPartial → downloadOnServer (реюз контракта Темы 1: headerFile/
+cacertFile уже в контракте) → `sha256sum -c` сверка → finally-scrub обоих файлов
+(.provision-*-прецедент); обычная mustUpload-ветка без изменений; restoreMode от
+ЛЮБОГО источника; adopt-отказ распространён на обе ветки. `backup-run.ts` —
+waitForBuiltBackup экспортирован (+archiveSha256 в BackupFlowResult),
+downloadMigrationArchive выделен (fallback без повторного запуска прогона).
+`backup-schedule.ts` — suppress/release: расписание старого сервера гасится на
+окно миграции (иначе подменит single-slot архив под digest'ом), отпускается в
+succeeded/failed-событиях и cancel. `ProvisioningPanel.runMigrationBackupStep`:
+съёмка → (capability server-migration) issue токена → probe IPC → direct=
+start({migrationTransfer}) / иначе лог «прямая передача недоступна…» +
+download + hashFile-сверка + start({backupArchivePath, migrationArchive});
+finally: ревок токена (только fallback-ветки; прямой живёт до deliver-and-delete
+или TTL), очистка suppression при cancel. REST: issueMigrationTransfer/
+revokeMigrationTransfer + restOrigin()-геттер; types.ts: MigrationTransfer +
+archiveSha256 в BackupRunInfo. IPC: `provisioning:probe-migration` (main
+резолвит persistedPinForHostname — pin-стор в main; короткая SSH-сессия:
+mkdir /tmp/space-migration-probe, writeFile 0600 ×2, один curl со статусом,
+cleanup, close) и `provisioning:hash-file` (SHA-256 локального файла, гейт
+temp/downloads-корней). `cancelProvisioningRun` стал async: сначала best-effort
+`pkill -f space-provisioning-download` (фоновые закачки отвязаны от канала —
+обрыв SSH их не убивает; curl несёт UA-маркер space-provisioning-download в
+argv — редиректы в cmdline не видны), потом close.bridges/preload:
+probeMigration/hashFile.
+
+Security-проход Темы 2: transfer-пути под permitAll несут весь гейт сами
+(256-бит токен, constant-time, TTL, слот; 404 на пустой слот неотличим от
+«нет токена»-пути — перечисление невозможно); токен только в файле 0600 (не
+cmdline — ps), лог — fingerprint 8 символов; curl-команды строятся из
+валидированных charset'ов через shellQuote; probe IPC = власть существующего
+provisioning:start (validateProvisioningParams), не новая поверхность;
+hashFile читает только temp/downloads; PEM сверяется с пином записи, не с
+ответом сервера; sha256-сверка обязательна в обеих ветках (подмена архива =
+честный провал, не restore).
+
+Реализация Темы 1. Юзер-решения сверх проработки: light — ОСНОВНОЙ дистрибутив
+под текущим именем (`SPACE-Setup-<v>.exe`, фид latest.yml); полный —
+**full-bundle** (`SPACE-Full-Bundle-Setup-<v>.exe`, `publish.channel:
+full-bundle` → фид `full-bundle.yml` — каноническое `<channel>.yml`
+electron-updater'а, НЕ latest-full-bundle.yml). Существующие 0.3.0-full при
+обновлении на 0.4.0 получают light-комплект (NSIS сносит каталог, −590 МБ) —
+осознанно. Рантайм-ветвления канала в коде НЕТ — channel зашит в app-update.yml
+артефакта, updates.ts не тронут.
+
+- **Единая лестница большого контента** (jar и образы, симметрично): (1)
+  сервер сам качает с GitHub; (2) фолбэк через клиента — full-bundle заливает
+  ВШИТОЕ, light качает с GitHub на диск и заливает. Jar: Advanced-override
+  всегда побеждает. Образы: missing-check → docker pull (digest) → DNS-fix →
+  зеркала gcr/daocloud → снятие зеркал → СЕРВЕР-GitHub → терминал (вшитые
+  `files.images !== null`, иначе клиент). MISSING-хвост везде: каждый этап
+  работает только с недостающим (встали пять — с GitHub едет один minio).
+- **`downloadOnServer`** (pipeline.ts): фоновая закачка НА сервере —
+  `setsid sh -c 'exec curl -fsS -C - …' </dev/null >/dev/null 2>/tmp/log & echo $! > pidfile`
+  (stdio отвязан от SSH-канала, иначе exec виснет на незакрытых FDs, а обрыв
+  канала SIGPIPE'ит закачку); поллинг `stat -c %s` + `kill -0` по pid-файлу со
+  стейт-машиной (размер==expected → done ДО перезапусков; умер недокачанным →
+  2 ручных рестарта `curl -C -`; не растёт ≥300 с при живом → kill `-- -pgid`
+  ПОСЛЕ сверки `/proc/<pid>/cmdline` на dest — PID re-use). Идемпотентен под
+  resumeOnDrop: re-entry находит живой трансфер по pid+cmdline и просто
+  продолжает поллить. Проба достижимости `curl -fsSIL` (302 GitHub = успех):
+  reachable ТОЛЬКО при спарсенном Content-Length — без expected-размера нет
+  honest done-условия. wget НЕ используется: probe-этап гарантирует curl.
+- **Терминальный этап** ветвится по `files.images !== null`, kit-маркер —
+  только тексты провала (light: «нужен GitHub или full-bundle-установщик») и
+  README-обещания; дев-машина/легаси с kit=full без tar.gz ведут себя как
+  light, НЕ падают.
+- **Контракты**: `ProvisioningFiles` = {jarOverridePath, jarBundledPath,
+  kitVersion, kit, imageManifest, images} (jarLocalPath/PROVISIONING_JAR_URL
+  удалены); 8-й параметр пайплайна `clientFileDownloader?` (инъекция
+  downloadToFile из electron-слоя — прецедент crypto.randomBytes);
+  `serverJarUrl/serverKitAssetUrl` (artifacts.ts) — URL по ТЕГУ версии
+  клиента, НЕ latest (парность важнее availability); `parseKitMarker/
+  parseImageManifest` (тесты). readTemplates: kit.json (нет файла → "full"),
+  манифест пинов ОТДЕЛЬНО от локальных архивов (light дропнул бы весь
+  манифест, а он нужен пуллам и URL).
+- **electron/provisioning.ts**: `downloadToFile` — стрим getReader→
+  createWriteStream (НЕ arrayBuffer), stall-watchdog 300 с без общего
+  AbortSignal-капа, троттл прогресса 250 мс, отмена, unlink недописанного;
+  клиентские докачки (jar/образы) чистятся в finally прогона.
+- **Сборка**: electron-builder.yml = light (extraResources filter
+  `!**/*.tar.gz`, `!oak-server.jar` + kit-light.json → provisioning/files/
+  kit.json); electron-builder-full-bundle.yml — полный дубль (channel
+  full-bundle, artifactName «SPACE Full Bundle Setup», kit-full.json); скрипт
+  `dist:full`; release.yml: fetch kit → full-билд → вынос артефактов в
+  release-full/ (+снос release/) → чистка jar/tar.gz (manifest.json ОСТАЁТСЯ)
+  → light-билд → зеркалирование пробел→дефис ×2 → upload 2 exe + 2 blockmap +
+  latest.yml + full-bundle.yml + проверка, что оба фида ссылаются на дефисные
+  имена; CI-гейт эквивалентности критичных строк двух конфигов (дрейф = один
+  из каналов молча умирает).
+- **Маркеры**: electron/provisioning/kit-light.json / kit-full.json (git);
+  в files/ их НЕТ — dev-режим без маркера = "full" (архивы на диске).
+- Гейты: 849/849 + typecheck + build. Смоук: dist:dir-light без архивов →
+  провижининг до GitHub-этапа; канальный смоук 0.4.1 после релиза (обе
+  машины + 0.3.0-full → light). README переписан (light основной,
+  full-bundle «для оффлайна», честное ограничение GitHub).
+- Тема 2 (миграция server-to-server) — следующим раундом, downloadOnServer
+  реюзируется (контракт уже несёт headerFile/cacertFile для токен-ветки).
+
 ## Бэкап сервера + restore при провижининге + Migrate (2026-10-28, код готов: сервер 538/538 mvn, клиент 830/830 + typecheck + build; смоук pending; коммит — по команде)
 
 Реализация проработки фичи C (см. блок C в «Проработке фич» ниже — юзер-решения там).

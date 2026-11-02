@@ -402,6 +402,9 @@ export interface BackupRunInfo {
   objectBytes: number;
   failedObjects: number;
   error: string | null;
+  /** SHA-256 of the built archive (server-migration round 2026-11-02; absent on older
+   *  servers): the migration verifies the transferred bytes against it. */
+  archiveSha256?: string | null;
 }
 
 export interface BackupStatus {
@@ -419,6 +422,17 @@ export interface BackupEstimate {
   objectCount: number;
   approxDatabaseBytes: number;
   availableBytes: number;
+}
+
+/** POST /api/server/backup/migration-transfer (server-migration round 2026-11-02): the
+ *  one-shot package the NEW server consumes — the raw token appears on this response
+ *  exactly once; the digest and the size let the receiving side verify the transfer
+ *  after it lands. */
+export interface MigrationTransfer {
+  token: string;
+  expiresAt: string;
+  archiveSha256: string;
+  archiveBytes: number;
 }
 
 /** GET /api/channels/{id}/permissions/me — override-aware, per channel. The `stream`

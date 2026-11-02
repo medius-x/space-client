@@ -1645,6 +1645,17 @@ export async function startSession(baseUrl: string, mode: "login" | "register", 
           log.warn("rest", `old-session logout after re-login failed: ${error instanceof Error ? error.message : String(error)}`);
         });
       }
+      // The record's LIVE session dies BEFORE the fresh pair lands: it holds
+      // the replaced family's tokens in memory, and its 401/refresh cycle
+      // would race the new pair (live 2026-11-02: the auto-login after a
+      // re-provisioned server was wiped by the promoted background session's
+      // stale refresh half a second later — the user hit the login screen
+      // with valid tokens). openSession rebuilds on the new family right after.
+      if (existing.id === activeSession?.recordId) {
+        await teardownSession();
+      } else {
+        disposeBackgroundSession(existing.id);
+      }
       await connectionDirectory.applyTokens(existing.id, tokens, previous);
       recordId = existing.id;
     } else {

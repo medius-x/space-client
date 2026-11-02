@@ -36,6 +36,7 @@ import type {
   StorageStatus,
   BackupEstimate,
   BackupStatus,
+  MigrationTransfer,
   UserRenamedResponse,
   UserResponse,
   UserSummary,
@@ -712,11 +713,33 @@ export class RestClient {
     return `${this.baseUrl}/api/server/backup/file`;
   }
 
+  /** This session's https origin (scheme + host + port) — the migration probe
+   *  needs the OLD server's address as the NEW server will dial it. */
+  restOrigin(): string {
+    return this.baseUrl;
+  }
+
   /** Deletes the undelivered archive without downloading it (an interrupted download
    *  leaves the transfer buffer on the server; the "delete archive" button clears it).
    *  Idempotent 204. */
   async discardBackupArchive(): Promise<void> {
     await this.request<unknown>("/api/server/backup/file", { method: "DELETE" });
+  }
+
+  // --- server-to-server migration transfer (2026-11-02; needs the server's
+  // --- "server-migration" capability — check before calling, fall back to the
+  // --- through-this-computer route otherwise) ---
+
+  /** Issues the one-shot migration token for the built archive (the raw token appears
+   *  on this response exactly once). 409 when no archive waits. */
+  async issueMigrationTransfer(): Promise<MigrationTransfer> {
+    return this.request<MigrationTransfer>("/api/server/backup/migration-transfer", { method: "POST" });
+  }
+
+  /** Withdraws the migration token (the run ended ANY way — success, failure, cancel;
+   *  the client's finally-step). Idempotent. */
+  async revokeMigrationTransfer(): Promise<void> {
+    await this.request<unknown>("/api/server/backup/migration-transfer", { method: "DELETE" });
   }
 
   /** The CURRENT access token, for the main-process backup download (IPC-local;
@@ -1134,6 +1157,19 @@ export class RestClient {
       clearTimeout(timeout);
     }
     if (!response.ok) {
+      // A RE-LOGIN may have replaced this record's token family while THIS
+      // session still held the old pair in memory (live 2026-11-02: the
+      // auto-login after a re-provisioned server wrote a fresh pair, and a
+      // promoted background session's stale-token refresh wiped it half a
+      // second later — the user landed on the login screen over perfectly
+      // valid tokens). When storage already holds a DIFFERENT refresh, ours
+      // is simply superseded: keep the new family, do NOT expire the app —
+      // the caller's retry re-reads storage and continues on it.
+      const superseding = this.tokenStorage.load();
+      if (superseding !== null && superseding.refreshToken !== tokens.refreshToken) {
+        log.info("rest", "refresh rejected, but storage already holds a newer token family — continuing on it");
+        return;
+      }
       log.warn("rest", `refresh rejected (${response.status}) — session expired`);
       this.tokenStorage.clear();
       this.onSessionExpired?.();

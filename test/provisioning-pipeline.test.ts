@@ -40,7 +40,11 @@ function baseFiles(): ProvisioningFiles {
     janusConfig: "# janus config",
     janusHttpConfig: "# janus http config",
     caddyFileTemplate: "site {\n\ttls /certs/tls.crt /certs/tls.key # provisioning:tls-file\n}\n",
-    jarLocalPath: "C:/bundled/oak-server.jar",
+    jarOverridePath: null,
+    jarBundledPath: "C:/bundled/oak-server.jar",
+    kitVersion: "0.4.0",
+    kit: "full",
+    imageManifest: [],
     images: null,
   };
 }
@@ -417,7 +421,7 @@ describe("provisioning pipeline", () => {
     transport.respond("docker image inspect", { stdout: "" });
     const { events, emit } = collectEvents();
 
-    await runProvisioningPipeline(transport, baseParams(), { ...baseFiles(), images: bundledImages() }, emit, fixedRandomHex);
+    await runProvisioningPipeline(transport, baseParams(), { ...baseFiles(), imageManifest: bundledImages().manifest, images: bundledImages() }, emit, fixedRandomHex);
 
     const swapCommand = transport.commandWith("swapon /swapfile");
     expect(swapCommand).toContain("fallocate -l 2G /swapfile");
@@ -436,7 +440,7 @@ describe("provisioning pipeline", () => {
     transport.respond("docker image inspect", { stdout: "" });
     const { events, emit } = collectEvents();
 
-    await runProvisioningPipeline(transport, baseParams(), { ...baseFiles(), images: bundledImages() }, emit, fixedRandomHex);
+    await runProvisioningPipeline(transport, baseParams(), { ...baseFiles(), imageManifest: bundledImages().manifest, images: bundledImages() }, emit, fixedRandomHex);
 
     const swapCommand = transport.commandWith("swapon /swapfile");
     expect(swapCommand).toContain("swapoff /swapfile");
@@ -456,7 +460,7 @@ describe("provisioning pipeline", () => {
     transport.respond("docker image inspect", { stdout: "" });
     const { emit } = collectEvents();
 
-    await runProvisioningPipeline(transport, baseParams(), { ...baseFiles(), images: bundledImages() }, emit, fixedRandomHex);
+    await runProvisioningPipeline(transport, baseParams(), { ...baseFiles(), imageManifest: bundledImages().manifest, images: bundledImages() }, emit, fixedRandomHex);
 
     expect(transport.commandWith("swapon")).toBeNull();
     expect(transport.commandWith("swapoff")).toBeNull();
@@ -470,7 +474,7 @@ describe("provisioning pipeline", () => {
     transport.respond("docker image inspect", { stdout: "" });
     const { emit } = collectEvents();
 
-    await runProvisioningPipeline(transport, baseParams(), { ...baseFiles(), images: bundledImages() }, emit, fixedRandomHex);
+    await runProvisioningPipeline(transport, baseParams(), { ...baseFiles(), imageManifest: bundledImages().manifest, images: bundledImages() }, emit, fixedRandomHex);
 
     expect(transport.commandWith("swapon")).toBeNull();
   });
@@ -482,7 +486,7 @@ describe("provisioning pipeline", () => {
     transport.respond("docker image inspect", { stdout: "" });
     const { events, emit } = collectEvents();
 
-    await runProvisioningPipeline(transport, { ...baseParams() }, { ...baseFiles(), images: bundledImages() }, emit, fixedRandomHex);
+    await runProvisioningPipeline(transport, { ...baseParams() }, { ...baseFiles(), imageManifest: bundledImages().manifest, images: bundledImages() }, emit, fixedRandomHex);
 
     expect(transport.commandWith("docker compose pull")).toBeNull();
     // The JAR still uploads (it always does) — no IMAGE archive may travel.
@@ -498,7 +502,7 @@ describe("provisioning pipeline", () => {
     transport.respond("docker image inspect", { stdout: `MISSING ${MINIO_REF}\n` });
     const { events, emit } = collectEvents();
 
-    await runProvisioningPipeline(transport, baseParams(), { ...baseFiles(), images: bundledImages() }, emit, fixedRandomHex);
+    await runProvisioningPipeline(transport, baseParams(), { ...baseFiles(), imageManifest: bundledImages().manifest, images: bundledImages() }, emit, fixedRandomHex);
 
     // The pull succeeded on the first round — no ladder, no image-archive uploads.
     expect(transport.commandWith(`docker pull '${MINIO_REF}'`)).not.toBeNull();
@@ -517,7 +521,7 @@ describe("provisioning pipeline", () => {
     transport.respondOnce("docker image inspect", { stdout: `MISSING ${MINIO_REF}\n` });
     const { events, emit } = collectEvents();
 
-    await runProvisioningPipeline(transport, baseParams(), { ...baseFiles(), images: bundledImages() }, emit, fixedRandomHex);
+    await runProvisioningPipeline(transport, baseParams(), { ...baseFiles(), imageManifest: bundledImages().manifest, images: bundledImages() }, emit, fixedRandomHex);
 
     // Only minio's archive travelled; postgres (present) stayed home.
     expect(transport.writes.some((write) => write.path === "/opt/oak/images/minio.tar.gz"
@@ -537,7 +541,7 @@ describe("provisioning pipeline", () => {
     transport.respond("docker image inspect", { stdout: "MISSING coturn/coturn@sha256:dead\n" });
     const { events, emit } = collectEvents();
 
-    await expect(runProvisioningPipeline(transport, baseParams(), { ...baseFiles(), images: bundledImages() }, emit, fixedRandomHex))
+    await expect(runProvisioningPipeline(transport, baseParams(), { ...baseFiles(), imageManifest: bundledImages().manifest, images: bundledImages() }, emit, fixedRandomHex))
       .rejects.toBeInstanceOf(ProvisioningFailure);
     const failed = events.find((event) => event.state === "failed");
     expect(failed?.stage).toBe("compose");
@@ -829,5 +833,246 @@ describe("provisioning pipeline", () => {
       .toHaveLength(2);
     expect(transport.reconnects).toBe(1);
     expect(transport.commandWith("pgrep")).toBeNull();
+  });
+
+  // ── The unified big-content ladder (user decision 2026-11-02) ────────────
+  // The server pulls the jar and the missing image tail from GitHub ITSELF
+  // whenever it can; the client's home link joins the byte path last.
+
+  it("lets the server download the jar from GitHub — no home-link bytes", async () => {
+    const transport = new FakeProvisioningTransport();
+    scriptHappyPath(transport);
+    // The probe answers with the final hop's length; the very first poll
+    // reports a complete file (the transfer already finished).
+    transport.respond("curl -fsSIL", { code: 0, stdout: "Content-Length: 79999999\n" });
+    transport.respond("/opt/oak/oak-server.jar", { code: 0, stdout: "79999999 0 4242\n" });
+    const { events, emit } = collectEvents();
+
+    const outcome = await runProvisioningPipeline(transport, baseParams(), baseFiles(), emit, fixedRandomHex);
+
+    expect(outcome.ownerReady).toBe(true);
+    // The detached transfer runs on the server (setsid + redirected stdio),
+    // the size is polled by stat, and the bundled jar NEVER travels over SFTP.
+    expect(transport.commandWith("setsid sh -c")).toContain("curl -fsS -C -");
+    expect(transport.commandWith("setsid sh -c")).toContain("</dev/null >/dev/null");
+    expect(transport.commandWith("stat -c %s")).toContain("/opt/oak/oak-server.jar");
+    expect(transport.commands.some((command) => command.startsWith("(writeLocalFile"))).toBe(false);
+    expect(events.some((event) => event.stage === "upload" && event.state === "log"
+      && (event.detail ?? "").includes("downloading the server jar from GitHub"))).toBe(true);
+    // The GitHub URL carries the version TAG, never "latest".
+    expect(transport.commandWith("curl -fsSIL")).toContain("/releases/download/v0.4.0/oak-server.jar");
+  });
+
+  it("falls back to the bundled jar when the server cannot reach GitHub", async () => {
+    const transport = new FakeProvisioningTransport();
+    scriptHappyPath(transport);
+    // No scripted probe: the fake's default empty answer has no usable
+    // Content-Length — an unverifiable probe counts as NOT reachable.
+    const { events, emit } = collectEvents();
+
+    const outcome = await runProvisioningPipeline(transport, baseParams(), baseFiles(), emit, fixedRandomHex);
+
+    expect(outcome.ownerReady).toBe(true);
+    expect(transport.commandWith("setsid sh -c")).toBeNull();
+    expect(transport.commands.some((command) => command.includes("(writeLocalFile C:/bundled/oak-server.jar)"))).toBe(true);
+    expect(events.some((event) => event.stage === "upload" && event.state === "log"
+      && (event.detail ?? "").includes("through this computer"))).toBe(false);
+  });
+
+  it("downloads the jar through the client as the light kit's last resort", async () => {
+    const transport = new FakeProvisioningTransport();
+    scriptHappyPath(transport);
+    const downloads: string[] = [];
+    const { events, emit } = collectEvents();
+
+    const outcome = await runProvisioningPipeline(
+      transport, baseParams(), { ...baseFiles(), jarBundledPath: null, kit: "light" },
+      emit, fixedRandomHex, undefined, instantSleep,
+      (url) => {
+        downloads.push(url);
+        return Promise.resolve("C:/temp/space-provisioning-jar.jar");
+      },
+    );
+
+    expect(outcome.ownerReady).toBe(true);
+    expect(downloads).toEqual(["https://github.com/medius-x/oak-server/releases/download/v0.4.0/oak-server.jar"]);
+    expect(transport.commands.some((command) => command.includes("(writeLocalFile C:/temp/space-provisioning-jar.jar)"))).toBe(true);
+    expect(events.some((event) => event.stage === "upload" && event.state === "log"
+      && (event.detail ?? "").includes("through this computer"))).toBe(true);
+  });
+
+  it("restarts a dead server-side transfer twice, then falls back to the bundled jar", async () => {
+    const transport = new FakeProvisioningTransport();
+    scriptHappyPath(transport);
+    transport.respond("curl -fsSIL", { code: 0, stdout: "Content-Length: 79999999\n" });
+    // Every poll sees a DEAD transfer with an empty file — the bounded
+    // restarts run out and the ladder falls through to the local jar.
+    transport.respond("/opt/oak/oak-server.jar", { code: 0, stdout: "0 0 1\n" });
+    const { events, emit } = collectEvents();
+
+    const outcome = await runProvisioningPipeline(
+      transport, baseParams(), baseFiles(), emit, fixedRandomHex, undefined, instantSleep,
+    );
+
+    expect(outcome.ownerReady).toBe(true);
+    // The initial ensure-start plus the two manual restarts.
+    expect(transport.commands.filter((command) => command.includes("setsid sh -c"))).toHaveLength(3);
+    // The failure's cause is read from the transfer's log file.
+    expect(transport.commandWith("tail -3")).toContain("space-dl-oak-server.jar.log");
+    expect(transport.commands.some((command) => command.includes("(writeLocalFile C:/bundled/oak-server.jar)"))).toBe(true);
+    expect(events.some((event) => event.stage === "upload" && event.state === "log"
+      && (event.detail ?? "").includes("did not complete"))).toBe(true);
+  });
+
+  it("lets the server download the MISSING image tail from GitHub when the registry is dead", async () => {
+    const transport = new FakeProvisioningTransport();
+    scriptHappyPath(transport);
+    // minio missing on the host; every pull route fails — but GitHub answers.
+    transport.respond("docker pull", { code: 1, stderr: "error from registry: denied\n" });
+    transport.respondOnce("docker image inspect", { stdout: `MISSING ${MINIO_REF}\n` });
+    transport.respond("curl -fsSIL", { code: 0, stdout: "Content-Length: 59000000\n" });
+    transport.respond("/opt/oak/oak-server.jar", { code: 0, stdout: "79999999 0 4242\n" });
+    transport.respond("/opt/oak/images/minio.tar.gz", { code: 0, stdout: "59000000 0 777\n" });
+    transport.respond("docker load", { stdout: "Loaded image\n" });
+    const { events, emit } = collectEvents();
+
+    const outcome = await runProvisioningPipeline(
+      transport, baseParams(), { ...baseFiles(), imageManifest: bundledImages().manifest, images: bundledImages() },
+      emit, fixedRandomHex,
+    );
+
+    expect(outcome.ownerReady).toBe(true);
+    // Only minio ran through the GitHub leg (the MISSING-tail rule); the
+    // bundled archive never travelled over SFTP.
+    expect(transport.commandWith("gunzip -c /opt/oak/images/minio.tar.gz | docker load")).not.toBeNull();
+    expect(transport.commands.some((command) => command.includes("setsid sh -c") && command.includes("/opt/oak/images/minio.tar.gz"))).toBe(true);
+    // A foreign partial is cleared before the transfer (an exact-size leftover
+    // is kept — curl -C - finishes it).
+    expect(transport.commands.some((command) => command.includes('!= 59000000') && command.includes("rm -f '/opt/oak/images/minio.tar.gz'"))).toBe(true);
+    expect(transport.commands.some((command) => command.startsWith("(writeLocalFile") && command.includes("images"))).toBe(false);
+    expect(events.some((event) => event.stage === "compose" && event.state === "log"
+      && (event.detail ?? "").includes("downloaded from GitHub"))).toBe(true);
+    // The bundled rescue never ran — the GitHub leg delivered the tail.
+    expect(events.some((event) => event.stage === "compose" && event.state === "log"
+      && (event.detail ?? "").includes("bundled"))).toBe(false);
+  });
+
+  it("delivers the missing tail through the client when this light build has no bundled archives", async () => {
+    const transport = new FakeProvisioningTransport();
+    scriptHappyPath(transport);
+    // The registry is dead AND the server-side GitHub leg is unreachable
+    // (no scripted probe) — the light kit's terminal stage joins in: the
+    // client downloads the archive and uploads it over SFTP.
+    transport.respond("docker pull", { code: 1, stderr: "error from registry: denied\n" });
+    transport.respondOnce("docker image inspect", { stdout: `MISSING ${MINIO_REF}\n` });
+    transport.respond("docker load", { stdout: "Loaded image\n" });
+    const downloads: string[] = [];
+    const { events, emit } = collectEvents();
+
+    const outcome = await runProvisioningPipeline(
+      transport, baseParams(),
+      { ...baseFiles(), kit: "light", imageManifest: bundledImages().manifest, images: null },
+      emit, fixedRandomHex, undefined, instantSleep,
+      (url) => {
+        downloads.push(url);
+        return Promise.resolve(`C:/temp/space-kit-${url.split("/").pop()}`);
+      },
+    );
+
+    expect(outcome.ownerReady).toBe(true);
+    expect(downloads).toEqual(["https://github.com/medius-x/oak-server/releases/download/v0.4.0/minio.tar.gz"]);
+    expect(transport.commands.some((command) => command.includes("(writeLocalFile C:/temp/space-kit-minio.tar.gz)"))).toBe(true);
+    expect(transport.commandWith("gunzip -c /opt/oak/images/minio.tar.gz | docker load")).not.toBeNull();
+    expect(events.some((event) => event.stage === "compose" && event.state === "log"
+      && (event.detail ?? "").includes("through this computer"))).toBe(true);
+    expect(events.some((event) => event.stage === "compose" && event.state === "log"
+      && (event.detail ?? "").includes("bundled"))).toBe(false);
+  });
+
+  it("fails a light run honestly when no delivery route exists at all", async () => {
+    const transport = new FakeProvisioningTransport();
+    scriptHappyPath(transport);
+    transport.respond("docker pull", { code: 1, stderr: "error from registry: denied\n" });
+    transport.respondOnce("docker image inspect", { stdout: `MISSING ${MINIO_REF}\n` });
+    // No bundled archives AND no client downloader — nothing can deliver.
+    const { events, emit } = collectEvents();
+
+    await expect(runProvisioningPipeline(
+      transport, baseParams(),
+      { ...baseFiles(), kit: "light", imageManifest: bundledImages().manifest, images: null },
+      emit, fixedRandomHex, undefined, instantSleep,
+    )).rejects.toThrow(ProvisioningFailure);
+
+    const failure = events.find((event) => event.state === "failed");
+    expect(failure?.stage).toBe("compose");
+    expect(failure?.detail).toContain("full-bundle installer");
+  });
+
+  // ── The direct server-to-server migration leg (2026-11-02) ────────────────
+
+  it("pulls the migration archive from the old server on the one-shot token", async () => {
+    const transport = new FakeProvisioningTransport();
+    scriptHappyPath(transport);
+    // The transfer poll reports a complete file right away.
+    transport.respond("/opt/oak/restore/backup.zip", { code: 0, stdout: "12345 0 999\n" });
+    transport.respond("docker logs", { stdout: "[restore] RESTORE COMPLETED — 5 statement(s), 0 object(s)\n" });
+    const { events, emit } = collectEvents();
+    const migrationTransfer = {
+      sourceUrl: "https://old.example.com",
+      token: "t".repeat(43),
+      archiveSha256: "a".repeat(64),
+      archiveBytes: 12345,
+      certificatePem: "-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----\n",
+    };
+
+    const outcome = await runProvisioningPipeline(
+      transport, baseParams({ migrationTransfer }), baseFiles(), emit, fixedRandomHex,
+    );
+
+    // The finish phase is needsLogin (restored), never an automatic login.
+    expect(outcome.restored).toBe(true);
+    expect(outcome.ownerReady).toBe(false);
+    // The token rides a 0600 FILE (never a command line — ps would see it), the
+    // pinned CA rides as the curl CA, and the URL is the token-gated endpoint.
+    expect(transport.writeToFile("/opt/oak/transfer/.migration-auth"))
+      .toBe(`X-Space-Migration-Token: ${"t".repeat(43)}\n`);
+    expect(transport.writeToFile("/opt/oak/transfer/old-ca.pem")).toContain("BEGIN CERTIFICATE");
+    const transferCommand = transport.commands.find((command) => command.includes("setsid sh -c")
+      && command.includes("transfer/file"));
+    expect(transferCommand).toContain("--cacert");
+    expect(transferCommand).toContain("/opt/oak/transfer/old-ca.pem");
+    expect(transferCommand).toContain("-H @");
+    expect(transferCommand).toContain("/opt/oak/transfer/.migration-auth");
+    expect(transferCommand).toContain("https://old.example.com/api/server/backup/transfer/file");
+    // The transferred bytes are verified against the issued digest.
+    expect(transport.commandWith("sha256sum -c")).toContain("a".repeat(64));
+    // The credential files are scrubbed when the leg ends.
+    expect(transport.commandWith("rm -f /opt/oak/transfer/.migration-auth /opt/oak/transfer/old-ca.pem")).not.toBeNull();
+    // No archive ever travelled over SFTP (only the jar did).
+    expect(transport.commands.some((command) => command.includes("(writeLocalFile") && command.includes("backup.zip"))).toBe(false);
+    expect(events.some((event) => event.stage === "restore" && event.state === "log"
+      && (event.detail ?? "").includes("straight from the old one"))).toBe(true);
+  });
+
+  it("refuses a direct transfer onto an adopted server, like a local restore", async () => {
+    const transport = new FakeProvisioningTransport();
+    scriptHappyPath(transport);
+    // An existing compose file flips the layout check to adopt.
+    transport.files.set("/opt/oak/docker-compose.yml", "services: {}");
+    const { events, emit } = collectEvents();
+
+    await expect(runProvisioningPipeline(
+      transport, baseParams({ migrationTransfer: {
+        sourceUrl: "https://old.example.com",
+        token: "t".repeat(43),
+        archiveSha256: "a".repeat(64),
+        archiveBytes: 12345,
+        certificatePem: null,
+      } }),
+      baseFiles(), emit, fixedRandomHex,
+    )).rejects.toThrow(ProvisioningFailure);
+
+    const failure = events.find((event) => event.state === "failed");
+    expect(failure?.stage).toBe("layout");
   });
 });

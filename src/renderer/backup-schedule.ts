@@ -17,6 +17,20 @@ const TICK_MILLIS = 60_000;
 /** recordId → ISO date of the last fired scheduled backup. */
 const firedOn = new Map<string, string>();
 
+/** recordIds whose schedule is PAUSED (the migration window, 2026-11-02): a
+ *  scheduled pass would REPLACE the single-slot archive the migration is
+ *  about to transfer — the digest handed to the new server would silently
+ *  stop matching. The migration suppresses for its window and releases after. */
+const suppressed = new Set<string>();
+
+export function suppressBackupScheduleFor(recordId: string): void {
+  suppressed.add(recordId);
+}
+
+export function releaseBackupScheduleFor(recordId: string): void {
+  suppressed.delete(recordId);
+}
+
 let ticking = false;
 
 export function startBackupScheduleTicking(): void {
@@ -30,6 +44,9 @@ export function startBackupScheduleTicking(): void {
 async function fireIfDue(): Promise<void> {
   const session = sessionBinding.getSnapshot();
   if (session === null) {
+    return;
+  }
+  if (suppressed.has(session.recordId)) {
     return;
   }
   const schedule = settingsStore.getSnapshot().backupSchedules[session.recordId];

@@ -294,6 +294,16 @@ export interface ProvisioningFormParams {
    *  backup step into the OS temp dir and is ONE-SHOT — the main process
    *  deletes it when the run ends any way (success, failure, cancel). */
   migrationArchive?: boolean;
+  /** The DIRECT server-to-server transfer (2026-11-02): the restore stage has
+   *  the new server pull the archive from the old one (curl + the one-shot
+   *  token). Mutually exclusive with backupArchivePath. */
+  migrationTransfer?: {
+    sourceUrl: string;
+    token: string;
+    archiveSha256: string;
+    archiveBytes: number;
+    certificatePem: string | null;
+  } | null;
 }
 
 /** One pipeline stage report; "connect" and "download" are main-side stages
@@ -330,11 +340,38 @@ export type ProvisioningIpcEvent =
   | { kind: "succeeded"; outcome: ProvisioningOutcomeIpc }
   | { kind: "failed"; stage: string; message: string };
 
+/** The migration probe's request (the SSH fields of the provisioning form plus
+ *  the transfer source); main resolves the OLD server's pinned fingerprint
+ *  itself — the pin store lives in the main process. */
+export interface MigrationProbeRequestBridge {
+  host: string;
+  sshPort: number;
+  sshLogin: string;
+  sshPassword: string | null;
+  sshKeyPath: string | null;
+  sshKeyPassphrase: string | null;
+  sourceUrl: string;
+  token: string;
+}
+
+export interface MigrationProbeResultBridge {
+  direct: boolean;
+  reason: string;
+  certificatePem: string | null;
+}
+
 export interface ProvisioningBridge {
   /** Start a run; false = rejected outright (already running / bad params). */
   start(params: ProvisioningFormParams): Promise<boolean>;
   /** Drop the SSH connection — the in-flight step fails as "cancelled". */
   cancel(): Promise<boolean>;
+  /** The migration leg's reachability probe (2026-11-02): one curl from the
+   *  NEW server against the OLD one's transfer endpoint — direct=true arms
+   *  the server-to-server route, false falls back to this computer. */
+  probeMigration(request: MigrationProbeRequestBridge): Promise<MigrationProbeResultBridge>;
+  /** SHA-256 of a downloaded migration archive (temp/downloads only; null =
+   *  unreadable path or read error). */
+  hashFile(absolutePath: string): Promise<string | null>;
   /** The step/result stream (single subscriber). */
   onEvent(callback: (event: ProvisioningIpcEvent) => void): void;
 }

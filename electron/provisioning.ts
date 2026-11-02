@@ -10,10 +10,11 @@ import { Client } from "ssh2";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
-import { app, net } from "electron";
+import { app, net, session as electronSession } from "electron";
 import {
   ConnectionLostError,
   runProvisioningPipeline,
+  type ClientFileDownloader,
   type ProvisioningFiles,
   type ProvisioningOutcome,
   type ProvisioningStage,
@@ -21,6 +22,7 @@ import {
   type ProvisioningTransport,
 } from "../src/domain/provisioning/pipeline";
 import { validateProvisioningParams, type ProvisioningParams } from "../src/domain/provisioning/params";
+import { parseImageManifest, parseKitMarker } from "../src/domain/provisioning/artifacts";
 import { currentLang, tf, type MessageKey, type TranslateParams } from "../src/domain/i18n/i18n";
 
 export type ProvisioningIpcEvent =
@@ -38,16 +40,24 @@ export interface ProvisioningHooks {
   log(line: string): void;
 }
 
-/** The last-resort jar source: the latest GitHub release artifact (round D
- *  publishes it). The bundled jar next to the templates is the default. */
-const PROVISIONING_JAR_URL = "https://github.com/medius-x/oak-server/releases/latest/download/oak-server.jar";
-const JAR_DOWNLOAD_TIMEOUT_MS = 300_000;
+/** The last-resort jar source: the GitHub release artifact of the tag matching
+ *  THIS client's version (parity beats availability — "latest" could hand out
+ *  a server the client was not built against). The bundled jar next to the
+ *  templates is the default. */
 /** No upload byte for this long = the link silently stopped delivering while
  *  ssh2 still considers the connection healthy (live 2026-10-28: a 79 MB jar
  *  upload froze mid-flight for good; the connection-level keepalive kept
  *  passing). Generous on purpose — crawling links move a 4 MB chunk in well
  *  under this. */
 const UPLOAD_STALL_TIMEOUT_MS = 300_000;
+/** The download twin of the upload watchdog: no body byte for this long = the
+ *  fetch is dead in the water (a stalled response body never errors on its
+ *  own). Deliberately NO overall AbortSignal cap — a crawling link may take
+ *  half an hour for a 190 MB archive and still be making progress. */
+const DOWNLOAD_STALL_TIMEOUT_MS = 300_000;
+/** IPC progress is throttled by time, not bytes: a fast link pumps megabytes
+ *  per read and must not flood the renderer with one event per chunk. */
+const DOWNLOAD_PROGRESS_MIN_INTERVAL_MS = 250;
 
 // Dev (npm run dev AND the unpacked `npm start`): the templates live in the
 // project tree next to this source file. Packaged: electron-builder's
@@ -59,42 +69,33 @@ const TEMPLATE_ROOT = app.isPackaged
   ? path.join(process.resourcesPath, "provisioning", "files")
   : path.resolve(app.getAppPath(), "electron", "provisioning", "files");
 
-function readTemplates(): Omit<ProvisioningFiles, "jarLocalPath"> {
+function readTemplates(): Omit<ProvisioningFiles, "jarOverridePath" | "jarBundledPath" | "kitVersion"> {
   const read = (relativePath: string): string => {
     // Git's autocrlf may hand out CRLF on Windows; janus's libconfig parser
     // and the shell shebangs expect LF — normalize every text template.
     return fs.readFileSync(path.join(TEMPLATE_ROOT, relativePath), "utf8").replace(/\r\n/g, "\n");
   };
-  // The bundled image set (npm run images:sync): manifest.json + the archives.
-  // A build without it simply ships no fallback — the pull ladder covers it.
-  const imagesDirectory = path.join(TEMPLATE_ROOT, "images");
-  const manifestPath = path.join(imagesDirectory, "manifest.json");
-  let images: ProvisioningFiles["images"] = null;
-  if (fs.existsSync(manifestPath)) {
-    try {
-      const parsed: unknown = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-      if (Array.isArray(parsed)) {
-        // Entries whose archive is absent (a fresh clone has the manifest but
-        // not the tarballs) drop out — those images fall back to the pull
-        // ladder instead of failing the upload.
-        const manifest = parsed.flatMap((entry) => {
-          if (typeof entry !== "object" || entry === null) {
-            return [];
-          }
-          const record = entry as { ref?: unknown; archive?: unknown; bytes?: unknown };
-          return typeof record.ref === "string" && typeof record.archive === "string" && typeof record.bytes === "number"
-            && fs.existsSync(path.join(imagesDirectory, record.archive))
-            ? [{ ref: record.ref, archive: record.archive, bytes: record.bytes }]
-            : [];
-        });
-        if (manifest.length > 0) {
-          images = { manifest, directory: imagesDirectory };
-        }
-      }
-    } catch (error) {
-      appendTemplateLog(`image manifest unreadable (${error instanceof Error ? error.message : String(error)}) — bundled images disabled`);
-    }
+  const readOrNull = (relativePath: string): string | null => {
+    const filePath = path.join(TEMPLATE_ROOT, relativePath);
+    return fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : null;
+  };
+  // The kit marker (light/full — user decision 2026-10-29): the FULL bundle
+  // ships the server kit in extraResources, the LIGHT one ships only the
+  // templates + manifest. Pre-0.4.0 installs and dev trees carry no marker —
+  // they keep the historical "full" reading.
+  const kit = parseKitMarker(readOrNull("kit.json"));
+  // The manifest is the ALWAYS-present pin source for both kits. The ARCHIVES
+  // are the full kit's own: entries whose archive is absent (a light build, a
+  // fresh clone) drop out of the bundled set — the ladder then covers those
+  // images from the registry/GitHub instead of failing the upload.
+  const manifestContent = readOrNull(path.join("images", "manifest.json"));
+  const imageManifest = parseImageManifest(manifestContent) ?? [];
+  if (manifestContent !== null && imageManifest.length === 0) {
+    appendTemplateLog("image manifest unreadable — digest pins disabled, the pull ladder falls back to compose refs");
   }
+  const imagesDirectory = path.join(TEMPLATE_ROOT, "images");
+  const archived = imageManifest.filter((entry) => fs.existsSync(path.join(imagesDirectory, entry.archive)));
+  const images: ProvisioningFiles["images"] = archived.length > 0 ? { manifest: archived, directory: imagesDirectory } : null;
   return {
     composeFile: read("docker-compose.yml"),
     dockerfileServer: read("Dockerfile.server"),
@@ -102,6 +103,8 @@ function readTemplates(): Omit<ProvisioningFiles, "jarLocalPath"> {
     janusConfig: read(path.join("janus", "janus.jcfg")),
     janusHttpConfig: read(path.join("janus", "janus.transport.http.jcfg")),
     caddyFileTemplate: read(path.join("caddy", "Caddyfile")),
+    kit,
+    imageManifest,
     images,
   };
 }
@@ -301,7 +304,7 @@ export class Ssh2Transport implements ProvisioningTransport {
     return outcome;
   }
 
-  async writeFile(remotePath: string, contents: string | Uint8Array): Promise<void> {
+  async writeFile(remotePath: string, contents: string | Uint8Array, options?: { mode?: number }): Promise<void> {
     if (!this.connected) {
       throw new ConnectionLostError("connection closed before the write started");
     }
@@ -309,7 +312,12 @@ export class Ssh2Transport implements ProvisioningTransport {
     let unregisterForceReject: () => void = () => undefined;
     await new Promise<void>((resolve, reject) => {
       unregisterForceReject = this.registerForceReject(() => reject(new CancelledByUserError()));
-      const writeStream = sftp.createWriteStream(remotePath);
+      // The mode matters for the migration leg's credential files: a token file
+      // must be 0600 — world-readable would hand the one-shot archive key to
+      // any local user of the fresh box.
+      const writeStream = options?.mode !== undefined
+        ? sftp.createWriteStream(remotePath, { mode: options.mode })
+        : sftp.createWriteStream(remotePath);
       writeStream.on("close", () => resolve());
       writeStream.on("error", reject);
       writeStream.end(contents);
@@ -505,51 +513,92 @@ export class Ssh2Transport implements ProvisioningTransport {
 
 let activeRun: { transport: Ssh2Transport } | null = null;
 
-/** A resolved jar source: the LOCAL path to upload from + a cleanup for the
- *  downloaded-to-temp variant. Every large file (jar, image archives) uploads
- *  through the SAME streaming writeLocalFile path — identical speed and
- *  behaviour by construction. */
-interface JarSource {
-  localPath: string;
-  cleanup: (() => void) | null;
-}
-
 /**
- * The jar source ladder (user decision, 2026-10-12): a local path from the
- * Advanced section ALWAYS wins; otherwise the jar BUNDLED with this client
- * build (the version guarantee — the client deploys the server it was built
- * against); a GitHub release download remains the last-resort fallback for
- * builds packaged without the jar.
+ * Streams a large HTTP body straight to disk — the jar and (light kit) the
+ * image archives must NEVER buffer through arrayBuffer in memory (79–190 MB is
+ * swap roulette). Precedent: the backup downloader's reader→writeStream loop
+ * (electron/backups.ts). A stall watchdog replaces any overall deadline: a
+ * crawling link may legitimately take half an hour for a big archive, but a
+ * link that stops delivering bytes entirely is dead. A failed or aborted
+ * download removes the partial file — a half-written archive must never look
+ * like a usable source. Returns the number of bytes written.
  */
-async function resolveJarSource(jarPath: string | null, emit: (event: ProvisioningIpcEvent) => void): Promise<JarSource> {
-  if (jarPath !== null && jarPath.trim().length > 0) {
-    const localPath = jarPath.trim();
-    emit({ kind: "step", stage: "download", state: "done", detail: `server jar read from ${path.basename(localPath)}` });
-    return { localPath, cleanup: null };
+async function downloadToFile(
+  sourceUrl: string,
+  destinationPath: string,
+  onProgress: (bytesReceived: number, bytesTotal: number | null) => void,
+  shouldAbort?: () => boolean,
+): Promise<number> {
+  const response = await net.fetch(sourceUrl);
+  if (!response.ok || response.body === null) {
+    throw new Error(`download failed (HTTP ${response.status})`);
   }
-  const bundledJarPath = path.join(TEMPLATE_ROOT, "oak-server.jar");
-  if (fs.existsSync(bundledJarPath)) {
-    const megabytes = Math.round(fs.statSync(bundledJarPath).size / 1024 / 1024);
-    emit({
-      kind: "step",
-      stage: "download",
-      state: "done",
-      detail: `using the bundled server jar (${megabytes} MB)`,
+  const bytesTotal = response.headers.has("content-length") ? Number(response.headers.get("content-length")) : null;
+  const reader = response.body.getReader();
+  const writeStream = fs.createWriteStream(destinationPath);
+  let writeStreamError: Error | null = null;
+  writeStream.on("error", (error: Error) => {
+    writeStreamError = error;
+  });
+  let stallTimer: NodeJS.Timeout | null = null;
+  let stalledByWatchdog = false;
+  const clearStallTimer = (): void => {
+    if (stallTimer !== null) {
+      clearTimeout(stallTimer);
+      stallTimer = null;
+    }
+  };
+  let bytesReceived = 0;
+  let lastProgressAt = 0;
+  try {
+    for (;;) {
+      if (shouldAbort?.() === true) {
+        throw new Error("cancelled by the user");
+      }
+      // Re-arm on every iteration: "progress" means bytes keep arriving,
+      // however slowly — the watchdog must not punish a merely slow link.
+      stallTimer = setTimeout(() => {
+        // Cancel unblocks the pending read() (it then reports done) — the
+        // flag above tells the loop this was a stall, not an end of body.
+        stalledByWatchdog = true;
+        void reader.cancel().catch(() => undefined);
+      }, DOWNLOAD_STALL_TIMEOUT_MS);
+      const chunk = await reader.read();
+      clearStallTimer();
+      if (stalledByWatchdog) {
+        throw new Error(
+          `the download of ${path.basename(destinationPath)} stalled — no bytes for ${Math.round(DOWNLOAD_STALL_TIMEOUT_MS / 1000)} s`);
+      }
+      if (chunk.done) {
+        break;
+      }
+      bytesReceived += chunk.value.byteLength;
+      const now = Date.now();
+      if (now - lastProgressAt >= DOWNLOAD_PROGRESS_MIN_INTERVAL_MS) {
+        lastProgressAt = now;
+        onProgress(bytesReceived, bytesTotal);
+      }
+      // Await the write: disk backpressure paces the reads honestly.
+      await new Promise<void>((resolveWrite, rejectWrite) => {
+        writeStream.write(chunk.value, (error) => (error === undefined ? resolveWrite() : rejectWrite(error)));
+      });
+    }
+    // Drain fully — resolve only after every buffered byte hit the disk.
+    await new Promise<void>((resolveClose) => {
+      writeStream.once("close", resolveClose);
+      writeStream.end();
     });
-    return { localPath: bundledJarPath, cleanup: null };
+    if (writeStreamError !== null) {
+      throw writeStreamError;
+    }
+    return bytesReceived;
+  } catch (error) {
+    clearStallTimer();
+    writeStream.destroy();
+    await reader.cancel().catch(() => undefined);
+    await fs.promises.unlink(destinationPath).catch(() => undefined);
+    throw error instanceof Error ? error : new Error(String(error));
   }
-  emit({ kind: "step", stage: "download", state: "start", detail: "no bundled jar — downloading the latest server release from GitHub" });
-  const response = await net.fetch(PROVISIONING_JAR_URL, { signal: AbortSignal.timeout(JAR_DOWNLOAD_TIMEOUT_MS) });
-  if (!response.ok) {
-    throw new Error(
-      `the latest release jar is not available (HTTP ${response.status}) — pick a local oak-server.jar in Advanced`,
-    );
-  }
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  const tempPath = path.join(app.getPath("temp"), `space-provisioning-jar-${Date.now()}.jar`);
-  await fs.promises.writeFile(tempPath, bytes);
-  emit({ kind: "step", stage: "download", state: "done", detail: `server jar downloaded (${Math.round(bytes.byteLength / 1024 / 1024)} MB)` });
-  return { localPath: tempPath, cleanup: () => void fs.promises.unlink(tempPath).catch(() => undefined) };
 }
 
 /** The migrate flow's one-shot archive (user decision 2026-10-28): deleted when
@@ -609,7 +658,9 @@ export async function startProvisioningRun(params: ProvisioningParams, hooks: Pr
   };
 
   let transport: Ssh2Transport | null = null;
-  let jarCleanup: (() => void) | null = null;
+  // The light kit's client-side downloads (jar / image archives fetched to
+  // temp when the server cannot reach GitHub) — removed on EVERY exit.
+  const downloadedKitFiles: string[] = [];
   // The last stage the pipeline touched — a cancel/failure surfacing without
   // its own stage (transport-level errors) is reported against THE step the
   // user was watching, not a phantom "connect".
@@ -617,13 +668,6 @@ export async function startProvisioningRun(params: ProvisioningParams, hooks: Pr
   cancellationRequested = false;
   activeRun = { transport: null as unknown as Ssh2Transport };
   try {
-    emit({ kind: "step", stage: "download", state: "start", detail: "resolving the server jar" });
-    const jarSource = await resolveJarSource(params.jarPath, emit);
-    jarCleanup = jarSource.cleanup;
-    if (cancellationRequested) {
-      throw new Error("cancelled by the user");
-    }
-
     emit({ kind: "step", stage: "connect", state: "start", detail: `connecting to ${params.host.trim()} as ${params.sshLogin.trim()}` });
     transport = await Ssh2Transport.connect(params);
     if (cancellationRequested) {
@@ -633,12 +677,32 @@ export async function startProvisioningRun(params: ProvisioningParams, hooks: Pr
     emit({ kind: "step", stage: "connect", state: "done" });
 
     templateWarningSink = hooks.log;
-    const files: ProvisioningFiles = { ...readTemplates(), jarLocalPath: jarSource.localPath };
+    // The jar sources (the ladder lives in the pipeline): an Advanced-section
+    // override ALWAYS wins; otherwise the bundled jar (full kit) is the local
+    // fallback while the SERVER-side GitHub download is tried first.
+    const jarOverridePath = params.jarPath !== null && params.jarPath.trim().length > 0 ? params.jarPath.trim() : null;
+    const bundledJarPath = path.join(TEMPLATE_ROOT, "oak-server.jar");
+    const files: ProvisioningFiles = {
+      ...readTemplates(),
+      jarOverridePath,
+      jarBundledPath: fs.existsSync(bundledJarPath) ? bundledJarPath : null,
+      kitVersion: app.getVersion(),
+    };
+    // The client-side leg of the big-content ladder: fetches a kit asset to a
+    // local temp file (streamed, stall-watched, cancellable) and hands the
+    // path back for the SFTP upload. Only ever used when the server itself
+    // cannot reach GitHub — the home link joins the byte path last.
+    const clientFileDownloader: ClientFileDownloader = async (url, fileName, onProgress) => {
+      const tempPath = path.join(app.getPath("temp"), `space-provisioning-kit-${Date.now()}-${fileName}`);
+      downloadedKitFiles.push(tempPath);
+      await downloadToFile(url, tempPath, onProgress, () => cancellationRequested);
+      return tempPath;
+    };
     // The step-detail translator reads the CURRENT main-process language, so a
     // language flip mid-run recolors the steps that have not fired yet.
     const translate = (key: MessageKey, translateParams?: TranslateParams): string => tf(currentLang(), key, translateParams);
     const outcome = await runProvisioningPipeline(transport, params, files, stepEmit, (bytes) =>
-      crypto.randomBytes(bytes).toString("hex"), translate,
+      crypto.randomBytes(bytes).toString("hex"), translate, undefined, clientFileDownloader,
     );
     hooks.onSucceeded(outcome);
     emit({ kind: "succeeded", outcome });
@@ -654,7 +718,9 @@ export async function startProvisioningRun(params: ProvisioningParams, hooks: Pr
     hooks.log(`[provisioning] FAILED (${stage}): ${message}`);
     return false;
   } finally {
-    jarCleanup?.();
+    for (const tempPath of downloadedKitFiles) {
+      void fs.promises.unlink(tempPath).catch(() => undefined);
+    }
     transport?.close();
     deleteMigrationArchive(params, hooks.log);
     activeRun = null;
@@ -664,10 +730,203 @@ export async function startProvisioningRun(params: ProvisioningParams, hooks: Pr
 
 /** Cancels the run: drops the SSH connection if it is up (the in-flight step
  *  fails), and arms the flag for the pre-connect phases — the jar download
- *  and the connection itself check it and stop instead of continuing. */
+ *  and the connection itself check it and stop instead of continuing. The
+ *  detached server-side downloads are killed by their marker first (their
+ *  stdio is off the channel, so the connection drop alone would leave them
+ *  running). */
 let cancellationRequested = false;
 
-export function cancelProvisioningRun(): void {
+export async function cancelProvisioningRun(): Promise<void> {
   cancellationRequested = true;
+  const transport = activeRun?.transport;
+  if (transport != null) {
+    try {
+      // Best-effort, bounded: the transport is about to close anyway.
+      await transport.exec("pkill -f space-provisioning-download || true", { timeoutMs: 5_000 });
+    } catch {
+      // the link may already be dead — close() below still rejects everything
+    }
+  }
   activeRun?.transport?.close();
+}
+
+// ---------------------------------------------------------------------------
+// The migration leg's reachability probe (2026-11-02)
+// ---------------------------------------------------------------------------
+
+export interface MigrationProbeRequest {
+  /** The SSH side of the NEW server (the same fields the provisioning form
+   *  carries; validated by the same validateProvisioningParams gate). */
+  host: string;
+  sshPort: number;
+  sshLogin: string;
+  sshPassword: string | null;
+  sshKeyPath: string | null;
+  sshKeyPassphrase: string | null;
+  /** The OLD server's https origin the NEW server will pull the archive from. */
+  sourceUrl: string;
+  /** The one-shot migration token (lands in a 0600 file, never a command line). */
+  token: string;
+  /** The OLD server's pinned TOFU fingerprint (hex) — gates the PEM capture. */
+  pinnedFingerprint: string | null;
+}
+
+export interface MigrationProbeResult {
+  direct: boolean;
+  /** The failure reason when direct=false (the migration log line). */
+  reason: string;
+  /** The OLD server's certificate in PEM when a pin exists and matched —
+   *  rides into provisioning:start as migrationTransfer.certificatePem. */
+  certificatePem: string | null;
+}
+
+/**
+ * Captures the OLD server's certificate through a ONE-SHOT verifyProc on the
+ * session: the REST calls never surface a VALID certificate (only failures
+ * reach certificate-error), so the PEM — which the receiving curl pins with
+ * --cacert — is taken here. The capture is only armed when a TOFU pin exists
+ * (a CA-valid domain deployment needs no PEM: the receiving system roots
+ * verify it); the pin must match, or nothing is captured (the probe then runs
+ * without --cacert and fails honestly → the through-this-computer fallback).
+ */
+async function captureServerCertificatePem(hostname: string, pinnedFingerprint: string | null): Promise<string | null> {
+  if (pinnedFingerprint === null) {
+    return null;
+  }
+  const session = electronSession.defaultSession;
+  let captured: string | null = null;
+  let settled = false;
+  const verifyProc = (request: { hostname: string; certificate: Electron.Certificate }, callback: (verificationResult: number) => void): void => {
+    if (!settled && request.hostname === hostname) {
+      settled = true;
+      const fingerprint = certFingerprintOfProc(request.certificate);
+      if (fingerprint === pinnedFingerprint.toUpperCase()) {
+        captured = request.certificate.data;
+        callback(0); // the very pin the user already trusted — accept
+        return;
+      }
+    }
+    callback(-2); // not ours (or already captured) — Chromium's default verdict
+  };
+  session.setCertificateVerifyProc(verifyProc);
+  try {
+    await net.fetch(`https://${hostname}/api/server`, { signal: AbortSignal.timeout(10_000) });
+  } catch {
+    // The response body does not matter — only the TLS handshake (a non-2xx or
+    // even a transport failure past the handshake still captured the cert).
+  } finally {
+    session.setCertificateVerifyProc(null);
+  }
+  return captured;
+}
+
+/** SHA-256 of a certificate's DER — the same normalization the pin store uses. */
+function certFingerprintOfProc(certificate: Electron.Certificate): string {
+  if (typeof certificate.data !== "string" || certificate.data === "") {
+    return "";
+  }
+  const der = Buffer.from(certificate.data.replace(/-----(?:BEGIN|END) CERTIFICATE-----|\s/g, ""), "base64");
+  if (der.length === 0) {
+    return "";
+  }
+  return crypto.createHash("sha256").update(der).digest("hex").toUpperCase();
+}
+
+/**
+ * Probes whether the NEW server can pull the migration archive straight from
+ * the OLD one: a short-lived SSH session writes the token (0600) and — when
+ * captured — the pinned CA file, runs ONE curl against the transfer endpoint
+ * (reachability + token validity + TLS trust in a single command) and reports
+ * the verdict. The probe files are cleaned up before the session closes; the
+ * token is NOT consumed by it (probe requests never count as a transfer).
+ */
+export async function probeMigrationDirectTransfer(request: MigrationProbeRequest): Promise<MigrationProbeResult> {
+  const sshParams: ProvisioningParams = {
+    host: request.host,
+    sshPort: request.sshPort,
+    sshLogin: request.sshLogin,
+    sshPassword: request.sshPassword,
+    sshKeyPath: request.sshKeyPath,
+    sshKeyPassphrase: request.sshKeyPassphrase,
+    domain: null,
+    firewall: false,
+    adminLogin: "probe",
+    adminNickname: null,
+    adminPassword: "probe-probe",
+    jarPath: null,
+    backupArchivePath: null,
+  };
+  const validation = validateProvisioningParams(sshParams);
+  if (validation !== null) {
+    return { direct: false, reason: validation, certificatePem: null };
+  }
+  if (!/^https:\/\/[A-Za-z0-9.:-]+$/.test(request.sourceUrl) || !/^[A-Za-z0-9_-]{20,100}$/.test(request.token)) {
+    return { direct: false, reason: "the migration source or token failed validation", certificatePem: null };
+  }
+  const hostname = new URL(request.sourceUrl).hostname;
+  const certificatePem = await captureServerCertificatePem(hostname, request.pinnedFingerprint);
+  const workDir = "/tmp/space-migration-probe";
+  const authFile = `${workDir}/.migration-auth`;
+  const caFile = `${workDir}/old-ca.pem`;
+  let transport: Ssh2Transport | null = null;
+  try {
+    transport = await Ssh2Transport.connect(sshParams);
+    await transport.exec(`mkdir -p ${workDir}`, { timeoutMs: 15_000 });
+    await transport.writeFile(authFile, `X-Space-Migration-Token: ${request.token}\n`, { mode: 0o600 });
+    if (certificatePem !== null) {
+      await transport.writeFile(caFile, certificatePem, { mode: 0o600 });
+    }
+    const trustArgs = certificatePem !== null ? ` --cacert ${caFile}` : "";
+    const probe = await transport.exec(
+      `curl -fsS --max-time 10${trustArgs} -H @${authFile} -o /dev/null -w '%{http_code}' ${request.sourceUrl}/api/server/backup/transfer/status`,
+      { timeoutMs: 30_000 },
+    );
+    const direct = probe.code === 0 && probe.stdout.trim() === "204";
+    return {
+      direct,
+      reason: direct
+        ? "the new server reaches the old one directly"
+        : `the direct probe failed (exit ${probe.code}, HTTP ${probe.stdout.trim() || "none"})`,
+      certificatePem,
+    };
+  } catch (error) {
+    return {
+      direct: false,
+      reason: `the direct probe could not run: ${error instanceof Error ? error.message : String(error)}`,
+      certificatePem,
+    };
+  } finally {
+    if (transport !== null) {
+      try {
+        await transport.exec(`rm -rf ${workDir}`, { timeoutMs: 10_000 });
+      } catch {
+        // best effort — the files carry only the short-lived token
+      }
+      transport.close();
+    }
+  }
+}
+
+/** SHA-256 of a local file (the fallback leg verifies the downloaded archive
+ *  against the digest the issue response carried — a mid-flight archive
+ *  replacement must not sail through on transport trust alone). Reads only
+ *  inside the OS temp/downloads trees — never an arbitrary caller path. */
+export async function hashLocalFile(absolutePath: string): Promise<string | null> {
+  const resolved = path.resolve(absolutePath.trim());
+  const allowedRoot = (root: string): boolean => {
+    const relative = path.relative(path.resolve(root), resolved);
+    return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative);
+  };
+  if (!allowedRoot(app.getPath("temp")) && !allowedRoot(app.getPath("downloads"))) {
+    return null;
+  }
+  return await new Promise<string | null>((resolve) => {
+    const digest = crypto.createHash("sha256");
+    const stream = fs.createReadStream(resolved);
+    stream.on("data", (chunk: string | Buffer) => {
+      digest.update(chunk);
+    });
+    stream.on("end", () => resolve(digest.digest("hex")));
+    stream.on("error", () => resolve(null));
+  });
 }

@@ -104,6 +104,78 @@ export function parseCurlWithStatus(stdout: string): { status: number; body: str
   return { status, body: stdout.slice(0, markerIndex) };
 }
 
+/** The server-kit release asset URLs, pinned to the TAG equal to the client's
+ *  version (user decision 2026-10-29): parity beats availability — the latest
+ *  release shortcut can hand out a server the client was NOT built against,
+ *  while a missing tag is an honest, immediate failure. The archive names are
+ *  the FLAT manifest.json names (the publishing script owns them — rule D1:
+ *  the consumer adapts). */
+export function serverJarUrl(appVersion: string): string {
+  return `https://github.com/medius-x/oak-server/releases/download/v${appVersion}/oak-server.jar`;
+}
+
+export function serverKitAssetUrl(appVersion: string, archive: string): string {
+  return `https://github.com/medius-x/oak-server/releases/download/v${appVersion}/${archive}`;
+}
+
+/** The build's kit: "full" bundles the server kit (jar + image archives) in
+ *  extraResources; "light" ships only the templates and the digest manifest —
+ *  everything big is fetched at provisioning time. */
+export type ProvisioningKit = "light" | "full";
+
+/** Parses the kit marker (resources/provisioning/files/kit.json). A missing
+ *  or garbage marker reads as "full": pre-0.4.0 installs and dev trees carry
+ *  no marker, and their behaviour must not change. */
+export function parseKitMarker(content: string | null): ProvisioningKit {
+  if (content === null) {
+    return "full";
+  }
+  try {
+    const parsed = JSON.parse(content) as { kit?: unknown };
+    return parsed?.kit === "light" ? "light" : "full";
+  } catch {
+    return "full";
+  }
+}
+
+/** One digest-pinned image of the server kit. */
+export interface ImageManifestEntry {
+  /** The pullable digest reference (repo@sha256:…). */
+  ref: string;
+  /** The FLAT GitHub asset name (postgres.tar.gz) — also the archive file name. */
+  archive: string;
+  /** The expected archive size in bytes (progress + stale-remainder checks). */
+  bytes: number;
+}
+
+/** Parses manifest.json into the valid entries (invalid records drop out
+ *  silently — a half-written manifest must not fail the whole ladder). This
+ *  is the ALWAYS-present pin source for BOTH kits: the light build strips the
+ *  tarballs but keeps the manifest. Null when there is nothing usable. */
+export function parseImageManifest(content: string | null): ImageManifestEntry[] | null {
+  if (content === null) {
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(content);
+    if (!Array.isArray(parsed)) {
+      return null;
+    }
+    const entries = parsed.flatMap((entry) => {
+      if (typeof entry !== "object" || entry === null) {
+        return [];
+      }
+      const record = entry as { ref?: unknown; archive?: unknown; bytes?: unknown };
+      return typeof record.ref === "string" && typeof record.archive === "string" && typeof record.bytes === "number"
+        ? [{ ref: record.ref, archive: record.archive, bytes: record.bytes }]
+        : [];
+    });
+    return entries.length > 0 ? entries : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The pullable image references of a compose file: every `image:` line that
  *  is NOT env-interpolated and NOT a locally built tag (the oak/janus build
  *  services carry image: only as their local tag). Used when no bundled

@@ -109,6 +109,44 @@ describe("RestClient", () => {
     expect(storage.load()).toBeNull();
   });
 
+  it("a stale-token refresh does NOT wipe a family that a re-login already replaced", async () => {
+    // The live 2026-11-02 incident: a re-provisioned server + the auto-login
+    // wrote a FRESH pair, while a session holding the OLD pair in memory hit
+    // its 401/refresh cycle half a second later — and wiped the new family,
+    // landing the user on the login screen over valid tokens. The refresh
+    // rejection must leave storage alone when it already holds a DIFFERENT
+    // (newer) refresh, and the caller's retry continues on the new pair.
+    const storage = new MemoryTokenStorage();
+    storage.save({ token: "stale", refreshToken: "refresh-old", expiresAt: 0 });
+    // The re-login lands MID-FLIGHT: the API call is out with the stale access,
+    // and storage gets the fresh family before the refresh answer arrives.
+    const fake = new FakeFetch((request) => {
+      if (request.path === "/api/auth/refresh") {
+        // The server never knew the old family (fresh install).
+        void storage.save({ token: "fresh", refreshToken: "refresh-new", expiresAt: 9e15 });
+        return { status: 401, body: { message: "Unknown token" } };
+      }
+      return request.authorization === "Bearer stale"
+        ? { status: 401, body: { message: "Expired" } }
+        : { status: 200, body: [] };
+    });
+    let expiredFired = false;
+    const client = new RestClient({
+      baseUrl: "http://x",
+      tokenStorage: storage,
+      fetchImpl: fake.call,
+      onSessionExpired: () => {
+        expiredFired = true;
+      },
+    });
+
+    await client.getUsers();
+
+    expect(expiredFired).toBe(false);
+    expect(storage.load()?.refreshToken).toBe("refresh-new");
+    expect(client.getTokens()?.token).toBe("fresh");
+  });
+
   it("retries a 401 exactly once — a second 401 surfaces as an error", async () => {
     const storage = new MemoryTokenStorage();
     storage.save({ token: "bad", refreshToken: "also-bad", expiresAt: 0 });

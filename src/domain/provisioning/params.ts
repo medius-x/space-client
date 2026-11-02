@@ -49,6 +49,28 @@ export interface ProvisioningParams {
    *  (success, failure, cancel). The Create flow's user-picked archive is
    *  never touched. Optional: absent = a normal (persistent) archive. */
   migrationArchive?: boolean;
+  /** The DIRECT server-to-server transfer (2026-11-02): when set, the restore
+   *  stage has the NEW server pull the archive from the OLD one itself (curl +
+   *  the one-shot token) — the user's home link stays out of the byte path.
+   *  Mutually exclusive with backupArchivePath; every field is validated
+   *  (https-only, base64url token charset, hex digest) because each one lands
+   *  inside a remote shell command. */
+  migrationTransfer?: MigrationTransferParams | null;
+}
+
+export interface MigrationTransferParams {
+  /** The OLD server's https origin (no trailing slash, no path). */
+  sourceUrl: string;
+  /** The one-shot migration token (base64url charset only). */
+  token: string;
+  /** SHA-256 (64 lowercase hex) the transfer is verified against after landing. */
+  archiveSha256: string;
+  /** The expected archive size in bytes (the transfer loop's done-condition). */
+  archiveBytes: number;
+  /** The OLD server's certificate in PEM, captured by the client against its
+   *  TOFU pin (the receiving curl pins it with --cacert; null on CA-valid
+   *  domain deployments — the system roots suffice there). */
+  certificatePem: string | null;
 }
 
 /** The one-password defaults the Create form falls back to (user decision,
@@ -99,6 +121,24 @@ export function validateProvisioningParams(params: ProvisioningParams): string |
   }
   if (params.adminPassword.length < 8) {
     return "Space account password must be at least 8 characters.";
+  }
+  const transfer = params.migrationTransfer ?? null;
+  if (transfer !== null) {
+    if (params.backupArchivePath !== null && params.backupArchivePath.trim().length > 0) {
+      return "The migration transfer and a local archive are mutually exclusive.";
+    }
+    if (!/^https:\/\/[A-Za-z0-9.:-]+$/.test(transfer.sourceUrl)) {
+      return "The migration source must be an https server address.";
+    }
+    if (!/^[A-Za-z0-9_-]{20,100}$/.test(transfer.token)) {
+      return "The migration token has an unexpected format.";
+    }
+    if (!/^[0-9a-f]{64}$/.test(transfer.archiveSha256)) {
+      return "The migration archive digest has an unexpected format.";
+    }
+    if (!Number.isFinite(transfer.archiveBytes) || transfer.archiveBytes <= 0) {
+      return "The migration archive size must be a positive number.";
+    }
   }
   return null;
 }

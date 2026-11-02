@@ -310,6 +310,15 @@ contextBridge.exposeInMainWorld("spaceProvisioning", {
   cancel(): Promise<unknown> {
     return ipcRenderer.invoke("provisioning:cancel");
   },
+  /** The migration leg's reachability probe (2026-11-02): one curl from the
+   *  NEW server to the OLD one's transfer endpoint. */
+  probeMigration(request: Record<string, unknown>): Promise<unknown> {
+    return ipcRenderer.invoke("provisioning:probe-migration", request);
+  },
+  /** SHA-256 of a downloaded migration archive (temp/downloads only). */
+  hashFile(absolutePath: string): Promise<string | null> {
+    return ipcRenderer.invoke("provisioning:hash-file", absolutePath);
+  },
   onEvent(callback: (event: unknown) => void): void {
     // Single-subscriber channel: replace any previous listener — a remount
     // (HMR, StrictMode) must not stack a second one and duplicate steps.

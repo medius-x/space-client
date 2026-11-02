@@ -14,8 +14,20 @@ Grab the latest `SPACE Setup <version>.exe` from
 [Releases](../../releases) and run it — a per-user install, no administrator
 rights required. Windows 10 or later.
 
-> The installer is not code-signed, so Windows SmartScreen will ask for
-> confirmation the first time ("More info" → "Run anyway").
+This is the standard (light) build, ~50 MB. When you set up a server, the
+machine itself downloads the OAK stack (~600 MB of Docker images plus the
+server jar) straight from GitHub — and if it cannot reach GitHub, SPACE relays
+the missing pieces through your computer. Either way, no registry access is
+strictly required.
+
+Need a fully offline install instead? Take `SPACE Full Bundle Setup
+<version>.exe` from the same Releases page: it bundles the entire server kit
+(~700 MB) and can provision a server with no Internet access at all.
+
+> The installers are not code-signed, so Windows SmartScreen will ask for
+> confirmation the first time ("More info" → "Run anyway"). Each build updates
+> within its own channel — a light install stays light, a full-bundle install
+> stays full-bundle.
 
 ## Getting started
 
@@ -130,15 +142,24 @@ accounts and client trust pins are preserved.
 
 ## Self-hosting notes
 
-- Setup first tries to pull Docker images from public registries; the ~600 MB
-  archive set bundled with the installer is the safety net — images that could
-  not be pulled are uploaded straight from the client. Provisioning keeps
-  working on a VPS with restricted or rate-limited registry access, fully
-  offline if it has to
+- Server setup fetches the stack through a ladder of sources, worst case
+  last: public Docker registries first (with DNS and mirror self-repair), then
+  GitHub directly from the server, then a relay through your computer — and,
+  on the full-bundle build, the kit bundled with the installer covers
+  everything with no network at all. Provisioning keeps working on a VPS with
+  restricted or rate-limited registry access
+- The light build's honest limitation: provisioning a server (including
+  adopting an existing one — the server jar is always needed) requires GitHub
+  to be reachable, from the server itself or from your computer. The
+  full-bundle build has no such requirement
 - Updates re-run the same flow on top of an existing installation
 - Backups are built in: Server Settings → Server builds a full archive (chats,
   accounts, attachments) straight to your computer, and Migrate deploys a fresh
-  server from it — no manual volume copying
+  server from it — no manual volume copying. When both machines can reach each
+  other, Migrate transfers the archive directly between them (verified by a
+  cryptographic digest, authorized by a one-shot token that expires in two
+  hours) and your computer only coordinates; otherwise the archive routes
+  through your computer as before
 
 ## Limitations
 

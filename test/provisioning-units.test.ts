@@ -11,8 +11,12 @@ import {
   composeImageRefs,
   extractJsonObject,
   parseCurlWithStatus,
+  parseImageManifest,
+  parseKitMarker,
   parseOpensslFingerprint,
   selfSignedSan,
+  serverJarUrl,
+  serverKitAssetUrl,
 } from "../src/domain/provisioning/artifacts";
 import { describeExecFailure } from "../src/domain/provisioning/pipeline";
 
@@ -150,6 +154,47 @@ describe("provisioning artifacts", () => {
     expect(selfSignedSan("203.0.113.10")).toBe("subjectAltName=DNS:localhost,IP:127.0.0.1,IP:203.0.113.10");
     expect(selfSignedSan("2001:db8::1")).toBe("subjectAltName=DNS:localhost,IP:127.0.0.1,IP:2001:db8::1");
     expect(selfSignedSan("oak.example.com")).toBe("subjectAltName=DNS:localhost,IP:127.0.0.1,DNS:oak.example.com");
+  });
+
+  it("pins the server-kit release URLs to the version tag — never latest", () => {
+    // Parity beats availability (user decision 2026-10-29): the jar and the
+    // image assets must come from the tag EQUAL to the client's version.
+    expect(serverJarUrl("0.4.0")).toBe(
+      "https://github.com/medius-x/oak-server/releases/download/v0.4.0/oak-server.jar");
+    expect(serverKitAssetUrl("0.4.0", "minio.tar.gz")).toBe(
+      "https://github.com/medius-x/oak-server/releases/download/v0.4.0/minio.tar.gz");
+    expect(serverJarUrl("0.4.0")).not.toContain("/latest/");
+  });
+
+  it("reads the kit marker with a full default — absent marker keeps the legacy behaviour", () => {
+    expect(parseKitMarker(null)).toBe("full");
+    expect(parseKitMarker("{ not json")).toBe("full");
+    expect(parseKitMarker('{"kit": "light"}')).toBe("light");
+    expect(parseKitMarker('{"kit": "full"}')).toBe("full");
+    // Only the exact light value flips the marker — anything else is full.
+    expect(parseKitMarker('{"kit": "Lite"}')).toBe("full");
+    expect(parseKitMarker('{"kit": null}')).toBe("full");
+    expect(parseKitMarker("{}")).toBe("full");
+  });
+
+  it("parses the image manifest, dropping invalid records silently", () => {
+    const valid = '[{"ref":"postgres@sha256:aa","archive":"postgres.tar.gz","bytes":115399507},'
+      + '{"ref":"minio/minio@sha256:bb","archive":"minio.tar.gz","bytes":61971628}]';
+    expect(parseImageManifest(valid)).toEqual([
+      { ref: "postgres@sha256:aa", archive: "postgres.tar.gz", bytes: 115399507 },
+      { ref: "minio/minio@sha256:bb", archive: "minio.tar.gz", bytes: 61971628 },
+    ]);
+    // Half-written/garbage entries drop out; a ref without a number or an
+    // archive without a ref is not a usable pin.
+    expect(parseImageManifest('[{"ref":"x","archive":"y","bytes":"not-a-number"},null,{"ref":"z"}]')).toBeNull();
+    expect(parseImageManifest("[]")).toBeNull();
+    expect(parseImageManifest("not json")).toBeNull();
+    expect(parseImageManifest(null)).toBeNull();
+    // A valid record among garbage survives — the ladder must not lose ALL
+    // its pins to one bad line.
+    expect(parseImageManifest('[{"ref":"a","archive":"a.tar.gz","bytes":1},"junk"]')).toEqual([
+      { ref: "a", archive: "a.tar.gz", bytes: 1 },
+    ]);
   });
 
   it("parses openssl fingerprints into the normalized pin", () => {

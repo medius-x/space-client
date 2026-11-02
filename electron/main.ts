@@ -1,6 +1,6 @@
 import { isSystemAudioAvailable, startSystemAudio, stopSystemAudio } from "./system-audio";
 import { getClientSize, isWindowConfirmedDead, watchSourceLiveness } from "./window-liveness";
-import { cancelProvisioningRun, startProvisioningRun } from "./provisioning";
+import { cancelProvisioningRun, hashLocalFile, probeMigrationDirectTransfer, startProvisioningRun } from "./provisioning";
 import { installUpdateIpc } from "./updates";
 import { installBackupIpc } from "./backups";
 import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeTheme, net, powerMonitor, protocol, safeStorage, screen, session, shell, Tray } from "electron";
@@ -848,9 +848,28 @@ ipcMain.handle("provisioning:start", (_event, params: unknown): boolean => {
 });
 
 ipcMain.handle("provisioning:cancel", () => {
-  cancelProvisioningRun();
+  void cancelProvisioningRun();
   appendLog("[provisioning] cancelled by the user");
   return true;
+});
+
+// The migration leg's reachability probe (2026-11-02): a short-lived SSH session
+// to the NEW server runs ONE curl against the OLD server's transfer endpoint.
+// The pinned fingerprint of the OLD server (needed for the certificate capture)
+// is resolved HERE — the persistedPinForHostname helper lives in this module.
+ipcMain.handle("provisioning:probe-migration", (_event, request: unknown) => {
+  if (typeof request !== "object" || request === null) {
+    return { direct: false, reason: "malformed probe request", certificatePem: null };
+  }
+  const probe = request as { sourceUrl?: unknown };
+  const hostname = typeof probe.sourceUrl === "string" ? hostnameFromUrl(probe.sourceUrl) : null;
+  const pinnedFingerprint = hostname !== null ? persistedPinForHostname(hostname) : null;
+  return probeMigrationDirectTransfer({ ...(request as object), pinnedFingerprint } as Parameters<typeof probeMigrationDirectTransfer>[0]);
+});
+
+// SHA-256 of a downloaded migration archive (the fallback leg's digest check).
+ipcMain.handle("provisioning:hash-file", (_event, absolutePath: unknown) => {
+  return typeof absolutePath === "string" ? hashLocalFile(absolutePath) : null;
 });
 
 ipcMain.handle("space-kv:rotate-tokens", (_event, key: unknown, expectedRefreshToken: unknown, tokens: unknown) => {

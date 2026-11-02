@@ -1,4 +1,10 @@
-# electron-builder config (round D): a one-click Windows NSIS installer.
+# electron-builder config — the LIGHT installer (user decision 2026-11-02):
+# a one-click Windows NSIS build WITHOUT the heavy server kit (~50 MB instead
+# of ~700 MB). The server jar and the docker-image archives are fetched at
+# provisioning time: the server pulls them from GitHub itself, and the client
+# relays them over SFTP only when the server cannot reach GitHub. The full
+# variant with the bundled kit is electron-builder-full-bundle.yml (dist:full,
+# the full-bundle update channel).
 #
 # The app payload is the electron-vite output (out/main + out/preload +
 # out/renderer bundles) plus the production node_modules — main-bundle externals
@@ -6,12 +12,11 @@
 # koffi is an N-API prebuilt addon: it is never rebuilt (npmRebuild: false) and
 # is unpacked from the asar (a .node file cannot load from inside an archive).
 #
-# The server provisioning kit (templates + the bundled oak-server.jar + the
-# docker-image archives, ~610 MB) rides in extraResources — plain files next to
-# app.asar under resources/provisioning/files, matching TEMPLATE_ROOT in
-# electron/provisioning.ts (app.isPackaged → process.resourcesPath). The
-# installer therefore provisions a server with NO network access to registries
-# (user decision 2026-10-13: the full image set ships with the client).
+# The provisioning kit that DOES ride along: the templates, the digest-pinned
+# image manifest (the pull ladder's pin source and the GitHub asset list) and
+# the kit marker — plain files next to app.asar under resources/provisioning/
+# files, matching TEMPLATE_ROOT in electron/provisioning.ts (app.isPackaged →
+# process.resourcesPath).
 appId: oak.space
 productName: SPACE
 
@@ -29,15 +34,28 @@ asarUnpack:
 # Self-update feed (2026-10-20): electron-updater reads resources/app-update.yml
 # (emitted from this publish block) and checks this repo's GitHub Releases for
 # latest.yml + the blockmap — no token, the repo is public. The owner/repo pair
-# mirrors the git remote (medius-x/space-client).
+# mirrors the git remote (medius-x/space-client). No channel here: this is the
+# DEFAULT feed, so the light installer updates light — the full-bundle channel
+# is defined in electron-builder-full-bundle.yml.
 publish:
   provider: github
   owner: medius-x
   repo: space-client
 
 extraResources:
+  # The light kit: templates + manifest.json + kit.json — everything EXCEPT the
+  # jar and the image archives (the filter is belt-and-braces on top of the
+  # release workflow cleaning them before this build).
   - from: electron/provisioning/files
     to: provisioning/files
+    filter:
+      - "**/*"
+      - "!**/*.tar.gz"
+      - "!oak-server.jar"
+  # The kit marker (readTemplates reads provisioning/files/kit.json; a missing
+  # marker — pre-0.4.0 installs, dev tree — reads as "full").
+  - from: electron/provisioning/kit-light.json
+    to: provisioning/files/kit.json
   # The tray icon — the only icon the exe resource cannot provide (Tray needs a
   # file path; createTray reads resources/build/icon-48.png when packaged).
   - from: electron/build/icon-48.png

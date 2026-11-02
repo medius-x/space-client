@@ -3,12 +3,15 @@ import {
   DEFAULT_ACCOUNT_LOGIN,
   DEFAULT_ACCOUNT_PASSWORD,
   validateProvisioningParams,
+  type MigrationTransferParams,
   type ProvisioningParams,
 } from "../../domain/provisioning/params";
+import { hasServerCapability } from "../../domain/logic/server-capabilities";
 import { humanByteSize } from "../../domain/logic/file-size";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { ProvisioningIpcEvent } from "../bridges";
-import { takeMigrationBackup } from "../backup-run";
+import { downloadMigrationArchive, waitForBuiltBackup } from "../backup-run";
+import { releaseBackupScheduleFor, suppressBackupScheduleFor } from "../backup-schedule";
 import { PasswordInput } from "./PasswordInput";
 import { startSession } from "../runtime";
 import type { MessageKey } from "../../domain/i18n/i18n";
@@ -164,11 +167,19 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange, mode = "setup
       } else if (event.kind === "failed") {
         setError(`${event.message}`);
         setPhase("failed");
+        // The migration window is over (the run failed any way) — the old
+        // server's backup schedule may fire again.
+        if (session !== null) {
+          releaseBackupScheduleFor(session.recordId);
+        }
       } else {
         // succeeded: log in automatically when the typed password fits the
         // account (a fresh registration, or an adopt re-run that logged in).
         // A RESTORED deployment never auto-logs-in: the accounts came from the
         // archive and the owner's password is the user's alone.
+        if (session !== null) {
+          releaseBackupScheduleFor(session.recordId);
+        }
         setRestoredOutcome(event.outcome.restored);
         if (event.outcome.ownerReady) {
           setPhase("loggingIn");
@@ -266,37 +277,136 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange, mode = "setup
     void runMigrationBackupStep(baseParams, session);
   };
 
-  /** The migrate run's first step: take a fresh backup of the current server,
-   *  then hand its local path to the main-process pipeline. Cancelled → back to
-   *  the form with the temp file deleted; failed → the form carries the error. */
+  /** The migrate run's source step (2026-11-02): build the fresh archive, then
+   *  deliver it by the LADDER — the direct server-to-server route first (the new
+   *  server pulls it from the old one over the one-shot token; this computer
+   *  stays out of the byte path), the through-this-computer download as the
+   *  always-available fallback (an unreachable old server, a legacy server
+   *  without the capability). Cancelled → back to the form, everything cleaned. */
   const runMigrationBackupStep = async (baseParams: ProvisioningParams,
                                         activeSession: ConnectionSession): Promise<void> => {
-    const result = await takeMigrationBackup(activeSession, () => backupCancelledRef.current);
-    if (backupCancelledRef.current) {
-      // Backed out before the SSH run: delete whatever landed in the temp dir
-      // (a FINISHED download too — it is a one-shot file), return to the form.
-      if (result.ok && result.downloadedPath !== undefined) {
-        void window.spaceBackup?.deleteTemp(result.downloadedPath);
+    suppressBackupScheduleFor(activeSession.recordId);
+    let issuedToken: { token: string; archiveSha256: string; archiveBytes: number } | null = null;
+    try {
+      const built = await waitForBuiltBackup(activeSession, () => backupCancelledRef.current);
+      if (backupCancelledRef.current || built.cancelled === true) {
+        returnToFormCancelled();
+        return;
       }
-      backupStepLiveRef.current = false;
-      setPhase("form");
-      setSteps({});
-      return;
+      if (!built.ok) {
+        backupFailed(built.error ?? "backup failed");
+        return;
+      }
+      const digest = built.archiveSha256 ?? null;
+      // The direct leg needs the server-side capability; a legacy old server
+      // (or a failed issue) routes through this computer without a change.
+      if (hasServerCapability(activeSession.serverProfile, "server-migration")) {
+        try {
+          const issued = await activeSession.rest.issueMigrationTransfer();
+          issuedToken = { token: issued.token, archiveSha256: issued.archiveSha256, archiveBytes: issued.archiveBytes };
+          const probe = await window.spaceProvisioning?.probeMigration({
+            host: baseParams.host,
+            sshPort: baseParams.sshPort,
+            sshLogin: baseParams.sshLogin,
+            sshPassword: baseParams.sshPassword,
+            sshKeyPath: baseParams.sshKeyPath,
+            sshKeyPassphrase: baseParams.sshKeyPassphrase,
+            sourceUrl: activeSession.rest.restOrigin(),
+            token: issued.token,
+          });
+          if (probe !== undefined && probe.direct) {
+            const migrationTransfer: MigrationTransferParams = {
+              sourceUrl: activeSession.rest.restOrigin(),
+              token: issued.token,
+              archiveSha256: issued.archiveSha256,
+              archiveBytes: issued.archiveBytes,
+              certificatePem: probe.certificatePem,
+            };
+            setSteps((previous) => ({ ...previous, backup: { state: "done" } }));
+            restoreArmedRef.current = true;
+            void window.spaceProvisioning?.start({ ...baseParams, migrationTransfer });
+            return; // the finally below revokes the token only on THIS leg's exit;
+            // the run itself revokes nothing — the server's TTL covers a killed client
+          }
+          setSteps((previous) => ({
+            ...previous,
+            backup: { state: "log", detail: `${t("provisioning.detail.migrationFallback")}${probe !== undefined ? ` (${probe.reason})` : ""}` },
+          }));
+        } catch (issueError) {
+          setSteps((previous) => ({
+            ...previous,
+            backup: { state: "log", detail: `${t("provisioning.detail.migrationFallback")}` },
+          }));
+          logMigrationNote(`token issue failed: ${issueError instanceof Error ? issueError.message : String(issueError)}`);
+          issuedToken = null;
+        }
+      }
+      // The fallback leg: download through this computer, verify the digest
+      // when one is known, upload from the local file.
+      const downloaded = await downloadMigrationArchive(activeSession);
+      if (backupCancelledRef.current) {
+        if (downloaded.ok && downloaded.downloadedPath !== undefined) {
+          void window.spaceBackup?.deleteTemp(downloaded.downloadedPath);
+        }
+        returnToFormCancelled();
+        return;
+      }
+      if (!downloaded.ok) {
+        backupFailed(downloaded.error ?? "the archive download failed");
+        return;
+      }
+      const archivePath = downloaded.downloadedPath ?? null;
+      const expectedDigest = issuedToken !== null ? issuedToken.archiveSha256 : digest;
+      if (archivePath !== null && expectedDigest != null && window.spaceProvisioning !== undefined) {
+        const actualDigest = await window.spaceProvisioning.hashFile(archivePath);
+        if (actualDigest !== null && actualDigest !== expectedDigest) {
+          void window.spaceBackup?.deleteTemp(archivePath);
+          backupFailed(t("provisioning.err.migrationDigest"));
+          return;
+        }
+        if (actualDigest === null) {
+          logMigrationNote("the local digest check was skipped (the file could not be hashed)");
+        }
+      }
+      setSteps((previous) => ({ ...previous, backup: { state: "done" } }));
+      restoreArmedRef.current = true;
+      void window.spaceProvisioning?.start({
+        ...baseParams,
+        backupArchivePath: archivePath,
+        migrationArchive: true,
+      });
+    } finally {
+      if (issuedToken !== null) {
+        // The token is spent on the fallback route (or the direct leg never
+        // started) — withdraw it right away; the direct leg's token lives on
+        // until the server-side transfer consumes the archive (deliver-and-
+        // delete) or the TTL sweeps it.
+        void activeSession.rest.revokeMigrationTransfer().catch(() => undefined);
+      }
+      if (backupCancelledRef.current) {
+        releaseBackupScheduleFor(activeSession.recordId);
+      }
     }
+  };
+
+  /** Cancels of the source step: clear the step-live flag, back to the form. */
+  const returnToFormCancelled = (): void => {
     backupStepLiveRef.current = false;
-    if (!result.ok) {
-      setSteps((previous) => ({ ...previous, backup: { state: "failed" } }));
-      setError(result.error ?? "backup failed");
-      setPhase("failed");
-      return;
-    }
-    setSteps((previous) => ({ ...previous, backup: { state: "done" } }));
-    restoreArmedRef.current = true;
-    void window.spaceProvisioning?.start({
-      ...baseParams,
-      backupArchivePath: result.downloadedPath ?? null,
-      migrationArchive: true,
-    });
+    setPhase("form");
+    setSteps({});
+  };
+
+  /** A failed source step: the form carries the error. */
+  const backupFailed = (message: string): void => {
+    backupStepLiveRef.current = false;
+    setSteps((previous) => ({ ...previous, backup: { state: "failed" } }));
+    setError(message);
+    setPhase("failed");
+  };
+
+  /** A note for the diagnostics log (the fallback reasons must be traceable). */
+  const logMigrationNote = (message: string): void => {
+    setSteps((previous) => ({ ...previous, backup: { state: "log", detail: message } }));
   };
 
   if (phase === "running" || phase === "loggingIn" || phase === "needsLogin") {

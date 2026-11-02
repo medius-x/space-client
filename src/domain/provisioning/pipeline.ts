@@ -25,6 +25,10 @@ import {
   parseCurlWithStatus,
   parseOpensslFingerprint,
   selfSignedSan,
+  serverJarUrl,
+  serverKitAssetUrl,
+  type ImageManifestEntry,
+  type ProvisioningKit,
 } from "./artifacts";
 
 // ---------------------------------------------------------------------------
@@ -53,7 +57,7 @@ export interface ProvisioningTransport {
   /** True while the underlying connection is alive (a resume skips the
    *  reconnect when the drop killed only the channel). */
   isConnected?(): boolean;
-  writeFile(remotePath: string, contents: string | Uint8Array): Promise<void>;
+  writeFile(remotePath: string, contents: string | Uint8Array, options?: { mode?: number }): Promise<void>;
   readFile(remotePath: string): Promise<string | null>;
   /** Streams a LOCAL file to the remote path (the image archives: hundreds of
    *  megabytes must never be buffered in memory). onProgress fires with the
@@ -69,7 +73,7 @@ export interface ProvisioningTransport {
  *  fallback: digest-pinned references the compose stack uses, each with its
  *  docker-save archive. Missing images deploy from here BEFORE any pull. */
 export interface ProvisioningImageSet {
-  manifest: Array<{ ref: string; archive: string; bytes: number }>;
+  manifest: ImageManifestEntry[];
   /** The local directory holding the archives (main passes it in). */
   directory: string;
 }
@@ -82,14 +86,37 @@ export interface ProvisioningFiles {
   janusConfig: string;
   janusHttpConfig: string;
   caddyFileTemplate: string;
-  /** The LOCAL path of the server jar — it uploads through the SAME
-   *  streaming writeLocalFile path as the image archives (one code path for
-   *  every large file: identical speed and behaviour by construction). */
-  jarLocalPath: string;
-  /** Null when the build ships no bundled images (the pull ladder then owns
-   *  the registry path on its own). */
+  /** An explicit jar path from the Advanced section — ALWAYS wins over every
+   *  other source (user decision 2026-10-12); null in the normal flow. */
+  jarOverridePath: string | null;
+  /** The jar bundled with this build (full kit); null in the light kit. */
+  jarBundledPath: string | null;
+  /** The client's own version — the GitHub tag behind every server-kit asset
+   *  URL (parity: the kit of THIS client, never "latest"). */
+  kitVersion: string;
+  /** The build's kit marker (kit.json): "full" bundles the server kit in
+   *  extraResources, "light" fetches everything big at provisioning time.
+   *  An absent marker (pre-0.4.0 installs, dev tree) reads as "full". */
+  kit: ProvisioningKit;
+  /** The digest-pinned image manifest — ALWAYS present in both kits (the
+   *  light build strips the tarballs but keeps manifest.json): the pull
+   *  ladder's pin source and the GitHub asset URL/size list. */
+  imageManifest: ImageManifestEntry[];
+  /** Null when the build ships no bundled image archives (light kit, or a
+   *  full build whose archives were cleaned away — such installs behave like
+   *  light at the terminal stage, they do NOT fail). */
   images: ProvisioningImageSet | null;
 }
+
+/** The host-side large-file downloader (electron/provisioning.ts injects its
+ *  downloadToFile): fetches a kit asset to a LOCAL temp file and resolves to
+ *  its path. The light kit's client-side fallback — the home link joins the
+ *  byte path only when the server itself cannot reach GitHub. */
+export type ClientFileDownloader = (
+  url: string,
+  fileName: string,
+  onProgress: (bytesReceived: number, bytesTotal: number | null) => void,
+) => Promise<string>;
 
 export type ProvisioningStage =
   | "probe"
@@ -178,6 +205,22 @@ const GHOST_PACKAGE_POLL_MS = 5_000;
 const GHOST_PACKAGE_CHECK = "pgrep -x apt-get >/dev/null 2>&1 || pgrep -x dpkg >/dev/null 2>&1";
 const GHOST_PACKAGE_TRIGGER = /apt|dpkg|get\.docker/;
 
+// Server-side downloads (the downloadOnServer contract): reachability probe,
+// poll cadence, the no-growth stall budget and the manual restarts on top of
+// curl's own --retry. A transfer that neither grows nor dies for the stall
+// budget is killed; one that died incomplete is restarted (curl -C - resumes
+// where the partial file stopped).
+const URL_PROBE_TIMEOUT_MS = 10_000;
+const SERVER_DOWNLOAD_POLL_MS = 2_000;
+const SERVER_DOWNLOAD_STALL_MS = 300_000;
+const SERVER_DOWNLOAD_RESTARTS = 2;
+
+/** Single-quotes a value for a remote shell command (the ladder's URLs and
+ *  paths are pre-validated, but the quoting must survive any future caller). */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 /** Parses the missing-check output ("MISSING ref" per line). */
 function parseMissingImages(stdout: string): string[] {
   return stdout
@@ -233,6 +276,10 @@ export async function runProvisioningPipeline(
   /** The pause seam of the resume ladder (reconnect backoff, ghost polling) —
    *  tests inject an instant no-op instead of waiting real seconds. */
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  /** The host's large-file downloader (the light kit's client-side fallback):
+   *  fetches a URL to a local temp file. Optional — without it the pipeline
+   *  has no client-side download leg and the ladder ends at the bundled jar. */
+  clientFileDownloader?: ClientFileDownloader,
 ): Promise<ProvisioningOutcome> {
   const domainDeployment = params.domain !== null && params.domain.trim().length > 0;
   const publicHost = (domainDeployment ? params.domain! : params.host).trim();
@@ -323,12 +370,14 @@ export async function runProvisioningPipeline(
   };
 
   /** writeFile/writeLocalFile with the same drop-resume: SFTP writes are
-   *  idempotent overwrites, so a re-run heals a truncated remote file. */
+   *  idempotent overwrites, so a re-run heals a truncated remote file. The
+   *  optional mode serves the migration leg's 0600 credential files. */
   const mustWrite = (
     stage: ProvisioningStage,
     remotePath: string,
     contents: string | Uint8Array,
-  ): Promise<void> => resumeOnDrop(stage, () => transport.writeFile(remotePath, contents));
+    options?: { mode?: number },
+  ): Promise<void> => resumeOnDrop(stage, () => transport.writeFile(remotePath, contents, options));
   const mustUpload = (
     stage: ProvisioningStage,
     localPath: string,
@@ -354,6 +403,135 @@ export async function runProvisioningPipeline(
       emit({ stage, state: "log", progress: text });
     };
   };
+
+  /** Clears a FOREIGN partial before a server-side download: a leftover from a
+   *  DIFFERENT run or version must never be doclined onto the new archive
+   *  (curl -C - would happily glue it). An EXACT size match is kept — the
+   *  transfer then finishes instantly, preserving the cross-run resume of a
+   *  half-delivered file of the same version. */
+  const clearForeignPartial = async (stage: ProvisioningStage, dest: string, expectedBytes: number): Promise<void> => {
+    await run(stage, `size=$(stat -c %s ${shellQuote(dest)} 2>/dev/null || echo -1); `
+      + `if [ "$size" != ${expectedBytes} ]; then rm -f ${shellQuote(dest)}; fi`);
+  };
+
+  /** Probes a URL FROM THE SERVER (curl is guaranteed by the probe step):
+   *  reachable + the FINAL hop's Content-Length (GitHub's asset URLs redirect
+   *  to a CDN — -L follows, the last header wins). A probe without a usable
+   *  length counts as NOT reachable: without the expected size the download
+   *  loop below has no honest done-condition. */
+  const probeServerUrl = async (
+    stage: ProvisioningStage,
+    url: string,
+  ): Promise<{ reachable: true; contentLength: number } | { reachable: false }> => {
+    const probeCommand = `curl -fsSIL --max-time ${Math.round(URL_PROBE_TIMEOUT_MS / 1000)} ${shellQuote(url)} 2>/dev/null`
+      + ` | tr -d '\\r' | grep -i '^content-length:' | tail -1`;
+    const result = await run(stage, probeCommand);
+    if (result.code !== 0) {
+      return { reachable: false };
+    }
+    const length = Number.parseInt(result.stdout.split(":")[1] ?? "", 10);
+    return Number.isFinite(length) && length > 0 ? { reachable: true, contentLength: length } : { reachable: false };
+  };
+
+  /** A server-side background download (the unified big-content ladder, user
+   *  decision 2026-11-02: the client's home link stays OUT of the byte path
+   *  whenever the server itself can reach the source). The transfer runs
+   *  DETACHED from the ssh channel — setsid with redirected stdio, or the exec
+   *  would hang on the unclosed inherited FDs and a channel death would
+   *  SIGPIPE the transfer mid-flight. The loop then polls the destination's
+   *  size and the transfer's liveness (pid file + kill -0).
+   *
+   *  Idempotent under the resume ladder: a re-entry after an ssh drop finds
+   *  the live transfer (its pid still owns the dest in /proc/<pid>/cmdline)
+   *  and just keeps polling; `curl -C -` resumes a dead transfer from the
+   *  partial file. Post-run leftovers from a DIFFERENT run must be removed by
+   *  the CALLER before the first call (a foreign partial would otherwise be
+   *  doclined onto the new archive). */
+  const downloadOnServer = async (
+    stage: ProvisioningStage,
+    request: {
+      url: string;
+      dest: string;
+      expectedBytes: number;
+      label: string;
+      onProgress?: (bytesReceived: number) => void;
+      /** The migration leg's auth/TLS: headers read from a 0600 file (never
+       *  the command line — ps on the server would see them) and a pinned
+       *  CA certificate. */
+      headerFile?: string;
+      cacertFile?: string;
+    },
+  ): Promise<void> => resumeOnDrop(stage, async () => {
+    const safeLabel = request.label.replace(/[^A-Za-z0-9._-]/g, "_");
+    const logFile = `/tmp/space-dl-${safeLabel}.log`;
+    const pidFile = `/tmp/space-dl-${safeLabel}.pid`;
+    const authArgs = request.headerFile !== undefined ? ` -H @${shellQuote(request.headerFile)}` : "";
+    const tlsArgs = request.cacertFile !== undefined ? ` --cacert ${shellQuote(request.cacertFile)}` : "";
+    const transferCommand = `exec curl -fsS -C - --retry 3 --retry-connrefused${authArgs}${tlsArgs}`
+      + ` -o ${shellQuote(request.dest)} ${shellQuote(request.url)}`;
+    const startTransfer = `setsid sh -c ${shellQuote(transferCommand)} </dev/null >/dev/null 2>${shellQuote(logFile)} & echo $! > ${shellQuote(pidFile)}`;
+    // Start ONLY when no live transfer already owns this dest (the resume
+    // re-entry path); the /proc cmdline check also rules out a reused pid.
+    const ensureTransfer = `pid=$(cat ${shellQuote(pidFile)} 2>/dev/null || echo 0); `
+      + `if [ "$pid" != 0 ] && kill -0 "$pid" 2>/dev/null `
+      + `&& tr '\\0' ' ' < /proc/$pid/cmdline 2>/dev/null | grep -qF -- ${shellQuote(request.dest)}; then `
+      + `echo RESUMED; else ${startTransfer}; fi`;
+    await must(stage, ensureTransfer);
+    const pollCommand = `size=$(stat -c %s ${shellQuote(request.dest)} 2>/dev/null || echo 0); `
+      + `pid=$(cat ${shellQuote(pidFile)} 2>/dev/null || echo 0); `
+      + `if [ "$pid" != 0 ] && kill -0 "$pid" 2>/dev/null; then alive=1; else alive=0; fi; `
+      + `echo "$size $alive $pid"`;
+    let lastSize = -1;
+    let lastGrowthAt = Date.now();
+    let restartsLeft = SERVER_DOWNLOAD_RESTARTS;
+    for (;;) {
+      const poll = await run(stage, pollCommand, { timeoutMs: 30_000 });
+      const match = /^(\d+) ([01]) (\d+)$/.exec(poll.stdout.trim());
+      if (match === null) {
+        throw new ProvisioningFailure(stage, t("provisioning.err.serverDownload", { label: request.label, reason: "status unreadable" }));
+      }
+      const size = Number(match[1]);
+      const alive = match[2] === "1";
+      const pid = Number(match[3]);
+      if (size >= request.expectedBytes) {
+        // Checked BEFORE any restart: a completed file must never be re-fetched
+        // (curl -C - on a full file is a no-op, but a size check is cheaper
+        // and immune to Content-Length quirks).
+        return;
+      }
+      if (size > lastSize) {
+        lastSize = size;
+        lastGrowthAt = Date.now();
+        request.onProgress?.(size);
+      } else if (alive && Date.now() - lastGrowthAt >= SERVER_DOWNLOAD_STALL_MS) {
+        // Kill ONLY the verified owner: the pid is re-checked against
+        // /proc/<pid>/cmdline right before the signal (a reused pid must not
+        // receive a group kill).
+        const verify = await run(stage, `tr '\\0' ' ' < /proc/${pid}/cmdline 2>/dev/null`);
+        if (verify.stdout.includes(request.dest)) {
+          await run(stage, `kill -- -${pid} 2>/dev/null; rm -f ${shellQuote(pidFile)}`);
+        }
+        throw new ProvisioningFailure(stage, t("provisioning.err.serverDownload", {
+          label: request.label,
+          reason: `no progress for ${Math.round(SERVER_DOWNLOAD_STALL_MS / 1000)} s`,
+        }));
+      }
+      if (!alive) {
+        if (restartsLeft > 0) {
+          restartsLeft -= 1;
+          await must(stage, startTransfer);
+          lastGrowthAt = Date.now();
+          continue;
+        }
+        const tail = (await run(stage, `tail -3 ${shellQuote(logFile)}`)).stdout.trim().replace(/\n/g, " | ");
+        throw new ProvisioningFailure(stage, t("provisioning.err.serverDownload", {
+          label: request.label,
+          reason: tail.length > 0 ? tail : "the transfer died before completing",
+        }));
+      }
+      await sleep(SERVER_DOWNLOAD_POLL_MS);
+    }
+  });
 
   try {
     // ── probe: OS + docker presence ─────────────────────────────────────
@@ -494,14 +672,17 @@ export async function runProvisioningPipeline(
     // Restore mode (backup round 2026-10-28): the archive loads at oak's FIRST
     // boot — an adopted server already booted with its own data, and silently
     // replacing it with the archive is exactly the kind of surprise this flow
-    // must never pull. Restores go to a FRESH machine.
+    // must never pull. Restores go to a FRESH machine. The archive arrives by
+    // EITHER route (2026-11-02): the direct server-to-server transfer, or a
+    // local file uploaded over SFTP — both are "restore mode".
     const restoreArchivePath = params.backupArchivePath !== null && params.backupArchivePath.trim().length > 0
       ? params.backupArchivePath.trim()
       : null;
-    if (restoreArchivePath !== null && adopt) {
+    const migrationTransfer = params.migrationTransfer ?? null;
+    if (restoreArchivePath !== null && adopt || migrationTransfer !== null && adopt) {
       throw new ProvisioningFailure("layout", t("provisioning.err.restoreAdopt"));
     }
-    const restoreMode = restoreArchivePath !== null;
+    const restoreMode = restoreArchivePath !== null || migrationTransfer !== null;
     emit({
       stage: "layout",
       state: "done",
@@ -512,8 +693,8 @@ export async function runProvisioningPipeline(
 
     // ── upload: templates + the server jar ──────────────────────────────
     emit({ stage: "upload", state: "start", detail: t("provisioning.detail.uploadingFiles") });
-    // The jar is the one multi-megabyte upload on this step — its REAL byte
-    // counter (the SFTP stream knows both numbers) is the step's progress.
+    // The jar is the one multi-megabyte item on this step — whichever leg
+    // delivers it, its byte counter is the step's progress.
     const uploadProgress = progressEmitter("upload");
     await mustWrite("upload", `${REMOTE_ROOT}/docker-compose.yml`, files.composeFile);
     await mustWrite("upload", `${REMOTE_ROOT}/Dockerfile.server`, files.dockerfileServer);
@@ -521,12 +702,61 @@ export async function runProvisioningPipeline(
     await mustWrite("upload", `${REMOTE_ROOT}/janus/janus.jcfg`, files.janusConfig);
     await mustWrite("upload", `${REMOTE_ROOT}/janus/janus.transport.http.jcfg`, files.janusHttpConfig);
     await mustWrite("upload", `${REMOTE_ROOT}/caddy/Caddyfile`, caddyFileForMode(files.caddyFileTemplate, domainDeployment));
-    await mustUpload("upload", files.jarLocalPath, `${REMOTE_ROOT}/oak-server.jar`, (bytesSent, bytesTotal) => {
+    // Jar ladder (user decision 2026-11-02 — the unified big-content rule):
+    // the Advanced override ALWAYS wins; else the SERVER pulls the jar from
+    // GitHub itself (the client's home link stays out of the byte path
+    // whenever possible); else the local fallback (the bundled jar of the full
+    // kit, or a client-side download in the light kit).
+    const jarRemotePath = `${REMOTE_ROOT}/oak-server.jar`;
+    const jarUploadProgress = (bytesSent: number, bytesTotal: number): void => {
       const text = formatByteProgress(bytesSent, bytesTotal);
       if (text.length > 0) {
         uploadProgress(`oak-server.jar ${text}`);
       }
-    });
+    };
+    let jarDelivered = false;
+    if (files.jarOverridePath !== null) {
+      await mustUpload("upload", files.jarOverridePath, jarRemotePath, jarUploadProgress);
+      jarDelivered = true;
+    } else {
+      const jarUrl = serverJarUrl(files.kitVersion);
+      const jarProbe = await probeServerUrl("upload", jarUrl);
+      if (jarProbe.reachable) {
+        emit({ stage: "upload", state: "log", detail: t("provisioning.detail.serverDownloadsJar") });
+        try {
+          await clearForeignPartial("upload", jarRemotePath, jarProbe.contentLength);
+          await downloadOnServer("upload", {
+            url: jarUrl,
+            dest: jarRemotePath,
+            expectedBytes: jarProbe.contentLength,
+            label: "oak-server.jar",
+            onProgress: (bytesReceived) => jarUploadProgress(bytesReceived, jarProbe.contentLength),
+          });
+          jarDelivered = true;
+        } catch (error) {
+          emit({
+            stage: "upload",
+            state: "log",
+            detail: `${t("provisioning.detail.serverDownloadFellBack", { label: "oak-server.jar" })}`
+              + `${error instanceof Error ? ` (${error.message})` : ""}`,
+          });
+        }
+      }
+    }
+    if (!jarDelivered && files.jarBundledPath !== null) {
+      await mustUpload("upload", files.jarBundledPath, jarRemotePath, jarUploadProgress);
+      jarDelivered = true;
+    }
+    if (!jarDelivered && clientFileDownloader !== undefined) {
+      emit({ stage: "upload", state: "log", detail: t("provisioning.detail.clientDownloadsJar") });
+      const downloadedJarPath = await clientFileDownloader(serverJarUrl(files.kitVersion), "oak-server.jar",
+        (bytesReceived, bytesTotal) => jarUploadProgress(bytesReceived, bytesTotal ?? bytesReceived));
+      await mustUpload("upload", downloadedJarPath, jarRemotePath, jarUploadProgress);
+      jarDelivered = true;
+    }
+    if (!jarDelivered) {
+      throw new ProvisioningFailure("upload", t("provisioning.err.jarUnavailable"));
+    }
     emit({
       stage: "upload",
       state: "done",
@@ -729,35 +959,115 @@ export async function runProvisioningPipeline(
       }
       if (remaining.length === 0) {
         emit({ stage: "compose", state: "log", detail: t("provisioning.detail.imagesFromRegistry") });
-      } else if (bundledImages !== null) {
-        // Every pull route failed — rescue from the bundled archives: upload
-        // ONLY what no route could deliver (writeLocalFile streams, docker
-        // load imports; the registry is bypassed entirely).
-        emit({
-          stage: "compose",
-          state: "log",
-          detail: t("provisioning.detail.bundleRescue", { count: remaining.length }),
-        });
-        await must("compose", `mkdir -p ${REMOTE_ROOT}/images`);
-        const composeProgress = progressEmitter("compose");
-        for (const ref of remaining) {
-          const entry = bundledImages.manifest.find((candidate) => candidate.ref === ref);
-          if (entry === undefined) {
-            continue; // not bundled either — the final check below reports it
+      } else if (files.imageManifest.length > 0) {
+        // The GitHub leg (user decision 2026-11-02): the SERVER itself pulls
+        // the missing tail from the oak-server release of the client's own
+        // version tag — the client's home link stays out of the byte path
+        // whenever the server can reach GitHub. Only the MISSING tail runs
+        // here (the same re-count rule as every other leg).
+        const missingEntries = files.imageManifest.filter((entry) => remaining.includes(entry.ref));
+        const githubProbe = missingEntries.length > 0
+          ? await probeServerUrl("compose", serverKitAssetUrl(files.kitVersion, missingEntries[0]!.archive))
+          : { reachable: false } as const;
+        if (githubProbe.reachable) {
+          emit({
+            stage: "compose",
+            state: "log",
+            detail: t("provisioning.detail.serverDownloadsImages", { count: missingEntries.length }),
+          });
+          await must("compose", `mkdir -p ${REMOTE_ROOT}/images`);
+          const githubProgress = progressEmitter("compose");
+          for (const entry of missingEntries) {
+            try {
+              await clearForeignPartial("compose", `${REMOTE_ROOT}/images/${entry.archive}`, entry.bytes);
+              await downloadOnServer("compose", {
+                url: serverKitAssetUrl(files.kitVersion, entry.archive),
+                dest: `${REMOTE_ROOT}/images/${entry.archive}`,
+                expectedBytes: entry.bytes,
+                label: entry.archive,
+                onProgress: (bytesReceived) => {
+                  const text = formatByteProgress(bytesReceived, entry.bytes);
+                  if (text.length > 0) {
+                    githubProgress(`${entry.archive} ${text}`);
+                  }
+                },
+              });
+              await must("compose", `gunzip -c ${REMOTE_ROOT}/images/${entry.archive} | docker load`, { timeoutMs: IMAGE_LOAD_TIMEOUT_MS });
+            } catch (error) {
+              emit({
+                stage: "compose",
+                state: "log",
+                detail: `${t("provisioning.detail.serverDownloadFellBack", { label: entry.archive })}`
+                  + `${error instanceof Error ? ` (${error.message})` : ""}`,
+              });
+            }
           }
+          remaining = parseMissingImages((await run("compose", missingCheck)).stdout);
+          if (remaining.length === 0) {
+            emit({ stage: "compose", state: "log", detail: t("provisioning.detail.imagesFromGithub") });
+          }
+        }
+      }
+      if (remaining.length > 0) {
+        // The terminal stage (user decision 2026-11-02): whatever the registry
+        // AND the server-side GitHub leg could not deliver travels through the
+        // CLIENT — from the bundled archives when this build carries them
+        // (files.images !== null: the full kit, dev tree with local tarballs),
+        // or from a client-side GitHub download otherwise (the light kit; a
+        // full build whose archives were cleaned away behaves like light, it
+        // does NOT fail). Upload ONLY the missing tail; docker load imports.
+        const useBundled = bundledImages !== null;
+        if (useBundled) {
+          emit({
+            stage: "compose",
+            state: "log",
+            detail: t("provisioning.detail.bundleRescue", { count: remaining.length }),
+          });
+        } else if (clientFileDownloader !== undefined) {
+          emit({
+            stage: "compose",
+            state: "log",
+            detail: t("provisioning.detail.clientDownloadsImages", { count: remaining.length }),
+          });
+        } else {
+          throw new ProvisioningFailure("compose", files.kit === "light"
+            ? t("provisioning.err.imagesUnavailableLight", { list: remaining.join(", ") })
+            : t("provisioning.err.imagesFailed", { reason: lastPullReason, list: remaining.join(", ") }));
+        }
+        await must("compose", `mkdir -p ${REMOTE_ROOT}/images`);
+        const terminalProgress = progressEmitter("compose");
+        for (const ref of remaining) {
+          const entry = files.imageManifest.find((candidate) => candidate.ref === ref);
+          if (entry === undefined) {
+            continue; // not in the manifest either — the final check reports it
+          }
+          let localArchivePath: string;
           emit({
             stage: "compose",
             state: "log",
             detail: t("provisioning.detail.uploadingImage", { ref, mb: Math.round(entry.bytes / 1024 / 1024) }),
           });
+          if (useBundled) {
+            localArchivePath = `${bundledImages!.directory}/${entry.archive}`;
+          } else {
+            localArchivePath = await clientFileDownloader!(
+              serverKitAssetUrl(files.kitVersion, entry.archive), entry.archive,
+              (bytesReceived, bytesTotal) => {
+                const text = formatByteProgress(bytesReceived, bytesTotal ?? entry.bytes);
+                if (text.length > 0) {
+                  terminalProgress(`${entry.archive} ${text}`);
+                }
+              },
+            );
+          }
           await mustUpload(
             "compose",
-            `${bundledImages.directory}/${entry.archive}`,
+            localArchivePath,
             `${REMOTE_ROOT}/images/${entry.archive}`,
             (bytesSent, bytesTotal) => {
               const text = formatByteProgress(bytesSent, bytesTotal);
               if (text.length > 0) {
-                composeProgress(`${entry.archive} ${text}`);
+                terminalProgress(`${entry.archive} ${text}`);
               }
             },
           );
@@ -765,11 +1075,17 @@ export async function runProvisioningPipeline(
         }
         const recheck = parseMissingImages((await run("compose", missingCheck)).stdout);
         if (recheck.length > 0) {
-          throw new ProvisioningFailure("compose", t("provisioning.err.imagesUnavailable", { list: recheck.join(", ") }));
+          throw new ProvisioningFailure("compose", files.kit === "light"
+            ? t("provisioning.err.imagesUnavailableLight", { list: recheck.join(", ") })
+            : t("provisioning.err.imagesUnavailable", { list: recheck.join(", ") }));
         }
-        emit({ stage: "compose", state: "log", detail: t("provisioning.detail.bundleDeployed") });
-      } else {
-        throw new ProvisioningFailure("compose", t("provisioning.err.imagesFailed", { reason: lastPullReason, list: remaining.join(", ") }));
+        emit({
+          stage: "compose",
+          state: "log",
+          detail: useBundled
+            ? t("provisioning.detail.bundleDeployed")
+            : t("provisioning.detail.imagesViaClient"),
+        });
       }
     }
     // SEQUENTIAL bring-up (user request 2026-10-12): lifting one service at a
@@ -812,8 +1128,8 @@ export async function runProvisioningPipeline(
       + `if [ -n "$code" ] && [ "$code" != "000" ] && [ "$code" != "502" ] && [ "$code" != "503" ] && [ "$code" != "504" ]; then echo "HTTP $code"; exit 0; fi; `
       + `sleep 5; done; echo 'the server did not answer within 400 seconds'; exit 1`;
 
-    if (restoreMode && restoreArchivePath !== null) {
-      // ── restore: upload the archive, boot oak on it, watch the marker ──
+    if (restoreMode) {
+      // ── restore: deliver the archive, boot oak on it, watch the marker ──
       // oak was deliberately left out of START_ORDER: its FIRST boot is the
       // one that loads the data (RestoreRunner). The runner logs RESTORE
       // COMPLETED / RESTORE FAILED: … — a failed boot behind Caddy would
@@ -821,12 +1137,56 @@ export async function runProvisioningPipeline(
       emit({ stage: "restore", state: "start", detail: t("provisioning.detail.restoreUploading") });
       await must("restore", `mkdir -p ${REMOTE_ROOT}/restore`);
       const restoreProgress = progressEmitter("restore");
-      await mustUpload("restore", restoreArchivePath, `${REMOTE_ROOT}/restore/backup.zip`, (bytesSent, bytesTotal) => {
-        const text = formatByteProgress(bytesSent, bytesTotal);
-        if (text.length > 0) {
-          restoreProgress(`backup.zip ${text}`);
+      const backupRemotePath = `${REMOTE_ROOT}/restore/backup.zip`;
+      if (migrationTransfer !== null) {
+        // The DIRECT leg (2026-11-02): the new server pulls the archive from
+        // the old one itself (curl + the one-shot token, ranged resume) — the
+        // user's home link never joins the byte path. The token rides a 0600
+        // file, never a command line (ps on the box would see it); the old
+        // server's certificate (captured against the client's TOFU pin) rides
+        // as the curl CA. Both files are scrubbed when the leg ends, any way.
+        emit({ stage: "restore", state: "log", detail: t("provisioning.detail.restoreDirectPull") });
+        const transferDir = `${REMOTE_ROOT}/transfer`;
+        const authFile = `${transferDir}/.migration-auth`;
+        const caFile = `${transferDir}/old-ca.pem`;
+        await must("restore", `mkdir -p ${transferDir}`);
+        await mustWrite("restore", authFile, `X-Space-Migration-Token: ${migrationTransfer.token}\n`, { mode: 0o600 });
+        if (migrationTransfer.certificatePem !== null) {
+          await mustWrite("restore", caFile, migrationTransfer.certificatePem, { mode: 0o600 });
         }
-      });
+        try {
+          await clearForeignPartial("restore", backupRemotePath, migrationTransfer.archiveBytes);
+          await downloadOnServer("restore", {
+            url: `${migrationTransfer.sourceUrl}/api/server/backup/transfer/file`,
+            dest: backupRemotePath,
+            expectedBytes: migrationTransfer.archiveBytes,
+            label: "backup.zip",
+            headerFile: authFile,
+            cacertFile: migrationTransfer.certificatePem !== null ? caFile : undefined,
+            onProgress: (bytesReceived) => {
+              const text = formatByteProgress(bytesReceived, migrationTransfer.archiveBytes);
+              if (text.length > 0) {
+                restoreProgress(`backup.zip ${text}`);
+              }
+            },
+          });
+          // Transport integrity does not lean on TLS alone: the transferred
+          // bytes must hash to the digest the issue response carried.
+          await must("restore", `echo ${shellQuote(`${migrationTransfer.archiveSha256}  ${backupRemotePath}`)} | sha256sum -c -`);
+        } finally {
+          // The credential scrub (the .provision-* precedent): best-effort,
+          // INSIDE the resume wrapper a failure here must not mask the leg's
+          // own outcome.
+          await run("restore", `rm -f ${authFile} ${caFile}`).catch(() => undefined);
+        }
+      } else {
+        await mustUpload("restore", restoreArchivePath!, backupRemotePath, (bytesSent, bytesTotal) => {
+          const text = formatByteProgress(bytesSent, bytesTotal);
+          if (text.length > 0) {
+            restoreProgress(`backup.zip ${text}`);
+          }
+        });
+      }
       emit({ stage: "restore", state: "log", detail: t("provisioning.detail.restoreBooting") });
       await must("restore", `cd ${REMOTE_ROOT} && docker compose up -d --build oak`, {
         timeoutMs: COMPOSE_UP_TIMEOUT_MS,
