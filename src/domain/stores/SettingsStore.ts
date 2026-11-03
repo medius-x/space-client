@@ -211,9 +211,11 @@ export class SettingsStore extends Emitter {
   }
 
   async load(): Promise<void> {
-    const stored = await kv.get<Partial<ClientSettings> & { apmEnabled?: boolean }>(KV_KEY);
+    const stored = await kv.get<Partial<ClientSettings> & { apmEnabled?: boolean; composerMarkersVisible?: boolean }>(KV_KEY);
     if (stored !== null) {
-      const { apmEnabled, ...rest } = stored;
+      // composerMarkersVisible (the dropped plain/WYSIWYG mode toggle,
+      // removed 2026-11-03) is dropped from older stores on read.
+      const { apmEnabled, composerMarkersVisible: droppedComposerMode, ...rest } = stored;
       this.settings = { ...DEFAULT_CLIENT_SETTINGS, ...rest };
       // Migration (2026-09-17): the one APM flag used to gate echo+NS+AGC
       // together. AEC/AGC became always-on; the NS slot became an engine.

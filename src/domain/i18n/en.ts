@@ -81,6 +81,13 @@ export const EN = {
   "chat.commentOptional": "Comment (optional)",
   "chat.forwardReuploadNote": "Attachments are re-uploaded to the target server — this may take a while.",
   "chat.editHint": "enter to save · esc to cancel",
+  "chat.formattingSubmenu": "Formatting",
+  "chat.formatBold": "Bold",
+  "chat.formatItalic": "Italic",
+  "chat.formatUnderline": "Underline",
+  "chat.formatStrike": "Strikethrough",
+  "chat.formatSpoiler": "Spoiler",
+  "chat.formatCode": "Inline code",
   "chat.editHintWithImages": "enter to save · esc to cancel · click × to remove an image",
   "chat.editHintRemoving": {
     one: "{count} image will be removed · enter to save · esc to cancel",

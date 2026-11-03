@@ -16,7 +16,33 @@ import { RestClient } from "../../core/rest";
 import { log } from "../../logging";
 import { computeGroupStarts, continuesGroup, formatHeaderStamp, formatTimeOfDay, toEpochMs, type GroupableMessage } from "../../domain/logic/message-grouping";
 import { lastServerMessageId } from "../../domain/stores/MessageStore";
-import { firstHttpUrl, segmentMessageContent } from "../../domain/logic/mention-segmenter";
+import { firstHttpUrl, segmentMessageContent, type MessageSegment } from "../../domain/logic/mention-segmenter";
+import { wrapSelectionInMarker } from "../../domain/logic/composer-format";
+import {
+  applyLiveFormatCommand,
+  createComposerEditor,
+  insertPlainText,
+  loadComposerText,
+  serializeComposerRoot,
+  $caretModelOffsets,
+} from "../lexical-composer";
+import {
+  COMMAND_PRIORITY_CRITICAL,
+  KEY_ARROW_DOWN_COMMAND,
+  KEY_ARROW_UP_COMMAND,
+  KEY_ENTER_COMMAND,
+  KEY_ESCAPE_COMMAND,
+  KEY_TAB_COMMAND,
+  UNDO_COMMAND,
+  REDO_COMMAND,
+  $getRoot,
+  $getSelection,
+  $isParagraphNode,
+  $isRangeSelection,
+  type LexicalCommand,
+  type LexicalEditor,
+} from "lexical";
+import { createEmptyHistoryState, registerHistory } from "@lexical/history";
 import {
   filterEmojis,
   isEmojiOnlyMessage,
@@ -1728,6 +1754,98 @@ function InlineSticker({ session, sticker }: {
   );
 }
 
+/** A hidden ||spoiler|| span — a click toggles the reveal (Discord's behavior);
+ *  stopPropagation keeps the row's own selection-click quiet. */
+function SpoilerSpan({ children }: { children: React.ReactNode }): React.JSX.Element {
+  const [revealed, setRevealed] = useState(false);
+  return (
+    <span
+      className={"fmt-spoiler" + (revealed ? " revealed" : "")}
+      onClick={(event) => {
+        event.stopPropagation();
+        setRevealed((current) => !current);
+      }}
+    >{children}</span>
+  );
+}
+
+/** Context-specific segment pieces: the walk below is shared, while mentions,
+ *  links and custom emojis depend on where the segments render (the row has the
+ *  session; the quote preview must stay flat — see FLAT_SEGMENT_DECORATORS). */
+type SegmentDecorators = {
+  mention: (segment: Extract<MessageSegment, { kind: "mention" }>, key: string) => React.ReactNode;
+  link: (segment: Extract<MessageSegment, { kind: "link" }>, key: string) => React.ReactNode;
+  emoji: (segment: Extract<MessageSegment, { kind: "emoji" }>, key: string) => React.ReactNode;
+};
+
+/** The quote preview's decorators: everything renders as PLAIN TEXT. The preview
+ *  string is server-truncated at 100 chars — a link segment cut mid-URL must not
+ *  become a clickable <a> (it would open a dead page). */
+const FLAT_SEGMENT_DECORATORS: SegmentDecorators = {
+  mention: (segment, key) => <span key={key}>{segment.text}</span>,
+  link: (segment, key) => <span key={key}>{segment.text}</span>,
+  emoji: (segment, key) => <span key={key}>{segment.text}</span>,
+};
+
+/** Recursive render of a segment list — the formatting pass nests children
+ *  inside "formatted" nodes, so the row's flat map became a walk. Pure JSX, no
+ *  HTML strings anywhere (the project's no-innerHTML discipline). */
+function renderMessageSegments(
+  segments: readonly MessageSegment[],
+  decorators: SegmentDecorators,
+  keyPrefix: string,
+): React.ReactNode[] {
+  return segments.map((segment, segmentIndex) => {
+    const key = `${keyPrefix}${segmentIndex}`;
+    switch (segment.kind) {
+      case "text":
+        return <span key={key}>{segment.text}</span>;
+      case "mention":
+        return decorators.mention(segment, key);
+      case "link":
+        return decorators.link(segment, key);
+      case "emoji":
+        return decorators.emoji(segment, key);
+      case "formatted":
+        if (segment.format === "spoiler") {
+          return <SpoilerSpan key={key}>{renderMessageSegments(segment.children, decorators, `${key}-`)}</SpoilerSpan>;
+        }
+        if (segment.format === "code") {
+          // The parser keeps a code span TERMINAL (exactly one text child) —
+          // render that string directly, no nested span.
+          const inner = segment.children.length === 1 && segment.children[0]!.kind === "text"
+            ? segment.children[0]!.text
+            : renderMessageSegments(segment.children, decorators, `${key}-`);
+          return <code key={key} className="fmt-code">{inner}</code>;
+        }
+        return <span key={key} className={`fmt-${segment.format}`}>{renderMessageSegments(segment.children, decorators, `${key}-`)}</span>;
+    }
+  });
+}
+
+/** The ROW's decorators (also the composer's preview mode): mentions highlight,
+ *  links open the system browser, custom emojis resolve through the catalog. */
+function messageDecorators(session: ConnectionSession, largeEmojis: boolean): SegmentDecorators {
+  return {
+    mention: (segment, key) => <span key={key} className="mention">{segment.text}</span>,
+    link: (segment, key) => (
+      <a
+        key={key}
+        className="body-link"
+        href={segment.url}
+        draggable={false}
+        onClick={(event) => {
+          event.preventDefault(); // the app never navigates — the system browser opens
+          void window.spaceMedia?.openExternal(segment.url);
+        }}
+      >
+        {segment.text}
+      </a>
+    ),
+    emoji: (segment, key) => <InlineEmoji key={key} session={session} name={segment.name} large={largeEmojis} />,
+  };
+}
+
 /**
  * Memoized: the VirtualList recomputes its window on every scroll frame, which
  * re-runs renderItem for the whole visible window — with memo, rows whose props
@@ -1852,28 +1970,7 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
     </>
   ) : (
     <div className="message-content">
-      {segmented.segments.map((segment, segmentIndex) =>
-        segment.kind === "mention"
-          ? <span key={segmentIndex} className="mention">{segment.text}</span>
-          : segment.kind === "link"
-            ? (
-              <a
-                key={segmentIndex}
-                className="body-link"
-                href={segment.url}
-                draggable={false}
-                onClick={(event) => {
-                  event.preventDefault(); // the app never navigates — the system browser opens
-                  void window.spaceMedia?.openExternal(segment.url);
-                }}
-              >
-                {segment.text}
-              </a>
-            )
-            : segment.kind === "emoji"
-              ? <InlineEmoji key={segmentIndex} session={session} name={segment.name} large={segmented.emojiOnly} />
-              : <span key={segmentIndex}>{segment.text}</span>,
-      )}
+      {renderMessageSegments(segmented.segments, messageDecorators(session, segmented.emojiOnly), "")}
       {message.editedAt !== null ? <span className="message-edited">{t("chat.edited")}</span> : null}
     </div>
   );
@@ -2228,7 +2325,10 @@ function QuoteCard({ level, depth, clickable, onJump, nameOf }: {
       {level.reply !== null && depth < QUOTE_DEPTH_MAX
         ? <QuoteCard level={level.reply} depth={depth + 1} clickable={clickable} onJump={onJump} nameOf={nameOf} />
         : null}
-      <span className="quote-preview">{level.preview}</span>
+      {/* The preview keeps its markers ("**bold**" arrived as plain text) but now
+          renders them: the same segmenter, FLAT decorators (the string is
+          server-truncated — a cut URL must stay non-clickable text). */}
+      <span className="quote-preview">{renderMessageSegments(segmentMessageContent(level.preview, []), FLAT_SEGMENT_DECORATORS, "")}</span>
     </div>
   );
 }
@@ -2422,17 +2522,42 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
   const [mentionIndex, setMentionIndex] = useState(0);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerQuery, setPickerQuery] = useState("");
+  // The composer is a single WYSIWYG editor (Lexical, user decision 2026-11-03:
+  // the plain/WYSIWYG mode toggle was dropped — two input systems with caret
+  // bridges between them were the most fragile part of the whole feature).
+  // The editor owns the DOM, the caret and the typing; the flat marker string
+  // stays the single MODEL (what goes on the wire): native typing serializes
+  // the document into it, external edits (picker inserts, mention
+  // substitutions, spell fixes, sends) reload the document from it.
+  const editorRootRef = useRef<HTMLDivElement>(null);
+  const lexicalEditorRef = useRef<LexicalEditor | null>(null); // created on first mount
+  const attachEnabledRef = useRef(attachEnabled); // the paste handler outlives re-renders
+  useEffect(() => {
+    attachEnabledRef.current = attachEnabled;
+  }, [attachEnabled]);
+  const textRef = useRef(text); // fresh model text for effect closures that must not re-run
+  useEffect(() => {
+    textRef.current = text;
+  }, [text]);
+  // The editor's key handlers live behind refs so the REGISTERED commands
+  // (one per mount) always run the freshest render's closures — Lexical sees
+  // keydown on the editable BEFORE React's delegated handler, so the
+  // keyboarding contract (Enter semantics, the @-popup navigation, Escape)
+  // must be answered inside the commands.
+  const enterHandlerRef = useRef<(event: KeyboardEvent | null) => void>(() => undefined);
+  const escapeHandlerRef = useRef<() => boolean>(() => false);
+  const mentionNavigationRef = useRef<(key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab") => boolean>(() => false);
+  const mentionUpdateRef = useRef<((value: string, caret: number) => void) | null>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
   const pickerButtonRef = useRef<HTMLButtonElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const composerInputRef = useRef<HTMLTextAreaElement>(null);
   // The placeholder carries the live channel name and can outgrow the field
-  // (user report 2026-10-28): clip it to the textarea's CONTENT width with an
+  // (user report 2026-10-28): clip it to the editor's CONTENT width with an
   // ellipsis instead of the hard clip. A ResizeObserver keeps the clip honest
   // through window resizes (the field is flex: 1 inside the card).
   const [fieldWidthPx, setFieldWidthPx] = useState<number | null>(null);
   useEffect(() => {
-    const node = composerInputRef.current;
+    const node = editorRootRef.current;
     if (node === null || typeof ResizeObserver === "undefined") {
       return;
     }
@@ -2455,15 +2580,70 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
       return; // the initial value — nothing to focus yet
     }
     requestAnimationFrame(() => {
-      const node = composerInputRef.current;
-      if (node === null) {
+      const editor = lexicalEditorRef.current;
+      if (editor === null || editor.getRootElement() === null) {
         return;
       }
-      node.focus();
-      const end = node.value.length;
-      node.setSelectionRange(end, end);
+      editor.focus();
+      const end = textRef.current.length;
+      loadComposerText(editor, textRef.current, { start: end, end });
     });
   }, [focusSignal]);
+  // The editor's mount: the editor owns the DOM from here; the flat model
+  // stays in sync through the update listener (document → string) and the
+  // loaders below (string → document).
+  useEffect(() => {
+    const rootElement = editorRootRef.current;
+    if (rootElement === null) {
+      return;
+    }
+    const editor = lexicalEditorRef.current ?? (lexicalEditorRef.current = createComposerEditor(
+      (error) => {
+        log.error("composer", "lexical editor error: " + error.message);
+      },
+      (files) => {
+        if (attachEnabledRef.current) {
+          onPaste(files);
+        }
+      },
+    ));
+    editor.setRootElement(rootElement);
+    const unregisterHistory = registerHistory(editor, createEmptyHistoryState(), 1000);
+    const unregisterUpdate = editor.registerUpdateListener(({ editorState }) => {
+      editorState.read(() => {
+        const serialized = serializeComposerRoot();
+        const caret = $caretModelOffsets();
+        setText((current) => (current === serialized ? current : serialized));
+        if (caret !== null) {
+          mentionUpdateRef.current?.(serialized, caret.end);
+        }
+      });
+    });
+    const registerHotkey = <Payload,>(command: LexicalCommand<Payload>, listener: (event: Payload) => boolean): (() => void) => editor.registerCommand(command, listener, COMMAND_PRIORITY_CRITICAL);
+    const unregisterEnter = registerHotkey(KEY_ENTER_COMMAND, (event) => {
+      event?.preventDefault();
+      enterHandlerRef.current(event);
+      return true;
+    });
+    const unregisterEscape = registerHotkey(KEY_ESCAPE_COMMAND, () => escapeHandlerRef.current());
+    const unregisterArrowDown = registerHotkey(KEY_ARROW_DOWN_COMMAND, () => mentionNavigationRef.current("ArrowDown"));
+    const unregisterArrowUp = registerHotkey(KEY_ARROW_UP_COMMAND, () => mentionNavigationRef.current("ArrowUp"));
+    const unregisterTab = registerHotkey(KEY_TAB_COMMAND, () => mentionNavigationRef.current("Tab"));
+    // The initial load: the model text as of this mount, caret at the end.
+    const end = textRef.current.length;
+    loadComposerText(editor, textRef.current, { start: end, end });
+    editor.focus();
+    return () => {
+      unregisterTab();
+      unregisterArrowUp();
+      unregisterArrowDown();
+      unregisterEscape();
+      unregisterEnter();
+      unregisterUpdate();
+      unregisterHistory();
+      editor.setRootElement(null);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- a one-time mount: the editor element exists for the component's lifetime
   const users = useStore(session.rosterStore, (state) => state.users);
   const roles = useStore(session.memberStore, (state) => state.roles);
   const ownUsername = useStore(appStore, (state) => state.ownUsername);
@@ -2538,39 +2718,21 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
       return;
     }
     const start = mentionQuery.caret - mentionQuery.token.length;
-    const replaced = `${text.slice(0, start)}@${insert} ${text.slice(mentionQuery.caret)}`;
-    setText(replaced);
-    setMentionQuery(null);
-    // A MOUSE click on a suggestion row moved the focus out of the field — the
-    // user expects to keep typing (or press Enter) right away (live report).
-    // rAF: let the re-render land first, then place the caret after the insert.
-    const caret = start + insert.length + 2; // after "@name "
-    window.requestAnimationFrame(() => {
-      const node = composerInputRef.current;
-      if (node !== null) {
-        node.focus();
-        node.setSelectionRange(caret, caret);
-      }
-    });
+    // A MOUSE click on a suggestion row moves the focus out of the field —
+    // applyEditorRange refocuses and re-places the caret after "@name ".
+    applyEditorRange(`${text.slice(0, start)}@${insert} ${text.slice(mentionQuery.caret)}`, start + insert.length + 2, start + insert.length + 2);
   };
 
-  /** Inserts an arbitrary string at the caret (the applyMention mechanic: rAF refocus
-   *  so a mouse click on the grid doesn't steal the typing flow). The picker STAYS
-   *  open — Discord's behavior — until Escape/outside-click closes it. */
+  /** Inserts an arbitrary string at the caret (through the model). The
+   *  picker STAYS open — Discord's behavior — until Escape or an
+   *  outside click closes it. */
   const insertAtCaret = (insert: string): void => {
-    const node = composerInputRef.current;
-    const caret = node !== null ? node.selectionStart ?? text.length : text.length;
-    const replaced = `${text.slice(0, caret)}${insert}${text.slice(caret)}`;
-    setText(replaced);
-    setMentionQuery(null);
-    window.requestAnimationFrame(() => {
-      const field = composerInputRef.current;
-      if (field !== null) {
-        field.focus();
-        const nextCaret = caret + insert.length;
-        field.setSelectionRange(nextCaret, nextCaret);
-      }
-    });
+    const caret = modelSelection();
+    applyEditorRange(
+      `${text.slice(0, caret.start)}${insert}${text.slice(caret.end)}`,
+      caret.start + insert.length,
+      caret.start + insert.length,
+    );
   };
 
   /** Inserts ":name:" — and records the use into the shared Latest MRU. */
@@ -2630,8 +2792,9 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
     setError(null);
     try {
       await onSend(content);
-      setText("");
-      setMentionQuery(null);
+      // The model empties through the editor primitive, so the WYSIWYG DOM
+      // rebuilds too (a bare setText would leave the sent text on screen).
+      applyEditorRange("", 0, 0);
       // A sent message closes the picker (user request) — but a FAILED send
       // keeps it: the draft survives, so does the picker.
       closePicker();
@@ -2688,40 +2851,85 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
     });
   }, []);
 
-  const selectionRange = (): { start: number; end: number } => {
-    const field = composerInputRef.current;
-    return field !== null
-      ? { start: field.selectionStart ?? 0, end: field.selectionEnd ?? 0 }
-      : { start: 0, end: 0 };
-  };
-
-  /** Applies a menu verb's text change: state set, a stale @-query dropped, the
-   *  caret refocused where the edit landed (the applyMention rAF idiom). */
-  const applyEditorText = (nextText: string, caret: number): void => {
+  /** Applies a text change to the MODEL: state set, a stale @-query dropped,
+   *  the document reloaded with the caret where the edit put it. */
+  const applyEditorRange = (nextText: string, caretStart: number, caretEnd: number): void => {
     setText(nextText);
     setMentionQuery(null);
-    window.requestAnimationFrame(() => {
-      const field = composerInputRef.current;
-      if (field !== null) {
-        field.focus();
-        field.setSelectionRange(caret, caret);
-      }
-    });
+    const editor = lexicalEditorRef.current;
+    if (editor !== null && editor.getRootElement() !== null) {
+      loadComposerText(editor, nextText, { start: caretStart, end: caretEnd });
+      editor.focus();
+    }
+  };
+
+  const applyEditorText = (nextText: string, caret: number): void => {
+    applyEditorRange(nextText, caret, caret);
+  };
+
+  /** The live caret/selection as MODEL offsets (the editor's selection lives
+   *  in the editor state, so it survives a blurred element). */
+  const modelSelection = (): { start: number; end: number } => {
+    const editor = lexicalEditorRef.current;
+    if (editor !== null && editor.getRootElement() !== null) {
+      return editor.getEditorState().read($caretModelOffsets) ?? { start: text.length, end: text.length };
+    }
+    return { start: text.length, end: text.length };
+  };
+
+  /** A formatting action — the ONE path for both the hotkeys (Ctrl+B/I/U,
+   *  Ctrl+Shift+X) and the context menu's Formatting block. The LIVE
+   *  selection rides Lexical's FORMAT_TEXT_COMMAND: a selection toggles the
+   *  format over exactly the SEEN characters (a word inside a strike run
+   *  unwraps honestly — the old model-wrap could only unwrap a WHOLE pair and
+   *  produced `~~one two ~~three~~~~` junk when the range sat inside an
+   *  existing pair), an EMPTY caret toggles the FLOWING format (the
+   *  selection's format keeps applying to everything typed next — Discord's
+   *  typing toggle). The selection lives in the EDITOR STATE, so it survives
+   *  the menu click's blur (the copy/cut discipline). The model wrap stays as
+   *  the fallback when the editor is not attached. */
+  const toggleWrapSelection = (marker: string): void => {
+    const editor = lexicalEditorRef.current;
+    if (editor !== null && editor.getRootElement() !== null && applyLiveFormatCommand(editor, marker)) {
+      return;
+    }
+    const range = modelSelection();
+    const result = wrapSelectionInMarker(text, range.start, range.end, marker);
+    applyEditorRange(result.next, result.nextStart, result.nextEnd);
   };
 
   const runEditorVerb = (verb: "undo" | "redo" | "cut" | "copy" | "paste" | "delete" | "selectAll"): void => {
-    const field = composerInputRef.current;
-    if (field === null) {
+    // Lexical machinery: undo/redo through the registered history, selectAll
+    // over the document paragraph, paste through the plain inserter; the
+    // clipboard verbs speak the MODEL — the editor state holds the selection
+    // even after a menu click blurred the element.
+    const editor = lexicalEditorRef.current;
+    if (editor === null || editor.getRootElement() === null) {
       return;
     }
-    field.focus();
-    // Undo/Redo ride the field's NATIVE edit stack — execCommand fires an
-    // input event, so the ordinary onChange picks the result up.
+    editor.focus();
     if (verb === "undo" || verb === "redo") {
-      document.execCommand(verb);
+      editor.dispatchCommand(verb === "undo" ? UNDO_COMMAND : REDO_COMMAND);
       return;
     }
-    const { start, end } = selectionRange();
+    if (verb === "selectAll") {
+      editor.update(() => {
+        const first = $getRoot().getFirstChild();
+        if ($isParagraphNode(first)) {
+          first.select();
+        }
+      }, { discrete: true });
+      return;
+    }
+    if (verb === "paste") {
+      void navigator.clipboard.readText().then((inserted) => {
+        if (inserted.length > 0) {
+          insertPlainText(editor, inserted);
+        }
+      }).catch(() => undefined);
+      return;
+    }
+    const { start, end } = modelSelection();
     const selected = text.slice(start, end);
     if (verb === "copy") {
       void navigator.clipboard.writeText(selected).catch(() => undefined);
@@ -2734,34 +2942,15 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
       applyEditorText(`${text.slice(0, start)}${text.slice(end)}`, start);
       return;
     }
-    if (verb === "paste") {
-      void navigator.clipboard.readText().then((inserted) => {
-        if (inserted.length === 0) {
-          return;
-        }
-        const range = selectionRange();
-        applyEditorText(
-          `${text.slice(0, range.start)}${inserted}${text.slice(range.end)}`,
-          range.start + inserted.length,
-        );
-      }).catch(() => undefined);
-      return;
-    }
-    field.select(); // selectAll
   };
 
   /** Applies a picked dictionary suggestion: the replacement happens LOCALLY
-   *  (the applyEditorText idiom — synchronous, no IPC for the text itself);
-   *  main's replaceMisspelling is not used because it targets whatever edit
-   *  region is focused, while here the exact range is known. The caret has not
-   *  moved since the menu opened (a menu click does not touch the textarea),
+   *  (a model edit — synchronous, no IPC for the text itself); the caret has
+   *  not moved since the menu opened (a menu click does not touch the editor),
    *  but a mismatching word aborts rather than replacing the wrong thing. */
   const applySpellSuggestion = (word: string, suggestion: string): void => {
-    const field = composerInputRef.current;
-    if (field === null) {
-      return;
-    }
-    const range = wordRangeAt(text, field.selectionStart ?? 0);
+    const caret = modelSelection().start;
+    const range = wordRangeAt(text, caret);
     if (range === null || text.slice(range.start, range.end) !== word) {
       return;
     }
@@ -2780,6 +2969,138 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
     settingsStore.apply({
       spellCheckWords: withAddedSpellWord(settingsStore.getSnapshot().spellCheckWords, word),
     });
+  };
+
+  /** A newline at the caret — Shift/Ctrl+Enter. */
+  const insertNewline = (): void => {
+    const editor = lexicalEditorRef.current;
+    if (editor === null || editor.getRootElement() === null) {
+      return;
+    }
+    editor.update(() => {
+      const selection = $getSelection();
+      if ($isRangeSelection(selection)) {
+        selection.insertLineBreak();
+      }
+    }, { discrete: true });
+  };
+
+  /** Enter semantics are SETTINGS-OWNED (M7): default Enter sends and
+   *  Ctrl/Shift+Enter newline; with ctrlEnterSends the roles swap (Shift
+   *  stays a newline in both configurations). Driven by the Enter command. */
+  const runEnterSemantics = (ctrlKey: boolean, shiftKey: boolean, altKey: boolean): void => {
+    const plainEnter = !ctrlKey && !shiftKey && !altKey;
+    const ctrlEnter = ctrlKey && !shiftKey && !altKey;
+    const shiftEnter = shiftKey && !altKey;
+    const sendOnThisEnter = ctrlEnterSends ? ctrlEnter : plainEnter;
+    const newlineOnThisEnter = ctrlEnterSends ? plainEnter || shiftEnter : ctrlEnter || shiftEnter;
+    if (sendOnThisEnter) {
+      void submit();
+    } else if (newlineOnThisEnter) {
+      insertNewline();
+    }
+  };
+
+  // The WYSIWYG key handlers' FRESH closures (see the refs above): the Lexical
+  // commands are registered once per mount, the refs re-bind every render —
+  // the editor's whole keyboard contract is answered inside Lexical because
+  // it sees keydown first.
+  useEffect(() => {
+    mentionUpdateRef.current = (value, caret) => updateMentionQuery(value, caret);
+    enterHandlerRef.current = (event) => {
+      if (mentionQuery !== null && mentionCandidates.length > 0) {
+        applyMention(mentionCandidates[mentionIndex]!.insert);
+        return;
+      }
+      runEnterSemantics(event?.ctrlKey ?? false, event?.shiftKey ?? false, event?.altKey ?? false);
+    };
+    mentionNavigationRef.current = (key) => {
+      if (mentionQuery === null || mentionCandidates.length === 0) {
+        return false;
+      }
+      if (key === "ArrowDown") {
+        setMentionIndex((index) => (index + 1) % mentionCandidates.length);
+        return true;
+      }
+      if (key === "ArrowUp") {
+        setMentionIndex((index) => (index - 1 + mentionCandidates.length) % mentionCandidates.length);
+        return true;
+      }
+      applyMention(mentionCandidates[mentionIndex]!.insert); // Enter / Tab
+      return true;
+    };
+    escapeHandlerRef.current = () => {
+      if (onCancelReply !== null) {
+        onCancelReply();
+        return true;
+      }
+      if (mentionQuery !== null) {
+        setMentionQuery(null);
+        return true;
+      }
+      return false;
+    };
+  });
+
+  /** The editor's context menu (Electron shows no native menu in a
+   *  contentEditable — our own verb set). */
+  const onComposerContextMenu = (event: React.MouseEvent): void => {
+    event.preventDefault();
+    const selection = modelSelection();
+    // A right click moves the caret onto the clicked word, so the model caret
+    // already names it (a live SELECTION is not moved — its first word then).
+    const caretWordRange = wordRangeAt(text, selection.start);
+    const caretWord = caretWordRange !== null ? text.slice(caretWordRange.start, caretWordRange.end) : null;
+    setEditorMenu({
+      x: event.clientX,
+      y: event.clientY,
+      hasSelection: selection.end > selection.start,
+      hasText: text.length > 0,
+      canPaste: false,
+      spellWord: caretWord,
+      spellMisspelled: false,
+      spellSuggestions: [],
+    });
+    // Spell-check menu data comes from the EMBEDDED dictionaries (the
+    // platform's context-menu params stay empty on Windows —
+    // electron/electron#38876): ask about the word under the caret the moment
+    // the menu opens; the answer patches the menu in. Skipped while off.
+    if (caretWord !== null && spellCheckEnabled) {
+      void window.spaceSpell?.menuData(caretWord)
+        .then((data) => setEditorMenu((current) =>
+          current === null || current.spellWord !== caretWord
+            ? current // the menu closed or moved on — drop the answer
+            : {
+              ...current,
+              spellMisspelled: data.misspelled,
+              spellSuggestions: data.misspelled ? data.suggestions : [],
+            }))
+        .catch(() => undefined);
+    }
+    // Async clipboard probe: Paste enables itself when text is there.
+    void navigator.clipboard.readText()
+      .then((probe) => setEditorMenu((current) =>
+        current === null ? current : { ...current, canPaste: probe.length > 0 }))
+      .catch(() => setEditorMenu((current) =>
+        current === null ? current : { ...current, canPaste: true }));
+  };
+
+  /** The editor's keydown — ONLY Ctrl+Shift+X (strike; plain Ctrl+X stays
+   *  Cut). Everything else with a keyboard contract is answered elsewhere:
+   *  Enter semantics, the @-popup navigation and Escape by the REGISTERED
+   *  Lexical commands (they see keydown before React's delegated handler),
+   *  and Ctrl+B/I/U BY RICH-TEXT ITSELF — the plugin intercepts those and
+   *  dispatches FORMAT_TEXT_COMMAND, which OUR critical-priority handler
+   *  answers with the toggle semantics. Dispatching our own command from
+   *  here too would toggle TWICE and cancel out (the probe-caused smoke
+   *  bug: bold "worked once" and strike markers leaked as plain text).
+   *  Matched by event.code so the RUSSIAN layout keeps working (Ctrl+Ч =
+   *  physical X). */
+  const onComposerKeyDown = (event: React.KeyboardEvent): void => {
+    if (event.ctrlKey && event.shiftKey && !event.altKey && event.code === "KeyX") {
+      event.preventDefault();
+      toggleWrapSelection("~~");
+    }
   };
 
   return (
@@ -2932,115 +3253,23 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
             event.target.value = ""; // allow picking the same file twice
           }}
         />
-        <textarea
-          ref={composerInputRef}
-          value={text}
-          rows={Math.min(10, Math.max(1, text.split("\n").length))}
-          placeholder={fittedPlaceholder}
+        {/* The composer's editor (Lexical): React renders no children into it —
+           the editor attaches itself to the element in the mount effect and
+           owns the DOM, the caret and the typing from there; the document
+           serializes into the flat marker model on every update. Markers are
+           hidden (the text shows as it will render in chat); ":name:" tokens
+           stay literal text here. */}
+        <div
+          ref={editorRootRef}
+          className={"composer-editor-formatted" + (text.trim().length === 0 ? " is-empty" : "")}
+          contentEditable
+          suppressContentEditableWarning
+          role="textbox"
+          aria-multiline="true"
           spellCheck={true}
-          onChange={(event) => {
-            setText(event.target.value);
-            updateMentionQuery(event.target.value, event.target.selectionStart);
-          }}
-          onPaste={(event) => {
-            const files = [...event.clipboardData.files];
-            if (attachEnabled && files.length > 0) {
-              event.preventDefault();
-              onPaste(files);
-            }
-          }}
-          onContextMenu={(event) => {
-            // Electron shows no native menu in a textarea — our own verb set
-            // (user request 2026-10-27).
-            event.preventDefault();
-            const { start, end } = selectionRange();
-            // A right click moves the caret onto the clicked word, so the
-            // selection start already names it (a live SELECTION is not
-            // moved — then this is the selection's first word).
-            const caretWordRange = wordRangeAt(text, start);
-            const caretWord = caretWordRange !== null ? text.slice(caretWordRange.start, caretWordRange.end) : null;
-            setEditorMenu({
-              x: event.clientX,
-              y: event.clientY,
-              hasSelection: end > start,
-              hasText: text.length > 0,
-              canPaste: false,
-              spellWord: caretWord,
-              spellMisspelled: false,
-              spellSuggestions: [],
-            });
-            // Spell-check menu data comes from the EMBEDDED dictionaries (the
-            // platform's context-menu params stay empty on Windows —
-            // electron/electron#38876): ask about the word under the caret
-            // the moment the menu opens; the answer patches the menu in.
-            // Skipped entirely while the checker is toggled off.
-            if (caretWord !== null && spellCheckEnabled) {
-              void window.spaceSpell?.menuData(caretWord)
-                .then((data) => setEditorMenu((current) =>
-                  current === null || current.spellWord !== caretWord
-                    ? current // the menu closed or moved on — drop the answer
-                    : {
-                      ...current,
-                      spellMisspelled: data.misspelled,
-                      spellSuggestions: data.misspelled ? data.suggestions : [],
-                    }))
-                .catch(() => undefined);
-            }
-            // Async clipboard probe: Paste enables itself when text is there.
-            // A rejected probe (permission hiccup) keeps the verb ENABLED —
-            // better a no-op click than a mysteriously dead Paste.
-            void navigator.clipboard.readText()
-              .then((probe) => setEditorMenu((current) =>
-                current === null ? current : { ...current, canPaste: probe.length > 0 }))
-              .catch(() => setEditorMenu((current) =>
-                current === null ? current : { ...current, canPaste: true }));
-          }}
-          onKeyDown={(event) => {
-          if (event.key === "Escape" && onCancelReply !== null) {
-            event.preventDefault();
-            onCancelReply();
-            return;
-          }
-          if (mentionQuery !== null && mentionCandidates.length > 0) {
-            if (event.key === "ArrowDown") {
-              event.preventDefault();
-              setMentionIndex((index) => (index + 1) % mentionCandidates.length);
-              return;
-            }
-            if (event.key === "ArrowUp") {
-              event.preventDefault();
-              setMentionIndex((index) => (index - 1 + mentionCandidates.length) % mentionCandidates.length);
-              return;
-            }
-            if (event.key === "Enter" || event.key === "Tab") {
-              event.preventDefault();
-              applyMention(mentionCandidates[mentionIndex]!.insert);
-              return;
-            }
-            if (event.key === "Escape") {
-              setMentionQuery(null);
-              return;
-            }
-          }
-          // Enter semantics are SETTINGS-OWNED (M7): default Enter sends and
-          // Ctrl/Shift+Enter newline; with ctrlEnterSends the roles swap (Shift
-          // stays a newline in both modes). Ctrl+Enter needs the manual insert —
-          // Chromium treats it as non-text.
-          const plainEnter = event.key === "Enter" && !event.ctrlKey && !event.shiftKey && !event.altKey;
-          const ctrlEnter = event.key === "Enter" && event.ctrlKey && !event.shiftKey && !event.altKey;
-          const shiftEnter = event.key === "Enter" && event.shiftKey && !event.altKey;
-          const sendOnThisEnter = ctrlEnterSends ? ctrlEnter : plainEnter;
-          const newlineOnThisEnter = ctrlEnterSends ? plainEnter || shiftEnter : ctrlEnter || shiftEnter;
-          if (sendOnThisEnter) {
-            event.preventDefault();
-            void submit();
-          } else if (newlineOnThisEnter) {
-            event.preventDefault();
-            const textarea = event.currentTarget;
-            textarea.setRangeText("\n", textarea.selectionStart, textarea.selectionEnd, "end");
-            setText(textarea.value);
-          }
-        }}
+          data-placeholder={fittedPlaceholder}
+          onContextMenu={onComposerContextMenu}
+          onKeyDown={onComposerKeyDown}
         />
         {/* The single smile button at the card's RIGHT edge opens the unified
             expression picker. ALWAYS visible (user request 2026-09-30): the Emoji
@@ -3076,6 +3305,24 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
             { label: t("common.delete"), disabled: !editorMenu.hasSelection, action: () => runEditorVerb("delete") },
             { separator: true },
             { label: t("chat.selectAll"), disabled: !editorMenu.hasText, action: () => runEditorVerb("selectAll") },
+            // The formatting row (user request 2026-11-03, right above the
+            // spelling row): the same Telegram shape — "Formatting ›" opening
+            // the six marker actions to the right. Needs a SELECTION (each
+            // action wraps/unwraps what is selected); the items work on the
+            // range CAPTURED AT OPEN — a menu click blur-blanks the live one —
+            // and edit the model directly.
+            ...(editorMenu.hasSelection ? [{
+              label: t("chat.formattingSubmenu"),
+              action: () => undefined,
+              children: [
+                { label: t("chat.formatBold"), action: () => toggleWrapSelection("**") },
+                { label: t("chat.formatItalic"), action: () => toggleWrapSelection("*") },
+                { label: t("chat.formatUnderline"), action: () => toggleWrapSelection("__") },
+                { label: t("chat.formatStrike"), action: () => toggleWrapSelection("~~") },
+                { label: t("chat.formatSpoiler"), action: () => toggleWrapSelection("||") },
+                { label: t("chat.formatCode"), action: () => toggleWrapSelection("`") },
+              ],
+            }] : []),
             // Spell-check row at the BOTTOM (user request 2026-11-03 — the
             // Telegram shape): one "Spelling ›" entry opening the suggestions +
             // Add-to-dictionary in a submenu to the right; shown only for a

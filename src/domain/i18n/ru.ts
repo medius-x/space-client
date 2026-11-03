@@ -81,6 +81,13 @@ export const RU: Dict = {
   "chat.commentOptional": "Комментарий (необязательно)",
   "chat.forwardReuploadNote": "Вложения заново загружаются на целевой сервер — это может занять время.",
   "chat.editHint": "enter — сохранить · esc — отмена",
+  "chat.formattingSubmenu": "Форматирование",
+  "chat.formatBold": "Жирный",
+  "chat.formatItalic": "Курсив",
+  "chat.formatUnderline": "Подчёркнутый",
+  "chat.formatStrike": "Зачёркнутый",
+  "chat.formatSpoiler": "Спойлер",
+  "chat.formatCode": "Код",
   "chat.editHintWithImages": "enter — сохранить · esc — отмена · × удаляет картинку",
   "chat.editHintRemoving": {
     one: "{count} картинка будет удалена · enter — сохранить · esc — отмена",

@@ -70,6 +70,11 @@ accounts and client trust pins are preserved.
 ### Chat
 
 - Text messages with instant delivery, editing and deletion
+- Message formatting with Discord markers (`**bold**`, `*italic*`,
+  `__underline__`, `~~strike~~`, `||spoiler||`, `` `code` ``) — Ctrl+B/I/U,
+  Ctrl+Shift+X shortcuts, and a "Formatting" submenu in the composer's
+  context menu. The composer itself is a WYSIWYG editor: the markers are
+  hidden and the text looks the way it will in chat
 - Spell checking in English and Russian (dictionaries bundled) while you type
 - Replies with nested quote chains; forwarding to any channel — including other servers
 - Reactions, custom emoji and sticker packs (import/export as archives)

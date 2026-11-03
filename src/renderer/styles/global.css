@@ -954,6 +954,33 @@ button.wide-add { width: 100%; }
    state ever shown; a send in flight renders as a perfectly normal row). */
 .message-failed-glyph { color: var(--sp-red); font-size: 14px; align-self: center; cursor: default; }
 .message-content { color: var(--sp-text); white-space: pre-wrap; overflow-wrap: break-word; }
+/* Discord-marker formatting (rendered in the row, the quote preview and the
+   composer's preview mode). Spoiler: hidden = dark plate over transparent
+   text; revealed = the ordinary text on a faint plate. */
+.fmt-bold { font-weight: 600; }
+.fmt-italic { font-style: italic; }
+.fmt-underline { text-decoration: underline; }
+.fmt-strike { text-decoration: line-through; }
+.fmt-code {
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+  font-size: 0.9em;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+.fmt-spoiler {
+  background: #111214;
+  color: transparent;
+  border-radius: 3px;
+  padding: 0 2px;
+  cursor: pointer;
+}
+/* While hidden, the spoiler is opaque to the pointer and to selection alike: a
+   link inside must NOT be clickable through the plate (it would open unseen),
+   and the invisible text must not be selectable. The span's own click reveal
+   keeps working — pointer-events on the span itself stay on. */
+.fmt-spoiler:not(.revealed) * { pointer-events: none; user-select: none; }
+.fmt-spoiler.revealed { background: rgba(0, 0, 0, 0.18); color: inherit; }
 .message-edited { color: #949ba4; font-size: 11px; margin-left: 6px; }
 .message-attachments { color: var(--sp-link); font-size: 13px; margin-top: 2px; }
 
@@ -2459,6 +2486,51 @@ button.wide-add { width: 100%; }
   outline: none;
 }
 .composer textarea::placeholder { color: var(--sp-text-dim); }
+/* The WYSIWYG editing mode: a Lexical contentEditable mirroring the
+   textarea's box metrics so the card does not jump on a mode switch. The
+   editor owns the DOM (React renders nothing inside); the document
+   serializes into the flat marker model on every update. The format elements
+   use the same .fmt-* classes the message rows use; the spoiler shows as a
+   faint plate (never hidden — this is an editor, the text must stay
+   readable). */
+.composer-editor-formatted {
+  position: relative;
+  flex: 1;
+  min-height: 32px;
+  max-height: 194px; /* 10 lines × 18px + padding — the textarea's rows cap */
+  overflow-y: auto;
+  padding: 7px 6px 7px 10px;
+  font-size: 13px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  outline: none;
+}
+.composer-editor-formatted .fmt-spoiler {
+  background: rgba(0, 0, 0, 0.25);
+  color: inherit;
+  cursor: text;
+}
+/* Lexical's document shape: one <p> per document (the browser's default
+   paragraph margins would break the textarea-mirroring box metrics), and the
+   semantic tags it renders for bold/italic/code carry their own browser
+   defaults — normalize them onto the format classes' look so the composer
+   matches the message rows exactly. */
+.composer-editor-formatted p { margin: 0; }
+.composer-editor-formatted strong { font-weight: 600; }
+.composer-editor-formatted em { font-style: italic; }
+.composer-editor-formatted code { font-size: inherit; line-height: inherit; }
+/* The hidden-spoiler rules must NOT apply inside the editor: the text stays
+   readable and selectable there. */
+.composer-editor-formatted .fmt-spoiler:not(.revealed) * { pointer-events: auto; user-select: text; }
+.composer-editor-formatted.is-empty::before {
+  content: attr(data-placeholder);
+  position: absolute; /* the document is a block <p> — an inline ::before would take its own line */
+  top: 7px;
+  left: 10px;
+  color: var(--sp-text-dim);
+  pointer-events: none;
+}
 /* A failed send surfaces its error under the card — nothing else lives there
     (no usage hint: oak has none, and the card then pairs with the user bar). */
 .composer-error { color: var(--sp-red); font-size: 11px; padding: 4px 4px 0; }

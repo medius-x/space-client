@@ -37,3 +37,10 @@ does not: CI, docs, refactoring, internal rework.
   dictionary" (added words are remembered between restarts). The
   dictionaries are bundled with the app — it works the same offline,
   on any machine. Can be turned off in Settings → General.
+- Message formatting, Discord-style: `**bold**`, `*italic*`,
+  `__underline__`, `~~strike~~`, `` `code` `` and `||spoiler||` (click a
+  spoiler to reveal it). The selection gets wrapped by Ctrl+B/I/U,
+  Ctrl+Shift+X, or a new "Formatting" submenu in the composer's right-click
+  menu. The composer is a WYSIWYG editor: the markers are hidden and the
+  text looks the way it will in chat while you type. Quote previews render
+  formatting too.
