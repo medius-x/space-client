@@ -53,17 +53,7 @@ export function toEpochMs(createdAtIso: string): number {
  *  keyed by the UI language (dates follow the LANGUAGE setting, not the OS —
  *  otherwise a RU interface shows English months); the key set is the fixed
  *  two-language catalog, so entries never invalidate. */
-const TIME_OF_DAY_FORMATTERS = new Map<UiLang, Intl.DateTimeFormat>();
 const MONTH_FORMATTERS = new Map<UiLang, Intl.DateTimeFormat>();
-
-function timeOfDayFormatter(lang: UiLang): Intl.DateTimeFormat {
-  let formatter = TIME_OF_DAY_FORMATTERS.get(lang);
-  if (formatter === undefined) {
-    formatter = new Intl.DateTimeFormat(lang, { hour: "2-digit", minute: "2-digit" });
-    TIME_OF_DAY_FORMATTERS.set(lang, formatter);
-  }
-  return formatter;
-}
 
 function monthFormatter(lang: UiLang): Intl.DateTimeFormat {
   let formatter = MONTH_FORMATTERS.get(lang);
@@ -74,9 +64,13 @@ function monthFormatter(lang: UiLang): Intl.DateTimeFormat {
   return formatter;
 }
 
-/** "14:05" local time for the group head (locale-dependent by design, not unit-tested). */
-export function formatTimeOfDay(epochMs: number, lang: UiLang = "en"): string {
-  return timeOfDayFormatter(lang).format(epochMs);
+/** "14:05" local time — ALWAYS 24-hour: the header stamps build HH:MM the
+ *  same way, and a locale-dependent gutter next to 24-hour headers reads as
+ *  a bug (user report 2026-11-04: the hover gutter flipped to AM/PM under
+ *  an English UI while everything around stayed 24h). */
+export function formatTimeOfDay(epochMs: number): string {
+  const date = new Date(epochMs);
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
 /** oak's message-header stamp: "Today at 14:05" / "Yesterday at 14:05" / "Sep 4

@@ -2069,7 +2069,7 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
       {startsGroup ? (
         <Avatar session={session} username={message.authorUsername} size={40} />
       ) : (
-        <div className="message-gutter">{formatTimeOfDay(toEpochMs(message.createdAt), currentLang())}</div>
+        <div className="message-gutter">{formatTimeOfDay(toEpochMs(message.createdAt))}</div>
       )}
       <div className="message-body">
         {startsGroup ? (

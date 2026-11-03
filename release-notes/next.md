@@ -44,3 +44,10 @@ does not: CI, docs, refactoring, internal rework.
   menu. The composer is a WYSIWYG editor: the markers are hidden and the
   text looks the way it will in chat while you type. Quote previews render
   formatting too.
+- The right-click menu's submenus ("Spelling", "Formatting") no longer snap
+  shut while you move the mouse diagonally toward an item — they stay open
+  for a moment after the pointer leaves the parent row. Moving the mouse to
+  another menu item still closes them right away.
+- The time shown beside a message on hover is now always 24-hour, matching
+  the rest of the chat's timestamps (under an English interface it used to
+  flip to AM/PM).

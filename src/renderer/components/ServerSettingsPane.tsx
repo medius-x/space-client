@@ -3595,7 +3595,7 @@ function ServerStorageSection({ session }: { session: ConnectionSession }): Reac
       {health !== null ? (
         <>
           {health.services.map((entry) => <HealthRow key={entry.name} entry={entry} />)}
-          <div className="settings-hint">{t("serverSettings.checkedAt", { time: formatTimeOfDay(new Date(health.checkedAt).getTime(), currentLang()) })}</div>
+          <div className="settings-hint">{t("serverSettings.checkedAt", { time: formatTimeOfDay(new Date(health.checkedAt).getTime()) })}</div>
         </>
       ) : null}
       {healthUnsupported ? (
@@ -3786,7 +3786,7 @@ function BackupSection({ session }: { session: ConnectionSession }): React.JSX.E
               ? t("backup.lastFailed", { message: lastRun.error })
               : t("backup.latest", {
                 size: formatBytes(lastRun.sizeBytes),
-                when: formatTimeOfDay(new Date(lastRun.finishedAt ?? lastRun.startedAt).getTime(), currentLang()),
+                when: formatTimeOfDay(new Date(lastRun.finishedAt ?? lastRun.startedAt).getTime()),
                 rows: lastRun.totalRows,
                 objects: lastRun.objectCount,
               })}

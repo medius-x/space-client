@@ -1,5 +1,12 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
+
+/** How long a submenu stays open after the pointer leaves its wrap (parent
+ *  row + submenu card). Without the grace, a DIAGONAL move toward a submenu
+ *  item above or below the parent row crosses neighboring menu rows, leaves
+ *  the wrap for a moment and the submenu snaps shut mid-travel (user report
+ *  2026-11-04: reaching "Spelling"/"Formatting" items felt like surgery). */
+const SUBMENU_CLOSE_GRACE_MS = 350;
 
 /** A thin rule instead of a row (oak's popupSeparator) — the message menu's
  *  grouped sections (user request 2026-11-03). */
@@ -42,20 +49,64 @@ export function ContextMenu({ x, y, items, onClose, anchor }: {
   useOutsideDismiss(menuRef, onClose, anchorRef);
   // One open submenu at a time — keyed by the parent row's label.
   const [openSubmenu, setOpenSubmenu] = useState<string | null>(null);
+  // Pending grace-close of a submenu the pointer just left — cancelled by any
+  // re-entry (the wrap's onMouseEnter) so the diagonal travel above survives.
+  const submenuCloseTimerRef = useRef<number | null>(null);
+  const cancelSubmenuClose = (): void => {
+    if (submenuCloseTimerRef.current !== null) {
+      window.clearTimeout(submenuCloseTimerRef.current);
+      submenuCloseTimerRef.current = null;
+    }
+  };
+  useEffect(() => cancelSubmenuClose, []);
+  // Last pointermove sample — lets a row enter tell "settling on this row"
+  // (vertical list navigation) from "flying right toward the submenu card"
+  // (a diagonal that merely CROSSES neighboring rows on its way).
+  const pointerXRef = useRef<number | null>(null);
+  /** Entering a plain row closes the open submenu AT ONCE — unless the
+   *  pointer just moved rightward, which is the diagonal flight the grace
+   *  exists for (instant close on every crossing would bring the original
+   *  bug back, user follow-up 2026-11-04: plain navigation felt sluggish). */
+  const closeSubmenuUnlessFlyingRight = (event: React.MouseEvent): void => {
+    const flyingRight = pointerXRef.current !== null && event.clientX - pointerXRef.current > 1;
+    pointerXRef.current = event.clientX;
+    if (openSubmenu === null || flyingRight) {
+      return;
+    }
+    cancelSubmenuClose();
+    setOpenSubmenu(null);
+  };
 
   const rows = items.filter((item) => !item.separator).length;
   const left = Math.min(Math.max(8, x), window.innerWidth - 190);
   const top = Math.min(Math.max(8, y), window.innerHeight - 8 - rows * 34);
   return (
-    <div ref={menuRef} className="context-menu" style={{ left, top }} onClick={(event) => event.stopPropagation()}>
+    <div
+      ref={menuRef}
+      className="context-menu"
+      style={{ left, top }}
+      onClick={(event) => event.stopPropagation()}
+      onPointerMove={(event) => {
+        pointerXRef.current = event.clientX;
+      }}
+    >
       {items.map((item, index) => item.separator ? (
         <div key={`separator-${index}`} className="context-menu-separator" />
       ) : item.children !== undefined ? (
         <div
           key={item.label}
           className={"context-menu-submenu-wrap" + (openSubmenu === item.label ? " open" : "")}
-          onMouseEnter={() => setOpenSubmenu(item.label)}
-          onMouseLeave={() => setOpenSubmenu((current) => current === item.label ? null : current)}
+          onMouseEnter={() => {
+            cancelSubmenuClose();
+            setOpenSubmenu(item.label);
+          }}
+          onMouseLeave={() => {
+            cancelSubmenuClose();
+            submenuCloseTimerRef.current = window.setTimeout(() => {
+              submenuCloseTimerRef.current = null;
+              setOpenSubmenu((current) => current === item.label ? null : current);
+            }, SUBMENU_CLOSE_GRACE_MS);
+          }}
         >
           <button
             className="context-menu-item has-submenu"
@@ -90,6 +141,7 @@ export function ContextMenu({ x, y, items, onClose, anchor }: {
           key={item.label}
           className={"context-menu-item" + (item.danger ? " danger" : "")}
           disabled={item.disabled === true}
+          onMouseEnter={closeSubmenuUnlessFlyingRight}
           onClick={() => {
             onClose();
             item.action();

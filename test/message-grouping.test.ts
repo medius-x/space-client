@@ -76,14 +76,12 @@ describe("timestamp formatters (cached Intl instances)", () => {
   // days, so the arithmetic must stay inside one local day on ANY host tz.
   const now = new Date(2026, 9, 19, 12, 0, 0).getTime(); // Oct 19 2026, local noon
 
-  it("formatTimeOfDay matches a one-shot Intl format of the UI language", () => {
-    // Since the localization round the locale follows the UI LANGUAGE setting
-    // (default en), not the host OS — compare against the same Intl source.
-    const sample = new Date(2026, 9, 19, 14, 5).getTime();
-    expect(formatTimeOfDay(sample))
-      .toBe(new Intl.DateTimeFormat("en", { hour: "2-digit", minute: "2-digit" }).format(sample));
-    expect(formatTimeOfDay(sample, "ru"))
-      .toBe(new Intl.DateTimeFormat("ru", { hour: "2-digit", minute: "2-digit" }).format(sample));
+  it("formatTimeOfDay is always 24-hour regardless of language", () => {
+    // The hover gutter sits next to 24-hour header stamps (which build HH:MM
+    // manually) — a locale-dependent flip to AM/PM under an English UI read
+    // as a bug (user report 2026-11-04). Same construction as the headers.
+    expect(formatTimeOfDay(new Date(2026, 9, 19, 14, 5).getTime())).toBe("14:05");
+    expect(formatTimeOfDay(new Date(2026, 9, 19, 0, 5).getTime())).toBe("00:05");
   });
 
   it("formatHeaderStamp renders Today/Yesterday and the full date for older days", () => {
