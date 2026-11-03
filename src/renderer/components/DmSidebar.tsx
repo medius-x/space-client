@@ -91,7 +91,7 @@ export function DmSidebar({ session }: { session: ConnectionSession }): React.JS
         // Add member is the OWNER's tool in oak; Rename is everyone's.
         ...(isOwner ? [{ label: t("dm.addMember"), action: () => setAddToGroup(menuRow.dm) }] : []),
         { label: t("dm.rename"), action: () => setRenameTarget(menuRow.dm) },
-        { label: "", separator: true, action: () => undefined },
+        { separator: true },
         { label: t("dm.leaveGroup"), danger: true, action: () => leaveGroup(menuRow.dm) },
         ...(isOwner
           ? [{ label: t("dm.closeGroup"), danger: true, action: () => void session.closeDm(menuRow.dm.id) }]

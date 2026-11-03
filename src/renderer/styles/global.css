@@ -2052,6 +2052,17 @@ button.wide-add { width: 100%; }
 .discussion-origin-back:hover { background: var(--sp-hover); color: var(--sp-text); }
 .discussion-origin-back .icon { font-size: 16px; }
 .discussion-origin-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+/* The thread's home channel (user request 2026-11-03): the controls-only tile
+   otherwise carries no text at all. margin auto centers it vertically inside
+   the otherwise-empty body. */
+.discussion-origin-in-chat {
+  color: var(--sp-text-dim);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin: auto 0;
+}
 .discussion-origin-author { display: flex; align-items: baseline; gap: 6px; font-weight: 700; font-size: 12px; }
 .discussion-origin-time { color: var(--sp-text-dim); font-size: 11px; font-weight: 400; }
 .discussion-origin-snippet {
@@ -2225,6 +2236,29 @@ button.wide-add { width: 100%; }
    right edge where the button lives in the connected bar too. */
 .user-bar.empty { justify-content: flex-end; }
 .user-bar-button { padding: 4px 8px; }
+/* The avatar+nick block is a button opening Account settings (user request
+   2026-11-03): transparent like the gear, hover-highlighted the same way;
+   disabled while offline (account mutations are REST calls). */
+.user-bar-id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+/* Per-element hover only (user follow-up): a thin accent ring around the avatar
+   and the accent color for the nick — the block itself never highlights as a
+   whole. */
+.user-bar-id .avatar-wrap { border-radius: 50%; }
+.user-bar-id .avatar-wrap:hover { box-shadow: 0 0 0 1px var(--sp-accent); }
+.user-bar-id .user-bar-name:hover { color: var(--sp-accent); }
+.user-bar-id.offline { cursor: default; }
 /* Staged membership rows (Roles → Members): a pending add glows green (it
    appears only after Save), a pending removal dims and strikes through while
    its ✕ becomes an undo. */

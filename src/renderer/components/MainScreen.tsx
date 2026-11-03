@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useStore } from "../hooks/useStore";
-import { appStore, connectionDirectory, retryConnection, toggleUserSettings } from "../runtime";
+import { appStore, connectionDirectory, openAccountSettings, retryConnection, toggleUserSettings } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { ConnectionQualitySnapshot } from "../../domain/logic/connection-quality";
 import type { MessageKey } from "../../domain/i18n/i18n";
@@ -151,26 +151,46 @@ function ConnectedUserBar({ session }: { session: ConnectionSession }): React.JS
   const retryable = stompState === "lost" || stompState === "connecting";
   return (
     <div className={"user-bar" + (voiceConnected ? " with-voice" : "")}>
-      <Avatar session={session} username={ownUsername} size={32} diskFallbackKey={ownAvatarKey} />
-      <div className="user-bar-text">
-        <span className="user-bar-name">{ownDisplayName}</span>
-        <span className="user-bar-status-row">
-          <span className={"user-bar-status " + status.className}>{status.text}</span>
-          {/* The ping indicator rides ALONGSIDE the status while connected —
-              while down, the status row itself already tells the story. */}
-          {stompState === "connected" ? <PingBadge quality={connectionQuality} /> : null}
-          {/* oak's retryButton: visible only while the connection is down; the
-              slot stays reserved so the row never jumps when it appears. */}
-          {retryable ? (
-            <button
-              className={"user-bar-retry " + status.className}
-              title={t("userBar.reconnectNow")}
-              onClick={retryConnection}
-            >
-              <span className="icon mdi-refresh" />
-            </button>
-          ) : <span className="user-bar-retry-slot" />}
-        </span>
+      {/* The avatar+nick block opens Account settings (user request 2026-11-03);
+          offline it disables — account mutations are REST calls. The ⚙ stays
+          the CLIENT-scoped surface (sound, keybinds, diagnostics). A div-role
+          button, not <button>: the status row nests the retry <button>, and
+          nested buttons are invalid (the retry click would also bubble into
+          opening the settings). */}
+      <div
+        className={"user-bar-id" + (stompState === "connected" ? "" : " offline")}
+        role="button"
+        tabIndex={stompState === "connected" ? 0 : -1}
+        title={t("userBar.accountSettings")}
+        onClick={stompState === "connected" ? openAccountSettings : undefined}
+        onKeyDown={(event) => {
+          if (stompState === "connected" && (event.key === "Enter" || event.key === " ")) {
+            event.preventDefault();
+            openAccountSettings();
+          }
+        }}
+      >
+        <Avatar session={session} username={ownUsername} size={32} diskFallbackKey={ownAvatarKey} />
+        <div className="user-bar-text">
+          <span className="user-bar-name">{ownDisplayName}</span>
+          <span className="user-bar-status-row">
+            <span className={"user-bar-status " + status.className}>{status.text}</span>
+            {/* The ping indicator rides ALONGSIDE the status while connected —
+                while down, the status row itself already tells the story. */}
+            {stompState === "connected" ? <PingBadge quality={connectionQuality} /> : null}
+            {/* oak's retryButton: visible only while the connection is down; the
+                slot stays reserved so the row never jumps when it appears. */}
+            {retryable ? (
+              <button
+                className={"user-bar-retry " + status.className}
+                title={t("userBar.reconnectNow")}
+                onClick={retryConnection}
+              >
+                <span className="icon mdi-refresh" />
+              </button>
+            ) : <span className="user-bar-retry-slot" />}
+          </span>
+        </div>
       </div>
       <button className="ghost user-bar-button" title={t("userBar.settings")} onClick={toggleUserSettings}>
         <span className="icon mdi-cog" />

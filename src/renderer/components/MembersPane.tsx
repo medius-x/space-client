@@ -105,7 +105,7 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
     // oak's member card: a separator rule between the personal actions and
     // the moderation block (showMemberMenu) — now regardless of presence.
     ...(personalMenuItems.length > 0 && moderationMenuItems.length > 0
-      ? [{ label: "", separator: true, action: () => undefined }]
+      ? [{ separator: true } as const]
       : []),
     // Ban above, Remove from server LAST and red (user layout, 2026-10-19):
     // the irreversible eviction is the terminal action of the menu.

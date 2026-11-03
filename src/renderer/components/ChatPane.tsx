@@ -893,16 +893,18 @@ function messageMenuItems(
       : [];
   }
   const items: ContextMenuItem[] = [];
+  // The order follows the user's grouping (2026-11-03): reaction | forward,
+  // reply | pin, discussion | edit, select, delete — separated by dividers.
   // Gate SYMMETRY with the hover button (canAddReactions): a member without
   // ADD_REACTIONS must not see a context-menu path the server will 403 (live
   // report: the menu item opened the picker, the pick silently did nothing).
   if (extra.canReact) {
     items.push({ label: t("chat.addReaction"), action: extra.openPicker });
   }
+  items.push({ separator: true });
+  items.push({ label: t("chat.forwardVerb"), action: () => actions.beginForward([message]) });
   items.push({ label: t("chat.reply"), action: () => actions.setReplyTo(message) });
-  if ((message.content?.length ?? 0) > 0) {
-    items.push({ label: t("chat.copyText"), action: () => void navigator.clipboard.writeText(message.content ?? "").catch(() => undefined) });
-  }
+  items.push({ separator: true });
   // Discord's pin gate: MANAGE_MESSAGES on server channels, ANY participant in a DM
   // (the server's DM branch enforces the same). A 400 means the per-channel cap.
   if (extra.isDm || canManageMessages) {
@@ -937,17 +939,38 @@ function messageMenuItems(
       });
     }
   }
+  items.push({ separator: true });
+  if ((message.content?.length ?? 0) > 0) {
+    items.push({ label: t("chat.copyText"), action: () => void navigator.clipboard.writeText(message.content ?? "").catch(() => undefined) });
+  }
   if (message.authorUsername === ownUsername) {
     items.push({ label: t("chat.edit"), action: () => actions.beginEdit(message) });
   }
-  items.push({ label: t("chat.forwardVerb"), action: () => actions.beginForward([message]) });
   if (!actions.selectionMode) {
     items.push({ label: t("chat.selectMessages"), action: extra.beginSelection });
   }
   if (message.authorUsername === ownUsername || canManageMessages) {
     items.push({ label: t("common.delete"), danger: true, action: extra.confirmDelete });
   }
-  return items;
+  return collapseMenuSeparators(items);
+}
+
+/** Conditional items (no ADD_REACTIONS, DMs, someone else's message…) must never
+ *  leave a divider stranded at the edges or doubled mid-list. */
+function collapseMenuSeparators(items: ContextMenuItem[]): ContextMenuItem[] {
+  const collapsed: ContextMenuItem[] = [];
+  for (const item of items) {
+    const previous = collapsed[collapsed.length - 1];
+    if (item.separator && (collapsed.length === 0 || previous === undefined || previous.separator)) {
+      continue;
+    }
+    collapsed.push(item);
+  }
+  const tail = collapsed[collapsed.length - 1];
+  if (tail !== undefined && tail.separator) {
+    collapsed.pop();
+  }
+  return collapsed;
 }
 
 // ---------------------------------------------------------------------------
@@ -2103,7 +2126,9 @@ function DiscussionOriginPanel({ session, discussion, originFull, onCloseRequest
           <button className="discussion-origin-back" title={t("chat.backToChannel")} onClick={() => closeDiscussionView()}>
             <span className="icon mdi-arrow-left" />
           </button>
-          <div className="discussion-origin-body" />
+          <div className="discussion-origin-body">
+            <div className="discussion-origin-in-chat">{t("chat.discussionInChat", { channel: parentChannel.name })}</div>
+          </div>
           <div className="discussion-origin-draft-tag">{t("chat.draftTag")}</div>
         </div>
         {fullRow}
@@ -2125,9 +2150,11 @@ function DiscussionOriginPanel({ session, discussion, originFull, onCloseRequest
         </button>
         {originFull !== null ? (
           // The full row below carries the message — the tile keeps the
-          // controls only (user follow-up 2026-10-27); the empty body keeps
-          // the actions pinned to the right edge.
-          <div className="discussion-origin-body" />
+          // controls only (user follow-up 2026-10-27); the empty body carries
+          // the parent-chat label and keeps the actions pinned to the right edge.
+          <div className="discussion-origin-body">
+            <div className="discussion-origin-in-chat">{t("chat.discussionInChat", { channel: parentChannel.name })}</div>
+          </div>
         ) : (
           // No full row (the origin sits outside the loaded window) — the
           // frozen snapshot stays as the tile's only content.
@@ -2950,12 +2977,12 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
           items={[
             { label: t("chat.undo"), action: () => runEditorVerb("undo") },
             { label: t("chat.redo"), action: () => runEditorVerb("redo") },
-            { label: "", separator: true, action: () => undefined },
+            { separator: true },
             { label: t("chat.cut"), disabled: !editorMenu.hasSelection, action: () => runEditorVerb("cut") },
             { label: t("chat.copy"), disabled: !editorMenu.hasSelection, action: () => runEditorVerb("copy") },
             { label: t("chat.paste"), disabled: !editorMenu.canPaste, action: () => runEditorVerb("paste") },
             { label: t("common.delete"), disabled: !editorMenu.hasSelection, action: () => runEditorVerb("delete") },
-            { label: "", separator: true, action: () => undefined },
+            { separator: true },
             { label: t("chat.selectAll"), disabled: !editorMenu.hasText, action: () => runEditorVerb("selectAll") },
           ]}
           onClose={() => setEditorMenu(null)}

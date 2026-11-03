@@ -1,16 +1,20 @@
 import { useRef } from "react";
 import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
 
-export interface ContextMenuItem {
-  label: string;
-  danger?: boolean;
-  /** A thin rule instead of a row (oak's popupSeparator) — Call | — | Kick/Ban. */
-  separator?: boolean;
-  /** Greyed out and unclickable — the composer's Cut/Back-space rows when
-   *  nothing is selected (the editor context menu, 2026-10-27). */
-  disabled?: boolean;
-  action: () => void;
-}
+/** A thin rule instead of a row (oak's popupSeparator) — the message menu's
+ *  grouped sections (user request 2026-11-03). */
+export type ContextMenuItem =
+  | { separator: true }
+  | {
+    label: string;
+    danger?: boolean;
+    /** Greyed out and unclickable — the composer's Cut/Back-space rows when
+     *  nothing is selected (the editor context menu, 2026-10-27). */
+    disabled?: boolean;
+    action: () => void;
+    /** Narrowing tag only — a regular row is never a separator. */
+    separator?: false;
+  };
 
 /**
  * Lightweight right-click menu: fixed-position card. Any pointer press outside
