@@ -13,3 +13,6 @@ smoke-release):
   user's words; no internal ticket ids, no commit hashes.
 - Committed together with the version bump, BEFORE the tag is pushed — the
   workflow reads it from the tagged commit.
+- `next.md` is the running draft between releases: every user-visible commit
+  (client OR server — releases are paired) appends one entry there in the
+  final style. At release time it is edited into `v<version>.md` and emptied.
