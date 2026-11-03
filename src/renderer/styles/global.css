@@ -2245,20 +2245,20 @@ button.wide-add { width: 100%; }
   gap: 8px;
   flex: 1;
   min-width: 0;
-  padding: 0;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
 }
-/* Per-element hover only (user follow-up): a thin accent ring around the avatar
-   and the accent color for the nick — the block itself never highlights as a
-   whole. */
+/* The avatar and the nick are the ONLY hit targets (user follow-up); the row
+   itself is plain layout. Per-element hover: a thin accent ring around the
+   avatar, the accent color for the nick. */
+.user-bar-avatar { display: inline-flex; cursor: pointer; }
 .user-bar-id .avatar-wrap { border-radius: 50%; }
 .user-bar-id .avatar-wrap:hover { box-shadow: 0 0 0 1px var(--sp-accent); }
+/* A column-flex child stretches to the container's full width by default — the
+   click zone would cover the whole row right of the avatar. Shrink to the
+   text itself (user follow-up). */
+.user-bar-id .user-bar-name { cursor: pointer; align-self: flex-start; max-width: 100%; }
 .user-bar-id .user-bar-name:hover { color: var(--sp-accent); }
-.user-bar-id.offline { cursor: default; }
+.user-bar-id.offline .user-bar-avatar,
+.user-bar-id.offline .user-bar-name { cursor: default; }
 /* Staged membership rows (Roles → Members): a pending add glows green (it
    appears only after Save), a pending removal dims and strikes through while
    its ✕ becomes an undo. */

@@ -151,28 +151,34 @@ function ConnectedUserBar({ session }: { session: ConnectionSession }): React.JS
   const retryable = stompState === "lost" || stompState === "connecting";
   return (
     <div className={"user-bar" + (voiceConnected ? " with-voice" : "")}>
-      {/* The avatar+nick block opens Account settings (user request 2026-11-03);
-          offline it disables — account mutations are REST calls. The ⚙ stays
-          the CLIENT-scoped surface (sound, keybinds, diagnostics). A div-role
-          button, not <button>: the status row nests the retry <button>, and
-          nested buttons are invalid (the retry click would also bubble into
-          opening the settings). */}
-      <div
-        className={"user-bar-id" + (stompState === "connected" ? "" : " offline")}
-        role="button"
-        tabIndex={stompState === "connected" ? 0 : -1}
-        title={t("userBar.accountSettings")}
-        onClick={stompState === "connected" ? openAccountSettings : undefined}
-        onKeyDown={(event) => {
-          if (stompState === "connected" && (event.key === "Enter" || event.key === " ")) {
-            event.preventDefault();
-            openAccountSettings();
-          }
-        }}
-      >
-        <Avatar session={session} username={ownUsername} size={32} diskFallbackKey={ownAvatarKey} />
+      {/* The avatar and the NICK open Account settings (user request 2026-11-03;
+          follow-up: ONLY those two hit targets — not the whole row). Offline
+          they disable — account mutations are REST calls. The ⚙ stays the
+          CLIENT-scoped surface (sound, keybinds, diagnostics). */}
+      <div className={"user-bar-id" + (stompState === "connected" ? "" : " offline")}>
+        <span
+          className="user-bar-avatar"
+          title={t("userBar.accountSettings")}
+          onClick={stompState === "connected" ? openAccountSettings : undefined}
+        >
+          <Avatar session={session} username={ownUsername} size={32} diskFallbackKey={ownAvatarKey} />
+        </span>
         <div className="user-bar-text">
-          <span className="user-bar-name">{ownDisplayName}</span>
+          <span
+            className="user-bar-name"
+            role="button"
+            tabIndex={stompState === "connected" ? 0 : -1}
+            title={t("userBar.accountSettings")}
+            onClick={stompState === "connected" ? openAccountSettings : undefined}
+            onKeyDown={(event) => {
+              if (stompState === "connected" && (event.key === "Enter" || event.key === " ")) {
+                event.preventDefault();
+                openAccountSettings();
+              }
+            }}
+          >
+            {ownDisplayName}
+          </span>
           <span className="user-bar-status-row">
             <span className={"user-bar-status " + status.className}>{status.text}</span>
             {/* The ping indicator rides ALONGSIDE the status while connected —
