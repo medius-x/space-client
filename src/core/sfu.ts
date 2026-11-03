@@ -206,6 +206,10 @@ export class SfuSession {
 
   private publisherPc: RTCPeerConnection | null = null;
   private micTrack: MediaStreamTrack | null = null;
+  /** The PRE-suppression capture — the dead-mic detector reads its noise floor
+   *  (suppression emits exact zeros on honest silence). Same object as micTrack
+   *  when no engine replaced it. */
+  private rawMicTrack: MediaStreamTrack | null = null;
   private micSender: RTCRtpSender | null = null;
   private screenVideoSender: RTCRtpSender | null = null;
   private shareAudioSender: RTCRtpSender | null = null;
@@ -346,6 +350,7 @@ export class SfuSession {
       return;
     }
     let micTrack = micStream.getAudioTracks()[0] ?? null;
+    const rawMicTrack = micTrack;
     if (micTrack !== null && this.micEnhancer !== null) {
       try {
         micTrack = await this.micEnhancer(micTrack);
@@ -354,6 +359,7 @@ export class SfuSession {
         log.warn("sfu", `noise suppression unavailable, publishing raw mic: ${String(error)}`);
       }
     }
+    this.rawMicTrack = rawMicTrack;
     this.micTrack = micTrack;
     if (this.micTrack && this.micMutedDesired) {
       this.micTrack.enabled = false; // re-entered a room while server-muted — comply immediately
@@ -413,6 +419,11 @@ export class SfuSession {
 
   getMicTrack(): MediaStreamTrack | null {
     return this.micTrack;
+  }
+
+  /** The pre-suppression capture for the dead-mic detector (same object when no engine runs). */
+  getRawMicTrack(): MediaStreamTrack | null {
+    return this.rawMicTrack;
   }
 
   setMicEnabled(enabled: boolean): void {

@@ -36,6 +36,7 @@ import { paletteColor } from "../domain/logic/user-palette";
 import { displayNameOf } from "../domain/logic/display-name";
 import { isAfkActive } from "../domain/logic/afk-activity";
 import { initialConnectionQuality, type ConnectionQualitySnapshot } from "../domain/logic/connection-quality";
+import { MIC_SILENCE_THRESHOLD_MS } from "../domain/logic/mic-silence";
 import { isDailyCheckDue, isIdleEnoughForUpdateCheck } from "../domain/logic/update-policy";
 import { memberKickReasonText, memberKickTitle } from "../domain/logic/moderation-reason";
 import type { TlsUntrustedEvent, UpdateCheckResult, UpdateStateEvent } from "./bridges";
@@ -108,6 +109,9 @@ export interface AppState {
    *  ms) — the voice badge's "· N ms". NULL while not established; distinct
    *  from the STOMP ping (signalling) by design. */
   voiceRttMillis: number | null;
+  /** The dead-mic verdict: 90 s of digital zero on the raw capture while the
+   *  mic is not muted — the amber status line replaces "Voice connected". */
+  micSilent: boolean;
   participants: FeedInfo[];
   sharing: boolean;
   cameraOn: boolean;
@@ -241,6 +245,7 @@ class AppStore extends Emitter {
     voiceState: "idle",
     stateDetail: null,
     voiceRttMillis: null,
+    micSilent: false,
     participants: [],
     sharing: false,
     cameraOn: false,
@@ -308,6 +313,18 @@ class AppStore extends Emitter {
 
 export const appStore = new AppStore();
 export const roomAudio = new RoomAudio();
+// The dead-mic verdict (live report 2026-10-30: a headset dongle died mid-call
+// with the capture staying "alive" — perfect digital silence, no track event).
+// The hint is a status line, never an action: a hardware headset-mute button
+// produces the same zero and belongs to the user, not to us.
+roomAudio.setOwnMicSilenceHandler((silent) => {
+  if (silent) {
+    log.warn("voice", `microphone delivers digital silence for ${MIC_SILENCE_THRESHOLD_MS / 1000}s (raw capture flat zero) — showing the mic-silent hint`);
+  } else {
+    log.info("voice", "microphone alive again — hiding the mic-silent hint");
+  }
+  appStore.patch({ micSilent: silent });
+});
 export const connectionDirectory = new ConnectionDirectory();
 /** App-wide client settings (instant-apply, KV-persisted) — M7. */
 export const settingsStore = new SettingsStore();
@@ -2199,6 +2216,7 @@ function activeSessionUiResetPatch(): Partial<AppState> {
     voiceState: "idle",
     stateDetail: null,
     voiceRttMillis: null,
+    micSilent: false,
     participants: [],
     sharing: false,
     cameraOn: false,
@@ -3014,7 +3032,7 @@ export async function joinVoice(channel: Channel): Promise<void> {
     voiceCompliance.deafened = false;
   }
   roomAudio.setDeafened(false);
-  appStore.patch({ activeVoiceChannelId: channel.id, voiceState: "connecting", stateDetail: null, voiceRttMillis: null, participants: [], viewingFeedId: null });
+  appStore.patch({ activeVoiceChannelId: channel.id, voiceState: "connecting", stateDetail: null, voiceRttMillis: null, micSilent: false, participants: [], viewingFeedId: null });
   // The share/camera gate reads the per-channel STREAM bit — a voice channel is
   // often never OPENED as a chat tab, so its bits would never be cached otherwise.
   void session.ensureChannelPermissions(channel.id);
@@ -3136,7 +3154,7 @@ async function connectVoiceRoom(channel: Channel): Promise<void> {
       await sfu.start();
       const mic = sfu.getMicTrack();
       if (mic) {
-        roomAudio.attachOwnMic(appStore.getSnapshot().ownUsername ?? "you", mic);
+        roomAudio.attachOwnMic(appStore.getSnapshot().ownUsername ?? "you", mic, sfu.getRawMicTrack() ?? undefined);
       }
       applyComplianceToLiveSession(); // a re-entering muted member stays muted
       log.info("voice", `joined room ${room.roomId} on ${room.janusUrl}`);
@@ -3293,7 +3311,7 @@ async function detachVoiceAfterLoss(reason: string): Promise<void> {
     activeSession?.stomp.send("/app/voice.leave", { channelId });
   }
   resetVoiceCompliance();
-  appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", stateDetail: null, participants: [], viewingFeedId: null, roomViewOpen: false });
+  appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", stateDetail: null, voiceRttMillis: null, micSilent: false, participants: [], viewingFeedId: null, roomViewOpen: false });
   if (hadSession && settingsStore.getSnapshot().soundEnabled) { // the app sound switch (ding + knocks)
     notifications.playKnock("leave");
     notifications.showToast({ title: tr("voice.voiceLabel"), channelName: tr("toast.connectionLost"), body: tr("toast.disconnectedFromRoom", { reason }) });
@@ -3376,13 +3394,18 @@ function disposeNoisePipeline(): void {
 async function publishMicTrack(track: MediaStreamTrack): Promise<void> {
   if (callSession !== null) {
     await callSession.replaceMicTrack(track);
-    roomAudio.attachOwnMic(appStore.getSnapshot().ownUsername ?? "you", track);
+    const callRawTrack = callMicStream?.getAudioTracks()[0];
+    roomAudio.attachOwnMic(
+      appStore.getSnapshot().ownUsername ?? "you",
+      track,
+      callRawTrack !== undefined && callRawTrack.id !== track.id ? callRawTrack : undefined,
+    );
     return;
   }
   if (sfuSession !== null) {
     await sfuSession.replaceMicTrack(track);
     sfuSession.setMicEnabled(!voiceCompliance.micMuted);
-    roomAudio.attachOwnMic(appStore.getSnapshot().ownUsername ?? "you", track);
+    roomAudio.attachOwnMic(appStore.getSnapshot().ownUsername ?? "you", track, sfuSession.getRawMicTrack() ?? undefined);
   }
 }
 
@@ -3521,7 +3544,7 @@ export async function leaveVoice(): Promise<void> {
     activeSession?.stomp.send("/app/voice.leave", { channelId });
   }
   resetVoiceCompliance();
-  appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", stateDetail: null, participants: [], viewingFeedId: null, roomViewOpen: false });
+  appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", stateDetail: null, voiceRttMillis: null, micSilent: false, participants: [], viewingFeedId: null, roomViewOpen: false });
   if (hadSession && settingsStore.getSnapshot().soundEnabled) { // the app sound switch (ding + knocks)
     notifications.playKnock("leave");
   }
@@ -4653,8 +4676,13 @@ async function fetchIceServers(): Promise<RTCIceServer[]> {
  *  roomAudio own-mic chain the voice room uses, fed by the call's mic track. */
 function attachOwnCallMic(micStream: MediaStream): void {
   const track = micStream.getAudioTracks()[0];
+  const rawTrack = callMicStream?.getAudioTracks()[0];
   if (track) {
-    roomAudio.attachOwnMic(appStore.getSnapshot().ownUsername ?? "you", track);
+    roomAudio.attachOwnMic(
+      appStore.getSnapshot().ownUsername ?? "you",
+      track,
+      rawTrack !== undefined && rawTrack.id !== track.id ? rawTrack : undefined,
+    );
   }
 }
 
@@ -5234,6 +5262,7 @@ function teardownCall(): void {
     peerDeafenedOn: false,
     peerCameraOn: false,
     peerScreenOn: false,
+    micSilent: false,
     // oak's closeCall → restoreChatFromRoom: the call's room view dies with it.
     roomViewOpen: false,
   });

@@ -1,6 +1,7 @@
 import { LEVEL_POLL_MS } from "../config";
 import { log } from "../logging";
 import { floatRms, isSpeaking, rmsToDbfs, speakingLevel } from "../core/audio-math";
+import { MicSilenceTracker, createMicSilenceTracker } from "../domain/logic/mic-silence";
 
 /** DOMExceptions often carry an EMPTY message — the name is the signal (device-lesson). */
 function describeError(error: unknown): string {
@@ -118,7 +119,18 @@ export class RoomAudio {
     analyser: AnalyserNode;
     buffer: Float32Array<ArrayBuffer>;
     level: number;
+    /** The published track — its `enabled` gates the silence streak (a deliberate
+     *  mute also produces digital silence and must not accumulate a verdict). */
+    publishedTrack: MediaStreamTrack;
+    /** The RAW capture analyser when suppression is active (RNNoise emits exact
+     *  zeros on real silence — the raw input's noise floor is the only honest
+     *  life signal); null when the published track already IS the raw capture. */
+    rawAnalyser: AnalyserNode | null;
+    rawBuffer: Float32Array<ArrayBuffer> | null;
+    silence: MicSilenceTracker;
   } | null = null;
+  /** Fires on the dead-mic verdict transitions (see mic-silence.ts for the cause it detects). */
+  private ownMicSilenceHandler: ((silent: boolean) => void) | null = null;
 
   private ensureContext(): AudioContext {
     if (this.context === null) {
@@ -454,15 +466,35 @@ export class RoomAudio {
     return new Set(this.speakingNow);
   }
 
-  /** Own speaking ring: local mic analysis only, never any playout (that would echo). */
-  attachOwnMic(username: string, track: MediaStreamTrack): void {
+  /** Own speaking ring: local mic analysis only, never any playout (that would echo).
+   *  `rawTrack` (the pre-suppression capture) rides along for the dead-mic detector. */
+  attachOwnMic(username: string, track: MediaStreamTrack, rawTrack?: MediaStreamTrack): void {
     this.detachOwnMic();
     const context = this.ensureContext();
     const source = context.createMediaStreamSource(new MediaStream([track]));
     const analyser = context.createAnalyser();
     analyser.fftSize = 512;
     source.connect(analyser);
-    this.ownMic = { username, source, analyser, buffer: new Float32Array(analyser.fftSize), level: 0 };
+    let rawAnalyser: AnalyserNode | null = null;
+    let rawBuffer: Float32Array<ArrayBuffer> | null = null;
+    if (rawTrack !== undefined && rawTrack.id !== track.id) {
+      const rawSource = context.createMediaStreamSource(new MediaStream([rawTrack]));
+      rawAnalyser = context.createAnalyser();
+      rawAnalyser.fftSize = 512;
+      rawSource.connect(rawAnalyser);
+      rawBuffer = new Float32Array(rawAnalyser.fftSize);
+    }
+    this.ownMic = {
+      username,
+      source,
+      analyser,
+      buffer: new Float32Array(analyser.fftSize),
+      level: 0,
+      publishedTrack: track,
+      rawAnalyser,
+      rawBuffer,
+      silence: createMicSilenceTracker(),
+    };
   }
 
   detachOwnMic(): void {
@@ -472,10 +504,21 @@ export class RoomAudio {
     try {
       this.ownMic.source.disconnect();
       this.ownMic.analyser.disconnect();
+      if (this.ownMic.rawAnalyser !== null) {
+        this.ownMic.rawAnalyser.disconnect();
+      }
     } catch {
       // already torn down
     }
+    const wasSilent = this.ownMic.silence.isSilent();
     this.ownMic = null;
+    if (wasSilent) {
+      this.ownMicSilenceHandler?.(false);
+    }
+  }
+
+  setOwnMicSilenceHandler(handler: ((silent: boolean) => void) | null): void {
+    this.ownMicSilenceHandler = handler;
   }
 
   startLevelPolling(intervalMs = LEVEL_POLL_MS): void {
@@ -496,11 +539,36 @@ export class RoomAudio {
       own.analyser.getFloatTimeDomainData(own.buffer);
       own.level = speakingLevel(floatRms(own.buffer), own.level);
       this.emitSpeaking(own.username, isSpeaking(own.level));
+      this.pollOwnMicSilence(own);
     }
     for (const chain of this.voiceChains.values()) {
       chain.analyser.getFloatTimeDomainData(chain.buffer);
       chain.level = speakingLevel(floatRms(chain.buffer), chain.level);
       this.emitSpeaking(chain.username, isSpeaking(chain.level));
+    }
+  }
+
+  /**
+   * The dead-mic streak (live report 2026-10-30): a muted track feeds the graph
+   * digital silence, so a deliberate mute must never accumulate a verdict; the
+   * RAW analyser is preferred — suppression emits exact zeros on honest silence
+   * and would fire the hint on every quiet listener.
+   */
+  private pollOwnMicSilence(own: NonNullable<RoomAudio["ownMic"]>): void {
+    if (!own.publishedTrack.enabled) {
+      if (own.silence.isSilent()) {
+        own.silence.reset();
+        this.ownMicSilenceHandler?.(false);
+      }
+      return;
+    }
+    const analyser = own.rawAnalyser ?? own.analyser;
+    const buffer = own.rawBuffer ?? own.buffer;
+    analyser.getFloatTimeDomainData(buffer);
+    const wasSilent = own.silence.isSilent();
+    const silent = own.silence.feed(floatRms(buffer), Date.now());
+    if (silent !== wasSilent) {
+      this.ownMicSilenceHandler?.(silent);
     }
   }
 

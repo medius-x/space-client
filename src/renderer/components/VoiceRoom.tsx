@@ -231,6 +231,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
   const voiceState = useStore(appStore, (state) => state.voiceState);
   const stateDetail = useStore(appStore, (state) => state.stateDetail);
   const voiceRttMillis = useStore(appStore, (state) => state.voiceRttMillis);
+  const micSilent = useStore(appStore, (state) => state.micSilent);
   const sharing = useStore(appStore, (state) => state.sharing);
   const cameraOn = useStore(appStore, (state) => state.cameraOn);
   const activeChannelId = useStore(appStore, (state) => state.activeVoiceChannelId);
@@ -300,14 +301,14 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
     // oak skips the stage entirely; our timer starts on "On a call").
     const ringingOut = callState === "ringing-out";
     const statusClass = callState === "in-call"
-      ? (callHealthy ? "live" : "reconnecting")
+      ? (callHealthy ? (micSilent ? "mic-silent" : "live") : "reconnecting")
       : "connecting";
     const statusText = ringingOut
       ? t("voice.calling")
       : callState === "connecting"
         ? t("voice.connecting")
         : callState === "in-call"
-          ? (callHealthy ? (callSeconds > 0 ? t("voice.onACallTimer", { time: formatCallSeconds(callSeconds) }) : t("voice.onACall")) : t("voice.reconnecting"))
+          ? (callHealthy ? (micSilent ? t("voice.micSilent") : (callSeconds > 0 ? t("voice.onACallTimer", { time: formatCallSeconds(callSeconds) }) : t("voice.onACall"))) : t("voice.reconnecting"))
           : t("voice.onACall");
     // oak's voiceScreenBadge equivalent: the peer's announced camera/screen.
     const peerScreens = (peerScreenOn || peerCameraOn) ? 1 : 0;
@@ -412,7 +413,9 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
   const micLocked = permMuted || channelAfk;
   const selfMuted = (ownMarks?.selfMuted ?? false) || (ownMarks?.modMuted ?? false) || permMuted;
   const selfDeafened = (ownMarks?.selfDeafened ?? false) || (ownMarks?.modDeafened ?? false);
-  const statusClass = voiceState === "live" ? "live" : voiceState === "reconnecting" ? "reconnecting" : voiceState === "failed" ? "failed" : "connecting";
+  const statusClass = voiceState === "live"
+    ? (micSilent ? "mic-silent" : "live")
+    : voiceState === "reconnecting" ? "reconnecting" : voiceState === "failed" ? "failed" : "connecting";
   // oak's room statuses were "On a call"/"Connecting"/"Reconnecting… N/5" — the
   // live text is OURS (user decision 2026-10-15): a call-style phrase in a room
   // read as a foreign status, and with the STOMP "Connected" badge nearby a dead
@@ -420,8 +423,12 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
   // nobody noticed). The exact RTT does NOT ride the status line (a green
   // "230 ms" read as "everything is fine" — live 2026-10-15): it lives in the
   // waves glyph's tooltip, the glyph itself carries the quality tier.
+  // The mic-silent takeover (live 2026-10-30: a headset dongle died mid-call
+  // feeding perfect digital silence — no event, no error) outranks "connected":
+  // the media path IS fine, the microphone is not. The waves glyph stays —
+  // the network and the mic are different axes.
   const statusText = voiceState === "live"
-    ? t("voice.voiceConnected")
+    ? (micSilent ? t("voice.micSilent") : t("voice.voiceConnected"))
     : voiceState === "reconnecting"
       ? t("voice.reconnectingDetail", { detail: stateDetail !== null && stateDetail.length > 0 ? ` ${stateDetail}` : "" })
       : voiceState === "failed"

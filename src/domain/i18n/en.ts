@@ -128,6 +128,7 @@ export const EN = {
   "voice.shareScreen": "Share screen",
   "voice.hangUp": "Hang up",
   "voice.voiceConnected": "Voice connected",
+  "voice.micSilent": "Mic is silent",
   "voice.connectionFailed": "Connection failed",
   "voice.connectionRtt": "Voice connection: {rtt} ms",
   "voice.connectionMeasuring": "Voice connection: measuring…",

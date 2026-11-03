@@ -130,6 +130,7 @@ export const RU: Dict = {
   "voice.shareScreen": "Демонстрация экрана",
   "voice.hangUp": "Завершить",
   "voice.voiceConnected": "Голос подключён",
+  "voice.micSilent": "Микрофон молчит",
   "voice.connectionFailed": "Не удалось подключиться",
   "voice.connectionRtt": "Голосовое соединение: {rtt} мс",
   "voice.connectionMeasuring": "Голосовое соединение: замер…",

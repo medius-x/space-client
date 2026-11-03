@@ -4185,6 +4185,8 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 .voice-bar-status { font-size: 12px; font-weight: 700; }
 .voice-bar-status.live { color: var(--sp-green); }
 .voice-bar-status.connecting, .voice-bar-status.reconnecting { color: var(--sp-yellow); }
+/* The dead-mic verdict (amber, not red: the media path itself is healthy). */
+.voice-bar-status.mic-silent { color: var(--sp-yellow); }
 .voice-bar-status.failed { color: var(--sp-red); }
 /* The status line with the Discord-style signal waves glyph (user decision
    2026-10-15): the glyph carries the MEDIA quality tier, the exact RTT rides
