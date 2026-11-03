@@ -28,3 +28,6 @@ does not: CI, docs, refactoring, internal rework.
   now says so instead of looking healthy — after a minute and a half of
   total silence the status line turns amber: "Mic is silent". The hint
   disappears the moment the microphone wakes up.
+- Small polish in the chat: the text you type now starts on the same
+  line as the messages above it, and editing a message no longer makes
+  its text visually larger.
