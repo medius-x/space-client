@@ -1539,7 +1539,9 @@ button.wide-add { width: 100%; }
   border-radius: 6px;
   color: var(--sp-text);
   padding: 8px 10px;
-  font-size: 14px;
+  /* Same 13px as the message text — the editor must not "grow" the words it
+     edits (user request 2026-11-03). */
+  font-size: 13px;
   font-family: inherit;
   resize: vertical;
   outline: none;
@@ -2380,7 +2382,11 @@ button.wide-add { width: 100%; }
   border: none;
   border-radius: 8px;
   color: var(--sp-text);
-  padding: 7px 6px;
+  /* 10px left = the text column lines up with the chat text (16 list padding +
+     40 avatar + 6 gap = 62px; 8 composer + 8 card + 32 attach + 4 gap + 10 = 62)
+     — the CARD itself stays on the 8px overlay insets it shares with the user
+     bar, only the text moves (user request 2026-11-03). */
+  padding: 7px 6px 7px 10px;
   font-size: 13px;
   /* 18px line + 14px padding = 32px — EXACTLY the avatar/attach box, so the
      single-line card resolves to the same 44px as the user bar. */
