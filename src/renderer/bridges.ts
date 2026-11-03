@@ -266,6 +266,28 @@ export interface TlsCertBridge {
   onUntrusted(callback: (event: TlsUntrustedEvent) => void): void;
 }
 
+/** Spell-check bridge (2026-11-03): Chromium's Hunspell checker lives on the
+ *  SESSION (main-configured, languages pinned to en-US + ru-RU); this bridge
+ *  carries the enable/disable toggle and the custom-dictionary word, and feeds
+ *  the composer's right-click menu with the platform's misspelling data —
+ *  context-menu params are the ONLY source of dictionary suggestions. */
+export interface SpellBridge {
+  /** Push the Settings → General toggle: false unsets the session's spell
+   *  languages (no underlines anywhere); true restores them. */
+  setEnabled(enabled: boolean): void;
+  /** Add a word to the session dictionary (main seeds the whole persisted list
+   *  at boot; this covers words added while running). */
+  addWord(word: string): Promise<boolean>;
+  /** The context menu's data for one word: our verdict + suggestions from the
+   *  EMBEDDED dictionaries (the platform's own context-menu params stay empty
+   *  on Windows — electron/electron#38876). */
+  menuData(word: string): Promise<{ misspelled: boolean; suggestions: string[] }>;
+  /** Main → the composer: a right click landed on a misspelled word. Arrives
+   *  a tick AFTER the renderer's own contextmenu handler opened the menu —
+   *  the composer matches the word before showing the suggestions. */
+  onContextMenu(callback: (event: { misspelledWord: string; suggestions: string[] }) => void): void;
+}
+
 // ---------------------------------------------------------------------------
 // Provisioning (round C): the Create tab's SSH deployment of a fresh server
 // ---------------------------------------------------------------------------
@@ -467,5 +489,6 @@ declare global {
     spaceUpdates?: UpdatesBridge;
     spaceI18n?: I18nBridge;
     spaceBackup?: BackupsBridge;
+    spaceSpell?: SpellBridge;
   }
 }

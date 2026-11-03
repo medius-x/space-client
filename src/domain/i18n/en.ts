@@ -92,6 +92,8 @@ export const EN = {
   "chat.copy": "Copy",
   "chat.paste": "Paste",
   "chat.selectAll": "Select all",
+  "chat.spellingSubmenu": "Spelling",
+  "chat.addSpellWord": "Add \"{word}\" to dictionary",
   "chat.tooFarBack": "Message is too far back to jump to",
   "chat.dropFiles": "Drop files to attach",
 
@@ -379,6 +381,9 @@ export const EN = {
   // (phase 1); the section's remaining strings join in phase 3.
   "settings.language.label": "Language",
   "settings.language.system": "System default",
+  "settings.spellHeader": "Spelling",
+  "settings.spellCheck": "Check spelling",
+  "settings.spellHint": "Underlines misspelled English and Russian words as you type; right-click a word for suggestions. The dictionaries are bundled with the app.",
   "settings.userSettingsTitle": "User Settings",
   "settings.accountSettingsTitle": "Account Settings",
   "settings.section.general": "General",

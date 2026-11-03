@@ -5,6 +5,7 @@ import { clampJumboEmojiSize } from "../logic/emoji-picker";
 import { sanitizeRecentExpressions } from "../logic/reaction-picker";
 import type { SavedSharePreset } from "../logic/share-quality";
 import { clampBackupKeepCount } from "../logic/backup-files";
+import { sanitizeSpellWords } from "../logic/spell-word";
 import type { LanguageSetting } from "../i18n/i18n";
 
 /**
@@ -115,6 +116,15 @@ export interface ClientSettings {
    *  backup fires only while a client is running — the server stores nothing).
    *  Keyed by connection record id; the schedule lives "on this computer". */
   backupSchedules: Record<string, BackupSchedule>;
+  /** Spell checking (2026-11-03): Chromium's built-in Hunspell checker, the
+   *  languages pinned to en-US + ru-RU (the project's audience — no language
+   *  picker). false unsets the session languages, silencing every underline.
+   *  Mirrored to the MAIN process (which owns the session) on boot and flip. */
+  spellCheckEnabled: boolean;
+  /** The user's custom dictionary (Add to dictionary): the session's in-memory
+   *  addWordToSpellCheckerDictionary does NOT survive restarts, so the words
+   *  persist here and main re-seeds them at every boot. */
+  spellCheckWords: string[];
 }
 
 export interface BackupSchedule {
@@ -157,6 +167,8 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   backupFolder: null,
   backupKeepCount: 1,
   backupSchedules: {},
+  spellCheckEnabled: true,
+  spellCheckWords: [],
 };
 
 const KV_KEY = "client-settings";
@@ -273,6 +285,13 @@ export class SettingsStore extends Emitter {
           : null,
         backupKeepCount: clampBackupKeepCount(rest.backupKeepCount),
         backupSchedules: sanitizeBackupSchedules(rest.backupSchedules),
+      };
+      // Spell check (2026-11-03): the toggle is a plain boolean, the custom
+      // dictionary rides the spell-word sanitizer (trim/dedup/cap).
+      this.settings = {
+        ...this.settings,
+        spellCheckEnabled: typeof rest.spellCheckEnabled === "boolean" ? rest.spellCheckEnabled : true,
+        spellCheckWords: sanitizeSpellWords(rest.spellCheckWords),
       };
     }
     this.loaded = true;

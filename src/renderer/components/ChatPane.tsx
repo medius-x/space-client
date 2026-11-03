@@ -46,6 +46,7 @@ import { Modal } from "./Modal";
 import { VirtualList, type VirtualListHandle } from "./VirtualList";
 import { AttachmentView, attachmentUsableWidth } from "./AttachmentView";
 import { isImageFile } from "../../domain/logic/attachment-layout";
+import { wordRangeAt, withAddedSpellWord } from "../../domain/logic/spell-word";
 import { estimateRowHeight, QUOTE_DEPTH_MAX } from "../../domain/logic/message-row-height";
 import { learnedDims } from "../media-dims";
 import { Avatar } from "./Avatar";
@@ -1814,6 +1815,7 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
       <textarea
         className="inline-editor"
         autoFocus
+        spellCheck={true}
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         onBlur={commitEdit}
@@ -2646,13 +2648,45 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
   // verbs through the app's own ContextMenu. Clipboard state is probed
   // asynchronously the moment the menu opens (Paste flips on when the
   // clipboard holds text); the selection verbs read the field synchronously.
+  // Spell check (2026-11-03) rides the same menu: main forwards the platform's
+  // misspelling data (webContents context-menu params — the only source of
+  // dictionary suggestions) a tick AFTER this handler opens the menu; the push
+  // is matched against the word under the caret and dropped when it disagrees
+  // (a stale push from an earlier click would otherwise graft suggestions onto
+  // the wrong menu).
   const [editorMenu, setEditorMenu] = useState<{
     x: number;
     y: number;
     hasSelection: boolean;
     hasText: boolean;
     canPaste: boolean;
+    /** The word under the caret at open time — the spelling block's anchor. */
+    spellWord: string | null;
+    /** True once the embedded checker confirmed the word is misspelled —
+     *  gates the submenu row (a correct word gets no spelling entry). */
+    spellMisspelled: boolean;
+    /** The checker's suggestions for the word (may be empty — the submenu then
+     *  still offers Add to dictionary). */
+    spellSuggestions: string[];
   } | null>(null);
+
+  // The Settings → General toggle gates the spelling row TOO (live smoke
+  // 2026-11-03: with checking off the underlines were gone but the row with
+  // suggestions stayed — the checker answers regardless of its consumers).
+  const spellCheckEnabled = useStore(settingsStore, (settings) => settings.spellCheckEnabled);
+
+  useEffect(() => {
+    const spellBridge = window.spaceSpell;
+    if (!spellBridge) {
+      return; // tests / a preload without the bridge — no suggestions, menu intact
+    }
+    spellBridge.onContextMenu((event) => {
+      setEditorMenu((current) =>
+        current === null || current.spellWord !== event.misspelledWord || event.suggestions.length === 0
+          ? current // no menu open, another word, or platform-empty suggestions (Windows) — drop it
+          : { ...current, spellMisspelled: true, spellSuggestions: event.suggestions }); // richer platform list wins
+    });
+  }, []);
 
   const selectionRange = (): { start: number; end: number } => {
     const field = composerInputRef.current;
@@ -2714,6 +2748,38 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
       return;
     }
     field.select(); // selectAll
+  };
+
+  /** Applies a picked dictionary suggestion: the replacement happens LOCALLY
+   *  (the applyEditorText idiom — synchronous, no IPC for the text itself);
+   *  main's replaceMisspelling is not used because it targets whatever edit
+   *  region is focused, while here the exact range is known. The caret has not
+   *  moved since the menu opened (a menu click does not touch the textarea),
+   *  but a mismatching word aborts rather than replacing the wrong thing. */
+  const applySpellSuggestion = (word: string, suggestion: string): void => {
+    const field = composerInputRef.current;
+    if (field === null) {
+      return;
+    }
+    const range = wordRangeAt(text, field.selectionStart ?? 0);
+    if (range === null || text.slice(range.start, range.end) !== word) {
+      return;
+    }
+    applyEditorText(
+      text.slice(0, range.start) + suggestion + text.slice(range.end),
+      range.start + suggestion.length,
+    );
+  };
+
+  /** Add to dictionary: the session-level add (instant underline removal for
+   *  this run) plus the persisted list — Chromium's custom dictionary does not
+   *  survive restarts, so the words live in ClientSettings and main re-seeds
+   *  them at every boot. */
+  const addSpellWord = (word: string): void => {
+    void window.spaceSpell?.addWord(word);
+    settingsStore.apply({
+      spellCheckWords: withAddedSpellWord(settingsStore.getSnapshot().spellCheckWords, word),
+    });
   };
 
   return (
@@ -2871,6 +2937,7 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
           value={text}
           rows={Math.min(10, Math.max(1, text.split("\n").length))}
           placeholder={fittedPlaceholder}
+          spellCheck={true}
           onChange={(event) => {
             setText(event.target.value);
             updateMentionQuery(event.target.value, event.target.selectionStart);
@@ -2887,13 +2954,38 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
             // (user request 2026-10-27).
             event.preventDefault();
             const { start, end } = selectionRange();
+            // A right click moves the caret onto the clicked word, so the
+            // selection start already names it (a live SELECTION is not
+            // moved — then this is the selection's first word).
+            const caretWordRange = wordRangeAt(text, start);
+            const caretWord = caretWordRange !== null ? text.slice(caretWordRange.start, caretWordRange.end) : null;
             setEditorMenu({
               x: event.clientX,
               y: event.clientY,
               hasSelection: end > start,
               hasText: text.length > 0,
               canPaste: false,
+              spellWord: caretWord,
+              spellMisspelled: false,
+              spellSuggestions: [],
             });
+            // Spell-check menu data comes from the EMBEDDED dictionaries (the
+            // platform's context-menu params stay empty on Windows —
+            // electron/electron#38876): ask about the word under the caret
+            // the moment the menu opens; the answer patches the menu in.
+            // Skipped entirely while the checker is toggled off.
+            if (caretWord !== null && spellCheckEnabled) {
+              void window.spaceSpell?.menuData(caretWord)
+                .then((data) => setEditorMenu((current) =>
+                  current === null || current.spellWord !== caretWord
+                    ? current // the menu closed or moved on — drop the answer
+                    : {
+                      ...current,
+                      spellMisspelled: data.misspelled,
+                      spellSuggestions: data.misspelled ? data.suggestions : [],
+                    }))
+                .catch(() => undefined);
+            }
             // Async clipboard probe: Paste enables itself when text is there.
             // A rejected probe (permission hiccup) keeps the verb ENABLED —
             // better a no-op click than a mysteriously dead Paste.
@@ -2984,6 +3076,22 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
             { label: t("common.delete"), disabled: !editorMenu.hasSelection, action: () => runEditorVerb("delete") },
             { separator: true },
             { label: t("chat.selectAll"), disabled: !editorMenu.hasText, action: () => runEditorVerb("selectAll") },
+            // Spell-check row at the BOTTOM (user request 2026-11-03 — the
+            // Telegram shape): one "Spelling ›" entry opening the suggestions +
+            // Add-to-dictionary in a submenu to the right; shown only for a
+            // confirmed misspelling.
+            ...(spellCheckEnabled && editorMenu.spellMisspelled && editorMenu.spellWord !== null ? [{
+              label: t("chat.spellingSubmenu"),
+              action: () => undefined,
+              children: [
+                ...editorMenu.spellSuggestions.slice(0, 5).map((suggestion) => ({
+                  label: suggestion,
+                  action: () => applySpellSuggestion(editorMenu.spellWord!, suggestion),
+                })),
+                { separator: true } as const,
+                { label: t("chat.addSpellWord", { word: editorMenu.spellWord }), action: () => addSpellWord(editorMenu.spellWord!) },
+              ],
+            }] : []),
           ]}
           onClose={() => setEditorMenu(null)}
         />

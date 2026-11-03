@@ -31,3 +31,9 @@ does not: CI, docs, refactoring, internal rework.
 - Small polish in the chat: the text you type now starts on the same
   line as the messages above it, and editing a message no longer makes
   its text visually larger.
+- Spell checking while you type: misspelled English and Russian words
+  are underlined everywhere you type, and right-clicking a misspelled
+  word opens a "Spelling" submenu with corrections and "Add to
+  dictionary" (added words are remembered between restarts). The
+  dictionaries are bundled with the app — it works the same offline,
+  on any machine. Can be turned off in Settings → General.

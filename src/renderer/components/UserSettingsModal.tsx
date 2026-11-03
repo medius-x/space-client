@@ -927,6 +927,7 @@ function DownloadsFolderRow(): React.JSX.Element {
 function GeneralClientSection({ session }: { session: ConnectionSession | null }): React.JSX.Element {
   const t = useT();
   const language = useStore(settingsStore, (settings) => settings.language);
+  const spellEnabled = useStore(settingsStore, (settings) => settings.spellCheckEnabled);
   const cacheMegabytes = useStore(settingsStore, (state) => state.imageCacheMegabytes);
   const changeCache = (megabytes: number): void => {
     settingsStore.apply({ imageCacheMegabytes: megabytes });
@@ -944,6 +945,19 @@ function GeneralClientSection({ session }: { session: ConnectionSession | null }
         <option value="en">English</option>
         <option value="ru">Русский</option>
       </select>
+      <h3>{t("settings.spellHeader")}</h3>
+      <label className="settings-check">
+        <input
+          type="checkbox"
+          checked={spellEnabled}
+          onChange={(event) => {
+            settingsStore.apply({ spellCheckEnabled: event.target.checked });
+            window.spaceSpell?.setEnabled(event.target.checked); // main owns the session languages
+          }}
+        />
+        <span>{t("settings.spellCheck")}</span>
+      </label>
+      <div className="settings-hint">{t("settings.spellHint")}</div>
       <h3>{t("settings.updatesHeader")}</h3>
       <UpdatesSettingsBlock />
       <h3>{t("settings.downloadsHeader")}</h3>

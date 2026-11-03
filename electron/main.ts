@@ -3,6 +3,7 @@ import { getClientSize, isWindowConfirmedDead, watchSourceLiveness } from "./win
 import { cancelProvisioningRun, hashLocalFile, probeMigrationDirectTransfer, startProvisioningRun } from "./provisioning";
 import { installUpdateIpc } from "./updates";
 import { installBackupIpc } from "./backups";
+import { installSpellIpc, spellAddWord } from "./spell";
 import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeTheme, net, powerMonitor, protocol, safeStorage, screen, session, shell, Tray } from "electron";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -1255,6 +1256,74 @@ ipcMain.on("space-i18n:sync", (_event, lang: unknown) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Spell check (2026-11-03): Chromium's built-in Hunspell checker on the default
+// session. The languages are PINNED to en-US + ru-RU (the project's audience —
+// no language picker); the on/off toggle and the custom dictionary words live
+// in the client-settings KV (renderer-owned), seeded here at boot so the
+// underlines are correct from the first paint, before any renderer sync.
+// ---------------------------------------------------------------------------
+
+// PROBE FACT (scripts/spellcheck-probe.cjs, 2026-11-03): Chromium's Hunspell
+// set has NO "ru-RU" — the Russian dictionary ships under the bare "ru" (like
+// fr/pl/uk), and Electron NORMALIZES unknown region suffixes itself when the
+// list is set. A hand-rolled "protective" filter against
+// availableSpellCheckerLanguages had silently dropped Russian here once —
+// never filter this list, the platform ignores what it does not know.
+// The CHECKING itself is EMBEDDED (electron/spell.ts, user decision
+// 2026-11-03): the preload's webFrame provider intercepts both languages, so
+// the languages below only switch the pipeline on/off — the underline
+// verdicts, suggestions and the custom dictionary all come from the bundled
+// nspell dictionaries, identical on every machine.
+const SPELL_LANGUAGES = ["en-US", "ru"];
+
+function applySpellLanguages(enabled: boolean): void {
+  // Live smoke fact (2026-11-03): setSpellCheckerLanguages([]) does NOT turn
+  // the checker off — an empty list is not "off" — the underlines stayed on.
+  // The dedicated switch is setSpellCheckerEnabled (also gates the embedded
+  // provider's calls); the languages are set alongside for the on-flip.
+  session.defaultSession.setSpellCheckerEnabled(enabled);
+  if (enabled) {
+    session.defaultSession.setSpellCheckerLanguages(SPELL_LANGUAGES);
+  }
+}
+
+/** Boot seed from KV (the seedLanguageFromKv precedent): the setting toggle
+ *  and the custom words apply before the window exists, so the renderer's
+ *  first user never sees a wrong checker state. The words seed the EMBEDDED
+ *  dictionaries (electron/spell.ts) — the platform session dictionary is no
+ *  longer used for checking. */
+function seedSpellCheckFromKv(): void {
+  const settings = kvRead("client-settings");
+  const raw = settings !== null && typeof settings === "object"
+    ? (settings as Record<string, unknown>)
+    : null;
+  applySpellLanguages(raw?.spellCheckEnabled !== false); // absent = the default ON
+  const words = raw?.spellCheckWords;
+  if (Array.isArray(words)) {
+    for (const word of words) {
+      if (typeof word === "string" && word.trim().length > 0) {
+        spellAddWord(word);
+      }
+    }
+  }
+}
+
+ipcMain.on("space-spell:setEnabled", (_event, enabled: unknown) => {
+  applySpellLanguages(enabled === true);
+  appendLog(`[spell] checker ${enabled === true ? "enabled" : "disabled"}`);
+});
+
+ipcMain.handle("space-spell:addWord", (_event, word: unknown) => {
+  // A length-bounded plain string — it crosses only into the embedded
+  // dictionary, never into commands, paths or the log.
+  if (typeof word !== "string" || word.trim().length === 0 || word.length > 100) {
+    return false;
+  }
+  spellAddWord(word);
+  return true;
+});
+
 ipcMain.handle("space-window:popout", () => {
   if (popoutWindow && !popoutWindow.isDestroyed()) {
     popoutWindow.focus();
@@ -1635,6 +1704,22 @@ async function createWindow(): Promise<void> {
   // The caption's maximize glyph flips on restore (oak's ▢↔❐).
   mainWindow.on("maximize", () => mainWindow.webContents.send("space-window:maximized", true));
   mainWindow.on("unmaximize", () => mainWindow.webContents.send("space-window:maximized", false));
+
+  // Spell check: the platform's misspelling data rides the webContents
+  // context-menu params — the ONLY source of dictionary suggestions (there is
+  // no "check this word" API on the built-in engine). Forwarded to the
+  // renderer's own composer menu (Electron shows no native menu in a
+  // textarea); pushed only when the click actually hit a misspelled word, so
+  // ordinary right clicks stay silent.
+  mainWindow.webContents.on("context-menu", (_event, params) => {
+    if (params.misspelledWord.length === 0 || mainWindow.isDestroyed()) {
+      return;
+    }
+    mainWindow.webContents.send("space-spell:contextMenu", {
+      misspelledWord: params.misspelledWord,
+      suggestions: params.dictionarySuggestions,
+    });
+  });
   if (savedBounds?.maximized === true) {
     // Applied AFTER construction so the restore size (the saved normal bounds)
     // survives the maximize — Windows tracks the normal position itself.
@@ -1866,6 +1951,8 @@ app.whenReady().then(() => {
   nativeTheme.themeSource = "dark";
   registerSpaceAssetProtocol();
   seedLanguageFromKv(); // tray/title labels localize from the first paint (before any renderer sync)
+  seedSpellCheckFromKv(); // underlines and custom words are correct from the first paint
+  installSpellIpc(STATIC_ASSETS_ROOT, appendLog); // the embedded nspell checker (checkWords/menuData)
   void createWindow();
   app.on("activate", () => {
     // macOS habit — harmless on Windows, kept for free.

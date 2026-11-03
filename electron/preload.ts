@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webFrame } from "electron";
 
 /**
  * The preload bridge: appInfo proves contextIsolation works; spaceLog carries renderer
@@ -327,6 +327,59 @@ contextBridge.exposeInMainWorld("spaceProvisioning", {
     // (HMR, StrictMode) must not stack a second one and duplicate steps.
     ipcRenderer.removeAllListeners("provisioning:event");
     ipcRenderer.on("provisioning:event", (_event, payload: unknown) => callback(payload));
+  },
+});
+
+/** Spell-check bridge (2026-11-03): the EMBEDDED nspell checker lives in the
+ *  main process (bundled en_US + ru_RU Hunspell dictionaries); this preload
+ *  hooks it into the page by registering a webFrame spell-check PROVIDER for
+ *  both pinned languages — the provider intercepts the language from the
+ *  built-in engine (on Windows: the OS spellchecker, which draws underlines
+ *  but never populates the context-menu misspelling data). Every underline
+ *  verdict comes from our dictionaries.
+ *
+ *  The toggle has TWO layers (live smoke 2026-11-03: session.setSpellChecker
+ *  Enabled(false) alone did NOT stop the underlines): the PROVIDER keeps
+ *  intercepting as long as it is registered, so this side gates it with a
+ *  local flag that answers "all correct" synchronously — and main also
+ *  disables the session checker as a belt. */
+let spellProviderEnabled = true;
+
+for (const spellLanguage of ["en-US", "ru"]) {
+  webFrame.setSpellCheckProvider(spellLanguage, {
+    spellCheck(words, callback) {
+      if (!spellProviderEnabled) {
+        callback([]); // toggled off — every word reads as correct
+        return;
+      }
+      ipcRenderer.invoke("space-spell:checkWords", words)
+        .then((misspelled) => callback(misspelled as string[]))
+        .catch(() => callback([])); // transport hiccup — never block typing
+    },
+  });
+}
+
+contextBridge.exposeInMainWorld("spaceSpell", {
+  setEnabled(enabled: boolean): void {
+    spellProviderEnabled = enabled;
+    ipcRenderer.send("space-spell:setEnabled", enabled);
+  },
+  addWord(word: string): Promise<unknown> {
+    return ipcRenderer.invoke("space-spell:addWord", word);
+  },
+  /** The context menu's data: is the word misspelled + the suggestions. */
+  menuData(word: string): Promise<unknown> {
+    return ipcRenderer.invoke("space-spell:menuData", word);
+  },
+  onContextMenu(callback: (event: { misspelledWord: string; suggestions: string[] }) => void): void {
+    // Single-subscriber channel: replace any previous listener — a remount
+    // (HMR, StrictMode) must not stack a second one.
+    ipcRenderer.removeAllListeners("space-spell:contextMenu");
+    ipcRenderer.on("space-spell:contextMenu", (_event, payload: unknown) => {
+      if (payload !== null && typeof payload === "object") {
+        callback(payload as { misspelledWord: string; suggestions: string[] });
+      }
+    });
   },
 });
 

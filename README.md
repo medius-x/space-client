@@ -70,6 +70,7 @@ accounts and client trust pins are preserved.
 ### Chat
 
 - Text messages with instant delivery, editing and deletion
+- Spell checking in English and Russian (dictionaries bundled) while you type
 - Replies with nested quote chains; forwarding to any channel — including other servers
 - Reactions, custom emoji and sticker packs (import/export as archives)
 - `@user`, `@role` and `@everyone` mentions

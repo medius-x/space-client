@@ -94,6 +94,8 @@ export const RU: Dict = {
   "chat.copy": "Копировать",
   "chat.paste": "Вставить",
   "chat.selectAll": "Выделить всё",
+  "chat.spellingSubmenu": "Орфография",
+  "chat.addSpellWord": "Добавить «{word}» в словарь",
   "chat.tooFarBack": "Сообщение слишком далеко в истории для перехода",
   "chat.dropFiles": "Отпустите, чтобы прикрепить файлы",
 
@@ -383,6 +385,9 @@ export const RU: Dict = {
   // settings
   "settings.language.label": "Язык",
   "settings.language.system": "Системный",
+  "settings.spellHeader": "Орфография",
+  "settings.spellCheck": "Проверять орфографию",
+  "settings.spellHint": "Подчёркивает орфографические ошибки в английских и русских словах при вводе; правый клик по слову — варианты исправления. Словари вшиты в приложение.",
   "settings.userSettingsTitle": "Настройки пользователя",
   "settings.accountSettingsTitle": "Настройки аккаунта",
   "settings.section.general": "Общие",

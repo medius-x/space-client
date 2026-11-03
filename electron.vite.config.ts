@@ -19,7 +19,9 @@ export default defineConfig({
       // breaks them the same way, so it resolves from node_modules too.
       // electron-updater resolves its provider backends lazily at runtime;
       // it ships as production node_modules alongside koffi/ssh2.
-      rollupOptions: { external: ["electron", "koffi", "ssh2", "electron-updater"] },
+      // nspell (spell check) loads its bundled dictionaries the same lazy
+      // way — external keeps it in the shipped node_modules.
+      rollupOptions: { external: ["electron", "koffi", "ssh2", "electron-updater", "nspell"] },
     },
   },
   preload: {

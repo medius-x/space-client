@@ -786,6 +786,35 @@ body.rail-dragging * { cursor: grabbing !important; }
   background: var(--sp-control);
   margin: 4px 6px;
 }
+/* Submenu rows (the spelling block, Telegram-style, 2026-11-03): the row is
+   the anchor of a nested card that opens to the RIGHT on hover; leaving the
+   wrap (row OR nested card — both live inside it) closes it. */
+.context-menu-submenu-wrap { position: relative; }
+.context-menu-submenu-wrap .context-menu-item.has-submenu {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.context-menu-item .submenu-arrow { padding: 0; }
+.context-menu-item .submenu-arrow::after {
+  content: "\203A"; /* single right-pointing angle quote — the submenu glyph */
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+}
+.context-submenu {
+  position: absolute; /* overrides the fixed card positioning for the nested one */
+  left: 100%;
+  /* Opens UPWARD, bottom-aligned with the parent card's bottom edge (user
+     request 2026-11-03): the composer sits at the window's bottom, so a
+     downward submenu gets clipped — an upward one never does. -5px = the
+     parent card's bottom padding (4px) + border (1px): the submenu's bottom
+     and the card's bottom land on one line. */
+  bottom: -5px;
+  margin-left: 2px;
+  min-width: 160px;
+}
 
 /* ===== Modal (M1) ===== */
 

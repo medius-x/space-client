@@ -1575,6 +1575,13 @@ function applyUiLanguage(): void {
   void window.spaceI18n?.sync(lang);
 }
 
+/** Spell check (2026-11-03): the toggle mirrors into the MAIN process, which
+ *  owns the session languages (en-US + ru-RU, pinned). Boot + every settings
+ *  flip — the applyUiLanguage idiom; the IPC send is idempotent and cheap. */
+function applySpellCheckEnabled(): void {
+  void window.spaceSpell?.setEnabled(settingsStore.getSnapshot().spellCheckEnabled);
+}
+
 /** App entry: load the directory, auto-resume the most recently used connection. */
 export async function bootstrapApp(): Promise<void> {
   await settingsStore.load();
@@ -1593,6 +1600,7 @@ export async function bootstrapApp(): Promise<void> {
   startBackupScheduleTicking(); // the client-side periodic server backup (one-minute tick)
   applyUiLanguage(); // i18n boot: resolve, repaint, mirror into main + the aux windows
   settingsStore.subscribe(applyUiLanguage); // a language flip repoints tray/titles and repaints live
+  applySpellCheckEnabled(); // the spell-check toggle mirrors into main (session languages)
   settingsStore.subscribe(pushPopoutVoiceState); // an NS engine flip recolors the pop-out's button
   pushPopoutVoiceState(); // the initial mirror (the pop-out reads it on mount)
   notifications.setToastConfig({

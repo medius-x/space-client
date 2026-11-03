@@ -36,6 +36,7 @@
     "@mdi/font": "^7.4.47",
     "@testing-library/react": "^16.3.3",
     "@types/node": "^24.0.0",
+    "@types/nspell": "^2.1.6",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@types/ssh2": "^1.15.6",
@@ -58,6 +59,7 @@
     "electron-updater": "^6.8.9",
     "fflate": "^0.8.3",
     "koffi": "^3.3.0",
+    "nspell": "^2.1.5",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "ssh2": "^1.17.0"
