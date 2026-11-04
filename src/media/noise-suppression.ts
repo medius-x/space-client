@@ -45,15 +45,16 @@ export interface NoisePipeline {
   readonly track: MediaStreamTrack;
   /** Last VAD probability reported by the engine (diagnostics only). */
   readonly vad: number | null;
-  /** DeepFilterNet3 only: its 0–100 dB suppression limit, applied live. */
+  /** DeepFilterNet3 only: its 6–40 dB suppression limit, applied live. */
   setSuppressionLevel?(level: number): void;
   /** Tear the WebAudio detour down; does NOT stop the raw track. */
   dispose(): void;
 }
 
-/** The default DFN3 level rides the engine's own native scale: 50 dB of
- *  allowed attenuation is effectively "no limit" for it. */
-export const DEFAULT_DEEP_FILTER_LEVEL = 50;
+/** The default DFN3 ceiling (user report 2026-11-04): the old 50 dB default
+ *  was effectively "no limit", and most of the old 0..100 range was inaudible
+ *  because speech frames never attenuate that deep — the usable band is 6..40. */
+export const DEFAULT_DEEP_FILTER_LEVEL = 15;
 
 /**
  * Boot an AudioContext and REFUSE to hand back one that cannot run. A context
@@ -281,7 +282,7 @@ class SpaceDfn3Processor extends AudioWorkletProcessor {
       return;
     }
     try {
-      this.handle = df_create(modelBytes, options.processorOptions.suppressionLevel ?? 50);
+      this.handle = df_create(modelBytes, options.processorOptions.suppressionLevel ?? 15);
     } catch (error) {
       this.port.postMessage({ type: 'error', message: 'df_create(' + modelBytes.length + ' bytes): ' + describe(error) });
       return;
@@ -300,7 +301,7 @@ class SpaceDfn3Processor extends AudioWorkletProcessor {
       this.port.onmessage = (event) => {
         const data = event.data;
         if (this.ready && data !== undefined && data.type === 'level' && typeof data.value === 'number' && this.handle !== undefined) {
-          df_set_atten_lim(this.handle, Math.max(0, Math.min(100, data.value)));
+          df_set_atten_lim(this.handle, Math.max(0, Math.min(40, data.value)));
         }
       };
       this.port.postMessage({ type: 'ready', frameLength: this.frameLength });

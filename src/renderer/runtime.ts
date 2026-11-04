@@ -542,8 +542,12 @@ export async function runNoiseEngineSelfTest(engine: "rnnoise" | "deepfilternet3
     const generator = testContext.createBufferSource();
     generator.buffer = noiseBuffer;
     generator.loop = true;
+    // The gate lets phase 2 deliver REAL silence into the engine (a looping
+    // buffer cannot) — the generator keeps "playing" zeros through it.
+    const gate = testContext.createGain();
     const generatorSink = testContext.createMediaStreamDestination();
-    generator.connect(generatorSink);
+    generator.connect(gate);
+    gate.connect(generatorSink);
     generator.start();
     const preAnalyser = testContext.createAnalyser();
     preAnalyser.fftSize = 2_048;
@@ -569,6 +573,38 @@ export async function runNoiseEngineSelfTest(engine: "rnnoise" | "deepfilternet3
         ? "PASSTHROUGH (engine lets noise through — broken)"
         : "WEAK (some reduction, far short of RNNoise-class)";
     log.info("selftest", `noise engine ${engine}: in=${(preRms * 100).toFixed(1)}% out=${(postRms * 100).toFixed(1)}% → ${verdict}`);
+
+    // Phase 2 (2026-11-04, the DFN3 aggressiveness chase): one full second of
+    // REAL silence, then the same noise returns at once — onset ducking and
+    // the seconds-scale "quieter, then it evens out" of the live report are
+    // exactly this shape, and numbers make engines comparable instead of
+    // ear-only. Sampled every 125 ms for 2 s after the burst.
+    gate.gain.setValueAtTime(0, testContext.currentTime);
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    const burstSamples: number[] = [];
+    const burstSampler = window.setInterval(() => {
+      burstSamples.push(instantRms(postAnalyser));
+    }, 125);
+    gate.gain.setValueAtTime(1, testContext.currentTime);
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    window.clearInterval(burstSampler);
+    // Sample 0 is the engine's own latency window — it still reads silence at
+    // gate-on and painted a −150 dB "duck" in the first live run; measured
+    // onset starts from sample 1.
+    const measured = burstSamples.slice(1);
+    const steadyState = measured.slice(-8).sort((left, right) => left - right)[Math.floor(measured.slice(-8).length / 2)] ?? 0;
+    if (steadyState > preRms * 0.01) { // below −40 dB the ratios degenerate (silence-suppressors)
+      const worstOnset = Math.min(...measured);
+      const onsetDuckDb = 20 * Math.log10(steadyState / worstOnset);
+      const recoveredIndex = measured.findIndex((sample) => sample >= steadyState / 1.41 /* −3 dB */);
+      const recoveryMillis = recoveredIndex < 0 ? 2_000 : (recoveredIndex + 1) * 125;
+      const aggressiveness = onsetDuckDb > 6 || recoveryMillis >= 750
+        ? " — AGGRESSIVE (try a lower ceiling / another engine)"
+        : "";
+      log.info("selftest", `noise engine ${engine}: onset duck −${onsetDuckDb.toFixed(1)} dB, recovery ~${recoveryMillis} ms, steady −${(20 * Math.log10(preRms / steadyState)).toFixed(1)} dB${aggressiveness}`);
+    } else {
+      log.info("selftest", `noise engine ${engine}: suppressed to silence (steady −${(20 * Math.log10(preRms / Math.max(steadyState, 1e-9))).toFixed(1)} dB) — onset metrics need a ceilinged engine or a lower ceiling`);
+    }
     pipeline.dispose();
     generator.stop();
   } catch (error) {
@@ -576,6 +612,17 @@ export async function runNoiseEngineSelfTest(engine: "rnnoise" | "deepfilternet3
   } finally {
     void testContext.close();
   }
+}
+
+/** One analyser window's RMS — the phase-2 onset/recovery sampler. */
+function instantRms(analyser: AnalyserNode): number {
+  const buffer = new Float32Array(analyser.fftSize);
+  analyser.getFloatTimeDomainData(buffer as Float32Array<ArrayBuffer>);
+  let sum = 0;
+  for (let sampleIndex = 0; sampleIndex < buffer.length; sampleIndex += 1) {
+    sum += buffer[sampleIndex]! * buffer[sampleIndex]!;
+  }
+  return Math.sqrt(sum / buffer.length);
 }
 
 /** Max RMS across several analyser windows (~½ s) — robust to spot sampling. */

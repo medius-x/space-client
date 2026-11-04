@@ -371,15 +371,15 @@ function AudioSection({ staged }: { staged: StagedSettings }): React.JSX.Element
         {nsEngineLabel(t, staged.value("noiseSuppressionEngine"))} — {" "}
         {nsEngineDescription(t, staged.value("noiseSuppressionEngine"))}
       </div>
-      {/* DFN3 only — its native knob has a hard 0..100 ceiling, so a SLIDER
-          (user decision), never a free-form number field. */}
+      {/* DFN3 only — the honest 6..40 dB ceiling band (ns-settings.ts); a
+          SLIDER (user decision), never a free-form number field. */}
       {staged.value("noiseSuppressionEngine") === "deepfilternet3" ? (
         <label className="settings-field">
           <span>{t("settings.suppressionLimit", { level: staged.value("deepFilterSuppressionLevel") })}</span>
           <input
             type="range"
-            min={0}
-            max={100}
+            min={6}
+            max={40}
             step={1}
             value={staged.value("deepFilterSuppressionLevel")}
             onChange={(event) => staged.set("deepFilterSuppressionLevel", Number(event.target.value))}

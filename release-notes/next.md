@@ -55,3 +55,7 @@ does not: CI, docs, refactoring, internal rework.
   voice channel who has been idle past the server's AFK timeout shows a
   yellow dot instead of green, turning back to green the moment they become
   active. Works even when the server has no AFK channel configured.
+- The DeepFilterNet3 "Suppression limit" slider now works in an honest 6–40 dB
+  band with a 15 dB default. The old 0–100 scale parked the default at
+  "effectively unlimited", most of its range had no audible effect, and leftmost
+  (0) paradoxically meant the strongest suppression.

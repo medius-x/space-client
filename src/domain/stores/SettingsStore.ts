@@ -2,6 +2,7 @@ import { Emitter } from "../lib/store";
 import { kv } from "../persistence/kv-client";
 import { DEFAULT_KEYBINDS, resolveKeybinds, type ActionId } from "../logic/keybinds";
 import { clampJumboEmojiSize } from "../logic/emoji-picker";
+import { sanitizeDeepFilterSuppressionLevel } from "../logic/ns-settings";
 import { sanitizeRecentExpressions } from "../logic/reaction-picker";
 import type { SavedSharePreset } from "../logic/share-quality";
 import { clampBackupKeepCount } from "../logic/backup-files";
@@ -145,7 +146,7 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   maxToasts: 3,
   ringTimeoutSeconds: 120, // oak's default (SettingsStore.java)
   noiseSuppressionEngine: "rnnoise", // default RNNoise (DFN3 2026-10-15..2026-10-27; back by user request 2026-10-28)
-  deepFilterSuppressionLevel: 50, // effectively "no limit" at DFN3's native scale
+  deepFilterSuppressionLevel: 15, // dB ceiling, 6..40 band (ns-settings.ts; was 0..100/50)
   microphoneDeviceId: null,
   microphoneLabel: null,
   speakerDeviceId: null,
@@ -252,6 +253,12 @@ export class SettingsStore extends Emitter {
       // The Latest MRU is sanitized against the expression grammar (unknown slugs,
       // junk, duplicates) — never trust hand-edited KV arrays.
       this.settings = { ...this.settings, recentExpressions: sanitizeRecentExpressions(rest.recentExpressions) };
+      // The DFN3 ceiling remaps into the 6..40 dB band, preserving legacy
+      // intent (0 = "no limiter = strongest" → the max; garbage → the default).
+      this.settings = {
+        ...this.settings,
+        deepFilterSuppressionLevel: sanitizeDeepFilterSuppressionLevel(rest.deepFilterSuppressionLevel),
+      };
       // The downloads override is a non-empty string or nothing — hand-edited
       // KV garbage falls back to the default folder.
       this.settings = {

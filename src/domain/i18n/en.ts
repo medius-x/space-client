@@ -431,7 +431,7 @@ export const EN = {
   "settings.nsEngineLabel": "Engine",
   "settings.suppressionLimit": "Suppression limit — {level} dB",
   "settings.nsHint": "Runs locally on your microphone before it is sent. DeepFilterNet3 is the default; RNNoise is the lighter alternative; DTLN is the recurrent neural model (heaviest, wideband 16 kHz); Speex is the classic spectral suppressor; Gate only mutes pauses (quiet, not clean). Echo cancellation and auto gain are always on. While voice or a call is live, switching engines rebuilds the chain on the fly; the voice-bar NS button opens the same selector.",
-  "settings.nsLimitHint": "The limit caps how deeply DeepFilterNet3 may attenuate: 0 is no limit (the strongest suppression), higher values are gentler; it applies live.",
+  "settings.nsLimitHint": "The ceiling for how deeply DeepFilterNet3 may attenuate each frame: lower is gentler, higher is more aggressive. Eaten phrase onsets soften at lower ceilings. Applies live.",
   "settings.devicesHeader": "Devices",
   "settings.microphoneLabelField": "Microphone",
   "settings.speakerLabelField": "Speaker / headphones",
