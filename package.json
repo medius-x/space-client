@@ -1,6 +1,6 @@
 {
   "name": "space-client",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "SPACE — Electron/TypeScript desktop client for the OAK server",
   "author": "OAK project",
   "license": "AGPL-3.0-only",
