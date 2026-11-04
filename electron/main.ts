@@ -91,11 +91,36 @@ app.commandLine.appendSwitch("use-angle", "d3d11");
 
 // Two-instance smoke on one machine is a FEATURE here: `electron . --space-instance=b`
 // partitions userData (and with it the disk cache and localStorage — the second client
-// logs in as a DIFFERENT user). No single-instance lock on purpose.
+// logs in as a DIFFERENT user). Dev keeps NO single-instance lock on purpose.
 const instanceArgument = process.argv.find((arg) => arg.startsWith("--space-instance="));
 const instanceName = instanceArgument ? instanceArgument.split("=")[1] : process.env.SPACE_INSTANCE;
 if (instanceName) {
   app.setPath("userData", path.join(app.getPath("userData"), `instance-${instanceName}`));
+}
+
+// Single-instance lock, PACKAGED ONLY (2026-11-04, the friend's multiplying-windows
+// report: extra launches booted full twins sharing the same tokens — his incoming
+// voice literally doubled until he closed them). A second launch now quits and
+// focuses the live window instead. Dev stays lock-free by design: the smoke
+// instances above (and packaged+dev side by side) share this userData tree and
+// must never block each other; the lock is keyed on the userData path anyway,
+// so instance-b/c would coexist even if they were packaged.
+if (app.isPackaged && !instanceName) {
+  const gotSingleInstanceLock = app.requestSingleInstanceLock();
+  if (!gotSingleInstanceLock) {
+    appendLog("[main] second instance of the packaged app — quitting (lock held elsewhere)");
+    app.quit();
+  } else {
+    app.on("second-instance", (_event, commandLine, workingDirectory) => {
+      // The detective line: the twin's command line names WHO launched it —
+      // installer relaunch, updater, a shell handler — one glance in the log.
+      appendLog(`[main] second instance rejected: argv=${JSON.stringify(commandLine)} cwd=${workingDirectory}`);
+      if (mainWindowRef !== null && !mainWindowRef.isDestroyed()) {
+        mainWindowRef.show(); // restore from the tray too
+        mainWindowRef.focus();
+      }
+    });
+  }
 }
 
 // Optional CDP endpoint for `npm run profile` (scripts/capture-profile.mjs opens it,
@@ -209,7 +234,9 @@ ipcMain.handle("space-logs:collect", async () => {
 // The boot line is the first thing read in an exported archive — it must identify
 // the build AND the machine: the OS release (10.0.22631 etc.) separates "a Windows
 // 11 quirk" from "an old build" at a glance (user request, logging round smoke).
-appendLog(`--- space started (main) v${app.getVersion()} ${process.platform}-${process.arch} os=${os.release()} instance=${instanceName ?? "a"} ---`);
+// argv + ppid (2026-11-04) answer "who launched me" — the multiplying-windows
+// report had no other trace of the twin's origin.
+appendLog(`--- space started (main) v${app.getVersion()} ${process.platform}-${process.arch} os=${os.release()} instance=${instanceName ?? "a"} ppid=${process.ppid} argv=${JSON.stringify(process.argv)} ---`);
 
 // KV store: atomic JSON files in userData. set() with an UPDATER runs the
 // read-modify-write under a per-key lock IN THIS PROCESS — token rotation and UI

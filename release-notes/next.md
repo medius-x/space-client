@@ -59,3 +59,6 @@ does not: CI, docs, refactoring, internal rework.
   band with a 15 dB default. The old 0–100 scale parked the default at
   "effectively unlimited", most of its range had no audible effect, and leftmost
   (0) paradoxically meant the strongest suppression.
+- The installed app no longer opens extra full windows when something launches
+  it again while it is already running — the running window is focused instead
+  (previously each extra launch doubled every sound until you closed the twins).
