@@ -1,5 +1,5 @@
 import { Emitter } from "../lib/store";
-import type { PresenceEvent, PresenceStatus, UserSummary, VoiceMemberEvent } from "../../types";
+import type { PresenceEvent, PresenceStatus, UserSummary, VoiceAfkStatusEvent, VoiceMemberEvent } from "../../types";
 
 /**
  * Per-connection roster: users, presence set, voice-channel membership. Fed by the
@@ -9,6 +9,9 @@ import type { PresenceEvent, PresenceStatus, UserSummary, VoiceMemberEvent } fro
 export interface RosterState {
   users: readonly UserSummary[];
   presence: ReadonlySet<string>;
+  /** Online voice members whose activity heartbeat is older than the AFK timeout
+   *  (2026-11-04) — the roster dot tints yellow; a fresh heartbeat returns green. */
+  afk: ReadonlySet<string>;
   voiceMembers: ReadonlyMap<number, ReadonlySet<string>>;
 }
 
@@ -16,6 +19,7 @@ export class RosterStore extends Emitter {
   private state: RosterState = {
     users: [],
     presence: new Set<string>(),
+    afk: new Set<string>(),
     voiceMembers: new Map<number, ReadonlySet<string>>(),
   };
   /**
@@ -26,6 +30,11 @@ export class RosterStore extends Emitter {
    */
   private presenceSnapshotInFlight = false;
   private readonly pendingPresenceDeltas = new Map<string, PresenceStatus>();
+  /** The same guard for the AFK dimension (seeded by GET /api/voice/afk, flipped
+   *  by /topic/voice.afk) — without it, a flip racing the fetch waits for the NEXT
+   *  flip to self-correct (up to one AFK timeout later). */
+  private afkSnapshotInFlight = false;
+  private readonly pendingAfkDeltas = new Map<string, boolean>();
 
   getSnapshot = (): RosterState => this.state;
 
@@ -86,7 +95,61 @@ export class RosterStore extends Emitter {
     } else {
       presence.delete(event.username);
     }
-    this.state = { ...this.state, presence };
+    // Going fully offline wins over any AFK tint (the dot turns grey anyway) —
+    // keeps the set from holding stale entries for users not even connected.
+    const afk = new Set(this.state.afk);
+    if (event.status !== "ONLINE") {
+      afk.delete(event.username);
+    }
+    this.state = { ...this.state, presence, afk };
+    this.emit();
+  }
+
+  /** Marks the AFK snapshot window open — flips from now on are buffered, not applied. */
+  beginAfkSnapshot(): void {
+    this.afkSnapshotInFlight = true;
+  }
+
+  /** Applies the AFK snapshot, then replays the flips that raced it (last write wins). */
+  setVoiceAfk(usernames: readonly string[]): void {
+    const afk = new Set(usernames);
+    for (const [username, away] of this.pendingAfkDeltas) {
+      if (away) {
+        afk.add(username);
+      } else {
+        afk.delete(username);
+      }
+    }
+    this.pendingAfkDeltas.clear();
+    this.afkSnapshotInFlight = false;
+    this.state = { ...this.state, afk };
+    this.emit();
+  }
+
+  /** A failed snapshot must not leave the buffer open forever — replay onto the current state. */
+  abortAfkSnapshot(): void {
+    if (!this.afkSnapshotInFlight) {
+      return;
+    }
+    this.setVoiceAfk([...this.state.afk]);
+  }
+
+  /** /topic/voice.afk — one flip per transition; a no-op flip does not emit. */
+  applyAfkEvent(event: VoiceAfkStatusEvent): void {
+    if (this.afkSnapshotInFlight) {
+      this.pendingAfkDeltas.set(event.username, event.afk);
+      return;
+    }
+    if (this.state.afk.has(event.username) === event.afk) {
+      return;
+    }
+    const afk = new Set(this.state.afk);
+    if (event.afk) {
+      afk.add(event.username);
+    } else {
+      afk.delete(event.username);
+    }
+    this.state = { ...this.state, afk };
     this.emit();
   }
 

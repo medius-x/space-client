@@ -6,7 +6,7 @@ import type { RosterState } from "../../domain/stores/RosterStore";
 import { paletteColor } from "../../domain/logic/user-palette";
 
 /** A stable EMPTY roster for the session-less path — useStore needs a live store. */
-const EMPTY_ROSTER: RosterState = { users: [], presence: new Set(), voiceMembers: new Map() };
+const EMPTY_ROSTER: RosterState = { users: [], presence: new Set(), afk: new Set(), voiceMembers: new Map() };
 const nullRosterStore = {
   subscribe: (): (() => void) => () => undefined,
   getSnapshot: (): RosterState => EMPTY_ROSTER,
@@ -23,7 +23,7 @@ const nullRosterStore = {
  * fallbacks (live report 2026-09-24). `showPresence` overlays the presence dot
  * on the avatar's bottom-right corner (oak's MemberNode).
  */
-export function Avatar({ session, username, size, override, diskFallbackKey = null, showPresence = false, online = false }: {
+export function Avatar({ session, username, size, override, diskFallbackKey = null, showPresence = false, online = false, away = false }: {
   session: ConnectionSession | null;
   username: string;
   size: number;
@@ -34,6 +34,8 @@ export function Avatar({ session, username, size, override, diskFallbackKey = nu
   diskFallbackKey?: string | null;
   showPresence?: boolean;
   online?: boolean;
+  /** AFK tint for an ONLINE member's dot (the voice-heartbeat timeout; 2026-11-04). */
+  away?: boolean;
 }): React.JSX.Element {
   const user = useStore(session === null ? nullRosterStore : session.rosterStore, (state) =>
     state.users.find((entry) => entry.username === username) ?? null);
@@ -72,7 +74,7 @@ export function Avatar({ session, username, size, override, diskFallbackKey = nu
           {username.trim().length === 0 ? "?" : username.trim().slice(0, 2).toUpperCase()}
         </span>
       )}
-      {showPresence ? <span className={"avatar-presence" + (online ? " online" : "")} /> : null}
+      {showPresence ? <span className={"avatar-presence" + (online ? (away ? " online away" : " online") : "")} /> : null}
     </span>
   );
 }

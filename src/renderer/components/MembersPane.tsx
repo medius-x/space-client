@@ -139,6 +139,7 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
                 session={session}
                 member={entry.member}
                 online={entry.online}
+                away={roster.afk.has(entry.member.username)}
                 isSelf={entry.isSelf}
                 nameColor={entry.nameColor}
                 onMenu={(event) => {
@@ -158,8 +159,8 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
           })}</div>
           {roster.users.map((user) => (
             <div key={user.id} className="member-row">
-              {/* The dot rides EVERY avatar (Discord): green = online, grey = offline. */}
-              <Avatar session={session} username={user.username} size={32} showPresence online={roster.presence.has(user.username)} />
+              {/* The dot rides EVERY avatar (Discord): green = online, grey = offline, yellow = AFK. */}
+              <Avatar session={session} username={user.username} size={32} showPresence online={roster.presence.has(user.username)} away={roster.afk.has(user.username)} />
               <span className="member-name">{user.displayName ?? user.username}</span>
             </div>
           ))}
@@ -190,10 +191,11 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
 }
 
 /** One roster row: 36px avatar with the presence dot overlaid (oak's MemberNode). */
-function MemberRow({ session, member, online, isSelf, nameColor, onMenu }: {
+function MemberRow({ session, member, online, away, isSelf, nameColor, onMenu }: {
   session: ConnectionSession;
   member: ServerMember;
   online: boolean;
+  away: boolean;
   isSelf: boolean;
   nameColor: string | null;
   onMenu: (event: React.MouseEvent) => void;
@@ -202,8 +204,9 @@ function MemberRow({ session, member, online, isSelf, nameColor, onMenu }: {
   return (
     <div className={"member-row" + (online ? "" : " offline")} onContextMenu={onMenu}>
       {/* Discord: the presence dot rides EVERY avatar — green online, grey
-          offline (a missing dot read as "no status", live report). */}
-      <Avatar session={session} username={member.username} size={36} showPresence online={online} />
+          offline (a missing dot read as "no status", live report); yellow tints
+          an online member idle past the AFK timeout (2026-11-04). */}
+      <Avatar session={session} username={member.username} size={36} showPresence online={online} away={away} />
       <span className="member-name" style={{ color: nameColor ?? (online ? "var(--sp-text)" : "var(--sp-text-muted)") }}>
         {member.nickname}{isSelf ? ` ${t("members.you")}` : ""}
       </span>

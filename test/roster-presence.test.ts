@@ -43,3 +43,38 @@ describe("RosterStore presence race", () => {
     expect(store.getSnapshot().presence.has("bob")).toBe(false);
   });
 });
+
+/** The AFK dimension (2026-11-04): the same snapshot/delta discipline as presence. */
+describe("RosterStore afk race", () => {
+  it("flips racing the snapshot are replayed OVER it", () => {
+    const store = new RosterStore();
+    store.beginAfkSnapshot();
+    store.applyAfkEvent({ username: "bob", afk: true });
+    store.setVoiceAfk([]); // stale server answer without bob
+    expect(store.getSnapshot().afk.has("bob")).toBe(true);
+  });
+
+  it("a returning member leaves the set, a no-op flip keeps it as-is", () => {
+    const store = new RosterStore();
+    store.setVoiceAfk(["bob"]);
+    store.applyAfkEvent({ username: "bob", afk: true }); // already away — no change
+    expect(store.getSnapshot().afk.has("bob")).toBe(true);
+    store.applyAfkEvent({ username: "bob", afk: false }); // fresh heartbeat
+    expect(store.getSnapshot().afk.has("bob")).toBe(false);
+  });
+
+  it("going offline drops the AFK tint (the grey dot wins)", () => {
+    const store = new RosterStore();
+    store.setVoiceAfk(["bob"]);
+    store.applyPresenceEvent({ username: "bob", status: "OFFLINE" } as PresenceEvent);
+    expect(store.getSnapshot().afk.has("bob")).toBe(false);
+  });
+
+  it("a failed snapshot unbufers onto the current state", () => {
+    const store = new RosterStore();
+    store.beginAfkSnapshot();
+    store.applyAfkEvent({ username: "bob", afk: true });
+    store.abortAfkSnapshot();
+    expect(store.getSnapshot().afk.has("bob")).toBe(true);
+  });
+});

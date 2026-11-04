@@ -201,6 +201,19 @@ export class RestClient {
     return this.request<{ channelId: number; usernames: string[] }[]>("/api/voice/members", { method: "GET" });
   }
 
+  /** AFK roster snapshot (yellow-dot seed); an older server has no endpoint and
+   *  404s — that degrades to "no yellow dots", never an error (the emojis precedent). */
+  async getVoiceAfk(): Promise<string[]> {
+    try {
+      return await this.request<string[]>("/api/voice/afk", { method: "GET" });
+    } catch (error: unknown) {
+      if (error instanceof ApiError && error.status === 404) {
+        return [];
+      }
+      throw error;
+    }
+  }
+
   async getRoom(channelId: number): Promise<RoomInfo> {
     return this.request<RoomInfo>(`/api/channels/${channelId}/room`, { method: "GET" });
   }

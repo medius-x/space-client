@@ -51,3 +51,7 @@ does not: CI, docs, refactoring, internal rework.
 - The time shown beside a message on hover is now always 24-hour, matching
   the rest of the chat's timestamps (under an English interface it used to
   flip to AM/PM).
+- The roster's presence dot gained a third state: a member sitting in a
+  voice channel who has been idle past the server's AFK timeout shows a
+  yellow dot instead of green, turning back to green the moment they become
+  active. Works even when the server has no AFK channel configured.

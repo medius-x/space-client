@@ -4174,6 +4174,7 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
   border: 1.5px solid var(--sp-surface);
 }
 .avatar-presence.online { background: var(--sp-green); }
+.avatar-presence.online.away { background: var(--sp-yellow); }
 
 /* The roster is its OWN column beside the chat (oak's members-pane). The WIDTH
    now lives on the .right-pane shell (search header + body) — the roster fills

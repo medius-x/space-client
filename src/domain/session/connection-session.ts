@@ -24,6 +24,7 @@ import type {
   ServerProfile,
   Sticker,
   UserSummary,
+  VoiceAfkStatusEvent,
   VoiceControlCommand,
   VoiceControlEvent,
   VoiceControlState,
@@ -50,6 +51,7 @@ import { generateVideoPreview } from "../../media/video-thumbnail";
 import { measureImageSize } from "../../media/image-size";
 import { isImageFile, isVideoFile } from "../logic/attachment-layout";
 import { sanitizeSlotFileName } from "../logic/ascii-name";
+import { hasServerCapability } from "../logic/server-capabilities";
 import { ConnectionQuality, type ConnectionQualitySnapshot } from "../logic/connection-quality";
 import { ConnectionDirectory, RecordTokenStorage } from "./connection-record";
 
@@ -363,6 +365,23 @@ export class ConnectionSession {
       .catch((error: unknown) => {
         log.warn("session", `voice members snapshot failed: ${error instanceof Error ? error.message : String(error)}`);
       });
+    // The AFK roster dimension seeds the same way (its own race guard — a flip
+    // racing the fetch would otherwise wait for the NEXT flip to self-correct).
+    // Gated on the capability: an older server has neither the endpoint nor the
+    // topic — skip both instead of probing a 404 every session.
+    if (hasServerCapability(this.serverProfile, "afk-roster")) {
+      this.rosterStore.beginAfkSnapshot();
+      void this.rest.getVoiceAfk()
+        .then((away) => {
+          if (!this.disposed) {
+            this.rosterStore.setVoiceAfk(away);
+          }
+        })
+        .catch((error: unknown) => {
+          log.warn("session", `afk snapshot failed: ${error instanceof Error ? error.message : String(error)}`);
+          this.rosterStore.abortAfkSnapshot();
+        });
+    }
 
     // Same race guard for the social layer: /user/queue/relationships and
     // dm.channels fire on the server the moment they change — a snapshot taken
@@ -1430,6 +1449,11 @@ export class ConnectionSession {
       this.hooks.onVoiceMemberEvent?.(event);
       log.info("voice", `${event.username} ${event.status.toLowerCase()} channel #${event.channelId}`);
     });
+    if (hasServerCapability(this.serverProfile, "afk-roster")) {
+      this.stomp.subscribe("/topic/voice.afk", (raw) => {
+        this.rosterStore.applyAfkEvent(JSON.parse(raw) as VoiceAfkStatusEvent);
+      });
+    }
     this.stomp.subscribe("/topic/voice.state", (raw) => {
       const state = JSON.parse(raw) as VoiceControlState;
       this.voiceControlStore.applyState(state);
@@ -1707,6 +1731,20 @@ export class ConnectionSession {
       .catch((error: unknown) => {
         log.warn("session", `voice members resync failed: ${error instanceof Error ? error.message : String(error)}`);
       });
+    // The AFK dimension re-seeds with the same guard (see start()).
+    if (hasServerCapability(this.serverProfile, "afk-roster")) {
+      this.rosterStore.beginAfkSnapshot();
+      void this.rest.getVoiceAfk()
+        .then((away) => {
+          if (!this.disposed) {
+            this.rosterStore.setVoiceAfk(away);
+          }
+        })
+        .catch((error: unknown) => {
+          log.warn("session", `afk resync failed: ${error instanceof Error ? error.message : String(error)}`);
+          this.rosterStore.abortAfkSnapshot();
+        });
+    }
     this.socialRefresh.request();
     this.memberRefresh.request();
     this.emojiRefresh.request();

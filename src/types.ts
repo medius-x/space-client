@@ -531,6 +531,14 @@ export interface PresenceEvent {
   status: PresenceStatus;
 }
 
+/** /topic/voice.afk — a roster-presence AFK flip for a voice member (2026-11-04):
+ *  true when the last activity heartbeat is older than the server's AFK timeout,
+ *  false the moment a fresh heartbeat arrives. */
+export interface VoiceAfkStatusEvent {
+  username: string;
+  afk: boolean;
+}
+
 /**
  * STOMP /app/ping → /user/queue/ping: the client's epoch-millis timestamp,
  * echoed VERBATIM by the server (a bare JSON number both ways — the same
