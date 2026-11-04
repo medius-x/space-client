@@ -20,9 +20,11 @@ server jar) straight from GitHub — and if it cannot reach GitHub, SPACE relays
 the missing pieces through your computer. Either way, no registry access is
 strictly required.
 
-Need a fully offline install instead? Take `SPACE Full Bundled Setup
+Need a build that does not depend on GitHub? Take `SPACE Full Bundled Setup
 <version>.exe` from the same Releases page: it bundles the entire server kit
-(~735 MB) and can provision a server with no Internet access at all.
+(~735 MB), so provisioning a server works even when GitHub and Docker
+registries are unreachable — the network between your computer and the server
+machine is still required, of course.
 
 > The installers are not code-signed, so Windows SmartScreen will ask for
 > confirmation the first time ("More info" → "Run anyway"). Each build updates
@@ -94,7 +96,11 @@ accounts and client trust pins are preserved.
 - Camera in rooms and calls
 - Per-user volume sliders
 - Mute/deafen, and moderator mute/deafen/kick
-- An AFK channel that idle members are moved to automatically
+- An AFK channel that idle members are moved to automatically — and idle
+  members show a yellow presence dot in the member list, turning green again
+  the moment they come back
+- A dead microphone (a sleeping wireless headset is the typical cause) shows
+  an amber "Mic is silent" status instead of looking healthy
 - Noise suppression with five engines, switchable live
 - Voice invites, sharing quality presets, a pop-out viewer window and a
   connection quality indicator
@@ -152,8 +158,9 @@ accounts and client trust pins are preserved.
   last: public Docker registries first (with DNS and mirror self-repair), then
   GitHub directly from the server, then a relay through your computer — and,
   on the full-bundled build, the kit bundled with the installer covers
-  everything with no network at all. Provisioning keeps working on a VPS with
-  restricted or rate-limited registry access
+  everything without a single external download. Provisioning keeps working
+  on a VPS with restricted or rate-limited registry access, and the
+  full-bundled kit survives a full GitHub outage
 - The light build's honest limitation: provisioning a server (including
   adopting an existing one — the server jar is always needed) requires GitHub
   to be reachable, from the server itself or from your computer. The
