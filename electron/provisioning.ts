@@ -10,6 +10,7 @@ import { Client } from "ssh2";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
+import * as https from "node:https";
 import { app, net, session as electronSession } from "electron";
 import {
   ConnectionLostError,
@@ -513,92 +514,153 @@ export class Ssh2Transport implements ProvisioningTransport {
 
 let activeRun: { transport: Ssh2Transport } | null = null;
 
-/**
- * Streams a large HTTP body straight to disk — the jar and (light kit) the
- * image archives must NEVER buffer through arrayBuffer in memory (79–190 MB is
- * swap roulette). Precedent: the backup downloader's reader→writeStream loop
- * (electron/backups.ts). A stall watchdog replaces any overall deadline: a
- * crawling link may legitimately take half an hour for a big archive, but a
- * link that stops delivering bytes entirely is dead. A failed or aborted
- * download removes the partial file — a half-written archive must never look
- * like a usable source. Returns the number of bytes written.
- */
+/** A readable message for ANY thrown thing — the live report of 2026-11-04
+ *  had a bare `null` rejection reach the UI from the Chromium-side stream;
+ *  failures must always carry words. */
+function messageOf(error: unknown): string {
+  if (error instanceof Error && error.message.length > 0) {
+    return error.message;
+  }
+  if (error instanceof Error) {
+    return error.name;
+  }
+  return `a non-error was thrown (${String(error)})`;
+}
+
+/** One streaming attempt over the NODE stack — deliberately NOT Electron's
+ *  net.fetch: the Chromium-side main-process body streams can reject with a
+ *  bare null when a redirect chain (GitHub releases 302 to a CDN) breaks
+ *  mid-flight — a provisioning run died twice with a bare "null" failure on a
+ *  machine whose GitHub link was demonstrably fast (live report 2026-11-04).
+ *  Redirects are followed manually here; the stall watchdog, the streamed
+ *  never-in-memory body and the partial-file cleanup semantics of the old
+ *  reader loop are kept verbatim. */
+function fetchToFileOnce(
+  sourceUrl: string,
+  destinationPath: string,
+  onProgress: (bytesReceived: number, bytesTotal: number | null) => void,
+  shouldAbort: (() => boolean) | undefined,
+  redirectBudget: number,
+): Promise<{ finalUrl: string; bytes: number }> {
+  return new Promise((resolve, reject) => {
+    const writeStream = fs.createWriteStream(destinationPath);
+    let settled = false;
+    let stallTimer: NodeJS.Timeout | null = null;
+    const clearStallTimer = (): void => {
+      if (stallTimer !== null) {
+        clearTimeout(stallTimer);
+        stallTimer = null;
+      }
+    };
+    const request = https.request(sourceUrl, (response) => {
+      const status = response.statusCode ?? 0;
+      const location = response.headers.location;
+      if (status >= 300 && status < 400 && typeof location === "string") {
+        if (redirectBudget === 0) {
+          fail(new Error(`download of ${path.basename(destinationPath)} exceeded the redirect budget`));
+          return;
+        }
+        response.resume(); // drain the tiny redirect body before the next hop
+        request.destroy();
+        const nextUrl = new URL(location, sourceUrl).toString();
+        fetchToFileOnce(nextUrl, destinationPath, onProgress, shouldAbort, redirectBudget - 1).then(resolve, fail);
+        return;
+      }
+      if (status < 200 || status >= 300) {
+        fail(new Error(`download failed (HTTP ${status})`));
+        return;
+      }
+      const bytesTotalHeader = response.headers["content-length"];
+      const bytesTotal = typeof bytesTotalHeader === "string" ? Number(bytesTotalHeader) : null;
+      let bytesReceived = 0;
+      let lastProgressAt = 0;
+      // "Progress" means bytes keep arriving, however slowly — the watchdog
+      // must not punish a merely slow link, only a dead one.
+      const armStallTimer = (): void => {
+        clearStallTimer();
+        stallTimer = setTimeout(() => {
+          fail(new Error(`the download of ${path.basename(destinationPath)} stalled — no bytes for ${Math.round(DOWNLOAD_STALL_TIMEOUT_MS / 1000)} s`));
+        }, DOWNLOAD_STALL_TIMEOUT_MS);
+      };
+      armStallTimer();
+      response.on("data", (chunk: Buffer) => {
+        if (shouldAbort?.() === true) {
+          fail(new Error("cancelled by the user"));
+          return;
+        }
+        bytesReceived += chunk.byteLength;
+        const now = Date.now();
+        if (now - lastProgressAt >= DOWNLOAD_PROGRESS_MIN_INTERVAL_MS) {
+          lastProgressAt = now;
+          onProgress(bytesReceived, bytesTotal);
+        }
+      });
+      response.on("error", fail);
+      response.on("end", () => {
+        clearStallTimer();
+        // Drain fully — resolve only after every buffered byte hit the disk.
+        writeStream.once("close", () => {
+          if (!settled) {
+            settled = true;
+            resolve({ finalUrl: sourceUrl, bytes: bytesReceived });
+          }
+        });
+        writeStream.end();
+      });
+      response.pipe(writeStream, { end: false });
+    });
+    writeStream.on("error", fail);
+    request.on("error", fail);
+    request.end();
+    function fail(error: unknown): void {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearStallTimer();
+      writeStream.destroy();
+      request.destroy();
+      // A half-written file must never look like a usable source.
+      void fs.promises.unlink(destinationPath).catch(() => undefined);
+      reject(error instanceof Error ? error : new Error(messageOf(error)));
+    }
+  });
+}
+
+/** The retrying front door (2026-11-04): one network hiccup must not kill a
+ *  15-minute deployment — a failed attempt logs its reason, cleans up and
+ *  backs off (the GET is idempotent, the partial file is already unlinked).
+ *  Cancellation is never retried. */
+const DOWNLOAD_ATTEMPTS = 3;
+
 async function downloadToFile(
   sourceUrl: string,
   destinationPath: string,
   onProgress: (bytesReceived: number, bytesTotal: number | null) => void,
   shouldAbort?: () => boolean,
+  onLog?: (line: string) => void,
 ): Promise<number> {
-  const response = await net.fetch(sourceUrl);
-  if (!response.ok || response.body === null) {
-    throw new Error(`download failed (HTTP ${response.status})`);
-  }
-  const bytesTotal = response.headers.has("content-length") ? Number(response.headers.get("content-length")) : null;
-  const reader = response.body.getReader();
-  const writeStream = fs.createWriteStream(destinationPath);
-  let writeStreamError: Error | null = null;
-  writeStream.on("error", (error: Error) => {
-    writeStreamError = error;
-  });
-  let stallTimer: NodeJS.Timeout | null = null;
-  let stalledByWatchdog = false;
-  const clearStallTimer = (): void => {
-    if (stallTimer !== null) {
-      clearTimeout(stallTimer);
-      stallTimer = null;
-    }
-  };
-  let bytesReceived = 0;
-  let lastProgressAt = 0;
-  try {
-    for (;;) {
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt += 1) {
+    if (attempt > 1) {
+      await new Promise((resolveBackoff) => setTimeout(resolveBackoff, attempt === 2 ? 2_000 : 5_000));
       if (shouldAbort?.() === true) {
         throw new Error("cancelled by the user");
       }
-      // Re-arm on every iteration: "progress" means bytes keep arriving,
-      // however slowly — the watchdog must not punish a merely slow link.
-      stallTimer = setTimeout(() => {
-        // Cancel unblocks the pending read() (it then reports done) — the
-        // flag above tells the loop this was a stall, not an end of body.
-        stalledByWatchdog = true;
-        void reader.cancel().catch(() => undefined);
-      }, DOWNLOAD_STALL_TIMEOUT_MS);
-      const chunk = await reader.read();
-      clearStallTimer();
-      if (stalledByWatchdog) {
-        throw new Error(
-          `the download of ${path.basename(destinationPath)} stalled — no bytes for ${Math.round(DOWNLOAD_STALL_TIMEOUT_MS / 1000)} s`);
-      }
-      if (chunk.done) {
-        break;
-      }
-      bytesReceived += chunk.value.byteLength;
-      const now = Date.now();
-      if (now - lastProgressAt >= DOWNLOAD_PROGRESS_MIN_INTERVAL_MS) {
-        lastProgressAt = now;
-        onProgress(bytesReceived, bytesTotal);
-      }
-      // Await the write: disk backpressure paces the reads honestly.
-      await new Promise<void>((resolveWrite, rejectWrite) => {
-        writeStream.write(chunk.value, (error) => (error === undefined ? resolveWrite() : rejectWrite(error)));
-      });
     }
-    // Drain fully — resolve only after every buffered byte hit the disk.
-    await new Promise<void>((resolveClose) => {
-      writeStream.once("close", resolveClose);
-      writeStream.end();
-    });
-    if (writeStreamError !== null) {
-      throw writeStreamError;
+    try {
+      const { finalUrl, bytes } = await fetchToFileOnce(sourceUrl, destinationPath, onProgress, shouldAbort, 5);
+      onLog?.(`downloaded ${path.basename(destinationPath)} — ${bytes} bytes${finalUrl === sourceUrl ? "" : ` via ${finalUrl}`}`);
+      return bytes;
+    } catch (error) {
+      lastError = error;
+      if (shouldAbort?.() === true) {
+        throw error; // a cancellation is final
+      }
+      onLog?.(`download attempt ${attempt} of ${DOWNLOAD_ATTEMPTS} failed: ${messageOf(error)}${attempt < DOWNLOAD_ATTEMPTS ? " — retrying" : ""}`);
     }
-    return bytesReceived;
-  } catch (error) {
-    clearStallTimer();
-    writeStream.destroy();
-    await reader.cancel().catch(() => undefined);
-    await fs.promises.unlink(destinationPath).catch(() => undefined);
-    throw error instanceof Error ? error : new Error(String(error));
   }
+  throw lastError instanceof Error ? lastError : new Error(messageOf(lastError));
 }
 
 /** The migrate flow's one-shot archive (user decision 2026-10-28): deleted when
@@ -695,7 +757,7 @@ export async function startProvisioningRun(params: ProvisioningParams, hooks: Pr
     const clientFileDownloader: ClientFileDownloader = async (url, fileName, onProgress) => {
       const tempPath = path.join(app.getPath("temp"), `space-provisioning-kit-${Date.now()}-${fileName}`);
       downloadedKitFiles.push(tempPath);
-      await downloadToFile(url, tempPath, onProgress, () => cancellationRequested);
+      await downloadToFile(url, tempPath, onProgress, () => cancellationRequested, (line) => hooks.log(`[provisioning] ${line}`));
       return tempPath;
     };
     // The step-detail translator reads the CURRENT main-process language, so a
@@ -712,7 +774,7 @@ export async function startProvisioningRun(params: ProvisioningParams, hooks: Pr
     // A cancelled run reports CANCELLATION, whatever the transport error
     // underneath (the force-reject may surface as a stall or a connection
     // loss — the user asked to stop, not to hear about the network).
-    const message = cancellationRequested ? "cancelled by the user" : error instanceof Error ? error.message : String(error);
+    const message = cancellationRequested ? "cancelled by the user" : messageOf(error);
     const stage = error instanceof Error && "stage" in error ? String((error as { stage: unknown }).stage) : lastStage;
     emit({ kind: "failed", stage, message });
     hooks.log(`[provisioning] FAILED (${stage}): ${message}`);
