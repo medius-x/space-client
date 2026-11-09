@@ -141,6 +141,16 @@ export class RoomAudio {
     return this.context;
   }
 
+  /** One-glance stall autopsy (the uplink watchdog logs this): a "suspended"
+   *  context freezes every WebAudio detour — the mic track then delivers no
+   *  frames at all, which is exactly the frozen-RTP signature. */
+  describeAudioContextState(): string {
+    if (this.context === null) {
+      return "none (created lazily)";
+    }
+    return `${this.context.state} @ ${this.context.sampleRate} Hz`;
+  }
+
   /** AudioContext.setSinkId is structural-typed (absent from the TS libs) —
    *  the same feature-detect NotificationHub uses. The whole graph playout
    *  follows the context sink. */

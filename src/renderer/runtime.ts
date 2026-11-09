@@ -26,6 +26,7 @@ import {
 } from "../domain/session/connection-record";
 import { ConnectionSession, type SessionHooks } from "../domain/session/connection-session";
 import { MAX_VOICE_REJOIN_ATTEMPTS, rejoinDelayMs, rejoinExhausted } from "../domain/logic/rejoin-ladder";
+import { UplinkEscalation } from "../domain/logic/uplink-watchdog";
 import { dmDisplayName } from "../domain/logic/dm-display";
 import { lastServerMessageId } from "../domain/stores/MessageStore";
 import type { MentionIdentity } from "../domain/logic/notification-decider";
@@ -3114,6 +3115,10 @@ export async function joinVoice(channel: Channel): Promise<void> {
   }
   cancelVoiceRejoin();
   await teardownVoice();
+  // A manual entry starts the uplink escalation ladder over (the automatic
+  // rejoin path deliberately does NOT — see UplinkEscalation).
+  uplinkEscalation.reset();
+  uplinkGiveUpAnnounced = false;
   // Entering a room resets MY OWN marks only (the server drops self-marks on
   // leave and re-publishes a surviving moderator mark on our enter). Other
   // members' marks stay — they are still true server-side; wiping them made a
@@ -3311,33 +3316,65 @@ function startVoiceRttPolling(): void {
  * room vanished. Either the channel still exists — climb the rejoin ladder — or it
  * does not and the member is detached for good.
  */
-/** Publish-side uplink watchdog escalation state (rooms). Reset per voice session. */
-let uplinkStallStrikes = 0;
-let uplinkStallRejoins = 0;
+/** Publish-side uplink watchdog escalation (rooms). Reset ONLY on a manual
+ *  room entry — see UplinkEscalation for why a teardown-time reset once
+ *  turned a wedged mic into 90 minutes of room-tearing rejoins. */
+const uplinkEscalation = new UplinkEscalation();
+let uplinkGiveUpAnnounced = false;
 
 /**
  * The SfuSession watchdog fired: RTP stopped leaving the mic while it is
- * enabled — a dead publish chain that no error path reports. Escalation: the
- * first strike rebuilds the NS pipeline (the most common root — a stranded
- * detour or a worklet that never runs), a second consecutive strike rejoins
- * the room (the manual cure of the 2026-10-16 live bug, automated), capped at
- * two automatic rejoins per voice session.
+ * enabled — a dead publish chain that no error path reports. The ladder
+ * (UplinkEscalation): rebuild the NS detour → recycle the capture (a fresh
+ * getUserMedia, no room disruption — the cure for a wedged device) → two full
+ * rejoins → give up with the amber mic hint and STOP touching the room: the
+ * incoming audio of everyone stays whole, the user sees the hint and re-enters
+ * or replugs at will.
  */
 function handleOwnUplinkStalled(): void {
-  uplinkStallStrikes += 1;
-  if (uplinkStallStrikes === 1) {
+  const step = uplinkEscalation.next();
+  // The one-glance stall autopsy: what the capture chain looks like RIGHT NOW.
+  // A wedged device shows readyState=live muted=false with the label — while
+  // an AudioContext death shows through the context state.
+  log.warn("voice", `own uplink stalled (escalation: ${step}) — capture: ${sfuSession?.describeMicCapture() ?? "no session"}, audio context: ${roomAudio.describeAudioContextState()}`);
+  if (step === "rebuild-noise") {
     log.warn("voice", "own uplink stalled — rebuilding the noise pipeline");
     enqueueNoiseRebuild(settingsStore.getSnapshot().noiseSuppressionEngine);
     return;
   }
-  uplinkStallStrikes = 0;
-  if (uplinkStallRejoins >= 2) {
-    log.warn("voice", "own uplink still stalled — automatic rejoins exhausted, rejoin the room manually");
+  if (step === "recycle-capture") {
+    void recycleMicCapture();
     return;
   }
-  uplinkStallRejoins += 1;
-  log.warn("voice", `own uplink stalled ${uplinkStallRejoins === 1 ? "twice" : "again"} — rejoining the room`);
-  handleVoiceSessionLost("own uplink stalled");
+  if (step === "rejoin") {
+    log.warn("voice", "own uplink stalled after a capture recycle — rejoining the room");
+    handleVoiceSessionLost("own uplink stalled");
+    return;
+  }
+  if (!uplinkGiveUpAnnounced) {
+    uplinkGiveUpAnnounced = true;
+    log.warn("voice", "own uplink still stalled — automatic escalation exhausted; leaving the room whole, showing the mic hint");
+    appStore.patch({ micSilent: true }); // the amber hint — the same verdict the dead-mic detector shows
+  }
+}
+
+/** Ladder step 2: a full capture recycle — stop the raw track, open a FRESH
+ *  getUserMedia (Chromium rebuilds the capture chain; this unwedges devices
+ *  that open fine but deliver no frames) and publish the new track in place.
+ *  The room, the transports and everyone's incoming audio stay untouched. */
+async function recycleMicCapture(): Promise<void> {
+  if (sfuSession === null) {
+    return;
+  }
+  log.warn("voice", "own uplink stalled — recycling the microphone capture (fresh getUserMedia)");
+  try {
+    const freshRawTrack = await sfuSession.reopenMic();
+    const publishedTrack = await enhanceMicTrack(freshRawTrack);
+    await publishMicTrack(publishedTrack);
+    log.warn("voice", "microphone capture recycled — watching the new uplink");
+  } catch (error) {
+    log.error("voice", `microphone capture recycle failed: ${errorMessage(error)}`);
+  }
 }
 
 function handleVoiceSessionLost(reason: string): void {
@@ -3369,6 +3406,13 @@ function scheduleVoiceRejoin(attempt: number, reason: string): void {
   const delayMs = rejoinDelayMs(attempt);
   appStore.patch({ voiceState: "reconnecting", stateDetail: `${attempt}/${MAX_VOICE_REJOIN_ATTEMPTS}` });
   log.info("voice", `rejoin attempt ${attempt}/${MAX_VOICE_REJOIN_ATTEMPTS} in ${delayMs} ms (${reason})`);
+  // One ladder, one timer: a second loss while an attempt is already pending
+  // must REPLACE that attempt's timer, not race it. The live 2026-11-07 trace
+  // shows two overlapping timers (publisher+subscriber failed together) run
+  // teardown+connect TWICE — two janus sessions, two "rejoin connected".
+  if (voiceRejoin !== null) {
+    window.clearTimeout(voiceRejoin.timer);
+  }
   const timer = window.setTimeout(() => {
     const rejoin = voiceRejoin;
     const session = activeSession;
@@ -3595,8 +3639,10 @@ export async function teardownVoice(): Promise<void> {
   stopWatchingShare();
   ghostFeedSince.clear();
   stopVoiceRttPolling();
-  uplinkStallStrikes = 0;
-  uplinkStallRejoins = 0;
+  // NOTE: the uplink escalation counters are NOT reset here — teardownVoice
+  // runs inside every automatic rejoin, and a reset at that point once
+  // un-capped the rejoin ladder (UplinkEscalation javadoc, live 2026-11-07).
+  // Only a MANUAL room entry (joinVoice) starts the ladder over.
   feedShareAudioTracks.clear();
   releaseNativeShareAudio();
   watchShareSource(null);

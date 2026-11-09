@@ -263,6 +263,37 @@ export class SfuSession {
   // Publisher
   // ---------------------------------------------------------------------------
 
+  /** The mic constraints shared by start() and reopenMic(): AEC/AGC are
+   *  ALWAYS ON (echo hurts the other listeners — no knob); the built-in
+   *  noiseSuppression is ALWAYS OFF — that job belongs to the selectable
+   *  engine, and two stacked suppressors mangle speech. No sampleRate
+   *  constraint — the pipeline's AudioContext resamples on its own. */
+  private micConstraints(): MediaTrackConstraints {
+    return {
+      echoCancellation: true,
+      noiseSuppression: false,
+      autoGainControl: true,
+      ...(this.microphoneDeviceId !== null ? { deviceId: { exact: this.microphoneDeviceId } } : {}),
+    };
+  }
+
+  /** openMic with the saved-device fallback: Chromium scopes media device ids
+   *  PER ORIGIN — an id saved by another window kind (dev server vs packaged
+   *  file://), or a yanked USB mic, makes the exact constraint unsatisfiable.
+   *  Fall back to the system default instead of refusing the room/recycle. */
+  private async openMicWithFallback(constraints: MediaTrackConstraints): Promise<MediaStream> {
+    try {
+      return await this.openMic(constraints);
+    } catch (error: unknown) {
+      if (this.microphoneDeviceId !== null && error instanceof DOMException && error.name === "OverconstrainedError") {
+        log.warn("sfu", "saved microphone unavailable in this window — using the system default");
+        const { deviceId: _dropped, ...defaultConstraints } = constraints;
+        return this.openMic(defaultConstraints);
+      }
+      throw error;
+    }
+  }
+
   /** getUserMedia under the {@link MIC_OPEN_TIMEOUT_MS} cap. A LATE resolve
    *  (the device recovered after we already failed) has its tracks stopped —
    *  a recovered-but-unclaimed mic must not stay captured forever. */
@@ -299,49 +330,24 @@ export class SfuSession {
   async start(): Promise<void> {
     this.callbacks.onState("connecting");
     let micStream: MediaStream;
-    // AEC/AGC are ALWAYS ON (echo hurts the other listeners — no knob); the
-    // built-in noiseSuppression is ALWAYS OFF — that job belongs to the
-    // selectable engine, and two stacked suppressors mangle speech. No
-    // sampleRate constraint — the pipeline's AudioContext resamples on its own.
-    const micConstraints = {
-      echoCancellation: true,
-      noiseSuppression: false,
-      autoGainControl: true,
-      ...(this.microphoneDeviceId !== null ? { deviceId: { exact: this.microphoneDeviceId } } : {}),
-    };
     try {
-      micStream = await this.openMic(micConstraints);
+      micStream = await this.openMicWithFallback(this.micConstraints());
     } catch (error: unknown) {
       if (error instanceof MicOpenTimedOutError) {
         log.error("sfu", "microphone open timed out — the audio device is wedged (replug the headset or reboot the machine)");
         this.callbacks.onState("failed", "microphone not responding");
         throw error;
       }
-      // Chromium scopes media device ids PER ORIGIN: an id saved by another
-      // window kind (dev server vs packaged file://) — or a yanked USB mic —
-      // makes the exact constraint unsatisfiable. Fall back to the system
-      // default instead of refusing the room.
-      if (this.microphoneDeviceId !== null && error instanceof DOMException && error.name === "OverconstrainedError") {
-        log.warn("sfu", "saved microphone unavailable in this window — using the system default");
-        try {
-          const { deviceId: _dropped, ...defaultConstraints } = micConstraints;
-          micStream = await this.openMic(defaultConstraints);
-        } catch (fallbackError: unknown) {
-          log.error("sfu", `microphone unavailable: ${fallbackError instanceof DOMException ? fallbackError.name : String(fallbackError)}`);
-          this.callbacks.onState("failed", "microphone unavailable");
-          throw fallbackError instanceof Error ? fallbackError : new Error(String(fallbackError));
-        }
-      } else {
-        // The state line shows a generic verdict — the real cause (permission,
-        // busy device) must land in the log. DOMExceptions often carry an
-        // EMPTY message — the name is the readable half.
-        const described = error instanceof DOMException
-          ? `${error.name}`
-          : error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-        log.error("sfu", `microphone unavailable: ${described}`);
-        this.callbacks.onState("failed", "microphone unavailable");
-        throw error instanceof Error ? error : new Error(String(error));
-      }
+      // The state line shows a generic verdict — the real cause (permission,
+      // busy device) must land in the log. DOMExceptions often carry an
+      // EMPTY message — the name is the readable half. The saved-device
+      // fallback has already run inside openMicWithFallback.
+      const described = error instanceof DOMException
+        ? `${error.name}`
+        : error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      log.error("sfu", `microphone unavailable: ${described}`);
+      this.callbacks.onState("failed", "microphone unavailable");
+      throw error instanceof Error ? error : new Error(String(error));
     }
     if (this.closed) {
       for (const track of micStream.getTracks()) {
@@ -424,6 +430,41 @@ export class SfuSession {
   /** The pre-suppression capture for the dead-mic detector (same object when no engine runs). */
   getRawMicTrack(): MediaStreamTrack | null {
     return this.rawMicTrack;
+  }
+
+  /**
+   * Full capture recycle for a wedged microphone: opens a FRESH getUserMedia
+   * (Chromium rebuilds the whole capture chain — this unwedges devices that
+   * open fine but deliver no frames, live 2026-11-07), stops the OLD raw
+   * capture only after the fresh one is in hand, and hands the new raw track
+   * to the caller, who runs it through the enhancer and publishes it in place
+   * via replaceMicTrack. The transports and the room stay untouched.
+   * @throws whatever getUserMedia throws (the caller logs and climbs on).
+   */
+  async reopenMic(): Promise<MediaStreamTrack> {
+    if (this.closed) {
+      throw new Error("session closed");
+    }
+    let micStream = await this.openMicWithFallback(this.micConstraints());
+    const freshTrack = micStream.getAudioTracks()[0] ?? null;
+    if (freshTrack === null) {
+      for (const track of micStream.getTracks()) {
+        track.stop();
+      }
+      throw new Error("recycle produced no audio track");
+    }
+    this.rawMicTrack?.stop(); // the wedged capture dies only once the fresh one exists
+    this.rawMicTrack = freshTrack;
+    return freshTrack;
+  }
+
+  /** One-glance stall autopsy: what the capture objects look like right now. */
+  describeMicCapture(): string {
+    const raw = this.rawMicTrack;
+    const published = this.micTrack;
+    const rawPart = raw === null ? "none" : `"${raw.label}" readyState=${raw.readyState} muted=${raw.muted}`;
+    const publishedPart = published === null ? "none" : `readyState=${published.readyState} enabled=${published.enabled}`;
+    return `raw=${rawPart}, published=${publishedPart}, device=${this.microphoneDeviceId ?? "default"}`;
   }
 
   setMicEnabled(enabled: boolean): void {

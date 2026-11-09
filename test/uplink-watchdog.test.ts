@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { UplinkStallDetector } from "../src/domain/logic/uplink-watchdog";
+import { UplinkEscalation, UplinkStallDetector } from "../src/domain/logic/uplink-watchdog";
 
 describe("UplinkStallDetector (publish-side mic watchdog)", () => {
   it("fires on the second consecutive zero-growth sample, then re-arms", () => {
@@ -44,5 +44,32 @@ describe("UplinkStallDetector (publish-side mic watchdog)", () => {
     expect(detector.sample(1000, true)).toBe(false); // baseline, not a stall
     expect(detector.sample(1000, true)).toBe(false);
     expect(detector.sample(1000, true)).toBe(true);
+  });
+});
+
+describe("UplinkEscalation (the stall ladder)", () => {
+  it("climbs cheapest first: rebuild → recycle → rejoin ×2 → give-up forever", () => {
+    const escalation = new UplinkEscalation();
+    expect(escalation.next()).toBe("rebuild-noise");
+    expect(escalation.next()).toBe("recycle-capture");
+    expect(escalation.next()).toBe("rejoin");
+    expect(escalation.next()).toBe("rejoin");
+    // The ladder is EXHAUSTED: a wedged mic must not tear the room forever
+    // (the live 2026-11-07 trace: 271 automatic rejoins in 90 minutes).
+    expect(escalation.next()).toBe("give-up");
+    expect(escalation.next()).toBe("give-up");
+    expect(escalation.next()).toBe("give-up");
+  });
+
+  it("reset() (a MANUAL room entry, never the automatic rejoin's teardown) starts over", () => {
+    const escalation = new UplinkEscalation();
+    escalation.next();
+    escalation.next();
+    escalation.next();
+    escalation.next();
+    expect(escalation.next()).toBe("give-up");
+    escalation.reset();
+    expect(escalation.next()).toBe("rebuild-noise");
+    expect(escalation.next()).toBe("recycle-capture");
   });
 });

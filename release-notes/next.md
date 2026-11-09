@@ -21,6 +21,14 @@ does not: CI, docs, refactoring, internal rework.
   words no longer interfere with loading the built-in dictionaries, and a
   dictionary load failure now logs its reason instead of failing silently
   (underlines simply stay off in that case).
+- When your microphone stops delivering audio mid-call (a wedged audio
+  device), the client now escalates carefully instead of tearing the voice
+  room apart: it rebuilds the audio pipeline, then re-opens the microphone
+  outright (without dropping the room), and only rejoins the room twice as a
+  last resort. If the microphone is still dead after that, it shows the amber
+  mic hint and leaves everyone's incoming audio intact — previously a wedged
+  mic caused an endless reconnect loop that chopped the audio for the whole
+  room every half a minute.
 - The yellow AFK dot in the member roster now means "away from the computer",
   not "idle in a voice channel": it appears after 5 minutes without any input
   on your machine (speaking in voice or sharing your screen keeps you green)

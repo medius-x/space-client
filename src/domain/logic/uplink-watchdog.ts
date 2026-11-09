@@ -52,3 +52,54 @@ export class UplinkStallDetector {
     this.streak = 0;
   }
 }
+
+/**
+ * The escalation ladder the runtime climbs on each CONFIRMED uplink stall
+ * (the detector above), cheapest first:
+ *
+ *   1. rebuild-noise    — re-create the suppression detour around the SAME
+ *                         capture (fixes a stranded pipeline, no disruption)
+ *   2. recycle-capture  — stop the raw track and open a FRESH getUserMedia;
+ *                         Chromium rebuilds the whole capture chain, which
+ *                         unwedges devices that open fine but deliver no
+ *                         frames (live 2026-11-07). No room disruption.
+ *   3. rejoin ×2        — the full ladder step (room teardown + rejoin)
+ *   4. give-up          — show the mic hint, STOP touching the room
+ *
+ * The reset must ONLY run on a MANUAL room entry. It used to live in
+ * teardownVoice — which every automatic rejoin runs — so the rejoin cap never
+ * held: a wedged mic re-joined the room every ~20 s for 90 straight minutes
+ * (271 rejoins, live 2026-11-07), tearing the audio for everyone else too.
+ */
+export type UplinkEscalationStep = "rebuild-noise" | "recycle-capture" | "rejoin" | "give-up";
+
+export class UplinkEscalation {
+  private static readonly MAX_REJOINS = 2;
+
+  private strikes = 0;
+  private rejoins = 0;
+  private captureRecycled = false;
+
+  next(): UplinkEscalationStep {
+    this.strikes += 1;
+    if (this.strikes === 1) {
+      return "rebuild-noise";
+    }
+    if (!this.captureRecycled) {
+      this.captureRecycled = true;
+      return "recycle-capture";
+    }
+    if (this.rejoins < UplinkEscalation.MAX_REJOINS) {
+      this.rejoins += 1;
+      return "rejoin";
+    }
+    return "give-up";
+  }
+
+  /** A manual voice entry (user clicked into a channel) starts the ladder over. */
+  reset(): void {
+    this.strikes = 0;
+    this.rejoins = 0;
+    this.captureRecycled = false;
+  }
+}
