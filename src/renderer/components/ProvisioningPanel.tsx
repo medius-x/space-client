@@ -13,7 +13,7 @@ import type { ProvisioningIpcEvent } from "../bridges";
 import { downloadMigrationArchive, waitForBuiltBackup } from "../backup-run";
 import { releaseBackupScheduleFor, suppressBackupScheduleFor } from "../backup-schedule";
 import { PasswordInput } from "./PasswordInput";
-import { startSession } from "../runtime";
+import { refreshServerProfilesForHost, startSession } from "../runtime";
 import type { MessageKey } from "../../domain/i18n/i18n";
 import { useT } from "../hooks/useT";
 
@@ -181,6 +181,10 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange, mode = "setup
           releaseBackupScheduleFor(session.recordId);
         }
         setRestoredOutcome(event.outcome.restored);
+        // The server may have just been REDEPLOYED under live sessions (the
+        // adopt path): repaint their cached profile — the Server Settings
+        // version line — without a client restart.
+        refreshServerProfilesForHost(event.outcome.hostUrl);
         if (event.outcome.ownerReady) {
           setPhase("loggingIn");
           void startSession(event.outcome.hostUrl, "login", event.outcome.adminUsername, adminPasswordRef.current);

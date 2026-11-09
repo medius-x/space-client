@@ -1759,6 +1759,29 @@ async function probeServerReachable(hostUrl: string, timeoutMillis: number = 4_0
 }
 
 /**
+ * After a provisioning run the server may have been REDEPLOYED under live
+ * sessions (the adopt path): their tokens survive — the .env secrets are kept
+ * — but the cached profile, including the version line in Server Settings, is
+ * only read at handshake, and a server restart pushes nothing to /topic/server
+ * (live report 2026-11-04: the version stayed stale until a client restart).
+ * One cheap GET per matching session (active AND background) repaints it.
+ */
+export function refreshServerProfilesForHost(hostUrl: string): void {
+  const normalized = normalizeHostUrl(hostUrl);
+  for (const record of connectionDirectory.getSnapshot()) {
+    if (normalizeHostUrl(record.hostUrl) !== normalized) {
+      continue;
+    }
+    const session = sessionMap.get(record.id);
+    if (session !== undefined) {
+      void session.refreshServerProfile().catch((error: unknown) => {
+        log.warn("session", `server profile refresh after provisioning failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
+  }
+}
+
+/**
  * Rail click on another record: switch (resume) or re-login when the family is
  * dead. NEVER gated (user decision 2026-10-08): the rail is the primary
  * navigation and must stay clickable at all times — a dead target server means

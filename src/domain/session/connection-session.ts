@@ -1414,6 +1414,37 @@ export class ConnectionSession {
     await this.refreshPermissions();
   }
 
+  /**
+   * Applies a fresh server profile outside the handshake (live report
+   * 2026-11-04: after an ADOPT re-provisioning the version line in Server
+   * Settings stayed stale until a client restart — the session's tokens
+   * survive the server redeploy, but the profile is only read at handshake,
+   * and a server RESTART pushes nothing to /topic/server). Shared by that
+   * topic's handler and {@link refreshServerProfile}.
+   */
+  private applyServerProfile(profile: ServerProfile): void {
+    const previousVersion = this.serverProfile?.version ?? null;
+    this.serverProfile = profile;
+    // Same version trail as the start() snapshot, but only when the build
+    // actually changed — a rename push must not spam the log.
+    if (profile.version !== previousVersion) {
+      log.info("session", `server version: ${profile.version ?? "unknown"}${previousVersion === null ? "" : ` (was ${previousVersion ?? "unknown"})`}`);
+    }
+    void this.directory.update(this.recordId, { cachedServerName: profile.name, cachedServerAvatarKey: profile.avatarKey });
+  }
+
+  /** Re-reads the server profile over REST (see {@link applyServerProfile}). */
+  async refreshServerProfile(): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
+    const profile = await this.rest.getServerProfile();
+    if (this.disposed) {
+      return;
+    }
+    this.applyServerProfile(profile);
+  }
+
   // ---------------------------------------------------------------------------
   // STOMP topic wiring
   // ---------------------------------------------------------------------------
@@ -1553,14 +1584,7 @@ export class ConnectionSession {
     });
     this.stomp.subscribe("/topic/server", (raw) => {
       const profile = JSON.parse(raw) as ServerProfile;
-      const previousVersion = this.serverProfile?.version ?? null;
-      this.serverProfile = profile;
-      // Same version trail as the start() snapshot, but only when the build
-      // actually changed — a rename push must not spam the log.
-      if (profile.version !== previousVersion) {
-        log.info("session", `server version: ${profile.version ?? "unknown"}`);
-      }
-      void this.directory.update(this.recordId, { cachedServerName: profile.name, cachedServerAvatarKey: profile.avatarKey });
+      this.applyServerProfile(profile);
     });
     this.stomp.subscribe("/topic/channels", (raw) => {
       const channel = JSON.parse(raw) as Channel;
