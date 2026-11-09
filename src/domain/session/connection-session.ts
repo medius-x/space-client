@@ -236,6 +236,11 @@ export class ConnectionSession {
    *  this; runtime uses it to decide whether a switch may DEMOTE the session to
    *  the background (keeping its in-memory chats) instead of disposing it. */
   private started = false;
+  /** The last roster-AFK verdict the runtime handed us about OUR OWN user
+   *  (client-side decision, user request 2026-11-04). Kept as the session's
+   *  DESIRED state and (re)delivered on every (re)connect — a flip landing in a
+   *  reconnect window is never lost. Null until the runtime's first decision. */
+  private rosterAfkSent: boolean | null = null;
 
   constructor(options: ConnectionSessionOptions) {
     this.directory = options.directory;
@@ -342,6 +347,9 @@ export class ConnectionSession {
     await this.stomp.connect();
     this.subscribeGlobalTopics();
     this.syncChannelSubscriptions();
+    // Our own roster AFK verdict, if the runtime already has one (the app ticked
+    // before this session existed) — the server forgets it with the socket.
+    this.deliverRosterAfk();
 
     // Post-subscription snapshots: deltas arriving during the fetch ride the
     // pendingDeltas buffer inside the stores, so nothing is lost either side.
@@ -1720,6 +1728,26 @@ export class ConnectionSession {
     }
   }
 
+  /** The roster AFK verdict about OUR OWN user (the runtime's global, machine-wide
+   *  decision — user request 2026-11-04): stored as this session's desired state
+   *  and delivered now; a send that lands in a reconnect window is skipped by the
+   *  client, but resyncAfterReconnect/start() re-deliver the stored value, so the
+   *  flip is never lost. Sends on an older server (no /app/roster.afk handler)
+   *  are dropped silently server-side — harmless. */
+  reportRosterAfk(afk: boolean): void {
+    this.rosterAfkSent = afk;
+    if (!this.disposed) {
+      this.stomp.send("/app/roster.afk", { afk });
+    }
+  }
+
+  /** (Re)deliver the stored verdict — called on connect and on reconnect. */
+  private deliverRosterAfk(): void {
+    if (this.rosterAfkSent !== null && !this.disposed) {
+      this.stomp.send("/app/roster.afk", { afk: this.rosterAfkSent });
+    }
+  }
+
   /**
    * A WS gap swallowed every /topic push the server sent during it — nothing
    * arrives retroactively. On every REconnect re-take the same snapshot set
@@ -1734,6 +1762,8 @@ export class ConnectionSession {
       return;
     }
     log.info("session", "STOMP reconnected — resyncing what the gap missed");
+    // Our own AFK verdict first — the server dropped it with the socket.
+    this.deliverRosterAfk();
     // Presence keeps its snapshot+delta-buffer discipline (see start()).
     this.rosterStore.beginPresenceSnapshot();
     void this.rest.getPresence()

@@ -11,3 +11,9 @@ does not: CI, docs, refactoring, internal rework.
 - After updating a server through the Create dialog (the adopt flow), the
   "Server version" line in Server Settings now refreshes on its own —
   previously it kept showing the old version until the client was restarted.
+- The yellow AFK dot in the member roster now means "away from the computer",
+  not "idle in a voice channel": it appears after 5 minutes without any input
+  on your machine (speaking in voice or sharing your screen keeps you green)
+  whether or not you are in a voice room, and it no longer depends on the
+  server's AFK-channel timeout. Any input in any application brings the dot
+  back to green almost instantly.

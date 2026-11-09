@@ -14,3 +14,19 @@ export const AFK_IDLE_GRACE_SECONDS = 60;
 export function isAfkActive(idleSeconds: number, speaking: boolean, streaming = false): boolean {
   return speaking || streaming || idleSeconds < AFK_IDLE_GRACE_SECONDS;
 }
+
+/** The ROSTER AFK threshold (user decision 2026-11-04, 5 minutes): system-wide
+ *  input idle beyond this marks the member AWAY in the roster. This is the
+ *  CLIENT's own decision, a SEPARATE entity from the voice AFK sweep — sitting
+ *  in no voice room never blocks the yellow dot, and the server's AFK-channel
+ *  timeout has no say here. */
+export const ROSTER_AFK_AFTER_SECONDS = 300;
+
+/**
+ * Whether the member is AWAY for the roster dot: no system-wide input for the
+ * roster threshold while not speaking in voice and not streaming. The flips of
+ * this verdict ride {@code /app/roster.afk}; the server only relays them.
+ */
+export function isRosterAway(idleSeconds: number, speaking: boolean, streaming = false): boolean {
+  return !speaking && !streaming && idleSeconds >= ROSTER_AFK_AFTER_SECONDS;
+}

@@ -34,7 +34,7 @@ import { messageHasEveryoneHere, messageMentionsRole, messageMentionsUser } from
 import { dmToastHeader, toastBodyFallback, toastServerHeader } from "../domain/logic/toast-preview";
 import { paletteColor } from "../domain/logic/user-palette";
 import { displayNameOf } from "../domain/logic/display-name";
-import { isAfkActive } from "../domain/logic/afk-activity";
+import { isAfkActive, isRosterAway } from "../domain/logic/afk-activity";
 import { initialConnectionQuality, type ConnectionQualitySnapshot } from "../domain/logic/connection-quality";
 import { MIC_SILENCE_THRESHOLD_MS } from "../domain/logic/mic-silence";
 import { isDailyCheckDue, isIdleEnoughForUpdateCheck } from "../domain/logic/update-policy";
@@ -1645,6 +1645,7 @@ export async function bootstrapApp(): Promise<void> {
   installAppClosingListener(); // the forestalled window close leaves voice/call cleanly
   startUpdateChecks(); // client self-update: startup + daily-in-idle probes
   startBackupScheduleTicking(); // the client-side periodic server backup (one-minute tick)
+  startAfkReporting(); // the AFK ticker runs for the WHOLE app life: the voice heartbeat + the roster dot (2026-11-04)
   applyUiLanguage(); // i18n boot: resolve, repaint, mirror into main + the aux windows
   settingsStore.subscribe(applyUiLanguage); // a language flip repoints tray/titles and repaints live
   applySpellCheckEnabled(); // the spell-check toggle mirrors into main (session languages)
@@ -3022,18 +3023,26 @@ function cancelVoiceRejoin(): void {
   }
 }
 
-/** The AFK heartbeat interval: while the ACTIVE session is in a voice room, report
- *  activity every 30 s (speaking, or system-wide input idle under the grace).
- *  The TICK CLOCK is main-owned (armAfkTicker) — a renderer interval starves
- *  on a hidden window and silently stopped heartbeats for PRESENT members
- *  (live reports 2026-10); when the bridge is older, a local interval is the
- *  degraded fallback. */
+/** The AFK ticker — armed ONCE for the whole app life (user request 2026-11-04):
+ *  every 30 s it feeds TWO decisions, (a) the VOICE heartbeat while the active
+ *  session sits in a voice room (the AFK-room sweep's input) and (b) the ROSTER
+ *  away verdict, which is ALWAYS evaluated — the yellow dot means "away from
+ *  the computer" and voice membership is just one activity source, never a
+ *  precondition. The TICK CLOCK is main-owned (armAfkTicker) — a renderer
+ *  interval starves on a hidden window and silently stopped heartbeats for
+ *  PRESENT members (live reports 2026-10); when the bridge is older, a local
+ *  interval is the degraded fallback. */
 let afkReportTimer: number | null = null;
 let afkTickerArmed = false;
 
+/** The machine-wide roster verdict: one decision, reported by EVERY live session
+ *  (the roster of each connected server shows the same user). Starts PRESENT —
+ *  the first threshold-crossing tick flips it. */
+let currentRosterAway = false;
+
 function startAfkReporting(): void {
   if (afkTickerArmed || afkReportTimer !== null) {
-    return; // already running (a rejoin into another room keeps the one timer)
+    return; // already running for the app's lifetime
   }
   const idleBridge = window.spaceIdle;
   if (idleBridge?.armAfkTicker !== undefined && idleBridge.onAfkTick !== undefined) {
@@ -3049,26 +3058,24 @@ function startAfkReporting(): void {
   }, 30_000);
 }
 
-function stopAfkReporting(): void {
-  if (afkTickerArmed) {
-    afkTickerArmed = false;
-    window.spaceIdle?.armAfkTicker?.(false);
+/** Push the verdict through every live session — the active one and each
+ *  background server (each roster shows this user; a session that is mid-reconnect
+ *  stores the value and re-delivers it on its socket). */
+function broadcastRosterAfk(away: boolean): void {
+  if (activeSession !== null) {
+    activeSession.reportRosterAfk(away);
   }
-  if (afkReportTimer !== null) {
-    window.clearInterval(afkReportTimer);
-    afkReportTimer = null;
+  for (const session of sessionMap.values()) {
+    session.reportRosterAfk(away);
   }
 }
 
-/** Every tick logs its verdict (the incident trace the user asked for,
- *  2026-10-27: AFK ejections of present members with no visible cause —
- *  pair these lines with main's `[afk] tick idle=Ns` and the server sweep). */
+/** Each tick logs its VOICE verdict only while in a voice room (the incident
+ *  trace the user asked for, 2026-10-27: AFK ejections of present members with
+ *  no visible cause — pair these lines with main's `[afk] tick idle=Ns` and the
+ *  server sweep); the roster dimension logs only its FLIPS. */
 async function reportAfkActivity(mainMeasuredIdleSeconds?: number): Promise<void> {
-  const session = activeSession;
   const state = appStore.getSnapshot();
-  if (session === null || state.activeVoiceChannelId === null) {
-    return;
-  }
   // A missing bridge (old preload) degrades to speaking-only — never a false "active".
   const idleSeconds = mainMeasuredIdleSeconds !== undefined
     ? mainMeasuredIdleSeconds
@@ -3079,10 +3086,24 @@ async function reportAfkActivity(mainMeasuredIdleSeconds?: number): Promise<void
   // An outgoing screen share or camera is activity by definition — the member
   // is demonstrably present even with a cold system-input idle timer.
   const streaming = state.sharing || state.cameraOn;
-  const active = isAfkActive(idleSeconds, speaking, streaming);
-  log.info("voice", `afk heartbeat: ${active ? "sent" : "SKIPPED — idle"} (idle ${idleSeconds}s, speaking=${speaking}, streaming=${streaming})`);
-  if (active) {
-    session.stomp.send("/app/voice.activity", {});
+
+  // (a) The VOICE heartbeat — the AFK-room sweep's input, its own timeout, a
+  // separate entity from the roster dot.
+  const session = activeSession;
+  if (session !== null && state.activeVoiceChannelId !== null) {
+    const active = isAfkActive(idleSeconds, speaking, streaming);
+    log.info("voice", `afk heartbeat: ${active ? "sent" : "SKIPPED — idle"} (idle ${idleSeconds}s, speaking=${speaking}, streaming=${streaming})`);
+    if (active) {
+      session.stomp.send("/app/voice.activity", {});
+    }
+  }
+
+  // (b) The ROSTER verdict — always: away from the computer, voice or not.
+  const away = isRosterAway(idleSeconds, speaking, streaming);
+  if (away !== currentRosterAway) {
+    currentRosterAway = away;
+    log.info("presence", `roster afk: ${away ? "away" : "back"} (idle ${idleSeconds}s, speaking=${speaking}, streaming=${streaming})`);
+    broadcastRosterAfk(away);
   }
 }
 
@@ -3115,7 +3136,6 @@ export async function joinVoice(channel: Channel): Promise<void> {
   // often never OPENED as a chat tab, so its bits would never be cached otherwise.
   void session.ensureChannelPermissions(channel.id);
   session.stomp.send("/app/voice.join", { channelId: channel.id });
-  startAfkReporting();
 
   try {
     await connectVoiceRoom(channel);
@@ -3574,7 +3594,6 @@ function watchNoiseSettings(): void {
 export async function teardownVoice(): Promise<void> {
   stopWatchingShare();
   ghostFeedSince.clear();
-  stopAfkReporting();
   stopVoiceRttPolling();
   uplinkStallStrikes = 0;
   uplinkStallRejoins = 0;
