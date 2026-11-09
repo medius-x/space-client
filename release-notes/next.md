@@ -16,6 +16,11 @@ does not: CI, docs, refactoring, internal rework.
   by the single-instance lock and could die mid-init with an error window;
   it now exits immediately and quietly (the live window comes to the front,
   as before).
+- Fixed spell check breaking after you add a word to the dictionary: on the
+  next start every typed word would be underlined as misspelled. The custom
+  words no longer interfere with loading the built-in dictionaries, and a
+  dictionary load failure now logs its reason instead of failing silently
+  (underlines simply stay off in that case).
 - The yellow AFK dot in the member roster now means "away from the computer",
   not "idle in a voice channel": it appears after 5 minutes without any input
   on your machine (speaking in voice or sharing your screen keeps you green)

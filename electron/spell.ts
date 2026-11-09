@@ -54,14 +54,30 @@ function buildRuRepBlock(): string {
 type Spell = ReturnType<typeof nspell>;
 
 let staticRoot = "";
+let spellLog: ((line: string) => void) | null = null;
 let dictionaries: Spell[] | null = null;
+/** Custom-dictionary words that arrived BEFORE the dictionaries were ready
+ *  (seedSpellCheckFromKv runs before installSpellIpc sets the static root —
+ *  the 2026-11-10 empty-dictionaries incident: the early seed call cached
+ *  dictionaries=[] forever, marking every word misspelled). Buffered here
+ *  and re-applied on the real load. */
+let pendingCustomWords: string[] = [];
 
 /** Lazily loads both dictionaries (~4 MB, once per process). A failed load
  *  degrades the feature, never the app: every check answers "all correct"
- *  (no underlines, no menu block) until the files are readable again. */
+ *  (no underlines, no menu block) until the files are readable again — the
+ *  missing dictionaries must NEVER answer "misspelled", or every typed word
+ *  turns red (the 2026-11-10 dev-instance report: {misspelled:true,
+ *  suggestions:[]} for "привет" and "hello" alike). The failure reason lands
+ *  in the log — a silent catch here once cost a whole diagnosis round.
+ *  Called before installSpellIpc (staticRoot still empty) it returns an
+ *  UNCACHED empty list — the real load happens once the root is known. */
 function loadedDictionaries(): Spell[] {
   if (dictionaries !== null) {
     return dictionaries;
+  }
+  if (staticRoot === "") {
+    return []; // not wired yet — never cache this state
   }
   const root = path.join(staticRoot, "spell");
   const loaded: Spell[] = [];
@@ -73,20 +89,31 @@ function loadedDictionaries(): Spell[] {
         ? Buffer.concat([affix, Buffer.from(buildRuRepBlock())])
         : affix;
       loaded.push(nspell(affixWithRep, dictionary));
-    } catch {
+    } catch (error) {
+      spellLog?.(`[spell] dictionary load FAILED (${language}, root=${root}): ${error instanceof Error ? error.message : String(error)}`);
       dictionaries = loaded; // partial or empty — checks simply pass
       return loaded;
     }
   }
   dictionaries = loaded;
+  for (const word of pendingCustomWords) {
+    for (const dictionary of loaded) {
+      dictionary.add(word);
+    }
+  }
+  pendingCustomWords = [];
   return loaded;
 }
 
 /** The renderer provider's core: words the NONE of the dictionaries accepts.
  *  A word known to either language is correct (mixed-language typing is the
- *  norm for the ru+en audience). */
+ *  norm for the ru+en audience). With NO dictionary loaded the answer is
+ *  "all correct" — absence of a dictionary must not fabricate misspellings. */
 export function spellMisspelled(words: readonly string[]): string[] {
   const dicts = loadedDictionaries();
+  if (dicts.length === 0) {
+    return [];
+  }
   return words.filter((word) => !dicts.some((dictionary) => dictionary.correct(word)));
 }
 
@@ -111,8 +138,14 @@ export function spellSuggestions(word: string): string[] {
 }
 
 /** Add to dictionary: every loaded dictionary accepts the word from now on
- *  (the persisted list re-seeds this at every boot; see main.ts). */
+ *  (the persisted list re-seeds this at every boot; see main.ts). Words
+ *  arriving before the dictionaries are wired are buffered and applied on
+ *  the real load — see pendingCustomWords. */
 export function spellAddWord(word: string): void {
+  if (dictionaries === null && staticRoot === "") {
+    pendingCustomWords.push(word);
+    return;
+  }
   for (const dictionary of loadedDictionaries()) {
     dictionary.add(word);
   }
@@ -120,6 +153,7 @@ export function spellAddWord(word: string): void {
 
 export function installSpellIpc(rendererStaticRoot: string, log: (line: string) => void): void {
   staticRoot = rendererStaticRoot;
+  spellLog = log;
   ipcMain.handle("space-spell:checkWords", (_event, words: unknown) => {
     if (!Array.isArray(words)) {
       return [];
@@ -139,9 +173,15 @@ export function installSpellIpc(rendererStaticRoot: string, log: (line: string) 
     return { misspelled, suggestions: misspelled ? spellSuggestions(word) : [] };
   });
   // Warm the dictionaries at boot: the first typed word would otherwise pay
-  // the ~4 MB load as a visible typing hiccup.
+  // the ~4 MB load as a visible typing hiccup. The verdict line separates a
+  // real load from a silent one at a glance (the "ready" below counts only
+  // what actually parsed; a failure line names the language, the root and
+  // the reason — see loadedDictionaries).
   setImmediate(() => {
-    loadedDictionaries();
-    log(`[spell] embedded dictionaries ready (${Object.keys(DICTIONARY_FILES).join("+")})`);
+    const loaded = loadedDictionaries();
+    const verdict = loaded.length === Object.keys(DICTIONARY_FILES).length
+      ? `ready (${Object.keys(DICTIONARY_FILES).join("+")})`
+      : `DEGRADED — ${loaded.length}/${Object.keys(DICTIONARY_FILES).length} dictionaries loaded`;
+    log(`[spell] embedded dictionaries ${verdict}`);
   });
 }
