@@ -11,6 +11,11 @@ does not: CI, docs, refactoring, internal rework.
 - After updating a server through the Create dialog (the adopt flow), the
   "Server version" line in Server Settings now refreshes on its own —
   previously it kept showing the old version until the client was restarted.
+- Launching SPACE while it is already running no longer pops up a crash
+  dialog: the duplicate launch used to keep initializing after being rejected
+  by the single-instance lock and could die mid-init with an error window;
+  it now exits immediately and quietly (the live window comes to the front,
+  as before).
 - The yellow AFK dot in the member roster now means "away from the computer",
   not "idle in a voice channel": it appears after 5 minutes without any input
   on your machine (speaking in voice or sharing your screen keeps you green)

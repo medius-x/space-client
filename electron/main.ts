@@ -108,19 +108,36 @@ if (instanceName) {
 if (app.isPackaged && !instanceName) {
   const gotSingleInstanceLock = app.requestSingleInstanceLock();
   if (!gotSingleInstanceLock) {
-    appendLog("[main] second instance of the packaged app — quitting (lock held elsewhere)");
+    // The twin must die HERE, before anything else initializes. app.quit()
+    // only QUEUES the quit — the top-level init (window, toasts, native
+    // bindings) kept running in the duplicate process and crashed it with an
+    // uncaught-exception dialog on every relaunch (the friend's 2026-11-07
+    // report). The detective line is written synchronously: appendLog() sits
+    // above its write-chain init at this point (TDZ) and its async chain
+    // would be cut by the exit anyway — and the twin's OWN argv is the
+    // evidence the first instance can never see.
+    try {
+      const twinLogsDirectory = path.join(app.getPath("userData"), "logs");
+      fs.mkdirSync(twinLogsDirectory, { recursive: true });
+      fs.appendFileSync(
+        path.join(twinLogsDirectory, logBucketName(new Date())),
+        `${new Date().toISOString()} [main] second instance of the packaged app — quitting (lock held elsewhere) argv=${JSON.stringify(process.argv)}\n`,
+      );
+    } catch {
+      // logging must never keep a duplicate alive
+    }
     app.quit();
-  } else {
-    app.on("second-instance", (_event, commandLine, workingDirectory) => {
-      // The detective line: the twin's command line names WHO launched it —
-      // installer relaunch, updater, a shell handler — one glance in the log.
-      appendLog(`[main] second instance rejected: argv=${JSON.stringify(commandLine)} cwd=${workingDirectory}`);
-      if (mainWindowRef !== null && !mainWindowRef.isDestroyed()) {
-        mainWindowRef.show(); // restore from the tray too
-        mainWindowRef.focus();
-      }
-    });
+    process.exit(0);
   }
+  app.on("second-instance", (_event, commandLine, workingDirectory) => {
+    // The detective line: the twin's command line names WHO launched it —
+    // installer relaunch, updater, a shell handler — one glance in the log.
+    appendLog(`[main] second instance rejected: argv=${JSON.stringify(commandLine)} cwd=${workingDirectory}`);
+    if (mainWindowRef !== null && !mainWindowRef.isDestroyed()) {
+      mainWindowRef.show(); // restore from the tray too
+      mainWindowRef.focus();
+    }
+  });
 }
 
 // Optional CDP endpoint for `npm run profile` (scripts/capture-profile.mjs opens it,
