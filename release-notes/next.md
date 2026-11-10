@@ -34,6 +34,9 @@ does not: CI, docs, refactoring, internal rework.
   rode a saved preset. Window shares remember their settings per window
   title: sharing the same window again reopens exactly what you used for it
   last time (the 10 most recently shared window titles are kept).
+- Your own last message no longer lights up the Home badge after a client
+  restart: the unread counter used to include the messages you sent
+  yourself, so your own latest DM looked like an unread incoming message.
 - The yellow AFK dot in the member roster now means "away from the computer",
   not "idle in a voice channel": it appears after 5 minutes without any input
   on your machine (speaking in voice or sharing your screen keeps you green)
