@@ -202,8 +202,17 @@ export class AttachmentCache extends Emitter {
           this.markDead(image.key, "404");
           return null;
         }
-      } catch {
-        // network error — fall through to the recovery mint
+      } catch (error) {
+        // network error — fall through to the recovery mint, but NAME the
+        // failure: a presigned URL pointing at an unreachable host (the
+        // classic wrong-public-endpoint provisioning) used to leave rows on
+        // their fallback discs with zero trace in the log (live 2026-11-10).
+        try {
+          log.warn("media", `image fetch failed (${new URL(url).host}): ${error instanceof Error ? error.message : String(error)}`);
+        } catch {
+          // url not parseable — the message alone still helps
+          log.warn("media", `image fetch failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
       const fresh = await this.mintFreshLink(image.key);
       if (fresh === null) {
