@@ -72,7 +72,7 @@ accounts and client trust pins are preserved.
 ### Chat
 
 - Text messages with instant delivery, editing and deletion
-- Message formatting with Discord markers (`**bold**`, `*italic*`,
+- Message formatting with markers (`**bold**`, `*italic*`,
   `__underline__`, `~~strike~~`, `||spoiler||`, `` `code` ``) — Ctrl+B/I/U,
   Ctrl+Shift+X shortcuts, and a "Formatting" submenu in the composer's
   context menu. The composer itself is a WYSIWYG editor: the markers are
