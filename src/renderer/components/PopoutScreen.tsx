@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { PopoutViewer } from "../../core/popout-viewer";
+import { PopoutViewer, type ShareInCounters } from "../../core/popout-viewer";
 import { NsEngineMenu, VolumeSliderInput } from "./VoiceRoom";
 import { CaptionBar } from "./CaptionBar";
 import type { NoiseEngineKind } from "../../media/noise-suppression";
@@ -264,6 +264,45 @@ export function PopoutScreen(): React.JSX.Element {
     };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // The viewer-side share health line (2026-11-10, the high-quality freeze
+  // reports): this window owns the watched share's video subscription, so the
+  // freeze counters live HERE. A freeze delta logs IMMEDIATELY with its
+  // duration and loss/jitter context — "the picture stood still for 1.2 s"
+  // becomes a number instead of a memory; the steady line lands every 10 s
+  // next to the publisher's [share-stats] out line in the same log.
+  useEffect(() => {
+    let ticks = 0;
+    let previous: ShareInCounters | null = null;
+    const timer = setInterval(() => {
+      void viewerRef.current?.getShareInCounters().then((current) => {
+        if (current === null) {
+          previous = null;
+          return;
+        }
+        const last = previous;
+        previous = current;
+        ticks += 1;
+        if (last === null) {
+          return;
+        }
+        const dimensions = current.width !== null && current.height !== null ? `${current.width}×${current.height}` : "?";
+        const lost = current.packetsLost !== null && last.packetsLost !== null ? current.packetsLost - last.packetsLost : null;
+        const freezeDelta = current.freezeCount !== null && last.freezeCount !== null ? current.freezeCount - last.freezeCount : null;
+        const freezeSeconds = current.totalFreezesSeconds !== null && last.totalFreezesSeconds !== null
+          ? current.totalFreezesSeconds - last.totalFreezesSeconds
+          : null;
+        if ((freezeDelta ?? 0) > 0 || (freezeSeconds ?? 0) >= 0.5) {
+          log.warn("share-stats", `viewer freeze: +${freezeDelta ?? "?"} freezes (+${(freezeSeconds ?? 0).toFixed(2)} s) — ${dimensions}, dec ${current.decodedFps ?? "?"} fps, lost +${lost ?? "?"}, jitter ${current.jitterBufferMs !== null ? current.jitterBufferMs.toFixed(1) : "?"} ms`);
+          return; // the freeze line IS this window's line; no duplicate steady row
+        }
+        if (ticks % 10 === 0) {
+          log.info("share-stats", `in: ${dimensions}, dec ${current.decodedFps ?? "?"} fps, lost +${lost ?? "?"}, jitter ${current.jitterBufferMs !== null ? current.jitterBufferMs.toFixed(1) : "?"} ms, freezes ${current.freezeCount ?? "?"}`);
+        }
+      });
+    }, 1000);
+    return () => clearInterval(timer);
   }, []);
 
   const volumeInteractive = shareAudio && shareUsername !== null;

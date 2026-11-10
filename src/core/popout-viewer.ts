@@ -32,6 +32,28 @@ export interface PopoutViewerOptions {
 
 const GATHERING_TIMEOUT_MS = 2_000;
 
+/**
+ * The viewer-side share snapshot (2026-11-10, the high-quality freeze
+ * reports): Chromium counts FREEZES itself — freezeCount/totalFreezesDuration
+ * on the inbound video track are the direct measurement of "the picture
+ * stood still" — plus the loss/jitter context that separates a network stall
+ * from a decoder stall. Null = the stat was absent. Rates are the caller's
+ * delta job.
+ */
+export interface ShareInCounters {
+  timestamp: number;
+  width: number | null;
+  height: number | null;
+  decodedFps: number | null;
+  framesDecoded: number;
+  freezeCount: number | null;
+  totalFreezesSeconds: number | null;
+  packetsLost: number | null;
+  /** Average per-frame jitter-buffer delay over the WHOLE call (ms). */
+  jitterBufferMs: number | null;
+  bytes: number;
+}
+
 export class PopoutViewer {
   private readonly options: PopoutViewerOptions;
   private readonly janus: JanusClient;
@@ -75,6 +97,44 @@ export class PopoutViewer {
     }
     await this.janus.send(this.handleId, joinBody);
     log.info("popout", `subscriber join sent (feed ${this.options.feedId}, mid ${this.options.videoMid})`);
+  }
+
+  /** The inbound-video stats snapshot (null before the track exists or when
+   *  the report carries none). The pop-out's [share-stats] in line reads this. */
+  async getShareInCounters(): Promise<ShareInCounters | null> {
+    const pc = this.pc;
+    if (pc === null) {
+      return null;
+    }
+    try {
+      const report = await pc.getStats();
+      let counters: ShareInCounters | null = null;
+      report.forEach((stat) => {
+        if (counters !== null || stat.type !== "inbound-rtp" || stat.kind !== "video") {
+          return;
+        }
+        const record = stat as unknown as Record<string, unknown>;
+        const num = (value: unknown): number | null =>
+          typeof value === "number" && Number.isFinite(value) ? value : null;
+        const delay = num(record.jitterBufferDelay);
+        const emitted = num(record.jitterBufferEmittedCount);
+        counters = {
+          timestamp: num(record.timestamp) ?? 0,
+          width: num(record.frameWidth),
+          height: num(record.frameHeight),
+          decodedFps: num(record.framesPerSecond),
+          framesDecoded: num(record.framesDecoded) ?? 0,
+          freezeCount: num(record.freezeCount),
+          totalFreezesSeconds: num(record.totalFreezesDuration),
+          packetsLost: num(record.packetsLost),
+          jitterBufferMs: delay !== null && emitted !== null && emitted > 0 ? (delay / emitted) * 1000 : null,
+          bytes: num(record.bytesReceived) ?? 0,
+        };
+      });
+      return counters;
+    } catch {
+      return null;
+    }
   }
 
   private createPc(): RTCPeerConnection {

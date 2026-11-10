@@ -4279,6 +4279,7 @@ export async function shareTarget(target: ShareTarget): Promise<void> {
       publishStream = new MediaStream([displayVideo, nativeAudioTrack]);
     }
     await sfuSession.startShare(publishStream, target.quality.bitrate);
+    ensureShareStatsPoller(); // the share's health line logs even with the diag panel closed
     if (target.kind === "window") {
       watchShareSource(target.id); // ended never fires on window close (WGC)
     }
@@ -5576,6 +5577,7 @@ export async function callShareTarget(target: ShareTarget): Promise<void> {
       publishStream = new MediaStream([displayVideo, nativeAudioTrack]);
     }
     await session.startShare(publishStream, target.quality.bitrate);
+    ensureShareStatsPoller(); // the share's health line logs even with the diag panel closed
     if (target.kind === "window") {
       watchShareSource(target.id); // ended never fires on window close (WGC)
     }
@@ -5708,12 +5710,15 @@ let lastLoggedVerdict: string | null = null;
 let shareStatsTimer: ReturnType<typeof setInterval> | null = null;
 let shareStatsTicks = 0;
 let lastOutCounters: VideoRtpCounters | null = null;
+let lastShareStatsWarnAt = 0;
 const shareStatsCache = { out: "—" };
 
 /** The publisher-side share line (input fps vs ENCODED fps — enc ≪ in = the
- *  encoder cannot keep up). The old viewer-side "share in" line is GONE: the
- *  main window no longer subscribes the watched share's video (2026-10-05,
- *  the pop-out owns it), so there is no inbound track to read stats from. */
+ *  encoder cannot keep up; enc-ms/frame = the encoder's CPU cost; PLI/NACK
+ *  deltas = viewers begging for keyframes/retransmits — the freeze-side view
+ *  of the same stall). The old viewer-side "share in" line is GONE from the
+ *  main window (2026-10-05, the pop-out owns it) — the pop-out logs its own
+ *  [share-stats] in line with freeze counters. */
 function shareStatsLine(current: VideoRtpCounters | null, previous: VideoRtpCounters | null): string {
   if (current === null) {
     return "—";
@@ -5722,14 +5727,58 @@ function shareStatsLine(current: VideoRtpCounters | null, previous: VideoRtpCoun
   const parts = [dimensions, `in ${current.framesPerSecond ?? "?"} fps`];
   if (previous !== null) {
     const seconds = Math.max(0.001, (current.timestamp - previous.timestamp) / 1000);
-    if (current.frames >= previous.frames) {
-      parts.push(`enc ${((current.frames - previous.frames) / seconds).toFixed(0)} fps`);
+    const frameDelta = current.frames - previous.frames;
+    if (frameDelta >= 0) {
+      parts.push(`enc ${(frameDelta / seconds).toFixed(0)} fps`);
     }
     if (current.bytes >= previous.bytes) {
       parts.push(`${(((current.bytes - previous.bytes) * 8 / seconds) / 1_000_000).toFixed(1)} Mbps`);
     }
+    if (current.encodeSeconds !== null && previous.encodeSeconds !== null && frameDelta > 0) {
+      const perFrameMs = ((current.encodeSeconds - previous.encodeSeconds) / frameDelta) * 1000;
+      if (perFrameMs >= 0) {
+        parts.push(`enc ${perFrameMs.toFixed(1)} ms/f`);
+      }
+    }
+    if (current.pliCount !== null && previous.pliCount !== null && current.pliCount > previous.pliCount) {
+      parts.push(`pli +${current.pliCount - previous.pliCount}`);
+    }
+    if (current.nackCount !== null && previous.nackCount !== null && current.nackCount > previous.nackCount) {
+      parts.push(`nack +${current.nackCount - previous.nackCount}`);
+    }
+  }
+  if (current.maxBitrate !== null) {
+    parts.push(`ceiling ${(current.maxBitrate / 1_000_000).toFixed(1)}`);
   }
   return parts.join(" · ");
+}
+
+/** The immediate-anomaly detector (2026-11-10, the high-quality freeze
+ *  reports): a freeze seen by EVERY viewer points at the publisher — either
+ *  the encoder cannot keep up or the uplink degraded. A LOW actual bitrate
+ *  alone is NOT an anomaly (a static window honestly compresses far below
+ *  the ceiling — the first live smoke fired on exactly that, 0.8 Mbps of 8.0
+ *  with a perfect 31 fps and 1.6 ms/f): it only counts when viewers show the
+ *  strain (PLI/NACK growth) or the encoder falls behind. One warn per 10 s. */
+function shareStatsAnomaly(current: VideoRtpCounters, previous: VideoRtpCounters): string | null {
+  const seconds = Math.max(0.001, (current.timestamp - previous.timestamp) / 1000);
+  const frameDelta = current.frames - previous.frames;
+  const warnings: string[] = [];
+  let encoderBehind = false;
+  if (current.framesPerSecond !== null && current.framesPerSecond > 0 && frameDelta > 0) {
+    const encodedFps = frameDelta / seconds;
+    if (encodedFps < current.framesPerSecond * 0.6) {
+      encoderBehind = true;
+      warnings.push(`encoder cannot keep up: ${encodedFps.toFixed(0)} enc fps < ${current.framesPerSecond} in fps`);
+    }
+  }
+  const pliDelta = current.pliCount !== null && previous.pliCount !== null ? current.pliCount - previous.pliCount : 0;
+  const nackDelta = current.nackCount !== null && previous.nackCount !== null ? current.nackCount - previous.nackCount : 0;
+  if (current.maxBitrate !== null && current.bytes > previous.bytes && (pliDelta > 0 || nackDelta > 0)) {
+    const actualMbps = ((current.bytes - previous.bytes) * 8 / seconds) / 1_000_000;
+    warnings.push(`viewers requesting keyframes/retransmits at ${actualMbps.toFixed(1)} Mbps of ${(current.maxBitrate / 1_000_000).toFixed(1)} ceiling (pli +${pliDelta}, nack +${nackDelta})`);
+  }
+  return warnings.length > 0 ? warnings.join("; ") : null;
 }
 
 async function pollShareStats(): Promise<void> {
@@ -5740,6 +5789,13 @@ async function pollShareStats(): Promise<void> {
     outCounters = null;
   }
   shareStatsCache.out = shareStatsLine(outCounters, lastOutCounters);
+  if (outCounters !== null && lastOutCounters !== null) {
+    const anomaly = shareStatsAnomaly(outCounters, lastOutCounters);
+    if (anomaly !== null && Date.now() - lastShareStatsWarnAt > 10_000) {
+      lastShareStatsWarnAt = Date.now();
+      log.warn("share-stats", `anomaly: ${anomaly} — ${shareStatsCache.out}`);
+    }
+  }
   lastOutCounters = outCounters;
 
   shareStatsTicks += 1;

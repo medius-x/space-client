@@ -152,22 +152,41 @@ export interface VideoRtpCounters {
   framesDropped: number | null;
   packetsLost: number | null;
   jitterMs: number | null;
+  /** Cumulative encoder CPU seconds (outbound) — the per-frame cost is the
+   *  encoder-load evidence (2026-11-10, the high-quality freeze reports). */
+  encodeSeconds: number | null;
+  /** Cumulative key frames (outbound) — a PLI storm forces these out. */
+  keyFrames: number | null;
+  /** Cumulative PLI requests RECEIVED from viewers (outbound side): each is a
+   *  viewer saying "the picture broke, send a keyframe". */
+  pliCount: number | null;
+  /** Cumulative NACKs received from viewers (retransmission requests). */
+  nackCount: number | null;
+  /** The sender's configured maxBitrate (bps) — the "requested ceiling" the
+   *  actual Mbps is compared against. */
+  maxBitrate: number | null;
 }
 
 function numberOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-/** Chrome links an rtp entry to its MediaStreamTrack through a two-hop:
- *  rtp.trackId → the track-stats entry → trackIdentifier === track.id.
- *  Returns BOTH entries when that track sends/receives video. */
+/** Chrome links an rtp entry to its MediaStreamTrack through a two-hop, and
+ *  the middle entry RENAMED across Chromium versions (live probe, 2026-11-10:
+ *  the share out line silently read null for the track's whole lifetime):
+ *  - older:   rtp.trackId → a type:"track" stats entry → trackIdentifier
+ *  - ~133+/Electron 44: type:"track" is GONE from the report; instead
+ *             rtp.mediaSourceId → a type:"media-source" entry → trackIdentifier.
+ *  Both hops are accepted; returns BOTH entries when the track sends/receives
+ *  video. NOTE: media-source carries framesPerSecond but NO frameWidth/
+ *  frameHeight — the caller falls back to the track's getSettings(). */
 function videoEntriesForTrack(report: RTCStatsReport, direction: "outbound-rtp" | "inbound-rtp", trackIdentifier: string): { rtp: Record<string, unknown>; track: Record<string, unknown> } | null {
-  const trackStats = new Map<string, Record<string, unknown>>();
+  const sourceStats = new Map<string, Record<string, unknown>>();
   report.forEach((stat) => {
-    if (stat.type === "track" && stat.kind === "video") {
+    if ((stat.type === "track" || stat.type === "media-source") && stat.kind === "video") {
       const record = stat as unknown as Record<string, unknown>;
       if (typeof record.id === "string") {
-        trackStats.set(record.id, record);
+        sourceStats.set(record.id, record);
       }
     }
   });
@@ -177,12 +196,13 @@ function videoEntriesForTrack(report: RTCStatsReport, direction: "outbound-rtp" 
       return;
     }
     const rtp = stat as unknown as Record<string, unknown>;
-    if (typeof rtp.trackId !== "string") {
-      return;
-    }
-    const track = trackStats.get(rtp.trackId);
-    if (track !== undefined && track.trackIdentifier === trackIdentifier) {
-      pair = { rtp, track };
+    const linked = typeof rtp.trackId === "string"
+      ? sourceStats.get(rtp.trackId)
+      : typeof rtp.mediaSourceId === "string"
+        ? sourceStats.get(rtp.mediaSourceId)
+        : undefined;
+    if (linked !== undefined && linked.trackIdentifier === trackIdentifier) {
+      pair = { rtp, track: linked };
     }
   });
   return pair;
@@ -1182,11 +1202,18 @@ export class SfuSession {
         bytes: numberOrNull(pair.rtp.bytesSent) ?? 0,
         frames: numberOrNull(pair.rtp.framesEncoded) ?? 0,
         framesPerSecond: numberOrNull(pair.track.framesPerSecond),
-        width: numberOrNull(pair.track.frameWidth),
-        height: numberOrNull(pair.track.frameHeight),
+        // media-source (the modern middle entry) carries NO dimensions — the
+        // live track's settings are the fallback (probe, 2026-11-10).
+        width: numberOrNull(pair.track.frameWidth) ?? numberOrNull(sender.track?.getSettings().width),
+        height: numberOrNull(pair.track.frameHeight) ?? numberOrNull(sender.track?.getSettings().height),
         framesDropped: null,
         packetsLost: null,
         jitterMs: null,
+        encodeSeconds: numberOrNull(pair.rtp.totalEncodeTime),
+        keyFrames: numberOrNull(pair.rtp.keyFramesEncoded),
+        pliCount: numberOrNull(pair.rtp.pliCount),
+        nackCount: numberOrNull(pair.rtp.nackCount),
+        maxBitrate: sender.getParameters().encodings[0]?.maxBitrate ?? null,
       };
     } catch {
       return null;

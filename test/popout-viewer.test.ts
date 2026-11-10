@@ -41,9 +41,15 @@ class FakePeerConnection {
   remoteDescriptions: unknown[] = [];
   localDescription: { type: string; sdp: string } | null = null;
   closed = false;
+  /** The stats getShareInCounters parses (RTCStatsReport-shaped enough: forEach). */
+  statsReport: Record<string, unknown>[] = [];
 
   constructor() {
     FakePeerConnection.instances.push(this);
+  }
+
+  async getStats(): Promise<Map<string, Record<string, unknown>>> {
+    return new Map(this.statsReport.map((entry) => [String(entry.id ?? ""), entry]));
   }
 
   async setRemoteDescription(description: unknown): Promise<void> {
@@ -100,6 +106,47 @@ describe("PopoutViewer", () => {
       streams: [{ feed: 42, mid: "1" }],
       autoupdate: false,
       pin: "pin9",
+    });
+  });
+
+  it("hands the inbound freeze counters to the share health line", async () => {
+    const { viewer, janus } = makeViewer();
+    // No PeerConnection yet — the health poller reads null, not a crash.
+    expect(await viewer.getShareInCounters()).toBeNull();
+    await viewer.start();
+    janus.options.onJsep(7, { type: "offer", sdp: "v=0 offer" });
+    await vi.waitFor(() => expect(FakePeerConnection.instances.length).toBeGreaterThan(0));
+    const pc = FakePeerConnection.instances.at(-1)!;
+    pc.statsReport = [
+      { id: "a", type: "inbound-rtp", kind: "audio" }, // the audio entry must be skipped
+      {
+        id: "v",
+        type: "inbound-rtp",
+        kind: "video",
+        timestamp: 1000,
+        frameWidth: 2560,
+        frameHeight: 1440,
+        framesPerSecond: 28,
+        framesDecoded: 840,
+        freezeCount: 2,
+        totalFreezesDuration: 1.37,
+        packetsLost: 12,
+        jitterBufferDelay: 0.064,
+        jitterBufferEmittedCount: 800,
+        bytesReceived: 9_000_000,
+      },
+    ];
+    const counters = await viewer.getShareInCounters();
+    expect(counters).toMatchObject({
+      width: 2560,
+      height: 1440,
+      decodedFps: 28,
+      framesDecoded: 840,
+      freezeCount: 2,
+      totalFreezesSeconds: 1.37,
+      packetsLost: 12,
+      jitterBufferMs: 0.08,
+      bytes: 9_000_000,
     });
   });
 
