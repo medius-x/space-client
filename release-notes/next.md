@@ -29,6 +29,11 @@ does not: CI, docs, refactoring, internal rework.
   mic hint and leaves everyone's incoming audio intact — previously a wedged
   mic caused an endless reconnect loop that chopped the audio for the whole
   room every half a minute.
+- The screen-share quality step now opens on what you used last instead of
+  the default preset — including the named preset row itself when the share
+  rode a saved preset. Window shares remember their settings per window
+  title: sharing the same window again reopens exactly what you used for it
+  last time (the 10 most recently shared window titles are kept).
 - The yellow AFK dot in the member roster now means "away from the computer",
   not "idle in a voice channel": it appears after 5 minutes without any input
   on your machine (speaking in voice or sharing your screen keeps you green)

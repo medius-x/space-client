@@ -5,6 +5,7 @@ import { clampJumboEmojiSize } from "../logic/emoji-picker";
 import { sanitizeDeepFilterSuppressionLevel } from "../logic/ns-settings";
 import { sanitizeRecentExpressions } from "../logic/reaction-picker";
 import type { SavedSharePreset } from "../logic/share-quality";
+import { sanitizeRememberedSelection, sanitizeWindowShareQualities, type RememberedShareSelection } from "../logic/share-preset-memory";
 import { clampBackupKeepCount } from "../logic/backup-files";
 import { sanitizeSpellWords } from "../logic/spell-word";
 import type { LanguageSetting } from "../i18n/i18n";
@@ -69,6 +70,17 @@ export interface ClientSettings {
    *  the last checkbox state pre-checks the next share of that kind. */
   shareScreenAudio: boolean;
   shareWindowAudio: boolean;
+  /** The LAST share's selection (2026-11-10 user request): the quality that
+   *  actually went out the door plus the preset's NAME when it rode a named
+   *  preset untouched — the picker's Quality step re-opens on it (the named
+   *  row when the preset still exists with the same values) instead of the
+   *  static Medium default. Null until the first share ever. */
+  lastShareSelection: RememberedShareSelection | null;
+  /** Per-window-TITLE share memories (2026-11-10 user request): re-sharing
+   *  a window with the same title reopens exactly the selection used for it
+   *  last time — a stronger cue than the global lastShareSelection. Insertion
+   *  order = recency; the newest 10 titles survive (share-preset-memory). */
+  windowShareQualities: Record<string, RememberedShareSelection>;
   /** Render size (px) of emojis in jumbo (emoji-only) messages — a purely
    *  client-side preference (2026-09-29 user decision): it changes nothing
    *  for anyone else, so unlike Discord's fixed constant everyone picks
@@ -157,6 +169,8 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   sharePresets: [],
   shareScreenAudio: true,
   shareWindowAudio: true,
+  lastShareSelection: null,
+  windowShareQualities: {},
   emojiJumboSize: 48,
   pickerLastTab: "emoji",
   recentExpressions: [],
@@ -242,6 +256,13 @@ export class SettingsStore extends Emitter {
       if (!Array.isArray(this.settings.sharePresets)) {
         this.settings = { ...this.settings, sharePresets: [] };
       }
+      // The share-quality memories (last + per-window-title) are validated
+      // record shapes — hand-edited KV must not crash the picker's step 2.
+      this.settings = {
+        ...this.settings,
+        lastShareSelection: sanitizeRememberedSelection(rest.lastShareSelection ?? null),
+        windowShareQualities: sanitizeWindowShareQualities(rest.windowShareQualities ?? {}),
+      };
       // A stored jumbo size may be garbage or out of range (hand-edited KV) —
       // the clamp restores the default rather than rendering a broken row.
       this.settings = { ...this.settings, emojiJumboSize: clampJumboEmojiSize(rest.emojiJumboSize) };

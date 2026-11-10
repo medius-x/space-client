@@ -19,6 +19,12 @@ import {
   type SavedSharePreset,
   type ShareQuality,
 } from "../../domain/logic/share-quality";
+import {
+  rememberedWindowQuality,
+  restorePreset,
+  upsertWindowShareQuality,
+  type RememberedShareSelection,
+} from "../../domain/logic/share-preset-memory";
 import { Modal } from "./Modal";
 import { useT } from "../hooks/useT";
 
@@ -198,20 +204,34 @@ export function SharePickerModal({ onTarget, onClose }: {
 
   const currentQuality = resolveQuality(segmentDirty, comboValue, segmentState);
 
-  /** oak's step swap: the default (Medium, user decision) clamped to what the
-   *  source can feed; the combo pre-selects the preset when the clamped value
-   *  IS one, Custom otherwise. The audio checkbox seeds from the per-kind
+  /** The step-2 seed (2026-11-10 user request): a WINDOW re-share opens on
+   *  the selection remembered for its exact TITLE; everything else opens on
+   *  the LAST selection that went out the door; the static Medium default is
+   *  only the first-ever fallback. The seed still clamps to what the source
+   *  can feed, and the combo pre-selects the remembered NAMED preset when it
+   *  still exists with the same values, a value-matching preset otherwise,
+   *  Custom as the last resort. The audio checkbox seeds from the per-kind
    *  persisted flag. */
   const goStepTwo = (): void => {
-    const clamped = clampQualityToSource(DEFAULT_PICKER_QUALITY, sourceSize.width, sourceSize.height);
+    const snapshot = settingsStore.getSnapshot();
+    const pickedTitle = sources.find((source) => source.id === selected)?.name ?? null;
+    const seed = (tab === "window" && pickedTitle !== null
+        ? rememberedWindowQuality(snapshot.windowShareQualities, pickedTitle)
+        : null)
+      ?? snapshot.lastShareSelection;
+    const quality = seed === null ? DEFAULT_PICKER_QUALITY : seed.quality;
+    const clamped = clampQualityToSource(quality, sourceSize.width, sourceSize.height);
     setSegmentState(clamped);
     setSegmentDirty(false);
-    setComboValue([...BUILTIN_PRESETS, ...savedPresets].find((preset) =>
-      preset.fps === clamped.fps
-      && preset.width === clamped.width
-      && preset.height === clamped.height
-      && preset.bitrate === clamped.bitrate) ?? null);
-    const snapshot = settingsStore.getSnapshot();
+    // The combo follows the NAME when the clamp did not bend the values (a
+    // clamped resolution no longer matches the named preset — Custom then).
+    const combo = seed !== null && clamped.fps === seed.quality.fps
+      && clamped.width === seed.quality.width
+      && clamped.height === seed.quality.height
+      && clamped.bitrate === seed.quality.bitrate
+      ? restorePreset(seed, [...BUILTIN_PRESETS, ...savedPresets])
+      : null;
+    setComboValue(combo);
     setIncludeAudio(tab === "window" ? snapshot.shareWindowAudio : snapshot.shareScreenAudio);
     setPresetName("");
     setStep(2);
@@ -287,6 +307,23 @@ export function SharePickerModal({ onTarget, onClose }: {
       // oak's commitShare: the checkbox state becomes the next share's seed.
       settingsStore.apply(tab === "screen" ? { shareScreenAudio: includeAudio } : { shareWindowAudio: includeAudio });
     }
+    // The quality memory (2026-11-10): the selection that actually STARTED is
+    // the next share's seed — the quality plus the preset's NAME when the
+    // share rode a named preset untouched. A window share additionally
+    // remembers it per window TITLE: an exact re-title reopens exactly this
+    // selection, named row included.
+    const shareSnapshot = settingsStore.getSnapshot();
+    const shareTitle = tab === "window" ? sources.find((source) => source.id === selected)?.name ?? null : null;
+    const remembered: RememberedShareSelection = {
+      quality: currentQuality,
+      presetName: segmentDirty || comboValue === null ? null : comboValue.name,
+    };
+    settingsStore.apply({
+      lastShareSelection: remembered,
+      ...(shareTitle !== null
+        ? { windowShareQualities: upsertWindowShareQuality(shareSnapshot.windowShareQualities, shareTitle, remembered) }
+        : {}),
+    });
     onTarget({ kind: tab, id: selected, quality: currentQuality, includeAudio: tab !== "camera" && includeAudio });
   };
 
