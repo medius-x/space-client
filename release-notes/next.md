@@ -37,6 +37,12 @@ does not: CI, docs, refactoring, internal rework.
 - Your own last message no longer lights up the Home badge after a client
   restart: the unread counter used to include the messages you sent
   yourself, so your own latest DM looked like an unread incoming message.
+- The small server icons in the direct-messages list no longer disappear
+  after the client has been running for a while: they used to re-download
+  from a link that expires after an hour, and once it did they silently fell
+  back to letter discs until a restart. They now load from the local cache
+  the server rail already uses, and a failed download leaves a trace in the
+  logs instead of vanishing quietly.
 - The yellow AFK dot in the member roster now means "away from the computer",
   not "idle in a voice channel": it appears after 5 minutes without any input
   on your machine (speaking in voice or sharing your screen keeps you green)
