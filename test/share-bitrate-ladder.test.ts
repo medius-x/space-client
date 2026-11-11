@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  CPU_DOWNSCALE_STEPS,
+  initialCpuDownscaleState,
   initialLadderState,
   ladderConfigForPreset,
+  nextCpuDownscale,
   nextLadderCeiling,
   type ShareLadderSignals,
   type ShareBitrateLadderState,
@@ -78,5 +81,47 @@ describe("share bitrate ladder (the 8-Mbps freeze post-mortem, 2026-11-11)", () 
       state = nextLadderCeiling(config, state, { ...quiet(round * 10_000), pliDelta: 5 }).state;
     }
     expect(state.ceilingBps).toBe(config.floorBps);
+  });
+});
+
+describe("cpu downscale stepper (the encoder-cannot-keep-up axis)", () => {
+  it("two consecutive overloaded windows step the scale UP, one does not", () => {
+    let state = initialCpuDownscaleState();
+    const first = nextCpuDownscale(state, true, false);
+    expect(first.change).toBeNull(); // one window alone never moves it
+    state = first.state;
+    const second = nextCpuDownscale(state, true, false);
+    expect(second.factor).toBe(CPU_DOWNSCALE_STEPS[1]); // ÷1.25
+    expect(second.change).toContain("encoder behind");
+  });
+
+  it("a borderline window between overloads breaks the streak (strictly consecutive)", () => {
+    let state = initialCpuDownscaleState();
+    state = nextCpuDownscale(state, true, false).state;
+    state = nextCpuDownscale(state, false, false).state; // borderline resets the streak
+    const notYet = nextCpuDownscale(state, true, false);
+    expect(notYet.change).toBeNull();
+  });
+
+  it("four consecutive relieved windows step it back, and the floor step is no-downscale", () => {
+    let state = initialCpuDownscaleState();
+    state = nextCpuDownscale(nextCpuDownscale(state, true, false).state, true, false).state; // ÷1.25
+    // relief below the top step does nothing…
+    state = nextCpuDownscale(state, false, true).state;
+    state = nextCpuDownscale(state, false, true).state;
+    state = nextCpuDownscale(state, false, true).state;
+    const back = nextCpuDownscale(state, false, true); // 4th relieved window
+    expect(back.factor).toBe(CPU_DOWNSCALE_STEPS[0]); // ÷1 — recovered
+    expect(back.change).toContain("caught up");
+    const idle = nextCpuDownscale(back.state, false, true); // nothing to recover
+    expect(idle.change).toBeNull();
+  });
+
+  it("repeated overloads bottom out at the most aggressive step", () => {
+    let state = initialCpuDownscaleState();
+    for (let round = 0; round < 20; round += 1) {
+      state = nextCpuDownscale(state, true, false).state;
+    }
+    expect(state.stepIndex).toBe(CPU_DOWNSCALE_STEPS.length - 1);
   });
 });

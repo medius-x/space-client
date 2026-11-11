@@ -149,3 +149,73 @@ export function nextLadderCeiling(
 export function initialLadderState(config: ShareBitrateLadderConfig): ShareBitrateLadderState {
   return { ceilingBps: config.startBps, lastDownAtMs: Number.NEGATIVE_INFINITY, baseRttMs: null };
 }
+
+// ---------------------------------------------------------------------------
+// The CPU axis (2026-11-11, the same post-mortem): a share preset the ENCODER
+// cannot sustain (the live log's "enc 11 fps < 30 in fps" — a 1440p window on
+// a busy machine) freezes into frame drops no bitrate ladder can cure — the
+// bottleneck is local CPU, not the channel. The lever is the sender's
+// scaleResolutionDownBy: the capture stays full-size, the encoder codes a
+// downscaled copy (the scaler is cheap; the encode cost drops quadratically).
+// The stepper moves in fixed steps with HYSTERESIS: two consecutive overloaded
+// windows step the scale UP (more aggressive), four consecutive relieved
+// windows step it back DOWN (recovery) — a single noisy window never moves it.
+// ---------------------------------------------------------------------------
+
+/** The downscale ladder, small-to-aggressive; index 0 = no downscale. */
+export const CPU_DOWNSCALE_STEPS: readonly number[] = [1, 1.25, 1.5, 2];
+
+export interface CpuDownscaleState {
+  stepIndex: number;
+  /** Consecutive overloaded windows (resets on relief). */
+  overloadedWindows: number;
+  /** Consecutive relieved windows (resets on overload). */
+  relievedWindows: number;
+}
+
+export interface CpuDownscaleVerdict {
+  factor: number;
+  state: CpuDownscaleState;
+  /** Human-readable move for the log; null when nothing changed. */
+  change: string | null;
+}
+
+export function initialCpuDownscaleState(): CpuDownscaleState {
+  return { stepIndex: 0, overloadedWindows: 0, relievedWindows: 0 };
+}
+
+/** One window's verdict: `overloaded` = the encoder fell meaningfully behind
+ *  its input (the "encoder cannot keep up" condition), `relieved` = it keeps
+ *  up with margin. A window may be neither (borderline) — no counter moves. */
+export function nextCpuDownscale(
+  state: CpuDownscaleState,
+  overloaded: boolean,
+  relieved: boolean,
+): CpuDownscaleVerdict {
+  if (overloaded) {
+    const overloadedWindows = state.overloadedWindows + 1;
+    if (overloadedWindows >= 2 && state.stepIndex < CPU_DOWNSCALE_STEPS.length - 1) {
+      const stepIndex = state.stepIndex + 1;
+      return {
+        factor: CPU_DOWNSCALE_STEPS[stepIndex]!,
+        state: { stepIndex, overloadedWindows: 0, relievedWindows: 0 },
+        change: `cpu downscale → ÷${CPU_DOWNSCALE_STEPS[stepIndex]} (encoder behind)`,
+      };
+    }
+    return { factor: CPU_DOWNSCALE_STEPS[state.stepIndex]!, state: { ...state, overloadedWindows, relievedWindows: 0 }, change: null };
+  }
+  if (relieved && state.stepIndex > 0) {
+    const relievedWindows = state.relievedWindows + 1;
+    if (relievedWindows >= 4) {
+      const stepIndex = state.stepIndex - 1;
+      return {
+        factor: CPU_DOWNSCALE_STEPS[stepIndex]!,
+        state: { stepIndex, overloadedWindows: 0, relievedWindows: 0 },
+        change: `cpu downscale → ÷${CPU_DOWNSCALE_STEPS[stepIndex]} (caught up)`,
+      };
+    }
+    return { factor: CPU_DOWNSCALE_STEPS[state.stepIndex]!, state: { ...state, overloadedWindows: 0, relievedWindows }, change: null };
+  }
+  // A borderline window resets nothing but never advances anything either.
+  return { factor: CPU_DOWNSCALE_STEPS[state.stepIndex]!, state: { ...state, overloadedWindows: 0, relievedWindows: 0 }, change: null };
+}

@@ -630,6 +630,28 @@ export class SfuSession {
     }
   }
 
+  /** The CPU axis (2026-11-11): scaleResolutionDownBy makes the encoder code a
+   *  downscaled copy of the full-size capture — the "encoder cannot keep up"
+   *  freeze cure. The existing maxBitrate riding the same parameters is
+   *  preserved. No-op without a live share sender. */
+  async setShareVideoDownscale(factor: number): Promise<void> {
+    const sender = this.screenVideoSender;
+    if (!sender) {
+      return;
+    }
+    try {
+      const parameters = sender.getParameters();
+      if (!parameters.encodings || parameters.encodings.length === 0) {
+        parameters.encodings = [{}];
+      }
+      parameters.encodings[0]!.scaleResolutionDownBy = factor;
+      await sender.setParameters(parameters);
+      log.info("sfu", `share video downscale → ÷${factor}`);
+    } catch (error: unknown) {
+      log.warn("sfu", `video downscale apply failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   /** The publisher→SFU RTT in ms — the EARLIEST congestion signal: the uplink
    *  queue fills (RTT climbs) long before packets drop. Prefers the nominated
    *  candidate pair; null until a pair reports. */

@@ -18,8 +18,10 @@ import { modulatedNoise } from "../domain/logic/share-recenter";
 import { matchDeviceId } from "../domain/logic/device-match";
 import { cameraVideoConstraints, describeQuality, displayVideoConstraints, type ShareQuality } from "../domain/logic/share-quality";
 import {
+  initialCpuDownscaleState,
   initialLadderState,
   ladderConfigForPreset,
+  nextCpuDownscale,
   nextLadderCeiling,
   type ShareBitrateLadderConfig,
   type ShareBitrateLadderState,
@@ -5869,6 +5871,11 @@ let ladderState: ShareBitrateLadderState | null = null;
 let ladderPliBase: number | null = null;
 let ladderCongestionReports = 0;
 let ladderReportedLostPct = 0;
+/** The CPU axis of the same 5 s window (2026-11-11): the downscale stepper's
+ *  state plus the previous window's counters (the enc-fps verdict needs a
+ *  frame delta across the window). */
+let cpuDownscale = initialCpuDownscaleState();
+let cpuWindowCounters: VideoRtpCounters | null = null;
 
 /** Seed the ladder for a fresh share; returns the OPENING ceiling to publish
  *  with (the preset itself stays the never-exceeded maximum). */
@@ -5878,6 +5885,8 @@ function startShareLadder(presetBps: number): number {
   ladderPliBase = null;
   ladderCongestionReports = 0;
   ladderReportedLostPct = 0;
+  cpuDownscale = initialCpuDownscaleState();
+  cpuWindowCounters = null;
   log.info("share-ladder", `preset ${(presetBps / 1_000_000).toFixed(1)} Mbps → opening ${(ladderState.ceilingBps / 1_000_000).toFixed(1)} Mbps (adaptive, AIMD)`);
   return ladderState.ceilingBps;
 }
@@ -5888,6 +5897,8 @@ function stopShareLadder(): void {
   ladderPliBase = null;
   ladderCongestionReports = 0;
   ladderReportedLostPct = 0;
+  cpuDownscale = initialCpuDownscaleState();
+  cpuWindowCounters = null;
 }
 
 /** A viewer-side congestion report landed (the server relay) — the loss the
@@ -5944,6 +5955,41 @@ async function pollShareLadder(): Promise<void> {
       // the next window retries; a failed setParameters never stops the share
     }
   }
+  // The CPU axis, same window: the encoder-cannot-keep-up verdict from the
+  // frame deltas (the channel ladder cannot cure a local CPU bottleneck).
+  const cpuVerdict = nextCpuDownscale(cpuDownscale, encoderOverloaded(counters, cpuWindowCounters), encoderRelieved(counters, cpuWindowCounters));
+  cpuDownscale = cpuVerdict.state;
+  cpuWindowCounters = counters;
+  if (cpuVerdict.change !== null) {
+    log.info("share-ladder", cpuVerdict.change);
+    try {
+      await sfuSession.setShareVideoDownscale(cpuVerdict.factor);
+    } catch {
+      // the next window retries; a failed setParameters never stops the share
+    }
+  }
+}
+
+/** The CPU window's overload verdict: the encoder fell meaningfully behind
+ *  its own capture input (< 75% of the input fps over the window). */
+function encoderOverloaded(current: VideoRtpCounters, previous: VideoRtpCounters | null): boolean {
+  if (previous === null || current.framesPerSecond === null || current.framesPerSecond <= 0) {
+    return false;
+  }
+  const seconds = Math.max(0.001, (current.timestamp - previous.timestamp) / 1000);
+  const encodedFps = (current.frames - previous.frames) / seconds;
+  return encodedFps > 0 && encodedFps < current.framesPerSecond * 0.75;
+}
+
+/** The CPU window's relief verdict: the encoder keeps up with margin (≥ 90% of
+ *  the input fps) — the recovery condition for stepping the scale back. */
+function encoderRelieved(current: VideoRtpCounters, previous: VideoRtpCounters | null): boolean {
+  if (previous === null || current.framesPerSecond === null || current.framesPerSecond <= 0) {
+    return false;
+  }
+  const seconds = Math.max(0.001, (current.timestamp - previous.timestamp) / 1000);
+  const encodedFps = (current.frames - previous.frames) / seconds;
+  return encodedFps >= current.framesPerSecond * 0.9;
 }
 
 /** The publisher-side share line (input fps vs ENCODED fps — enc ≪ in = the
