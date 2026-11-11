@@ -1029,6 +1029,16 @@ ipcMain.on("space-window:popoutVolume", (_event, username: unknown, volume: unkn
   }
   sendToMainWindow("popout:volume", username, Math.min(3, Math.max(0, volume)), kind);
 });
+// The pop-out's share congestion report (2026-11-11): forward to the main
+// window, which owns the STOMP session and sends it to the server (the
+// publisher's adaptive bitrate ladder consumes it).
+ipcMain.on("space-window:shareCongestion", (_event, publisher: unknown, lostPct: unknown) => {
+  if (typeof publisher !== "string" || publisher.length === 0 || publisher.length > 64
+    || typeof lostPct !== "number" || !Number.isFinite(lostPct)) {
+    return;
+  }
+  sendToMainWindow("popout:congestion", publisher, Math.min(100, Math.max(0, lostPct)));
+});
 // MAIN → pop-out: a gain changed in the main window (slider sync).
 ipcMain.on("space-window:pushPopoutVolume", (_event, username: unknown, gain: unknown, kind: unknown) => {
   if (typeof username !== "string" || typeof gain !== "number" || !Number.isFinite(gain)

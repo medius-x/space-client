@@ -476,6 +476,21 @@ contextBridge.exposeInMainWorld("spaceWindow", {
       }
     });
   },
+  /** The pop-out's congestion report (2026-11-11, the 8-Mbps freeze
+   *  post-mortem): the watched share's loss, aimed at the PUBLISHER's adaptive
+   *  bitrate ladder through the server. The main window owns the STOMP
+   *  session, so the report hops there first. */
+  shareCongestion(publisher: string, lostPct: number): void {
+    ipcRenderer.send("space-window:shareCongestion", publisher, lostPct);
+  },
+  onPopoutCongestion(callback: (publisher: string, lostPct: number) => void): void {
+    ipcRenderer.removeAllListeners("popout:congestion");
+    ipcRenderer.on("popout:congestion", (_event, publisher: unknown, lostPct: unknown) => {
+      if (typeof publisher === "string" && typeof lostPct === "number" && Number.isFinite(lostPct)) {
+        callback(publisher, Math.min(100, Math.max(0, lostPct)));
+      }
+    });
+  },
   pushPopoutVolume(username: string, gain: number, kind: "voice" | "share"): void {
     ipcRenderer.send("space-window:pushPopoutVolume", username, gain, kind);
   },

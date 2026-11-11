@@ -87,6 +87,12 @@ export interface WindowBridge {
   popoutVolume(username: string, volume: number, kind: "voice" | "share"): void;
   /** The MAIN window's sink for the pop-out sliders above. */
   onPopoutVolume(callback: (username: string, volume: number, kind: "voice" | "share") => void): void;
+  /** The POP-OUT's share congestion report (2026-11-11): the watched share's
+   *  loss percent, aimed at the publisher's adaptive bitrate ladder through
+   *  the server relay. */
+  shareCongestion(publisher: string, lostPct: number): void;
+  /** The MAIN window's sink for the report above (it owns the STOMP session). */
+  onPopoutCongestion(callback: (publisher: string, lostPct: number) => void): void;
   /** MAIN → pop-out: a gain changed in the main window — the pop-out's matching
    *  slider follows (two-way sync). */
   pushPopoutVolume(username: string, gain: number, kind: "voice" | "share"): void;

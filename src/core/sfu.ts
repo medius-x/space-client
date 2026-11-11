@@ -523,6 +523,21 @@ export class SfuSession {
       throw new Error("camera is already publishing — stop it before sharing a screen");
     }
     this.screenVideoSender = this.publisherPc.addTrack(videoTrack, new MediaStream([videoTrack]));
+    // Screen video prefers MOTION over per-frame detail, and BALANCED
+    // degradation (2026-11-11, the 8-Mbps freeze post-mortem): a 1920×804 film
+    // must not trade fps for quality the channel cannot ship anyway, and under
+    // pressure the encoder may drop resolution instead of freezing the stream
+    // (the display-capture default is maintain-resolution — the "enc 11 fps"
+    // anomaly in the freeze logs).
+    videoTrack.contentHint = "motion";
+    try {
+      // degradationPreference is a Chromium extension the TS DOM lib does not
+      // know — set it through the widened type (absent on older builds: no-op).
+      const sender = this.screenVideoSender as RTCRtpSender & { degradationPreference?: string };
+      sender.degradationPreference = "balanced";
+    } catch {
+      // older Chromium without sender degradationPreference: defaults stay
+    }
     if (videoBitrate !== null) {
       await this.raiseSenderBitrate(this.screenVideoSender, videoBitrate);
     }
@@ -604,6 +619,42 @@ export class SfuSession {
     } catch (error: unknown) {
       log.warn("sfu", `bitrate raise failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  /** The adaptive ladder's live ceiling move (2026-11-11): the same lever the
+   *  preset pulled at start, now driven by congestion signals instead of a
+   *  fixed number. No-op without a live share sender. */
+  async setShareVideoCeiling(maxBitrate: number): Promise<void> {
+    if (this.screenVideoSender) {
+      await this.raiseSenderBitrate(this.screenVideoSender, maxBitrate);
+    }
+  }
+
+  /** The publisher→SFU RTT in ms — the EARLIEST congestion signal: the uplink
+   *  queue fills (RTT climbs) long before packets drop. Prefers the nominated
+   *  candidate pair; null until a pair reports. */
+  async getPublisherRttMs(): Promise<number | null> {
+    const publisher = this.publisherPc;
+    if (!publisher) {
+      return null;
+    }
+    const stats = await publisher.getStats();
+    let nominatedRtt: number | null = null;
+    let lowestRtt: number | null = null;
+    stats.forEach((report) => {
+      const pair = report as { type?: string; state?: string; nominated?: boolean; currentRoundTripTime?: number };
+      if (pair.type !== "candidate-pair" || pair.state !== "succeeded" || typeof pair.currentRoundTripTime !== "number") {
+        return;
+      }
+      const rttMs = pair.currentRoundTripTime * 1000;
+      if (pair.nominated === true) {
+        nominatedRtt = rttMs;
+      }
+      if (lowestRtt === null || rttMs < lowestRtt) {
+        lowestRtt = rttMs;
+      }
+    });
+    return nominatedRtt ?? lowestRtt;
   }
 
   async stopShare(): Promise<void> {

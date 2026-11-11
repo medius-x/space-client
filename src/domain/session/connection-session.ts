@@ -82,6 +82,11 @@ export interface SessionHooks {
   onVoiceMemberEvent?(event: VoiceMemberEvent): void;
   /** /user/queue/voice.control type=KICKED — the runtime tears the voice session down. */
   onVoiceKicked(byUsername: string): void;
+  /** /user/queue/share.congestion — a VIEWER of this user's screen share
+   *  reports loss (the share-congestion capability): the publisher cannot see
+   *  downstream loss in its own stats, so the server relays the viewer's
+   *  verdict. The runtime feeds it to the adaptive bitrate ladder. */
+  onShareCongestion?(lostPct: number): void;
   /** /user/queue/voice.control type=MOVED (the AFK sweep) — the runtime re-joins
    *  into the given channel (the membership already moved server-side). */
   onVoiceMoved?(channelId: number): void;
@@ -1523,6 +1528,14 @@ export class ConnectionSession {
         this.rosterStore.applyActivityEvent(JSON.parse(raw) as PresenceActivityEvent);
       });
     }
+    if (hasServerCapability(this.serverProfile, "share-congestion")) {
+      this.stomp.subscribe("/user/queue/share.congestion", (raw) => {
+        const report = JSON.parse(raw) as { lostPct?: unknown };
+        if (typeof report.lostPct === "number" && Number.isFinite(report.lostPct) && report.lostPct >= 0) {
+          this.hooks.onShareCongestion?.(report.lostPct);
+        }
+      });
+    }
     this.stomp.subscribe("/topic/voice.state", (raw) => {
       const state = JSON.parse(raw) as VoiceControlState;
       this.voiceControlStore.applyState(state);
@@ -1793,6 +1806,17 @@ export class ConnectionSession {
   private deliverPresenceActivity(): void {
     if (this.presenceActivitySent !== null && !this.disposed) {
       this.stomp.send("/app/presence.activity", { activity: this.presenceActivitySent.line });
+    }
+  }
+
+  /** A viewer-side congestion report about ANOTHER user's share (the pop-out's
+   *  loss counters, relayed through main into the renderer): the publisher's
+   *  own stats cannot see downstream loss, so the server forwards this to the
+   *  publisher's sessions. Gated on the capability — an older server has no
+   *  handler and the send dies silently server-side; we skip it entirely. */
+  reportShareCongestion(publisher: string, lostPct: number): void {
+    if (!this.disposed && hasServerCapability(this.serverProfile, "share-congestion")) {
+      this.stomp.send("/app/share.congestion", { publisher, lostPct });
     }
   }
 

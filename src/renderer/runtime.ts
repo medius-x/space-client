@@ -18,6 +18,13 @@ import { modulatedNoise } from "../domain/logic/share-recenter";
 import { matchDeviceId } from "../domain/logic/device-match";
 import { cameraVideoConstraints, describeQuality, displayVideoConstraints, type ShareQuality } from "../domain/logic/share-quality";
 import {
+  initialLadderState,
+  ladderConfigForPreset,
+  nextLadderCeiling,
+  type ShareBitrateLadderConfig,
+  type ShareBitrateLadderState,
+} from "../domain/logic/share-bitrate-ladder";
+import {
   ConnectionDirectory,
   DEFAULT_NOTIFICATION_PREFS,
   EXPIRED_MARKER,
@@ -1219,6 +1226,13 @@ function makeSessionHooks(recordId: string): SessionHooks {
       void leaveVoice();
       notifications.showToast({ title: tr("voice.voiceLabel"), channelName: byUsername, body: tr("toast.kickedFromVoice") });
     },
+    // A viewer's congestion report about MY share (the server relay): the loss
+    // the publisher's own stats cannot see — the ladder's strongest signal.
+    onShareCongestion: (lostPct) => {
+      if (isActive()) {
+        noteShareCongestionReport(lostPct);
+      }
+    },
     onVoiceMoved: (channelId) => {
       // The AFK sweep (only the active session is ever in voice). The membership
       // already moved server-side; a rejoin ladder targeting the OLD room must die,
@@ -1645,6 +1659,7 @@ export async function bootstrapApp(): Promise<void> {
   installPopoutClosedListener(); // the share pop-out's own close lands here
   installTlsPromptListener(); // untrusted server certificates ask for trust here
   installPopoutVolumeListener(); // the share pop-out's volume slider lands here
+  installPopoutCongestionListener(); // the pop-out's share loss reports relay out from here
   installPopoutVoiceActionListener(); // the pop-out's mirrored voice-panel buttons land here
   installAppClosingListener(); // the forestalled window close leaves voice/call cleanly
   startUpdateChecks(); // client self-update: startup + daily-in-idle probes
@@ -3975,6 +3990,17 @@ function installPopoutVolumeListener(): void {
   });
 }
 
+/** The pop-out's share congestion reports (2026-11-11, the 8-Mbps freeze
+ *  post-mortem): the watched share's loss flies to the PUBLISHER through the
+ *  server relay — this window owns the STOMP session, so the report hops from
+ *  the pop-out through main into here. Only the ACTIVE session's room is ever
+ *  on screen in the pop-out. */
+function installPopoutCongestionListener(): void {
+  window.spaceWindow?.onPopoutCongestion((publisher, lostPct) => {
+    activeSession?.reportShareCongestion(publisher, lostPct);
+  });
+}
+
 /** The pop-out window's "closed" signal, installed ONCE at boot (it used to
  *  live in the room view's effect — closing the room view before the pop-out
  *  left popoutActive stuck true forever). */
@@ -4277,6 +4303,7 @@ function installAppClosingListener(): void {
 }
 
 async function stopShareInternal(): Promise<void> {
+  stopShareLadder();
   if (sfuSession) {
     await sfuSession.stopShare().catch(() => undefined);
   }
@@ -4365,7 +4392,7 @@ export async function shareTarget(target: ShareTarget): Promise<void> {
     } else if (nativeAudioTrack !== null && displayVideo !== null) {
       publishStream = new MediaStream([displayVideo, nativeAudioTrack]);
     }
-    await sfuSession.startShare(publishStream, target.quality.bitrate);
+    await sfuSession.startShare(publishStream, startShareLadder(target.quality.bitrate));
     ensureShareStatsPoller(); // the share's health line logs even with the diag panel closed
     if (target.kind === "window") {
       watchShareSource(target.id); // ended never fires on window close (WGC)
@@ -5663,7 +5690,7 @@ export async function callShareTarget(target: ShareTarget): Promise<void> {
     } else if (nativeAudioTrack !== null && displayVideo !== null) {
       publishStream = new MediaStream([displayVideo, nativeAudioTrack]);
     }
-    await session.startShare(publishStream, target.quality.bitrate);
+    await session.startShare(publishStream, startShareLadder(target.quality.bitrate));
     ensureShareStatsPoller(); // the share's health line logs even with the diag panel closed
     if (target.kind === "window") {
       watchShareSource(target.id); // ended never fires on window close (WGC)
@@ -5800,6 +5827,100 @@ let lastOutCounters: VideoRtpCounters | null = null;
 let lastShareStatsWarnAt = 0;
 const shareStatsCache = { out: "—" };
 
+// ---------------------------------------------------------------------------
+// The adaptive share-video ceiling (2026-11-11, the 8-Mbps freeze
+// post-mortem): the quality preset is a CEILING, not a constant. The friend's
+// uplink ran narrower than the preset, the queue filled for minutes ("smooth
+// at first, then freezing"), and the encoder never backed off — it cannot see
+// downstream loss (Janus vanilla-forwarding feeds it no transport-cc; the REMB
+// it gets is our own static number). The ladder starts at 60% of the preset,
+// climbs on quiet windows, cuts hard on PLI growth / viewer congestion
+// reports / RTT growth over the session baseline (the queue filling — the
+// earliest signal). Pure logic: domain/logic/share-bitrate-ladder.ts.
+// ---------------------------------------------------------------------------
+
+let ladderConfig: ShareBitrateLadderConfig | null = null;
+let ladderState: ShareBitrateLadderState | null = null;
+let ladderPliBase: number | null = null;
+let ladderCongestionReports = 0;
+let ladderReportedLostPct = 0;
+
+/** Seed the ladder for a fresh share; returns the OPENING ceiling to publish
+ *  with (the preset itself stays the never-exceeded maximum). */
+function startShareLadder(presetBps: number): number {
+  ladderConfig = ladderConfigForPreset(presetBps);
+  ladderState = initialLadderState(ladderConfig);
+  ladderPliBase = null;
+  ladderCongestionReports = 0;
+  ladderReportedLostPct = 0;
+  log.info("share-ladder", `preset ${(presetBps / 1_000_000).toFixed(1)} Mbps → opening ${(ladderState.ceilingBps / 1_000_000).toFixed(1)} Mbps (adaptive, AIMD)`);
+  return ladderState.ceilingBps;
+}
+
+function stopShareLadder(): void {
+  ladderConfig = null;
+  ladderState = null;
+  ladderPliBase = null;
+  ladderCongestionReports = 0;
+  ladderReportedLostPct = 0;
+}
+
+/** A viewer-side congestion report landed (the server relay) — the loss the
+ *  publisher cannot see with its own stats. Counted into the next window. */
+function noteShareCongestionReport(lostPct: number): void {
+  ladderCongestionReports += 1;
+  ladderReportedLostPct = Math.max(ladderReportedLostPct, lostPct);
+}
+
+/** One ladder window (every 5 s while the share publishes): gather the
+ *  signals, step the ladder, push the new ceiling onto the sender. */
+async function pollShareLadder(): Promise<void> {
+  const config = ladderConfig;
+  const state = ladderState;
+  if (config === null || state === null || sfuSession === null) {
+    return;
+  }
+  let counters: VideoRtpCounters | null = null;
+  try {
+    counters = await sfuSession.getShareOutCounters();
+  } catch {
+    counters = null;
+  }
+  if (counters === null) {
+    return; // no live share video this tick — leave the ladder parked
+  }
+  const pliDelta = counters.pliCount !== null && ladderPliBase !== null
+    ? Math.max(0, counters.pliCount - ladderPliBase)
+    : 0;
+  if (counters.pliCount !== null) {
+    ladderPliBase = counters.pliCount;
+  }
+  let rttMs: number | null = null;
+  try {
+    rttMs = await sfuSession.getPublisherRttMs();
+  } catch {
+    rttMs = null;
+  }
+  const verdict = nextLadderCeiling(config, state, {
+    nowMs: Date.now(),
+    rttMs,
+    pliDelta,
+    congestionReports: ladderCongestionReports,
+    reportedLostPct: ladderReportedLostPct,
+  });
+  ladderState = verdict.state;
+  ladderCongestionReports = 0;
+  ladderReportedLostPct = 0;
+  if (verdict.change !== null) {
+    log.info("share-ladder", `${verdict.change}${rttMs !== null ? `, rtt ${Math.round(rttMs)} ms` : ""}`);
+    try {
+      await sfuSession.setShareVideoCeiling(verdict.ceilingBps);
+    } catch {
+      // the next window retries; a failed setParameters never stops the share
+    }
+  }
+}
+
 /** The publisher-side share line (input fps vs ENCODED fps — enc ≪ in = the
  *  encoder cannot keep up; enc-ms/frame = the encoder's CPU cost; PLI/NACK
  *  deltas = viewers begging for keyframes/retransmits — the freeze-side view
@@ -5888,6 +6009,9 @@ async function pollShareStats(): Promise<void> {
   shareStatsTicks += 1;
   if (shareStatsTicks % 10 === 0 && outCounters !== null) {
     log.info("share-stats", `out: ${shareStatsCache.out}`);
+  }
+  if (shareStatsTicks % 5 === 0) {
+    void pollShareLadder(); // the adaptive ceiling's own window (5 s)
   }
 }
 

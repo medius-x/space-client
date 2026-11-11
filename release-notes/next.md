@@ -11,5 +11,12 @@ does not: CI, docs, refactoring, internal rework.
 - Your name in the members list can now carry an activity line — "playing
   CS2", "listening to radio", and so on — and it flips on and off by itself:
   register an application in User Settings → Activity (pick it from the
-  running list or browse for its .exe), and while that application runs,
-  everyone sees the line under your name; close it and the line goes away.
+  running list, Task-Manager style with icons), and while that application
+  runs, everyone sees the line under your name; close it and the line goes
+  away. When several registered apps run at once, the latest launched wins;
+  closing it falls back to the previous one.
+- Screen shares no longer freeze for seconds when the presenter's uplink is
+  narrower than the picked quality: the preset is now a ceiling, not a
+  constant — the sender starts at 60% of it and adapts (up on a quiet channel,
+  down on loss, keyframe requests from viewers or a growing RTT), so the
+  picture degrades gracefully instead of buffering into multi-second freezes.

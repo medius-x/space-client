@@ -275,6 +275,15 @@ export function PopoutScreen(): React.JSX.Element {
   useEffect(() => {
     let ticks = 0;
     let previous: ShareInCounters | null = null;
+    // The congestion-report accumulator (2026-11-11, the 8-Mbps freeze
+    // post-mortem): loss and frames SINCE THE LAST REPORT, not per-tick — a
+    // report must carry its whole window. A ≥0.5 s freeze with zero loss (the
+    // buffered-uplink case the post-mortem found) reports as a 6% equivalent:
+    // the publisher's ladder gates on reported loss, and a silent freeze is
+    // congestion by definition. Rate-limited to one report per 3 s.
+    let lostSinceReport = 0;
+    let framesSinceReport = 0;
+    let lastReportAt = 0;
     const timer = setInterval(() => {
       void viewerRef.current?.getShareInCounters().then((current) => {
         if (current === null) {
@@ -293,11 +302,23 @@ export function PopoutScreen(): React.JSX.Element {
         const freezeSeconds = current.totalFreezesSeconds !== null && last.totalFreezesSeconds !== null
           ? current.totalFreezesSeconds - last.totalFreezesSeconds
           : null;
-        if ((freezeDelta ?? 0) > 0 || (freezeSeconds ?? 0) >= 0.5) {
+        const freezeNow = (freezeDelta ?? 0) > 0 || (freezeSeconds ?? 0) >= 0.5;
+        if (freezeNow) {
           log.warn("share-stats", `viewer freeze: +${freezeDelta ?? "?"} freezes (+${(freezeSeconds ?? 0).toFixed(2)} s) — ${dimensions}, dec ${current.decodedFps ?? "?"} fps, lost +${lost ?? "?"}, jitter ${current.jitterBufferMs !== null ? current.jitterBufferMs.toFixed(1) : "?"} ms`);
-          return; // the freeze line IS this window's line; no duplicate steady row
         }
-        if (ticks % 10 === 0) {
+        lostSinceReport += Math.max(0, lost ?? 0);
+        framesSinceReport += Math.max(0, current.framesDecoded - last.framesDecoded);
+        if (((lost ?? 0) > 0 || freezeNow) && Date.now() - lastReportAt >= 3_000 && shareUsernameRef.current !== null) {
+          const measured = lostSinceReport + framesSinceReport > 0
+            ? (100 * lostSinceReport) / (lostSinceReport + framesSinceReport)
+            : 0;
+          const lostPct = Math.min(100, Math.max(measured, freezeNow ? 6 : 0));
+          window.spaceWindow?.shareCongestion(shareUsernameRef.current, lostPct);
+          lastReportAt = Date.now();
+          lostSinceReport = 0;
+          framesSinceReport = 0;
+        }
+        if (!freezeNow && ticks % 10 === 0) {
           log.info("share-stats", `in: ${dimensions}, dec ${current.decodedFps ?? "?"} fps, lost +${lost ?? "?"}, jitter ${current.jitterBufferMs !== null ? current.jitterBufferMs.toFixed(1) : "?"} ms, freezes ${current.freezeCount ?? "?"}`);
         }
       });
