@@ -409,6 +409,13 @@ let localDisplayStream: MediaStream | null = null;
 let localCameraStream: MediaStream | null = null;
 let janusSessionLostFired = false;
 let shareAudioElementActive = false;
+/** The share the rejoin ladder RESTORES after a transport loss (2026-11-11):
+ *  teardownVoice stops the capture with the session, and without a restore the
+ *  publisher rejoined voice with no share at all — the live incident's "the
+ *  share died, only a manual restart brought it back". Set on a successful
+ *  share start; cleared by a manual stop, by leaving the room, and by a failed
+ *  restore (a dead source must not zombie-retry on every future rejoin). */
+let lastShareTarget: ShareTarget | null = null;
 /** The live noise-suppression detour over the RAW mic (a voice room XOR a call —
  *  the two are already exclusive). The raw track is kept so an engine switch can
  *  rebuild the detour and swap the published track without a re-capture. */
@@ -3534,6 +3541,20 @@ function scheduleVoiceRejoin(attempt: number, reason: string): void {
         voiceRejoin = null;
         appStore.patch({ stateDetail: "waiting for media" });
         log.info("voice", "rejoin connected");
+        // The share restore (2026-11-11): teardownVoice stopped the capture
+        // with the old session — if the user was sharing, bring the SAME
+        // source back up on the fresh one. A failed restore (the source died
+        // while we were reconnecting) drops the restore point: no zombie
+        // retries on future rejoins, the manual picker is the fallback.
+        if (lastShareTarget !== null && lastShareTarget.kind !== "camera") {
+          try {
+            await shareTarget(lastShareTarget);
+            log.info("share", "share restored after rejoin");
+          } catch (error) {
+            log.warn("share", `share restore failed (${errorMessage(error)}) — manual restart needed`);
+            lastShareTarget = null;
+          }
+        }
       } catch (error) {
         log.warn("voice", `rejoin attempt failed: ${errorMessage(error)}`);
         handleVoiceSessionLost(errorMessage(error));
@@ -3548,6 +3569,7 @@ function scheduleVoiceRejoin(attempt: number, reason: string): void {
 /** Full detach after a lost room: teardown, server leave, knock, toast. */
 async function detachVoiceAfterLoss(reason: string): Promise<void> {
   cancelVoiceRejoin();
+  lastShareTarget = null; // the room is gone — nothing to restore into
   const channelId = appStore.getSnapshot().activeVoiceChannelId;
   const hadSession = sfuSession !== null || janusClient !== null;
   await teardownVoice();
@@ -3783,6 +3805,7 @@ export async function teardownVoice(): Promise<void> {
 export async function leaveVoice(): Promise<void> {
   const channelId = appStore.getSnapshot().activeVoiceChannelId;
   cancelVoiceRejoin();
+  lastShareTarget = null; // leaving the room ends the restore duty
   const hadSession = sfuSession !== null || janusClient !== null;
   await teardownVoice();
   if (channelId !== null) {
@@ -4304,6 +4327,7 @@ function installAppClosingListener(): void {
 
 async function stopShareInternal(): Promise<void> {
   stopShareLadder();
+  lastShareTarget = null; // a stop (manual or a fresh share's swap) ends the restore duty
   if (sfuSession) {
     await sfuSession.stopShare().catch(() => undefined);
   }
@@ -4393,6 +4417,7 @@ export async function shareTarget(target: ShareTarget): Promise<void> {
       publishStream = new MediaStream([displayVideo, nativeAudioTrack]);
     }
     await sfuSession.startShare(publishStream, startShareLadder(target.quality.bitrate));
+    lastShareTarget = target; // the rejoin ladder's restore point
     ensureShareStatsPoller(); // the share's health line logs even with the diag panel closed
     if (target.kind === "window") {
       watchShareSource(target.id); // ended never fires on window close (WGC)
