@@ -154,6 +154,10 @@ export interface ClientSettings {
    *  that process runs (the Discord game-detection model, manually registered).
    *  Cap MAX_REGISTERED_ACTIVITIES; the ids are client-minted (crypto.randomUUID). */
   registeredActivities: RegisteredActivity[];
+  /** The activity KILL SWITCH (user request 2026-11-11): false = the detector
+   *  reports nothing and clears the live line at once — pausing the feature
+   *  without wiping the registered rules. */
+  activitiesEnabled: boolean;
   /** The CURRENTLY detected running rules' ids (the auto-detect's last tick) —
    *  transit UI state persisted only so the section paints instantly on open;
    *  the detector re-derives it within one poll of a restart. */
@@ -234,6 +238,7 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   pickerLastTab: "emoji",
   recentExpressions: [],
   registeredActivities: [],
+  activitiesEnabled: true,
   runningActivityIds: [],
   downloadsFolder: null,
   updateCheckOnStartup: true,
@@ -329,6 +334,7 @@ export class SettingsStore extends Emitter {
       this.settings = {
         ...this.settings,
         registeredActivities: sanitizeRegisteredActivities(rest.registeredActivities ?? []),
+        activitiesEnabled: rest.activitiesEnabled !== false, // only an explicit false disables
         runningActivityIds: Array.isArray(rest.runningActivityIds)
           ? rest.runningActivityIds.filter((id): id is string => typeof id === "string")
           : [],

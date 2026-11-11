@@ -3,7 +3,7 @@ import { useStore } from "../hooks/useStore";
 import { appStore, callUser, openDmWithUser } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { PresenceActivity } from "../../types";
-import { ACTIVITY_MESSAGE_KEYS } from "../activity-display";
+import { formatActivityLine } from "../activity-display";
 import type { Relationship, Role, ServerMember } from "../../types";
 import { BAN_MEMBERS_PERMISSION, KICK_MEMBERS_PERMISSION } from "../../types";
 import { buildRosterGroups, canActOn, topPosition, type HierarchyView } from "../../domain/logic/roster-grouping";
@@ -218,7 +218,7 @@ function MemberRow({ session, member, online, away, isSelf, nameColor, activity,
         {/* The user-set activity line ("playing CS2", 2026-11-10) — Discord renders
             it as a muted second line under the nickname. */}
         {activity !== null && online ? (
-          <span className="member-activity">{t(ACTIVITY_MESSAGE_KEYS[activity.type])} {activity.name}</span>
+          <span className="member-activity">{formatActivityLine(t, activity)}</span>
         ) : null}
       </span>
       {member.owner ? <span className="owner-badge" title={t("members.serverOwner")}>👑</span> : null}

@@ -541,7 +541,7 @@ export interface VoiceAfkStatusEvent {
 
 /** The roster ACTIVITY line's verb key (2026-11-10) — the server stores the key,
  *  the client localizes the prefix ("playing", "listening", …). */
-export type ActivityKind = "playing" | "listening" | "watching" | "streaming" | "competing";
+export type ActivityKind = "playing" | "listening" | "watching" | "streaming" | "competing" | "custom";
 
 /** A user-set roster activity ("playing CS2") — transit presence state. */
 export interface PresenceActivity {

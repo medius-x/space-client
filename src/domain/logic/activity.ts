@@ -8,7 +8,7 @@
  */
 import type { ActivityKind, PresenceActivity } from "../../types";
 
-export const ACTIVITY_KINDS: readonly ActivityKind[] = ["playing", "listening", "watching", "streaming", "competing"];
+export const ACTIVITY_KINDS: readonly ActivityKind[] = ["playing", "listening", "watching", "streaming", "competing", "custom"];
 
 export const ACTIVITY_NAME_MAX_LENGTH = 64;
 

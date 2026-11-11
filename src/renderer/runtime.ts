@@ -3161,10 +3161,23 @@ function broadcastActivityLine(line: PresenceActivity | null): void {
 }
 
 async function pollActivityDetection(): Promise<void> {
-  const rules = settingsStore.getSnapshot().registeredActivities;
-  if (rules.length === 0 || window.spaceProcesses === undefined) {
+  const settings = settingsStore.getSnapshot();
+  if (settings.registeredActivities.length === 0 || window.spaceProcesses === undefined) {
     return;
   }
+  if (!settings.activitiesEnabled) {
+    // The kill switch (user request 2026-11-11): no matching, no reporting —
+    // and the live line and dots die at once (the toggle must beat the 5 s
+    // tick, not wait for it). The rules stay registered for a later re-enable.
+    if (lastBroadcastActivityLine !== null) {
+      broadcastActivityLine(null);
+    }
+    if (settings.runningActivityIds.length > 0) {
+      settingsStore.apply({ runningActivityIds: [] });
+    }
+    return;
+  }
+  const rules = settings.registeredActivities;
   let entries: ProcessNameEntry[] | null = null;
   try {
     entries = await window.spaceProcesses.names();

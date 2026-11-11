@@ -20,7 +20,7 @@ import { ApiError } from "../../core/rest";
 import type { ClientSettings } from "../../domain/stores/SettingsStore";
 import type { LanguageSetting } from "../../domain/i18n/i18n";
 import { ACTIVITY_KINDS, ACTIVITY_NAME_MAX_LENGTH, MAX_REGISTERED_ACTIVITIES, normalizeProcessName } from "../../domain/logic/activity";
-import { ACTIVITY_MESSAGE_KEYS } from "../activity-display";
+import { ACTIVITY_MESSAGE_KEYS, CUSTOM_KIND_LABEL_KEY, formatActivityLine } from "../activity-display";
 import type { ActivityKind } from "../../types";
 import type { ProcessNameEntry } from "../bridges";
 import { advertisedAddress, DISK_CACHE_CHOICES, diskCacheLabel } from "../../domain/logic/settings-format";
@@ -939,6 +939,7 @@ function ActivitySection(): React.JSX.Element {
   const t = useT();
   const registered = useStore(settingsStore, (settings) => settings.registeredActivities);
   const runningIds = useStore(settingsStore, (settings) => settings.runningActivityIds);
+  const activitiesEnabled = useStore(settingsStore, (settings) => settings.activitiesEnabled);
   const [entries, setEntries] = useState<ProcessNameEntry[] | null>(null);
   const [picked, setPicked] = useState<ProcessNameEntry | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -1106,6 +1107,13 @@ function ActivitySection(): React.JSX.Element {
     <div className="activity-section">
       <h3>{t("settings.activityHeader")}</h3>
       <div className="settings-hint">{t("settings.activityHint")}</div>
+      {/* The kill switch (user request 2026-11-11): pauses the whole feature
+          without wiping the rules — the live line clears at once. */}
+      <label className="settings-check">
+        <input type="checkbox" checked={activitiesEnabled}
+          onChange={(event) => settingsStore.apply({ activitiesEnabled: event.target.checked })} />
+        <span>{t("settings.activityPublishToggle")}</span>
+      </label>
       <div className="activity-picker" ref={pickerRef}>
         <button className="activity-picker-button" onClick={() => setPickerOpen((open) => !open)}>
           {picked === null
@@ -1129,7 +1137,7 @@ function ActivitySection(): React.JSX.Element {
       <div className="activity-add">
         <select value={newKind} onChange={(event) => setNewKind(event.target.value as ActivityKind)}>
           {ACTIVITY_KINDS.map((kind) => (
-            <option key={kind} value={kind}>{t(ACTIVITY_MESSAGE_KEYS[kind])}</option>
+            <option key={kind} value={kind}>{kind === "custom" ? t(CUSTOM_KIND_LABEL_KEY) : t(ACTIVITY_MESSAGE_KEYS[kind])}</option>
           ))}
         </select>
         <input
@@ -1167,7 +1175,7 @@ function ActivitySection(): React.JSX.Element {
             {activity.icon !== null
               ? <img src={activity.icon} alt="" width={16} height={16} />
               : <span className="activity-rule-blank" />}
-            <span className="activity-rule-line">{t(ACTIVITY_MESSAGE_KEYS[activity.type])} {activity.name}</span>
+            <span className="activity-rule-line">{formatActivityLine(t, activity)}</span>
             <code className="activity-rule-exe">{activity.processName}</code>
             <button
               className="ghost tiny"
