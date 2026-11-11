@@ -1816,6 +1816,14 @@ async function probeServerReachable(hostUrl: string, timeoutMillis: number = 4_0
  */
 export function refreshServerProfilesForHost(hostUrl: string): void {
   const normalized = normalizeHostUrl(hostUrl);
+  // The ACTIVE session lives outside sessionMap (only background records
+  // join it) — it needs its own look, or a provisioning run against the
+  // server the user is looking at never repainted it (live report 2026-11-11).
+  if (activeSession !== null && normalizeHostUrl(activeSession.hostUrl()) === normalized) {
+    void activeSession.refreshServerProfile().catch((error: unknown) => {
+      log.warn("session", `server profile refresh after provisioning failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
   for (const record of connectionDirectory.getSnapshot()) {
     if (normalizeHostUrl(record.hostUrl) !== normalized) {
       continue;

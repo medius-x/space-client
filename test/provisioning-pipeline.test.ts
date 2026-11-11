@@ -276,6 +276,26 @@ describe("provisioning pipeline", () => {
     expect(transport.commandWith("api/server/connection")).toContain("Bearer adopt.token");
   });
 
+  it("a non-owner adopt (the address PATCH answers 403) SUCCEEDS with the address left alone", async () => {
+    // The live 2026-11-11 report: an admin-level adopt re-run logged in fine,
+    // then the OWNER-only connection-info PATCH answered 403 — and the whole
+    // pipeline fell over with the server already redeployed. The 403 is the
+    // "not the owner" verdict: a log line, never a failure.
+    const transport = new FakeProvisioningTransport();
+    transport.files.set("/opt/oak/docker-compose.yml", "# existing deployment");
+    scriptHappyPath(transport);
+    transport.respond("test -f /opt/oak/caddy/certs/tls.crt", { stdout: "yes\n" });
+    transport.respond("api/auth/register", { stdout: `{"message":"Username already exists"}\n__STATUS__409` });
+    transport.respond("api/auth/login", { stdout: `{"token":"admin.token"}\n__STATUS__200` });
+    transport.respond("api/server/connection", { stdout: `\n__STATUS__403` });
+    const { events, emit } = collectEvents();
+
+    const outcome = await runProvisioningPipeline(transport, baseParams(), baseFiles(), emit, fixedRandomHex);
+
+    expect(outcome.ownerReady).toBe(true);
+    expect(events.find((event) => event.state === "failed")).toBeUndefined();
+  });
+
   it("rejects non-Linux hosts with a probe failure", async () => {
     const transport = new FakeProvisioningTransport();
     transport.respond("uname -s", { stdout: "Darwin\n" });

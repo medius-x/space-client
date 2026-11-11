@@ -791,6 +791,7 @@ export const EN = {
   "provisioning.detail.loggedInTyped": "the account already exists — logged in with the typed password",
   "provisioning.detail.loginMismatch": "the admin account exists with a DIFFERENT password — automatic login is not possible",
   "provisioning.detail.addressSet": "advertised address set to {host}",
+  "provisioning.detail.addressSkippedNotOwner": "the advertised address stays as the owner set it",
   "provisioning.detail.serverReady": "the server is ready",
   "provisioning.detail.serverReadyManual": "the server is ready — log in with the existing admin password",
   "provisioning.err.linuxOnly": "Only Linux servers are supported (this host runs {os}).",

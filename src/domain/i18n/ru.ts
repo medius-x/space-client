@@ -790,6 +790,7 @@ export const RU: Dict = {
   "provisioning.detail.loggedInTyped": "аккаунт уже существует — выполнен вход с введённым паролем",
   "provisioning.detail.loginMismatch": "админ-аккаунт существует с ДРУГИМ паролем — автоматический вход невозможен",
   "provisioning.detail.addressSet": "публичный адрес установлен: {host}",
+  "provisioning.detail.addressSkippedNotOwner": "адрес подключения не менялся — его задаёт владелец сервера",
   "provisioning.detail.serverReady": "сервер готов",
   "provisioning.detail.serverReadyManual": "сервер готов — войдите с существующим паролем администратора",
   "provisioning.err.linuxOnly": "Поддерживаются только Linux-серверы (этот хост работает на {os}).",

@@ -167,6 +167,13 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange, mode = "setup
       } else if (event.kind === "failed") {
         setError(`${event.message}`);
         setPhase("failed");
+        // The pipeline may still have REDEPLOYED the server before falling
+        // over (the register stage's owner-only steps are the live example):
+        // repaint the live sessions' cached profile anyway — one cheap GET,
+        // quietly harmless when the server never moved.
+        if (host.trim().length > 0) {
+          refreshServerProfilesForHost(host.trim());
+        }
         // The migration window is over (the run failed any way) — the old
         // server's backup schedule may fire again.
         if (session !== null) {

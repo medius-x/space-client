@@ -1333,7 +1333,16 @@ export async function runProvisioningPipeline(
       const connectionOutcome = parseCurlWithStatus(connectionResponse.stdout);
       if (connectionOutcome === null || connectionOutcome.status !== 200) {
         const status = connectionOutcome?.status ?? "no answer";
-        throw new ProvisioningFailure("register", t("provisioning.err.addressFailed", { status: String(status) }));
+        if (connectionOutcome?.status === 403) {
+          // A NON-OWNER adopt re-run (the account exists and the typed
+          // password logs in, but connection-info is the owner's alone): the
+          // address stays as the owner set it — NOT a pipeline failure (live
+          // report 2026-11-11: an admin-level adopt fell over right here, with
+          // the server already redeployed and its version never repainted).
+          emit({ stage: "register", state: "log", detail: t("provisioning.detail.addressSkippedNotOwner") });
+        } else {
+          throw new ProvisioningFailure("register", t("provisioning.err.addressFailed", { status: String(status) }));
+        }
       }
       emit({ stage: "register", state: "log", detail: t("provisioning.detail.addressSet", { host: publicHost }) });
     }
