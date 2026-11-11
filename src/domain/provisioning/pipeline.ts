@@ -205,6 +205,15 @@ const GHOST_PACKAGE_POLL_MS = 5_000;
 const GHOST_PACKAGE_CHECK = "pgrep -x apt-get >/dev/null 2>&1 || pgrep -x dpkg >/dev/null 2>&1";
 const GHOST_PACKAGE_TRIGGER = /apt|dpkg|get\.docker/;
 
+/** apt cache SELF-HEAL (live report 2026-11-11): an interrupted apt run
+ *  leaves /var/cache/apt/pkgcache.bin unrenamed and the next update dies with
+ *  "The package cache file is corrupted" (exit 100). Dropping the two cache
+ *  files and retrying the update is the documented cure — the files are
+ *  rebuildable, so the fallback is safe on every apt-based system. */
+const APT_UPDATE = "DEBIAN_FRONTEND=noninteractive apt-get update -qq"
+  + " || { rm -f /var/cache/apt/pkgcache.bin /var/cache/apt/srcpkgcache.bin;"
+  + " DEBIAN_FRONTEND=noninteractive apt-get update -qq; }";
+
 // Server-side downloads (the downloadOnServer contract): reachability probe,
 // poll cadence, the no-growth stall budget and the manual restarts on top of
 // curl's own --retry. A transfer that neither grows nor dies for the stall
@@ -544,7 +553,7 @@ export async function runProvisioningPipeline(
     const release = await run("probe", `. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || echo "unknown Linux"`);
     // curl drives the readiness poll and the registration calls below — some
     // minimal cloud images ship without it.
-    await must("probe", "command -v curl >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq curl)", {
+    await must("probe", `command -v curl >/dev/null 2>&1 || (${APT_UPDATE} && apt-get install -y -qq curl)`, {
       timeoutMs: FIREWALL_INSTALL_TIMEOUT_MS,
     });
 
@@ -640,7 +649,7 @@ export async function runProvisioningPipeline(
     await must("docker", "dpkg --configure -a", { timeoutMs: 600_000, onOutputLine: dockerLine });
     await must(
       "docker",
-      "DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get -y -qq dist-upgrade",
+      `${APT_UPDATE} && DEBIAN_FRONTEND=noninteractive apt-get -y -qq dist-upgrade`,
       { timeoutMs: SYSTEM_UPGRADE_TIMEOUT_MS, onOutputLine: dockerLine },
     );
     emit({ stage: "docker", state: "log", detail: t("provisioning.detail.packagesUpdated") });
@@ -829,7 +838,7 @@ export async function runProvisioningPipeline(
       emit({ stage: "firewall", state: "start" });
       await must(
         "firewall",
-        "command -v ufw >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq ufw)",
+        `command -v ufw >/dev/null 2>&1 || (${APT_UPDATE} && apt-get install -y -qq ufw)`,
         { timeoutMs: FIREWALL_INSTALL_TIMEOUT_MS },
       );
       await must(
