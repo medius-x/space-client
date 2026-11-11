@@ -8,8 +8,8 @@ edited into `v<version>.md` and emptied.
 What belongs here: features and fixes a user can see or feel. What
 does not: CI, docs, refactoring, internal rework.
 
-- You can now set an activity line under your name in the members list —
-  "playing CS2", "listening to radio", and so on. Register your own lines in
-  User Settings → General → Activity (pick the verb, name the activity) and
-  switch between them or turn them off any time; the line shows for everyone
-  in the roster and survives a client restart.
+- Your name in the members list can now carry an activity line — "playing
+  CS2", "listening to radio", and so on — and it flips on and off by itself:
+  register an application in User Settings → Activity (pick it from the
+  running list or browse for its .exe), and while that application runs,
+  everyone sees the line under your name; close it and the line goes away.

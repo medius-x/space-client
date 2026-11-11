@@ -1,5 +1,5 @@
 import { Emitter } from "../lib/store";
-import type { PresenceEvent, PresenceStatus, UserSummary, VoiceAfkStatusEvent, VoiceMemberEvent } from "../../types";
+import type { PresenceActivity, PresenceActivityEvent, PresenceEvent, PresenceStatus, UserSummary, VoiceAfkStatusEvent, VoiceMemberEvent } from "../../types";
 
 /**
  * Per-connection roster: users, presence set, voice-channel membership. Fed by the
@@ -12,6 +12,10 @@ export interface RosterState {
   /** Online voice members whose activity heartbeat is older than the AFK timeout
    *  (2026-11-04) — the roster dot tints yellow; a fresh heartbeat returns green. */
   afk: ReadonlySet<string>;
+  /** The roster ACTIVITY lines (2026-11-10, "playing CS2") — username → their line;
+   *  absent = no line. Seeded by GET /api/presence/activities, flipped by
+   *  /topic/presence.activity; presence OFFLINE drops the line locally. */
+  activities: ReadonlyMap<string, PresenceActivity>;
   voiceMembers: ReadonlyMap<number, ReadonlySet<string>>;
 }
 
@@ -20,6 +24,7 @@ export class RosterStore extends Emitter {
     users: [],
     presence: new Set<string>(),
     afk: new Set<string>(),
+    activities: new Map<string, PresenceActivity>(),
     voiceMembers: new Map<number, ReadonlySet<string>>(),
   };
   /**
@@ -35,6 +40,10 @@ export class RosterStore extends Emitter {
    *  flip to self-correct (up to one AFK timeout later). */
   private afkSnapshotInFlight = false;
   private readonly pendingAfkDeltas = new Map<string, boolean>();
+  /** The same guard for the ACTIVITY dimension (seeded by GET /api/presence/activities,
+   *  changed by /topic/presence.activity) — a change racing the fetch waits otherwise. */
+  private activitySnapshotInFlight = false;
+  private readonly pendingActivityDeltas = new Map<string, PresenceActivity | null>();
 
   getSnapshot = (): RosterState => this.state;
 
@@ -98,10 +107,14 @@ export class RosterStore extends Emitter {
     // Going fully offline wins over any AFK tint (the dot turns grey anyway) —
     // keeps the set from holding stale entries for users not even connected.
     const afk = new Set(this.state.afk);
+    const activities = new Map(this.state.activities);
     if (event.status !== "ONLINE") {
       afk.delete(event.username);
+      // Offline drops the activity line too (the server drops it silently —
+      // its last-session disconnect clear never broadcasts).
+      activities.delete(event.username);
     }
-    this.state = { ...this.state, presence, afk };
+    this.state = { ...this.state, presence, afk, activities };
     this.emit();
   }
 
@@ -150,6 +163,64 @@ export class RosterStore extends Emitter {
       afk.delete(event.username);
     }
     this.state = { ...this.state, afk };
+    this.emit();
+  }
+
+  /** Marks the ACTIVITY snapshot window open — changes from now on are buffered. */
+  beginActivitySnapshot(): void {
+    this.activitySnapshotInFlight = true;
+  }
+
+  /** Applies the activity snapshot, then replays the changes that raced it (last wins). */
+  setActivities(entries: readonly PresenceActivityEvent[]): void {
+    const activities = new Map<string, PresenceActivity>();
+    for (const entry of entries) {
+      if (entry.activity !== null) {
+        activities.set(entry.username, entry.activity);
+      }
+    }
+    for (const [username, activity] of this.pendingActivityDeltas) {
+      if (activity === null) {
+        activities.delete(username);
+      } else {
+        activities.set(username, activity);
+      }
+    }
+    this.pendingActivityDeltas.clear();
+    this.activitySnapshotInFlight = false;
+    this.state = { ...this.state, activities };
+    this.emit();
+  }
+
+  /** A failed snapshot must not leave the buffer open forever. */
+  abortActivitySnapshot(): void {
+    if (!this.activitySnapshotInFlight) {
+      return;
+    }
+    this.setActivities([...this.state.activities].map(([username, activity]) =>
+      ({ username, activity })));
+  }
+
+  /** /topic/presence.activity — a set/replace/clear; a no-op change does not emit. */
+  applyActivityEvent(event: PresenceActivityEvent): void {
+    if (this.activitySnapshotInFlight) {
+      this.pendingActivityDeltas.set(event.username, event.activity);
+      return;
+    }
+    const current = this.state.activities.get(event.username) ?? null;
+    const same = event.activity === null
+      ? current === null
+      : current !== null && current.type === event.activity.type && current.name === event.activity.name;
+    if (same) {
+      return;
+    }
+    const activities = new Map(this.state.activities);
+    if (event.activity === null) {
+      activities.delete(event.username);
+    } else {
+      activities.set(event.username, event.activity);
+    }
+    this.state = { ...this.state, activities };
     this.emit();
   }
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useStore } from "../hooks/useStore";
 import {
   appStore,
@@ -19,6 +19,10 @@ import { notifications } from "../notifications";
 import { ApiError } from "../../core/rest";
 import type { ClientSettings } from "../../domain/stores/SettingsStore";
 import type { LanguageSetting } from "../../domain/i18n/i18n";
+import { ACTIVITY_KINDS, ACTIVITY_NAME_MAX_LENGTH, MAX_REGISTERED_ACTIVITIES, normalizeProcessName } from "../../domain/logic/activity";
+import { ACTIVITY_MESSAGE_KEYS } from "../activity-display";
+import type { ActivityKind } from "../../types";
+import type { ProcessNameEntry } from "../bridges";
 import { advertisedAddress, DISK_CACHE_CHOICES, diskCacheLabel } from "../../domain/logic/settings-format";
 import { JUMBO_EMOJI_DEFAULT_PX, JUMBO_EMOJI_MAX_PX, JUMBO_EMOJI_MIN_PX } from "../../domain/logic/emoji-picker";
 import { deviceLabelFor, matchDeviceId } from "../../domain/logic/device-match";
@@ -47,13 +51,14 @@ import { PasswordInput } from "./PasswordInput";
  * (oak parity — their buttons act directly).
  */
 
-type Section = "general" | "account" | "audio" | "video" | "keybinds" | "appearance" | "notifications" | "diagnostics";
+type Section = "general" | "account" | "activity" | "audio" | "video" | "keybinds" | "appearance" | "notifications" | "diagnostics";
 
 /** The nav labels resolve through the dictionary at render time (the localization
  *  round): a module-level string map would freeze the language. */
-const SECTION_LABEL_KEYS: Record<Section, "settings.section.general" | "settings.section.account" | "settings.section.audio" | "settings.section.video" | "settings.section.keybinds" | "settings.section.appearance" | "settings.section.notifications" | "settings.section.diagnostics"> = {
+const SECTION_LABEL_KEYS: Record<Section, "settings.section.general" | "settings.section.account" | "settings.section.activity" | "settings.section.audio" | "settings.section.video" | "settings.section.keybinds" | "settings.section.appearance" | "settings.section.notifications" | "settings.section.diagnostics"> = {
   general: "settings.section.general",
   account: "settings.section.account",
+  activity: "settings.section.activity",
   audio: "settings.section.audio",
   video: "settings.section.video",
   keybinds: "settings.section.keybinds",
@@ -65,6 +70,7 @@ const SECTION_LABEL_KEYS: Record<Section, "settings.section.general" | "settings
 const SECTIONS: { key: Section }[] = [
   { key: "general" },
   { key: "account" },
+  { key: "activity" },
   { key: "audio" },
   { key: "video" },
   { key: "keybinds" },
@@ -151,10 +157,13 @@ export function UserSettingsModal({ session }: { session: ConnectionSession | nu
           </button>
         ))}
       </div>
-      {/* Keybinds owns its scroll (the Roles idiom): the body stops scrolling,
-          the page heading and the section's reset row stay pinned and only the
-          row list scrolls (user request 2026-10-07). */}
-      <div className={"settings-body" + (activeSection === "keybinds" ? " keybinds-pinned" : "")}>
+      {/* Keybinds and Activity own their scroll (the Roles idiom): the body
+          stops scrolling, the page heading and the section's controls stay
+          pinned and only the row list scrolls (user requests 2026-10-07 and
+          2026-11-11). */}
+      <div className={"settings-body"
+        + (activeSection === "keybinds" ? " keybinds-pinned" : "")
+        + (activeSection === "activity" ? " activity-pinned" : "")}>
         <SectionHeading title={headingTitle} />
         {activeSection === "general"
           ? (scope === "account"
@@ -162,6 +171,7 @@ export function UserSettingsModal({ session }: { session: ConnectionSession | nu
             : <GeneralClientSection session={session} />)
           : null}
         {activeSection === "account" && session !== null ? <AccountSection session={session} /> : null}
+        {activeSection === "activity" ? <ActivitySection /> : null}
         {activeSection === "audio" ? <AudioSection staged={staged} /> : null}
         {activeSection === "video" ? <VideoSection staged={staged} /> : null}
         {activeSection === "keybinds" ? <KeybindsSection /> : null}
@@ -918,6 +928,260 @@ function DownloadsFolderRow(): React.JSX.Element {
     </div>
   );
 }
+/** The ACTIVITY section (2026-11-10; AUTO-DETECT rework 2026-11-11): each rule
+ *  binds an exe to a line — while that process runs, the line shows in every
+ *  roster, when it closes the line goes (the Discord game-detection model
+ *  minus the game database). The picker is a CUSTOM dropdown (a native option
+ *  cannot host an icon): the Task-Manager presentation — applications with
+ *  their window titles and icons first, background processes by exe name
+ *  below; the live ● marks the rules the detector currently sees running. */
+function ActivitySection(): React.JSX.Element {
+  const t = useT();
+  const registered = useStore(settingsStore, (settings) => settings.registeredActivities);
+  const runningIds = useStore(settingsStore, (settings) => settings.runningActivityIds);
+  const [entries, setEntries] = useState<ProcessNameEntry[] | null>(null);
+  const [picked, setPicked] = useState<ProcessNameEntry | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const pickerRef = useRef<HTMLDivElement | null>(null);
+  const [newKind, setNewKind] = useState<ActivityKind>("playing");
+  const [newName, setNewName] = useState("");
+  const [nameTouched, setNameTouched] = useState(false);
+
+  // The process list reloads EVERY TIME the dropdown opens (user request
+  // 2026-11-11: an app started while the settings page was open must appear
+  // without reopening the settings; the mount run covers the section itself).
+  // SEQUENCED on purpose (the cold-restart race, 2026-11-11): describeApps
+  // reads main's app-pid map, which only a COMPLETED names() pass fills.
+  // Fired in parallel, it raced the cold map empty (nothing pending → null →
+  // no merge), and the first picker open after a restart showed bare window
+  // titles until the settings were closed and reopened.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const bridge = window.spaceProcesses;
+      if (bridge === undefined) {
+        return;
+      }
+      const names = await bridge.names();
+      if (cancelled) {
+        return;
+      }
+      setEntries(names);
+      if (names === null) {
+        return; // native list unavailable (no koffi)
+      }
+      // The describe pass (one PowerShell batch, cached in main): FileDescriptions
+      // ("Telegram Desktop" instead of the chat-title window name) + icons.
+      const described = await bridge.describeApps();
+      if (cancelled || described === null) {
+        return;
+      }
+      setEntries((current) => current === null
+        ? current
+        : current.map((entry) => {
+          const presentation = described[entry.name];
+          return presentation === undefined ? entry : { ...entry, label: presentation.label, icon: presentation.icon };
+        }));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pickerOpen]);
+
+  // The preset-menu idiom (SharePickerModal): outside click and capture-phase
+  // Escape close the dropdown; the Escape must not fall through to the modal.
+  useEffect(() => {
+    if (!pickerOpen) {
+      return;
+    }
+    const onPointerDown = (event: PointerEvent): void => {
+      if (pickerRef.current !== null && !pickerRef.current.contains(event.target as Node)) {
+        setPickerOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        setPickerOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [pickerOpen]);
+
+  // Icon backfill: a rule created before the describe pass returned (or one
+  // from an older KV) picks its icon up once the picker has learned it — the
+  // icon persists WITH the rule, so it survives the app closing.
+  useEffect(() => {
+    if (entries === null) {
+      return;
+    }
+    const iconByName = new Map(entries
+      .filter((entry) => entry.icon !== null)
+      .map((entry) => [entry.name, entry.icon as string]));
+    if (iconByName.size === 0) {
+      return;
+    }
+    let changed = false;
+    const next = registered.map((rule) => {
+      if (rule.icon !== null) {
+        return rule;
+      }
+      const icon = iconByName.get(rule.processName);
+      if (icon === undefined) {
+        return rule;
+      }
+      changed = true;
+      return { ...rule, icon };
+    });
+    if (changed) {
+      settingsStore.apply({ registeredActivities: next });
+    }
+  }, [entries, registered]);
+
+  /** Seed the line name from the PICKER'S PRESENTATION (FileDescription first,
+   *  "Telegram Desktop") — exactly the row the user clicked, not the window
+   *  title (a chat name) — until they type their own. */
+  const applyEntry = (entry: ProcessNameEntry): void => {
+    setPicked(entry);
+    setPickerOpen(false);
+    if (!nameTouched) {
+      const presented = entry.label ?? entry.title;
+      const stem = presented !== null && presented.length > 0
+        ? presented
+        : entry.name.replace(/\.exe$/i, "").replace(/[-_.]+/g, " ").trim();
+      setNewName(stem.length > 0 ? stem.charAt(0).toUpperCase() + stem.slice(1) : "");
+    }
+  };
+
+  const add = (): void => {
+    if (picked === null) {
+      return;
+    }
+    const processName = normalizeProcessName(picked.name);
+    const name = newName.trim();
+    if (processName === null || takenNames.has(processName) || name.length === 0
+        || registered.length >= MAX_REGISTERED_ACTIVITIES) {
+      return; // a duplicate app is not a second rule (user request 2026-11-11)
+    }
+    settingsStore.apply({
+      registeredActivities: [...registered, { id: crypto.randomUUID(), processName, type: newKind, name, icon: picked.icon }],
+    });
+    setPicked(null);
+    setNewName("");
+    setNameTouched(false);
+  };
+
+  const running = new Set(runningIds);
+  const apps = (entries ?? []).filter((entry) => entry.app);
+  const background = (entries ?? []).filter((entry) => !entry.app);
+  /** One rule per exe: rows already registered read as taken in the picker and
+   *  cannot be picked again (the Add button stays grey for them too). */
+  const takenNames = new Set(registered.map((rule) => rule.processName));
+  const duplicatePick = picked !== null && takenNames.has(normalizeProcessName(picked.name) ?? "");
+  const renderRow = (entry: ProcessNameEntry, keyPrefix: string): React.JSX.Element => {
+    const taken = takenNames.has(normalizeProcessName(entry.name) ?? "");
+    return (
+      <button
+        key={keyPrefix + entry.name}
+        className={"activity-picker-row" + (taken ? " taken" : "")}
+        title={taken ? t("settings.activityRegistered") : undefined}
+        onClick={() => {
+          if (!taken) {
+            applyEntry(entry);
+          }
+        }}
+      >
+        {entry.icon !== null ? <img src={entry.icon} alt="" width={16} height={16} /> : <span className="activity-picker-blank" />}
+        <span className="activity-picker-title">{entry.label ?? entry.title ?? entry.name}</span>
+        {taken ? <span className="icon mdi-check activity-picker-check" /> : <code>{entry.name}</code>}
+      </button>
+    );
+  };
+  return (
+    <div className="activity-section">
+      <h3>{t("settings.activityHeader")}</h3>
+      <div className="settings-hint">{t("settings.activityHint")}</div>
+      <div className="activity-picker" ref={pickerRef}>
+        <button className="activity-picker-button" onClick={() => setPickerOpen((open) => !open)}>
+          {picked === null
+            ? t("settings.activityPickRunning")
+            : <span className="activity-picker-chosen">
+              {picked.icon !== null ? <img src={picked.icon} alt="" width={16} height={16} /> : null}
+              <span>{picked.label ?? picked.title ?? picked.name}</span>
+              <code>{picked.name}</code>
+            </span>}
+          <span className="caret">▾</span>
+        </button>
+        {pickerOpen ? (
+          <div className="activity-picker-menu">
+            {apps.length > 0 ? <div className="activity-picker-group">{t("settings.activityGroupApps")}</div> : null}
+            {apps.map((entry) => renderRow(entry, "a"))}
+            {background.length > 0 ? <div className="activity-picker-group">{t("settings.activityGroupBackground")}</div> : null}
+            {background.map((entry) => renderRow(entry, "b"))}
+          </div>
+        ) : null}
+      </div>
+      <div className="activity-add">
+        <select value={newKind} onChange={(event) => setNewKind(event.target.value as ActivityKind)}>
+          {ACTIVITY_KINDS.map((kind) => (
+            <option key={kind} value={kind}>{t(ACTIVITY_MESSAGE_KEYS[kind])}</option>
+          ))}
+        </select>
+        <input
+          type="text"
+          value={newName}
+          maxLength={ACTIVITY_NAME_MAX_LENGTH}
+          placeholder={t("settings.activityNamePlaceholder")}
+          onChange={(event) => {
+            setNewName(event.target.value);
+            setNameTouched(true);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              add();
+            }
+          }}
+        />
+        <button
+          className="primary"
+          disabled={picked === null || duplicatePick || newName.trim().length === 0
+            || registered.length >= MAX_REGISTERED_ACTIVITIES}
+          onClick={add}
+        >
+          {t("settings.activityAdd")}
+        </button>
+      </div>
+      {/* The registered rules own the scroll (the Keybinds/Roles idiom, user
+          request 2026-11-11): the app picker and the add row stay pinned
+          however long the list grows. */}
+      <div className="activity-rules">
+        {registered.map((activity) => (
+          <div key={activity.id} className={"activity-rule" + (running.has(activity.id) ? " running" : "")}>
+            <span className={"activity-rule-dot" + (running.has(activity.id) ? " on" : "")}
+              title={running.has(activity.id) ? t("settings.activityRunning") : t("settings.activityIdle")} />
+            {activity.icon !== null
+              ? <img src={activity.icon} alt="" width={16} height={16} />
+              : <span className="activity-rule-blank" />}
+            <span className="activity-rule-line">{t(ACTIVITY_MESSAGE_KEYS[activity.type])} {activity.name}</span>
+            <code className="activity-rule-exe">{activity.processName}</code>
+            <button
+              className="ghost tiny"
+              title={t("settings.activityDelete")}
+              onClick={() => settingsStore.apply({
+                registeredActivities: registered.filter((row) => row.id !== activity.id),
+              })}
+            ><span className="icon mdi-trash-can" /></button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 /** General (CLIENT scope) — the ⚙ window's front tab (user request
  *  2026-10-19): the downloads folder and the disk-cache size moved here from
@@ -958,6 +1222,7 @@ function GeneralClientSection({ session }: { session: ConnectionSession | null }
         <span>{t("settings.spellCheck")}</span>
       </label>
       <div className="settings-hint">{t("settings.spellHint")}</div>
+
       <h3>{t("settings.updatesHeader")}</h3>
       <UpdatesSettingsBlock />
       <h3>{t("settings.downloadsHeader")}</h3>
@@ -975,6 +1240,7 @@ function GeneralClientSection({ session }: { session: ConnectionSession | null }
     </div>
   );
 }
+
 
 /** The Updates block of the client General section (user decisions 2026-10-20):
  *  the always-on "Update available" row (it ignores both Skip and the banner's

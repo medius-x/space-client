@@ -224,6 +224,117 @@ body.channel-dragging * { cursor: grabbing !important; }
 }
 .member-row:hover { background: var(--sp-hover); }
 
+/* The roster row's text column (2026-11-10): the nickname plus the optional
+   activity line ("playing CS2") as a muted second row, Discord's roster stack.
+   NO flex:1 — the column must stay as wide as its text so the owner crown
+   keeps sitting right after the name (a stretched column pushed it to the
+   row's edge, live report 2026-11-11). */
+.member-line {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.member-activity {
+  font-size: 11px;
+  line-height: 1.25;
+  color: var(--sp-text-dim);
+  font-style: italic; /* the Discord-style activity italic (user request 2026-11-11) */
+  /* Italic glyphs overhang their advance width, so a line filling the box
+     exactly had its LAST letter's tail clipped by overflow:hidden with no
+     ellipsis — a right inset gives the slant room (2026-11-11). */
+  padding-right: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The activity section (2026-11-11 auto-detect rework): one RULE row per
+   registered app — a live running dot, the line, the exe name, delete —
+   plus the two-row add form (app picker, then verb + line text). */
+/* Bare rows with the Roles-list divider (list-row's own border-bottom idiom,
+   user request 2026-11-11) — not cards. */
+.activity-rule {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--sp-surface);
+  color: var(--sp-text-muted);
+  font-size: 13px;
+}
+.activity-rule.running { color: var(--sp-text); }
+.activity-rule:hover { background: var(--sp-hover); color: var(--sp-text); }
+.activity-rule-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--sp-text-dim);
+  flex-shrink: 0;
+}
+.activity-rule-dot.on { background: var(--sp-green); }
+.activity-rule-line { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-rule-exe {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--sp-text-dim);
+  background: var(--sp-btn-secondary-bg, rgba(255, 255, 255, 0.06));
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+/* The ADD row: kind picker + name field + Add button in ONE line spanning the
+   app picker's full width above it (user request 2026-11-11). Deliberately
+   NOT a settings-field — that class is a label-over-control COLUMN that later
+   in this file overrode the row (the column regression) and pinned a 420px
+   max-width misaligned with the picker. The kind picker and the button keep
+   their own width; only the NAME field stretches. */
+.activity-add {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch; /* the NATIVE select's own height drives the row — the
+                             button and the name field stretch to match it, never
+                             the other way around (the wrong-baseline lesson,
+                             twice, 2026-11-11) */
+  gap: 6px;
+  margin-top: 6px;
+  width: 100%;
+}
+.activity-add select, .activity-add button { flex: 0 0 auto; }
+/* No lingering focus ring on the kind picker (user request 2026-11-11): after
+   a choice Chromium keeps the native select focused and draws its active
+   frame — the voice-toggle precedent of dropping the ring entirely. The value
+   in the box already says what was chosen. */
+.activity-add select:focus,
+.activity-add select:focus-visible { outline: none; }
+/* No heights anywhere: the kind picker keeps its native select look AND size,
+   and the button/input simply stretch to it. The input selectors carry
+   [type="text"] ON PURPOSE: the global input[type=text] skin (padding 10px,
+   font 14 — the "huge fields" regression, 2026-11-11) sits LATER in this file
+   at equal specificity and would otherwise win this early block. */
+.activity-add button { padding: 0 14px; font-size: 13px; }
+/* The name field wears the NATIVE select's own skin (user request 2026-11-11,
+   "same as the kind picker"): the CSS system colors resolve under
+   color-scheme:dark to exactly what Chromium paints a native <select> with —
+   the field and the picker read as one control family. */
+.activity-add input[type="text"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 12px;
+  font-size: 13px;
+  background: Field;
+  border: 1px solid color-mix(in srgb, ButtonBorder 40%, Field);
+  border-radius: 2px;
+  color: FieldText;
+}
+/* Focus changes NOTHING here (user request 2026-11-11): the border keeps the
+   same system color at rest and under the caret — the blinking caret alone
+   says "focused". */
+.activity-add input[type="text"]:focus { outline: none; border-color: color-mix(in srgb, ButtonBorder 40%, Field); }
+/* The registered rules own the scroll (the Keybinds/Roles idiom): the pickers
+   above stay pinned however long the list grows (user request 2026-11-11). */
+.activity-rules { flex: 1; min-height: 0; overflow-y: auto; margin-top: 12px; }
+.activity-rule img, .activity-rule-blank { width: 16px; height: 16px; flex-shrink: 0; }
+.activity-rule-blank { display: inline-block; }
+
 .presence-dot {
   width: 10px; height: 10px; border-radius: 50%;
   background: var(--sp-text-dim);
@@ -3621,12 +3732,13 @@ input[type="checkbox"]:disabled { opacity: 0.5; cursor: default; }
   margin-top: 12px;
 }
 
-/* The Keybinds tab owns its scroll (user request 2026-10-07, the Roles footer
-   idiom): the settings body stops scrolling, so the page heading and the reset
-   row stay pinned; only the row list inside the section scrolls, running down
-   into the divider above the button. */
-.settings-body.keybinds-pinned { display: flex; flex-direction: column; overflow: hidden; }
-.keybinds-section { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* The Keybinds and Activity tabs own their scroll (user requests 2026-10-07
+   and 2026-11-11, the Roles footer idiom): the settings body stops scrolling,
+   so the page heading and the pinned controls stay put; only the row list
+   inside the section scrolls, running down into the divider above the button. */
+.settings-body.keybinds-pinned,
+.settings-body.activity-pinned { display: flex; flex-direction: column; overflow: hidden; }
+.keybinds-section, .activity-section { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .keybinds-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 .keybind-reset-all {
   padding: 6px 14px;
@@ -4212,6 +4324,7 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 .friend-picker-list:hover::-webkit-scrollbar-thumb,
 .settings-body:hover::-webkit-scrollbar-thumb,
 .keybinds-scroll:hover::-webkit-scrollbar-thumb,
+.activity-rules:hover::-webkit-scrollbar-thumb,
 .roles-list:hover::-webkit-scrollbar-thumb,
 .role-tab-body:hover::-webkit-scrollbar-thumb,
 .room-view-body:hover::-webkit-scrollbar-thumb,
@@ -4714,3 +4827,74 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 /* While the pill is idle-hidden in fullscreen, the IDLE CURSOR hides with it
    (video-player semantics — the pop-out share window idiom). */
 .call-watch-stage:fullscreen.hide-cursor { cursor: none; }
+
+/* The activity process picker (2026-11-11): a custom dropdown — a native
+   <option> cannot host the 16×16 app icons. Task-Manager presentation:
+   titled applications with icons first, exe-named background rows below. */
+.activity-picker { position: relative; margin-top: 6px; }
+/* The app picker wears the NATIVE select's own skin (user request 2026-11-11:
+   "look like the other pickers"): the CSS system colors resolve under
+   color-scheme:dark to exactly the values Chromium paints a native <select>
+   with — Field for the background, ButtonBorder for the frame — so the match
+   holds on every system instead of a hand-tuned imitation. */
+.activity-picker-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 10px;
+  background: Field;
+  border: 1px solid color-mix(in srgb, ButtonBorder 40%, Field);
+  border-radius: 2px;
+  color: FieldText;
+  font-size: 13px;
+  cursor: pointer;
+}
+.activity-picker-button:hover { color: var(--sp-text); }
+.activity-picker-button .caret { margin-left: auto; color: var(--sp-text-dim); }
+.activity-picker-chosen { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+.activity-picker-chosen code { margin-left: auto; font-size: 11px; color: var(--sp-text-dim); }
+.activity-picker-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  z-index: 40;
+  background: var(--sp-popout-bg, #232428);
+  border: 1px solid var(--sp-border, rgba(255, 255, 255, 0.08));
+  border-radius: 4px;
+  padding: 4px 0;
+}
+.activity-picker-group {
+  padding: 6px 10px 2px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--sp-text-dim);
+}
+.activity-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 10px;
+  background: none;
+  border: none;
+  color: var(--sp-text-muted);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.activity-picker-row:hover { background: var(--sp-hover); color: var(--sp-text); }
+/* An exe that already has a rule: dimmed, a green check instead of the exe
+   badge, and the row cannot be picked again (user request 2026-11-11). */
+.activity-picker-row.taken { color: var(--sp-text-dim); cursor: default; }
+.activity-picker-row.taken:hover { background: none; color: var(--sp-text-dim); }
+.activity-picker-check { font-size: 14px; color: var(--sp-green); }
+.activity-picker-row img, .activity-picker-blank { width: 16px; height: 16px; flex-shrink: 0; }
+.activity-picker-blank { display: inline-block; }
+.activity-picker-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-picker-row code { font-size: 11px; color: var(--sp-text-dim); }

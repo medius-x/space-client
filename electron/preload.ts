@@ -205,6 +205,20 @@ contextBridge.exposeInMainWorld("spaceHotkey", {
   },
 });
 
+/** The roster activity auto-detect bridge (2026-11-11): the running-process
+ *  list split into applications and background processes (the Task-Manager
+ *  grouping) — null when the native list is unavailable (no koffi). */
+contextBridge.exposeInMainWorld("spaceProcesses", {
+  names(): Promise<unknown> {
+    return ipcRenderer.invoke("space-processes:names");
+  },
+  /** FileDescription + icon for the uncached apps (one PowerShell batch) —
+   *  call when the picker OPENS; the result also lands in main's cache. */
+  describeApps(): Promise<unknown> {
+    return ipcRenderer.invoke("space-processes:describeApps");
+  },
+});
+
 /** Capture-picker bridge (M4): desktop sources with previews + the grant hint. */
 contextBridge.exposeInMainWorld("spaceCapture", {
   /** Optional type filter — e.g. the self-test needs only screens, and skipping

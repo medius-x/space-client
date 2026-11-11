@@ -24,6 +24,10 @@ declare const require: (id: string) => unknown;
 type KoffiModule = {
   load: (library: string) => { func: (signature: string) => (...args: never[]) => unknown };
   as: (value: unknown, type: string) => unknown;
+  proto: (signature: string) => unknown;
+  pointer: (type: unknown) => unknown;
+  register: (callback: (hwnd: unknown, lParam: unknown) => number, pointerType: unknown) => unknown;
+  unregister: (callback: unknown) => void;
 };
 
 let koffi: KoffiModule | null = null;
@@ -45,10 +49,15 @@ export function isWindowLivenessAvailable(): boolean {
 }
 
 /** The shared user32 binding (IsWindow for the watchdog + the grant-cache
- *  probe, GetClientRect for the picker's resolution cutoff). */
+ *  probe, GetClientRect for the picker's resolution cutoff, GetWindowThread
+ * ProcessId for the activity picker's app/background split). */
 interface User32Fns {
   isWindow: (hwnd: unknown) => number;
   getClientRect: (hwnd: unknown, rect: unknown) => number;
+  getWindowThreadProcessId: (hwnd: unknown, pidOut: unknown) => number;
+  isWindowVisible: (hwnd: unknown) => number;
+  getWindowTextW: (hwnd: unknown, text: unknown, maxCount: number) => number;
+  enumWindows: (callback: unknown, lParam: number) => number;
 }
 
 let user32Fns: User32Fns | null = null;
@@ -61,13 +70,129 @@ function ensureUser32(): User32Fns | null {
       // _Out_ rect — koffi copies the 16-byte RECT (4 × int32 LE) into the
       // Node Buffer argument after the call (the memcpyOut idiom).
       getClientRect: user32.func("int GetClientRect(void *hwnd, _Out_ void *rect)") as unknown as (hwnd: unknown, rect: unknown) => number,
+      getWindowThreadProcessId: user32.func("uint32_t GetWindowThreadProcessId(void *hwnd, _Out_ uint32_t *pid)") as unknown as (hwnd: unknown, pidOut: unknown) => number,
+      isWindowVisible: user32.func("int IsWindowVisible(void *hwnd)") as unknown as (hwnd: unknown) => number,
+      getWindowTextW: user32.func("int GetWindowTextW(void *hwnd, _Out_ wchar_t *text, int maxCount)") as unknown as (hwnd: unknown, text: unknown, maxCount: number) => number,
+      enumWindows: user32.func("int EnumWindows(void *callback, intptr_t lParam)") as unknown as (callback: unknown, lParam: number) => number,
     };
   }
   return user32Fns;
 }
 
+/** The EnumWindows callback POINTER type — a LAZY SINGLETON, the named-type
+ *  registration lesson of process-snapshot (a second registration throws).
+ *  koffi.register wants the POINTER flavor: koffi.pointer(proto(fn)) — the
+ *  bare function prototype throws "expected <callback> *" (probed live,
+ *  2026-11-11). */
+let enumCbPointer: unknown = null;
+
+function ensureEnumCbPointer(): unknown {
+  if (enumCbPointer === null && koffi !== null) {
+    enumCbPointer = koffi.pointer(koffi.proto("int32_t OAK_EnumWindowsCb(void *hwnd, intptr_t lParam)"));
+  }
+  return enumCbPointer;
+}
+
+/** DWMWA_CLOAKED: a UWP app's "window" lingers INVISIBLE-but-present after the
+ *  real window closes (the Photos.exe trap); those must not read as apps. */
+const DWMWA_CLOAKED = 14;
+
+interface DwmFns {
+  getDwmWindowAttribute: (hwnd: unknown, attribute: number, value: unknown, size: number) => number;
+}
+
+let dwmFns: DwmFns | null | undefined; // undefined = not attempted yet
+
+function ensureDwmApi(): DwmFns | null {
+  if (dwmFns === undefined) {
+    dwmFns = null;
+    try {
+      if (koffi !== null) {
+        const dwm = koffi.load("dwmapi.dll");
+        dwmFns = {
+          getDwmWindowAttribute: dwm.func("int32_t DwmGetWindowAttribute(void *hwnd, uint32_t attr, void *value, uint32_t size)") as unknown as (hwnd: unknown, attribute: number, value: unknown, size: number) => number,
+        };
+      }
+    } catch {
+      dwmFns = null; // pre-DWM Windows — every window reads as uncloaked
+    }
+  }
+  return dwmFns;
+}
+
 function hwndHandle(hwnd: number): unknown {
   return koffi!.as(BigInt(hwnd), "void *");
+}
+
+/** The owning process id of a window (null when unknown — the idiom of
+ *  system-audio's windowPid): the activity picker classifies a process as an
+ *  "application" when one of its windows is capturable. */
+export function windowPidOf(hwnd: number): number | null {
+  const user32 = ensureUser32();
+  if (user32 === null) {
+    return null;
+  }
+  const pidOut = Buffer.alloc(4);
+  const threadId = user32.getWindowThreadProcessId(hwndHandle(hwnd), pidOut);
+  if (threadId === 0) {
+    return null; // not a window anymore
+  }
+  const pid = pidOut.readUInt32LE(0);
+  return pid > 0 ? pid : null;
+}
+
+/**
+ * VISIBLE top-level windows with titles: pid → title, the first window per
+ * pid winning (the picker's idiom). MINIMIZED windows are included —
+ * minimizing does not unset WS_VISIBLE, and desktopCapturer (the picker's old
+ * window layer) drops them (the user report, 2026-11-11); cloaked UWP
+ * remnants are excluded via DWMWA_CLOAKED. Null when unavailable (no koffi /
+ * not win32) — the caller then reads everyone as a background process.
+ */
+export function visibleWindowTitlesByPid(): Map<number, string> | null {
+  const user32 = ensureUser32();
+  const callbackType = ensureEnumCbPointer();
+  if (user32 === null || callbackType === null) {
+    return null;
+  }
+  const dwm = ensureDwmApi();
+  const out = new Map<number, string>();
+  let registered: unknown = null;
+  try {
+    registered = koffi!.register((hwnd: unknown): number => {
+      if (user32.isWindowVisible(hwnd) === 0) {
+        return 1; // keep enumerating
+      }
+      if (dwm !== null) {
+        const cloaked = Buffer.alloc(4);
+        if (dwm.getDwmWindowAttribute(hwnd, DWMWA_CLOAKED, cloaked, 4) === 0 && cloaked.readUInt32LE(0) !== 0) {
+          return 1; // a suspended UWP shell behind a closed window
+        }
+      }
+      const text = Buffer.alloc(512); // wchar_t[256]
+      const length = user32.getWindowTextW(hwnd, text, 256);
+      if (length <= 0) {
+        return 1;
+      }
+      const pidOut = Buffer.alloc(4);
+      if (user32.getWindowThreadProcessId(hwnd, pidOut) === 0) {
+        return 1;
+      }
+      const pid = pidOut.readUInt32LE(0);
+      if (pid > 0 && !out.has(pid)) {
+        out.set(pid, text.slice(0, length * 2).toString("utf16le"));
+      }
+      return 1; // keep enumerating
+    }, callbackType);
+    user32.enumWindows(registered, 0);
+  } catch {
+    return out.size > 0 ? out : null; // a partial walk still classifies what it saw
+  } finally {
+    if (registered !== null) {
+      koffi!.unregister(registered);
+    }
+  }
+  return out;
 }
 
 let watchTimer: ReturnType<typeof setInterval> | null = null;

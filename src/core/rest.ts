@@ -37,6 +37,7 @@ import type {
   BackupEstimate,
   BackupStatus,
   MigrationTransfer,
+  PresenceActivityEvent,
   UserRenamedResponse,
   UserResponse,
   UserSummary,
@@ -206,6 +207,19 @@ export class RestClient {
   async getVoiceAfk(): Promise<string[]> {
     try {
       return await this.request<string[]>("/api/voice/afk", { method: "GET" });
+    } catch (error: unknown) {
+      if (error instanceof ApiError && error.status === 404) {
+        return [];
+      }
+      throw error;
+    }
+  }
+
+  /** Activity-line snapshot (the roster seed); 404 on an older server degrades to
+   *  "no lines" — the client also gates on the presence-activity capability. */
+  async getPresenceActivities(): Promise<PresenceActivityEvent[]> {
+    try {
+      return await this.request<PresenceActivityEvent[]>("/api/presence/activities", { method: "GET" });
     } catch (error: unknown) {
       if (error instanceof ApiError && error.status === 404) {
         return [];

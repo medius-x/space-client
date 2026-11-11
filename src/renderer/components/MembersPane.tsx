@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import { useStore } from "../hooks/useStore";
 import { appStore, callUser, openDmWithUser } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
+import type { PresenceActivity } from "../../types";
+import { ACTIVITY_MESSAGE_KEYS } from "../activity-display";
 import type { Relationship, Role, ServerMember } from "../../types";
 import { BAN_MEMBERS_PERMISSION, KICK_MEMBERS_PERMISSION } from "../../types";
 import { buildRosterGroups, canActOn, topPosition, type HierarchyView } from "../../domain/logic/roster-grouping";
@@ -142,6 +144,7 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
                 away={roster.afk.has(entry.member.username)}
                 isSelf={entry.isSelf}
                 nameColor={entry.nameColor}
+                activity={roster.activities.get(entry.member.username) ?? null}
                 onMenu={(event) => {
                   event.preventDefault();
                   if (entry.member.username !== ownUsername) {
@@ -191,13 +194,14 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
 }
 
 /** One roster row: 36px avatar with the presence dot overlaid (oak's MemberNode). */
-function MemberRow({ session, member, online, away, isSelf, nameColor, onMenu }: {
+function MemberRow({ session, member, online, away, isSelf, nameColor, activity, onMenu }: {
   session: ConnectionSession;
   member: ServerMember;
   online: boolean;
   away: boolean;
   isSelf: boolean;
   nameColor: string | null;
+  activity: PresenceActivity | null;
   onMenu: (event: React.MouseEvent) => void;
 }): React.JSX.Element {
   const t = useT();
@@ -207,8 +211,15 @@ function MemberRow({ session, member, online, away, isSelf, nameColor, onMenu }:
           offline (a missing dot read as "no status", live report); yellow tints
           an online member idle past the AFK timeout (2026-11-04). */}
       <Avatar session={session} username={member.username} size={36} showPresence online={online} away={away} />
-      <span className="member-name" style={{ color: nameColor ?? (online ? "var(--sp-text)" : "var(--sp-text-muted)") }}>
-        {member.nickname}{isSelf ? ` ${t("members.you")}` : ""}
+      <span className="member-line">
+        <span className="member-name" style={{ color: nameColor ?? (online ? "var(--sp-text)" : "var(--sp-text-muted)") }}>
+          {member.nickname}{isSelf ? ` ${t("members.you")}` : ""}
+        </span>
+        {/* The user-set activity line ("playing CS2", 2026-11-10) — Discord renders
+            it as a muted second line under the nickname. */}
+        {activity !== null && online ? (
+          <span className="member-activity">{t(ACTIVITY_MESSAGE_KEYS[activity.type])} {activity.name}</span>
+        ) : null}
       </span>
       {member.owner ? <span className="owner-badge" title={t("members.serverOwner")}>👑</span> : null}
     </div>

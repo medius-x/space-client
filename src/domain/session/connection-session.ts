@@ -24,6 +24,8 @@ import type {
   ServerProfile,
   Sticker,
   UserSummary,
+  PresenceActivity,
+  PresenceActivityEvent,
   VoiceAfkStatusEvent,
   VoiceControlCommand,
   VoiceControlEvent,
@@ -242,6 +244,11 @@ export class ConnectionSession {
    *  reconnect window is never lost. Null until the runtime's first decision. */
   private rosterAfkSent: boolean | null = null;
 
+  /** The session's LAST delivered activity line (null = "no line reported yet";
+   *  an explicit clear is reported as the null INSIDE the stored object — see
+   *  reportPresenceActivity). Re-delivered on every (re)connect. */
+  private presenceActivitySent: { line: PresenceActivity | null } | null = null;
+
   constructor(options: ConnectionSessionOptions) {
     this.directory = options.directory;
     this.recordId = options.recordId;
@@ -350,6 +357,9 @@ export class ConnectionSession {
     // Our own roster AFK verdict, if the runtime already has one (the app ticked
     // before this session existed) — the server forgets it with the socket.
     this.deliverRosterAfk();
+    // Same for the activity line: a session born after the user set a line
+    // reports it immediately (the other sessions already do).
+    this.deliverPresenceActivity();
 
     // Post-subscription snapshots: deltas arriving during the fetch ride the
     // pendingDeltas buffer inside the stores, so nothing is lost either side.
@@ -388,6 +398,21 @@ export class ConnectionSession {
         .catch((error: unknown) => {
           log.warn("session", `afk snapshot failed: ${error instanceof Error ? error.message : String(error)}`);
           this.rosterStore.abortAfkSnapshot();
+        });
+    }
+    // The activity lines seed the same way (their own race guard), gated on the
+    // capability — an older server has neither the endpoint nor the topic.
+    if (hasServerCapability(this.serverProfile, "presence-activity")) {
+      this.rosterStore.beginActivitySnapshot();
+      void this.rest.getPresenceActivities()
+        .then((entries) => {
+          if (!this.disposed) {
+            this.rosterStore.setActivities(entries);
+          }
+        })
+        .catch((error: unknown) => {
+          log.warn("session", `activity snapshot failed: ${error instanceof Error ? error.message : String(error)}`);
+          this.rosterStore.abortActivitySnapshot();
         });
     }
 
@@ -1493,6 +1518,11 @@ export class ConnectionSession {
         this.rosterStore.applyAfkEvent(JSON.parse(raw) as VoiceAfkStatusEvent);
       });
     }
+    if (hasServerCapability(this.serverProfile, "presence-activity")) {
+      this.stomp.subscribe("/topic/presence.activity", (raw) => {
+        this.rosterStore.applyActivityEvent(JSON.parse(raw) as PresenceActivityEvent);
+      });
+    }
     this.stomp.subscribe("/topic/voice.state", (raw) => {
       const state = JSON.parse(raw) as VoiceControlState;
       this.voiceControlStore.applyState(state);
@@ -1748,6 +1778,24 @@ export class ConnectionSession {
     }
   }
 
+  /** The user's roster ACTIVITY line (2026-11-10): the same explicit-transition
+   *  protocol as the AFK verdict — reportRosterAfk's contract word for word,
+   *  with the line object in place of the boolean (null = clear). Re-delivered
+   *  on connect/reconnect; an older server drops the send silently. */
+  reportPresenceActivity(activity: PresenceActivity | null): void {
+    this.presenceActivitySent = { line: activity }; // a clear is a REPORTED state, not "never reported"
+    if (!this.disposed) {
+      this.stomp.send("/app/presence.activity", { activity });
+    }
+  }
+
+  /** (Re)deliver the stored activity line — connect and reconnect. */
+  private deliverPresenceActivity(): void {
+    if (this.presenceActivitySent !== null && !this.disposed) {
+      this.stomp.send("/app/presence.activity", { activity: this.presenceActivitySent.line });
+    }
+  }
+
   /**
    * A WS gap swallowed every /topic push the server sent during it — nothing
    * arrives retroactively. On every REconnect re-take the same snapshot set
@@ -1764,6 +1812,7 @@ export class ConnectionSession {
     log.info("session", "STOMP reconnected — resyncing what the gap missed");
     // Our own AFK verdict first — the server dropped it with the socket.
     this.deliverRosterAfk();
+    this.deliverPresenceActivity(); // the activity line died with the socket too
     // Presence keeps its snapshot+delta-buffer discipline (see start()).
     this.rosterStore.beginPresenceSnapshot();
     void this.rest.getPresence()
@@ -1797,6 +1846,20 @@ export class ConnectionSession {
         .catch((error: unknown) => {
           log.warn("session", `afk resync failed: ${error instanceof Error ? error.message : String(error)}`);
           this.rosterStore.abortAfkSnapshot();
+        });
+    }
+    // The activity lines re-seed the same way (see start()).
+    if (hasServerCapability(this.serverProfile, "presence-activity")) {
+      this.rosterStore.beginActivitySnapshot();
+      void this.rest.getPresenceActivities()
+        .then((entries) => {
+          if (!this.disposed) {
+            this.rosterStore.setActivities(entries);
+          }
+        })
+        .catch((error: unknown) => {
+          log.warn("session", `activity resync failed: ${error instanceof Error ? error.message : String(error)}`);
+          this.rosterStore.abortActivitySnapshot();
         });
     }
     this.socialRefresh.request();

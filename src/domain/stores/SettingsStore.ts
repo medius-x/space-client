@@ -5,6 +5,56 @@ import { clampJumboEmojiSize } from "../logic/emoji-picker";
 import { sanitizeDeepFilterSuppressionLevel } from "../logic/ns-settings";
 import { sanitizeRecentExpressions } from "../logic/reaction-picker";
 import type { SavedSharePreset } from "../logic/share-quality";
+import { MAX_REGISTERED_ACTIVITIES, normalizeProcessName, sanitizeActivity, sanitizeActivityIcon } from "../logic/activity";
+import type { ActivityKind } from "../../types";
+
+/** One registered roster activity rule (client settings): exe + verb + name + client id. */
+export interface RegisteredActivity {
+  id: string;
+  /** The exe NAME the auto-detect matches (lowercase basename, e.g. "cs2.exe"). */
+  processName: string;
+  type: ActivityKind;
+  name: string;
+  /** The app icon (16×16 data URL) captured from the picker's describe pass —
+   *  persisted WITH the rule so it survives the app closing. Null until known. */
+  icon: string | null;
+}
+
+/** Loader sanitize: valid rows only (verb/name/process shape), ids guaranteed
+ *  unique, the cap enforced (newest kept). Hand-edited KV garbage drops silently. */
+export function sanitizeRegisteredActivities(raw: unknown): RegisteredActivity[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const seenProcessNames = new Set<string>();
+  const out: RegisteredActivity[] = [];
+  for (const value of raw) {
+    const activity = sanitizeActivity(value);
+    const processName = normalizeProcessName((value as { processName?: unknown }).processName);
+    const record = value as { id?: unknown };
+    if (activity === null || processName === null
+        || typeof record.id !== "string" || record.id.length === 0 || seen.has(record.id)) {
+      continue;
+    }
+    // ONE rule per exe (user request 2026-11-11): legacy duplicates written by
+    // the pre-guard client drop at load; the FIRST row survives — exactly the
+    // row the detector's first-match order already favored.
+    if (seenProcessNames.has(processName)) {
+      continue;
+    }
+    seen.add(record.id);
+    seenProcessNames.add(processName);
+    out.push({
+      id: record.id,
+      processName,
+      type: activity.type,
+      name: activity.name,
+      icon: sanitizeActivityIcon((value as { icon?: unknown }).icon),
+    });
+  }
+  return out.slice(Math.max(0, out.length - MAX_REGISTERED_ACTIVITIES));
+}
 import { sanitizeRememberedSelection, sanitizeWindowShareQualities, type RememberedShareSelection } from "../logic/share-preset-memory";
 import { clampBackupKeepCount } from "../logic/backup-files";
 import { sanitizeSpellWords } from "../logic/spell-word";
@@ -99,6 +149,15 @@ export interface ClientSettings {
    *  in the settings window). Dead customs drop out at RENDER, not here — a
    *  re-uploaded emoji revives its place. */
   recentExpressions: string[];
+  /** The user's REGISTERED roster activities (2026-11-10; AUTO-DETECT rework
+   *  2026-11-11): each rule binds an exe NAME to a line — the line shows while
+   *  that process runs (the Discord game-detection model, manually registered).
+   *  Cap MAX_REGISTERED_ACTIVITIES; the ids are client-minted (crypto.randomUUID). */
+  registeredActivities: RegisteredActivity[];
+  /** The CURRENTLY detected running rules' ids (the auto-detect's last tick) —
+   *  transit UI state persisted only so the section paints instantly on open;
+   *  the detector re-derives it within one poll of a restart. */
+  runningActivityIds: string[];
   /** The downloads folder override (2026-10-19 user request): everything the
    *  client saves lands in ONE folder — default <OS Downloads>/SPACE, created
    *  on first use; this holds the chosen absolute path or null for the
@@ -174,6 +233,8 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   emojiJumboSize: 48,
   pickerLastTab: "emoji",
   recentExpressions: [],
+  registeredActivities: [],
+  runningActivityIds: [],
   downloadsFolder: null,
   updateCheckOnStartup: true,
   updateCheckDaily: true,
@@ -262,6 +323,15 @@ export class SettingsStore extends Emitter {
         ...this.settings,
         lastShareSelection: sanitizeRememberedSelection(rest.lastShareSelection ?? null),
         windowShareQualities: sanitizeWindowShareQualities(rest.windowShareQualities ?? {}),
+      };
+      // Registered roster activity rules: sanitized rows; the running-id list is
+      // transit paint state (re-derived by the detector's first poll anyway).
+      this.settings = {
+        ...this.settings,
+        registeredActivities: sanitizeRegisteredActivities(rest.registeredActivities ?? []),
+        runningActivityIds: Array.isArray(rest.runningActivityIds)
+          ? rest.runningActivityIds.filter((id): id is string => typeof id === "string")
+          : [],
       };
       // A stored jumbo size may be garbage or out of range (hand-edited KV) —
       // the clamp restores the default rather than rendering a broken row.

@@ -27,6 +27,9 @@ import {
 import { ConnectionSession, type SessionHooks } from "../domain/session/connection-session";
 import { MAX_VOICE_REJOIN_ATTEMPTS, rejoinDelayMs, rejoinExhausted } from "../domain/logic/rejoin-ladder";
 import { UplinkEscalation } from "../domain/logic/uplink-watchdog";
+import { matchRunningActivity, trackProcessDetection } from "../domain/logic/activity";
+import type { PresenceActivity } from "../types";
+import type { ProcessNameEntry } from "./bridges";
 import { dmDisplayName } from "../domain/logic/dm-display";
 import { lastServerMessageId } from "../domain/stores/MessageStore";
 import type { MentionIdentity } from "../domain/logic/notification-decider";
@@ -1646,6 +1649,7 @@ export async function bootstrapApp(): Promise<void> {
   installAppClosingListener(); // the forestalled window close leaves voice/call cleanly
   startUpdateChecks(); // client self-update: startup + daily-in-idle probes
   startBackupScheduleTicking(); // the client-side periodic server backup (one-minute tick)
+  startActivityDetection(); // the roster activity auto-detect (5 s process-name poll)
   startAfkReporting(); // the AFK ticker runs for the WHOLE app life: the voice heartbeat + the roster dot (2026-11-04)
   applyUiLanguage(); // i18n boot: resolve, repaint, mirror into main + the aux windows
   settingsStore.subscribe(applyUiLanguage); // a language flip repoints tray/titles and repaints live
@@ -3080,9 +3084,78 @@ function broadcastRosterAfk(away: boolean): void {
  *  then paints the user yellow forever — a fresh process that never crossed
  *  the threshold sends nothing at all. Seeding every new session with the
  *  CURRENT verdict heals this on connect (a fresh back report breaks the
- *  all-away aggregate). */
+ *  all-away aggregate) and re-establishes the activity line after a restart. */
 function seedPresenceReports(session: ConnectionSession): void {
   session.reportRosterAfk(currentRosterAway);
+  session.reportPresenceActivity(lastBroadcastActivityLine);
+}
+
+/**
+ * The ACTIVITY AUTO-DETECT (2026-11-11 rework of the manual toggle): while a
+ * process an activity rule names is RUNNING, the rule's line shows in every
+ * roster; when it closes, the line goes. The Discord game-detection model
+ * minus the game database — the user registers the apps themselves.
+ * A 5 s poll (only while rules exist) snapshots the process names from main
+ * (koffi toolhelp32), derives the FIRST matching rule (registration order),
+ * and on a CHANGE broadcasts the machine-wide line to every live session
+ * (the broadcastRosterAfk pattern — the server aggregates per session).
+ */
+let activityDetectTimer: number | null = null;
+let lastBroadcastActivityLine: PresenceActivity | null = null;
+/** The LIFO detect-order stamps: exe name → the tick it was FIRST seen
+ *  running (see trackProcessDetection; feeds matchRunningActivity). */
+const processDetectedAt = new Map<string, number>();
+
+function broadcastActivityLine(line: PresenceActivity | null): void {
+  lastBroadcastActivityLine = line;
+  log.info("presence", `activity line: ${line === null ? "cleared" : `${line.type} "${line.name}"`}`);
+  if (activeSession !== null) {
+    activeSession.reportPresenceActivity(line);
+  }
+  for (const session of sessionMap.values()) {
+    session.reportPresenceActivity(line);
+  }
+}
+
+async function pollActivityDetection(): Promise<void> {
+  const rules = settingsStore.getSnapshot().registeredActivities;
+  if (rules.length === 0 || window.spaceProcesses === undefined) {
+    return;
+  }
+  let entries: ProcessNameEntry[] | null = null;
+  try {
+    entries = await window.spaceProcesses.names();
+  } catch {
+    return; // a failed poll keeps the last line — never clears on a hiccup
+  }
+  if (entries === null) {
+    return; // native list unavailable (no koffi) — the rules stay dormant
+  }
+  const runningNames = entries.map((entry) => entry.name);
+  const running = new Set(runningNames);
+  const runningIds = rules.filter((rule) => running.has(rule.processName)).map((rule) => rule.id);
+  settingsStore.apply({ runningActivityIds: runningIds }); // the section's live indicators
+  // The LIFO verdict (user request 2026-11-11): the LATEST-launched matching
+  // exe wins; the stamps live across ticks (an exe seen in one poll and gone
+  // the next drops its stamp — a restart re-stamps).
+  const detectedAt = trackProcessDetection(processDetectedAt, runningNames, Date.now());
+  const line = matchRunningActivity(rules, runningNames, detectedAt);
+  const same = line === null
+    ? lastBroadcastActivityLine === null
+    : lastBroadcastActivityLine !== null
+      && lastBroadcastActivityLine.type === line.type
+      && lastBroadcastActivityLine.name === line.name;
+  if (!same) {
+    broadcastActivityLine(line);
+  }
+}
+
+/** Armed once at boot (bootstrapApp): the poll self-gates on rules existing. */
+export function startActivityDetection(): void {
+  if (activityDetectTimer === null) {
+    activityDetectTimer = window.setInterval(() => void pollActivityDetection(), 5_000);
+    void pollActivityDetection(); // the first verdict lands immediately
+  }
 }
 
 /** Each tick logs its VOICE verdict only while in a voice room (the incident

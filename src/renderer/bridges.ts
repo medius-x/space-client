@@ -476,6 +476,38 @@ export interface BackupsBridge {
   onProgress(callback: (event: { fileName: string; receivedBytes: number; totalBytes: number | null }) => void): void;
 }
 
+/** One row of the activity picker's process list (2026-11-11). */
+export interface ProcessNameEntry {
+  /** Lowercase exe name ("cs2.exe") — the rule's match key. */
+  name: string;
+  /** True when the process owns a visible window — the Task-Manager "app". */
+  app: boolean;
+  /** The window title (the FALLBACK label - a chat name in Telegram, not the app). */
+  title: string | null;
+  /** The exe FileDescription ("Telegram Desktop"), null before the describe pass. */
+  label: string | null;
+  /** 16x16 icon data URL (applications only, cached in main). */
+  icon: string | null;
+}
+
+/** The polished presentation of a described app (main's cache). */
+export interface AppPresentation {
+  /** The exe's FileDescription ("Telegram Desktop"), null when absent. */
+  label: string | null;
+  /** 16×16 icon data URL, null when unreadable. */
+  icon: string | null;
+}
+
+/** The roster activity auto-detect bridge (2026-11-11). */
+export interface ProcessesBridge {
+  /** The running processes grouped the Task-Manager way (apps with titles
+   *  and icons first); null when the native list is unavailable (no koffi). */
+  names(): Promise<ProcessNameEntry[] | null>;
+  /** FileDescription + icon for every described app so far (exe name → the
+   *  presentation), null when there was nothing new to describe. */
+  describeApps(): Promise<Record<string, AppPresentation> | null>;
+}
+
 declare global {
   interface Window {
     spaceCapture?: CaptureBridge;
@@ -490,5 +522,6 @@ declare global {
     spaceI18n?: I18nBridge;
     spaceBackup?: BackupsBridge;
     spaceSpell?: SpellBridge;
+    spaceProcesses?: ProcessesBridge;
   }
 }

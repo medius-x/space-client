@@ -6,7 +6,7 @@ import type { RosterState } from "../../domain/stores/RosterStore";
 import { paletteColor } from "../../domain/logic/user-palette";
 
 /** A stable EMPTY roster for the session-less path — useStore needs a live store. */
-const EMPTY_ROSTER: RosterState = { users: [], presence: new Set(), afk: new Set(), voiceMembers: new Map() };
+const EMPTY_ROSTER: RosterState = { users: [], presence: new Set(), afk: new Set(), activities: new Map(), voiceMembers: new Map() };
 const nullRosterStore = {
   subscribe: (): (() => void) => () => undefined,
   getSnapshot: (): RosterState => EMPTY_ROSTER,

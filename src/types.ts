@@ -539,6 +539,23 @@ export interface VoiceAfkStatusEvent {
   afk: boolean;
 }
 
+/** The roster ACTIVITY line's verb key (2026-11-10) — the server stores the key,
+ *  the client localizes the prefix ("playing", "listening", …). */
+export type ActivityKind = "playing" | "listening" | "watching" | "streaming" | "competing";
+
+/** A user-set roster activity ("playing CS2") — transit presence state. */
+export interface PresenceActivity {
+  type: ActivityKind;
+  name: string;
+}
+
+/** /topic/presence.activity — a set/replace/clear (activity null = cleared); the
+ *  seed is GET /api/presence/activities. */
+export interface PresenceActivityEvent {
+  username: string;
+  activity: PresenceActivity | null;
+}
+
 /**
  * STOMP /app/ping → /user/queue/ping: the client's epoch-millis timestamp,
  * echoed VERBATIM by the server (a bare JSON number both ways — the same

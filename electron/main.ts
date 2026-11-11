@@ -3,6 +3,7 @@ import { getClientSize, isWindowConfirmedDead, watchSourceLiveness } from "./win
 import { cancelProvisioningRun, hashLocalFile, probeMigrationDirectTransfer, startProvisioningRun } from "./provisioning";
 import { installUpdateIpc } from "./updates";
 import { installBackupIpc } from "./backups";
+import { installProcessSnapshotIpc } from "./process-snapshot";
 import { installSpellIpc, spellAddWord } from "./spell";
 import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeTheme, net, powerMonitor, protocol, safeStorage, screen, session, shell, Tray } from "electron";
 import * as fs from "node:fs";
@@ -1997,6 +1998,7 @@ app.whenReady().then(() => {
   seedLanguageFromKv(); // tray/title labels localize from the first paint (before any renderer sync)
   seedSpellCheckFromKv(); // underlines and custom words are correct from the first paint
   installSpellIpc(STATIC_ASSETS_ROOT, appendLog); // the embedded nspell checker (checkWords/menuData)
+  installProcessSnapshotIpc(); // the activity auto-detect: running-process names + the .exe picker
   void createWindow();
   app.on("activate", () => {
     // macOS habit — harmless on Windows, kept for free.

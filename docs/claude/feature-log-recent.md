@@ -88,3 +88,22 @@ Migrate: съёмка бэкапа = ПЕРВЫЙ шаг прогона (юзе�
 - Клик по тосту не навигировал: window.focus() не поднимает свёрнутое/трей-окно → IPC `space-window:raise` (sender-based: restore+show+focus) перед focus().
 - Around-скролл: aroundActive-эффект СИММЕТРИЧЕН (флаг стора вооружает belowEndRef+jumpToPresent); snap OFF при belowEnd — история растёт ПОД читателем; цепочка страниц — от завершения loadNewer (≥50 && near-bottom), afterId из СТОРА. Пилюля «Jump To Present» УДАЛЕНА (юзер-итерации) → постоянная кнопка `.chat-scroll-down` (вне 80px-зоны низа ИЛИ around-дыра; клик: дыра → reloadTail, иначе scrollToBottom; гашение только при !belowEnd). NEW-бейдж при замыкании around-хвоста подавлен one-shot `tailLandingSuppressRef`.
 - AFK выкидывал активных: смотрящий свой шар (или с камерой) не трогает мышь → idle → sweep. `isAfkActive(idle, speaking, streaming)`: живой исходящий шар/камера = активность. Корень-кандидат: 30-с интервал рендерера умирает на свёрнутом окне. ТАЙМЕР В MAIN: IPC `space-afk:arm`/`space-afk:tick`; рендерер на тик шлёт /app/voice.activity. Сервер: sweep-лог с причиной и last active.
+
+## Активности ростера — АВТО-ДЕТЕКТ («играет в …», 2026-11-10/11)
+
+Правило = exe + строка (verb+name): пока процесс запущен — строка под ником
+в каждом ростере, закрылся — строка уходит. Discord game-detection минус база
+игр. Пикер: дропдаун ЗАПУЩЕННЫХ процессов с РАЗДЕЛЕНИЕМ как в диспетчере задач («Приложения» = процессы с видимым окном, через desktopCapturer+HWND→PID window-liveness.windowPidOf; остальное — «Фоновые») (main: electron/process-snapshot.ts,
+koffi CreateToolhelp32Snapshot/Process32FirstW/NextW, view-free паттерн
+system-audio; живые факты: sizeof(PROCESSENTRY32W)=568, szExeFile@44,
+koffi.decode.string16(BigInt-адрес)) + нативный выбор .exe
+(dialog.showOpenDialog, рендереру только BASENAME). Детектор: runtime,
+интервал 5 c (self-gate: есть правила), matchRunningActivity — ПЕРВОЕ правило
+по порядку регистра с совпадающим именем; смена вердикта → бродкаст всем
+живым сессиям (broadcastRosterAfk-паттерн); runningActivityIds в настройках —
+live-индикаторы раздела. Раздел настроек «Активность» (отдельный, клиентский)
+гейтится anyServerHasCapability("presence-activity") — без capable-сервера
+раздел скрыт. SettingsStore: registeredActivities {id, processName, type,
+name} кап 20 (sanitize с normalizeProcessName: basename+lowercase+.exe);
+ручной toggle (activeActivityId) УДАЛЁН. Серверная механика (PresenceActivityTracker,
+/app/presence.activity, capability) — oak-server/docs/claude/feature-core.md.
