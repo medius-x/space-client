@@ -2096,6 +2096,7 @@ async function openSession(recordId: string): Promise<void> {
   }
   try {
     await session.start();
+    seedPresenceReports(session); // a fresh session reports its current verdicts
     session.attachmentCache.setDiskBudget(settingsStore.getSnapshot().imageCacheMegabytes * 1024 * 1024);
     await resolveSavedDevices(); // ids die across restarts — resolve by label first
     roomAudio.setOutputDevice(resolvedDevices.speaker); // the saved sink, before any chain attaches
@@ -2233,7 +2234,9 @@ function startBackgroundSessions(): void {
       sessionMap.set(record.id, session);
       sessionsIndex.bump();
       bindLiveBackgroundSession(session, connectionDirectory);
-      return session.start().catch((error: unknown) => {
+      return session.start().then(() => {
+        seedPresenceReports(session); // a fresh session reports its current verdicts
+      }).catch((error: unknown) => {
         log.warn("app", `background session for ${record.username} @ ${record.hostUrl} failed (${errorMessage(error)}) — REST snapshots, will retry`);
         disposeBackgroundSession(record.id);
         scheduleBackgroundRevival();
@@ -3069,6 +3072,17 @@ function broadcastRosterAfk(away: boolean): void {
   for (const session of sessionMap.values()) {
     session.reportRosterAfk(away);
   }
+}
+
+/** A FRESH session REPORTS, not just flips (the zombie-away incident,
+ *  2026-11-11): a dev process killed without a WS close frame leaves its last
+ *  report aggregated on the server, and the "away ⇔ all reports away" verdict
+ *  then paints the user yellow forever — a fresh process that never crossed
+ *  the threshold sends nothing at all. Seeding every new session with the
+ *  CURRENT verdict heals this on connect (a fresh back report breaks the
+ *  all-away aggregate). */
+function seedPresenceReports(session: ConnectionSession): void {
+  session.reportRosterAfk(currentRosterAway);
 }
 
 /** Each tick logs its VOICE verdict only while in a voice room (the incident
