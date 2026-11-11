@@ -28,6 +28,11 @@ export interface CaptureBridge {
   watchSource(sourceId: string | null): Promise<boolean>;
   /** The watched window died — stop the share the ordinary way. */
   onSourceDead(callback: (sourceId: string) => void): void;
+  /** Arm/cancel the minimized watch (null cancels): WGC freezes a minimized
+   *  window's last frame — the viewers get a "window minimized" hint. */
+  watchIconic(sourceId: string | null): Promise<unknown>;
+  /** The watched window's minimize state FLIPPED (once per flip). */
+  onSourceIconic(callback: (sourceId: string, iconic: boolean) => void): void;
 }
 
 /** The pop-out viewer's subscription target: the window runs its OWN videoroom
@@ -63,6 +68,9 @@ export interface PopoutVoiceState {
   deafened: boolean;
   /** The active noise-suppression engine ("off" = the grey button). */
   nsEngine: string;
+  /** Publishers whose shared window is MINIMIZED (2026-11-11): the pop-out
+   *  shows a hint over the frozen frame while the owner's window is down. */
+  iconicShareUsers: string[];
 }
 
 export interface WindowBridge {

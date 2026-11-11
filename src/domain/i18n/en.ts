@@ -559,6 +559,7 @@ export const EN = {
   "popout.title": "space — screen share",
   "popout.subtitle": "Screen share",
   "popout.waiting": "Waiting for the video…",
+  "popout.minimizedHint": "The owner minimized the shared window",
   "popout.nsEngine": "Noise suppression engine",
   "popout.exitFullscreen": "Exit full screen",
   "voice.shareNoAudio": "This share has no audio",

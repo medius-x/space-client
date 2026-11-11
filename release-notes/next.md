@@ -20,3 +20,11 @@ does not: CI, docs, refactoring, internal rework.
   constant — the sender starts at 60% of it and adapts (up on a quiet channel,
   down on loss, keyframe requests from viewers or a growing RTT), so the
   picture degrades gracefully instead of buffering into multi-second freezes.
+- A share now survives voice reconnects on its own: when the media transport
+  drops, the rejoin ladder brings the SAME window or screen back up instead of
+  leaving a dead tile for a manual restart.
+- When the encoder cannot keep up with the picked preset (a busy machine), the
+  share quietly downscales instead of dropping frames — and steps back up once
+  the load passes.
+- Viewers see an honest hint when the presenter minimizes the shared window:
+  the frozen frame gets a "window minimized" caption instead of silence.

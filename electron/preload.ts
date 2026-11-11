@@ -241,6 +241,20 @@ contextBridge.exposeInMainWorld("spaceCapture", {
       callback(sourceId);
     });
   },
+  /** Arm/cancel the minimized watch (null cancels): WGC freezes a minimized
+   *  window's last frame — the viewers get a "window minimized" hint. */
+  watchIconic(sourceId: string | null): Promise<unknown> {
+    return ipcRenderer.invoke("space-capture:watchIconic", sourceId);
+  },
+  /** The watched window's minimize state FLIPPED (once per flip). */
+  onSourceIconic(callback: (sourceId: string, iconic: boolean) => void): void {
+    ipcRenderer.removeAllListeners("space-capture:sourceIconic");
+    ipcRenderer.on("space-capture:sourceIconic", (_event, sourceId: unknown, iconic: unknown) => {
+      if (typeof sourceId === "string" && typeof iconic === "boolean") {
+        callback(sourceId, iconic);
+      }
+    });
+  },
 });
 
 /** System-idle bridge (the AFK sweep's activity source): seconds since the last

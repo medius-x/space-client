@@ -56,6 +56,7 @@ interface User32Fns {
   getClientRect: (hwnd: unknown, rect: unknown) => number;
   getWindowThreadProcessId: (hwnd: unknown, pidOut: unknown) => number;
   isWindowVisible: (hwnd: unknown) => number;
+  isIconic: (hwnd: unknown) => number;
   getWindowTextW: (hwnd: unknown, text: unknown, maxCount: number) => number;
   enumWindows: (callback: unknown, lParam: number) => number;
 }
@@ -72,6 +73,7 @@ function ensureUser32(): User32Fns | null {
       getClientRect: user32.func("int GetClientRect(void *hwnd, _Out_ void *rect)") as unknown as (hwnd: unknown, rect: unknown) => number,
       getWindowThreadProcessId: user32.func("uint32_t GetWindowThreadProcessId(void *hwnd, _Out_ uint32_t *pid)") as unknown as (hwnd: unknown, pidOut: unknown) => number,
       isWindowVisible: user32.func("int IsWindowVisible(void *hwnd)") as unknown as (hwnd: unknown) => number,
+      isIconic: user32.func("int IsIconic(void *hwnd)") as unknown as (hwnd: unknown) => number,
       getWindowTextW: user32.func("int GetWindowTextW(void *hwnd, _Out_ wchar_t *text, int maxCount)") as unknown as (hwnd: unknown, text: unknown, maxCount: number) => number,
       enumWindows: user32.func("int EnumWindows(void *callback, intptr_t lParam)") as unknown as (callback: unknown, lParam: number) => number,
     };
@@ -196,6 +198,58 @@ export function visibleWindowTitlesByPid(): Map<number, string> | null {
 }
 
 let watchTimer: ReturnType<typeof setInterval> | null = null;
+
+/** The minimized-state watch's own single slot (2026-11-11): a MINIMIZED
+ *  shared window does not die — WGC freezes its last frame and the viewers
+ *  stare at a still picture with no idea why. The poll flips only on CHANGE:
+ *  onIconic fires exactly once per minimize and once per restore. */
+let iconicWatchTimer: ReturnType<typeof setInterval> | null = null;
+let iconicWatchHwnd: number | null = null;
+let iconicLast: boolean | null = null;
+
+/** Arm the minimized watch for ONE window source (null cancels). Resolves
+ *  false when unavailable (no koffi / malformed id) — the caller simply goes
+ *  without the "window minimized" hint. */
+export function watchSourceIconic(sourceId: string | null, onIconic: (iconic: boolean) => void): boolean {
+  if (iconicWatchTimer !== null) {
+    clearInterval(iconicWatchTimer);
+    iconicWatchTimer = null;
+  }
+  if (sourceId === null) {
+    iconicWatchHwnd = null;
+    iconicLast = null;
+    return false;
+  }
+  const hwnd = parseWindowHwnd(sourceId);
+  if (hwnd === null || koffi === null || process.platform !== "win32") {
+    return false;
+  }
+  const user32 = ensureUser32();
+  if (user32 === null) {
+    return false;
+  }
+  const handle = hwndHandle(hwnd);
+  iconicWatchHwnd = hwnd;
+  iconicLast = null;
+  iconicWatchTimer = setInterval(() => {
+    if (user32.isWindow(handle) === 0 || iconicWatchHwnd !== hwnd) {
+      // The window died — the liveness watch owns that path; this watch ends.
+      if (iconicWatchTimer !== null) {
+        clearInterval(iconicWatchTimer);
+        iconicWatchTimer = null;
+      }
+      iconicWatchHwnd = null;
+      iconicLast = null;
+      return;
+    }
+    const iconic = user32.isIconic(handle) !== 0;
+    if (iconic !== iconicLast) {
+      iconicLast = iconic;
+      onIconic(iconic);
+    }
+  }, 500);
+  return true;
+}
 
 /** Arm the liveness watch for ONE window source; `null` cancels any running
  *  watch. Resolves false when the watchdog is unavailable or the id is

@@ -150,6 +150,10 @@ export interface AppState {
   viewingFeedId: number | null;
   /** The voice ROOM VIEW occupies the chat area (oak: swap-in by clicking the voice bar). */
   roomViewOpen: boolean;
+  /** Publishers whose shared window is MINIMIZED right now (the share-source
+   *  relay, 2026-11-11): WGC freezes a minimized window's frame — the
+   *  viewers' pop-out shows a hint instead of a silent still picture. */
+  shareSourceIconic: string[];
   diagOpen: boolean;
   stompState: "off" | "connecting" | "connected" | "lost";
   /** 1-based while a reconnect is scheduled/flying (0 = none) — "M/10". */
@@ -260,6 +264,7 @@ class AppStore extends Emitter {
     voiceRttMillis: null,
     micSilent: false,
     participants: [],
+    shareSourceIconic: [],
     sharing: false,
     cameraOn: false,
     popoutActive: false,
@@ -1242,6 +1247,18 @@ function makeSessionHooks(recordId: string): SessionHooks {
         noteShareCongestionReport(lostPct);
       }
     },
+    // A publisher's share-source flip (minimized ↔ restored): the viewers'
+    // pop-out shows a hint over the frozen frame while it lasts.
+    onShareSourceState: (username, iconic) => {
+      const current = appStore.getSnapshot().shareSourceIconic;
+      const next = iconic
+        ? (current.includes(username) ? current : [...current, username])
+        : current.filter((entry) => entry !== username);
+      if (next !== current) {
+        appStore.patch({ shareSourceIconic: next });
+        pushPopoutVoiceState(); // the pop-out's hint rides this mirror
+      }
+    },
     onVoiceMoved: (channelId) => {
       // The AFK sweep (only the active session is ever in voice). The membership
       // already moved server-side; a rejoin ladder targeting the OLD room must die,
@@ -1665,6 +1682,7 @@ export async function bootstrapApp(): Promise<void> {
   installHotkeys(); // global OS chords + the window keydown (local binds)
   installFileDropGuard(); // a file dropped ANYWHERE never navigates the window
   installSourceDeadListener(); // the window-share liveness watchdog reports here
+  installSourceIconicListener(); // the minimized-flip relay feeds from here
   installPopoutClosedListener(); // the share pop-out's own close lands here
   installTlsPromptListener(); // untrusted server certificates ask for trust here
   installPopoutVolumeListener(); // the share pop-out's volume slider lands here
@@ -2329,6 +2347,7 @@ function activeSessionUiResetPatch(): Partial<AppState> {
     voiceRttMillis: null,
     micSilent: false,
     participants: [],
+    shareSourceIconic: [],
     sharing: false,
     cameraOn: false,
     popoutActive: false,
@@ -3579,7 +3598,7 @@ async function detachVoiceAfterLoss(reason: string): Promise<void> {
     activeSession?.stomp.send("/app/voice.leave", { channelId });
   }
   resetVoiceCompliance();
-  appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", stateDetail: null, voiceRttMillis: null, micSilent: false, participants: [], viewingFeedId: null, roomViewOpen: false });
+  appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", stateDetail: null, voiceRttMillis: null, micSilent: false, participants: [], shareSourceIconic: [], viewingFeedId: null, roomViewOpen: false });
   if (hadSession && settingsStore.getSnapshot().soundEnabled) { // the app sound switch (ding + knocks)
     notifications.playKnock("leave");
     notifications.showToast({ title: tr("voice.voiceLabel"), channelName: tr("toast.connectionLost"), body: tr("toast.disconnectedFromRoom", { reason }) });
@@ -3814,7 +3833,7 @@ export async function leaveVoice(): Promise<void> {
     activeSession?.stomp.send("/app/voice.leave", { channelId });
   }
   resetVoiceCompliance();
-  appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", stateDetail: null, voiceRttMillis: null, micSilent: false, participants: [], viewingFeedId: null, roomViewOpen: false });
+  appStore.patch({ activeVoiceChannelId: null, voiceState: "idle", stateDetail: null, voiceRttMillis: null, micSilent: false, participants: [], shareSourceIconic: [], viewingFeedId: null, roomViewOpen: false });
   if (hadSession && settingsStore.getSnapshot().soundEnabled) { // the app sound switch (ding + knocks)
     notifications.playKnock("leave");
   }
@@ -3954,6 +3973,9 @@ let watchedShareSource: string | null = null;
 function watchShareSource(sourceId: string | null): void {
   watchedShareSource = sourceId;
   void window.spaceCapture?.watchSource(sourceId);
+  // The minimized twin: only WINDOW sources minimize (a whole screen cannot);
+  // null cancels, keeping the single iconic slot consistent with the watch.
+  void window.spaceCapture?.watchIconic(sourceId !== null && sourceId.startsWith("window:") ? sourceId : null);
 }
 
 function installSourceDeadListener(): void {
@@ -3968,6 +3990,20 @@ function installSourceDeadListener(): void {
     } else {
       void stopShareInternal();
     }
+  });
+}
+
+/** The publisher's minimized flips (2026-11-11): WGC freezes a minimized
+ *  window's frame — the viewers deserve a hint over the still picture. The
+ *  flip relays through the server (share-source-state); only the ACTIVE
+ *  session is ever in a voice room, so that is the one session to tell. */
+function installSourceIconicListener(): void {
+  window.spaceCapture?.onSourceIconic((sourceId, iconic) => {
+    if (sourceId !== watchedShareSource) {
+      return; // a stale watch from a previous share
+    }
+    log.info("share", `shared window ${iconic ? "minimized" : "restored"}`);
+    activeSession?.reportShareSourceState(iconic);
   });
 }
 
@@ -4288,6 +4324,7 @@ function pushPopoutVoiceState(): void {
     muted: voiceCompliance.micMuted,
     deafened: voiceCompliance.deafened,
     nsEngine: settingsStore.getSnapshot().noiseSuppressionEngine,
+    iconicShareUsers: appStore.getSnapshot().shareSourceIconic,
   });
 }
 

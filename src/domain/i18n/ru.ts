@@ -557,6 +557,7 @@ export const RU: Dict = {
   "popout.title": "space — демонстрация экрана",
   "popout.subtitle": "Демонстрация экрана",
   "popout.waiting": "Ожидание видео…",
+  "popout.minimizedHint": "Владелец свернул окно шаринга",
   "popout.nsEngine": "Движок шумоподавления",
   "popout.exitFullscreen": "Выйти из полного экрана",
   "voice.shareNoAudio": "В этой демонстрации нет звука",

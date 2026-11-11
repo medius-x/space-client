@@ -87,6 +87,10 @@ export interface SessionHooks {
    *  downstream loss in its own stats, so the server relays the viewer's
    *  verdict. The runtime feeds it to the adaptive bitrate ladder. */
   onShareCongestion?(lostPct: number): void;
+  /** /topic/share.state — a publisher's share-source flip (minimized ↔
+   *  restored, the share-source-state capability): the viewers' pop-out shows
+   *  a hint over the frozen frame while the owner's window is minimized. */
+  onShareSourceState?(username: string, iconic: boolean): void;
   /** /user/queue/voice.control type=MOVED (the AFK sweep) — the runtime re-joins
    *  into the given channel (the membership already moved server-side). */
   onVoiceMoved?(channelId: number): void;
@@ -253,6 +257,9 @@ export class ConnectionSession {
    *  an explicit clear is reported as the null INSIDE the stored object — see
    *  reportPresenceActivity). Re-delivered on every (re)connect. */
   private presenceActivitySent: { line: PresenceActivity | null } | null = null;
+  /** The last share-source flip this session reported (minimized ↔ restored);
+   *  null = never reported. Re-delivered on reconnect. */
+  private shareSourceStateSent: boolean | null = null;
 
   constructor(options: ConnectionSessionOptions) {
     this.directory = options.directory;
@@ -365,6 +372,7 @@ export class ConnectionSession {
     // Same for the activity line: a session born after the user set a line
     // reports it immediately (the other sessions already do).
     this.deliverPresenceActivity();
+    this.deliverShareSourceState(); // a minimized share must survive a reconnect
 
     // Post-subscription snapshots: deltas arriving during the fetch ride the
     // pendingDeltas buffer inside the stores, so nothing is lost either side.
@@ -1536,6 +1544,14 @@ export class ConnectionSession {
         }
       });
     }
+    if (hasServerCapability(this.serverProfile, "share-source-state")) {
+      this.stomp.subscribe("/topic/share.state", (raw) => {
+        const event = JSON.parse(raw) as { username?: unknown; iconic?: unknown };
+        if (typeof event.username === "string" && typeof event.iconic === "boolean") {
+          this.hooks.onShareSourceState?.(event.username, event.iconic);
+        }
+      });
+    }
     this.stomp.subscribe("/topic/voice.state", (raw) => {
       const state = JSON.parse(raw) as VoiceControlState;
       this.voiceControlStore.applyState(state);
@@ -1820,6 +1836,24 @@ export class ConnectionSession {
     }
   }
 
+  /** The publisher's own share-source state flip (2026-11-11): a MINIMIZED
+   *  shared window does not die — WGC freezes the last frame, and the viewers
+   *  deserve a "window minimized" hint over the still picture. Explicit
+   *  flips only; re-delivered on reconnect. */
+  reportShareSourceState(iconic: boolean): void {
+    this.shareSourceStateSent = iconic;
+    if (!this.disposed && hasServerCapability(this.serverProfile, "share-source-state")) {
+      this.stomp.send("/app/share.source-state", { iconic });
+    }
+  }
+
+  /** (Re)deliver the stored source-state flip — connect and reconnect. */
+  private deliverShareSourceState(): void {
+    if (this.shareSourceStateSent !== null && !this.disposed && hasServerCapability(this.serverProfile, "share-source-state")) {
+      this.stomp.send("/app/share.source-state", { iconic: this.shareSourceStateSent });
+    }
+  }
+
   /**
    * A WS gap swallowed every /topic push the server sent during it — nothing
    * arrives retroactively. On every REconnect re-take the same snapshot set
@@ -1837,6 +1871,7 @@ export class ConnectionSession {
     // Our own AFK verdict first — the server dropped it with the socket.
     this.deliverRosterAfk();
     this.deliverPresenceActivity(); // the activity line died with the socket too
+    this.deliverShareSourceState(); // the source-state flip died with it
     // Presence keeps its snapshot+delta-buffer discipline (see start()).
     this.rosterStore.beginPresenceSnapshot();
     void this.rest.getPresence()

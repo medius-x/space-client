@@ -41,6 +41,12 @@ function isPopoutVoiceState(value: unknown): value is PopoutVoiceState {
   return typeof record.muted === "boolean" && typeof record.deafened === "boolean" && typeof record.nsEngine === "string";
 }
 
+/** The main-keepsake state may predate the iconicShareUsers field — the hint
+ *  list normalizes to empty instead of undefined. */
+function normalizedVoiceState(state: PopoutVoiceState): PopoutVoiceState {
+  return { ...state, iconicShareUsers: Array.isArray(state.iconicShareUsers) ? state.iconicShareUsers : [] };
+}
+
 /** Silence window for incoming volume syncs after a LOCAL slider edit: the
  *  echo of our own drag (slider → IPC → setShareVolume → push back) must not
  *  fight the thumb mid-drag. */
@@ -74,7 +80,7 @@ export function PopoutScreen(): React.JSX.Element {
   // The NS seed mirrors the settings default — the pop-out never loads the
   // settings store (no bootstrapApp), and the real engine arrives with the
   // first voiceState push anyway; this only colors the one frame before it.
-  const [voiceState, setVoiceState] = useState<PopoutVoiceState>({ muted: false, deafened: false, nsEngine: DEFAULT_CLIENT_SETTINGS.noiseSuppressionEngine });
+  const [voiceState, setVoiceState] = useState<PopoutVoiceState>({ muted: false, deafened: false, nsEngine: DEFAULT_CLIENT_SETTINGS.noiseSuppressionEngine, iconicShareUsers: [] });
   const [nsMenuAt, setNsMenuAt] = useState<{ x: number; y: number } | null>(null);
   // The NS toggle button — its press must not outside-dismiss the menu, or the
   // click-toggle re-opens it (the emoji-picker anchorRef lesson).
@@ -151,13 +157,13 @@ export function PopoutScreen(): React.JSX.Element {
     void window.spaceWindow?.popoutParams().then(handleTarget);
     void window.spaceWindow?.popoutVoiceState().then((state) => {
       if (isPopoutVoiceState(state)) {
-        setVoiceState(state);
+        setVoiceState(normalizedVoiceState(state));
       }
     });
     window.spaceWindow?.onRetarget(handleTarget);
     window.spaceWindow?.onPopoutVoiceState((state) => {
       if (isPopoutVoiceState(state)) {
-        setVoiceState(state);
+        setVoiceState(normalizedVoiceState(state));
       }
     });
     window.spaceWindow?.onFullscreenChange((next) => {
@@ -339,6 +345,11 @@ export function PopoutScreen(): React.JSX.Element {
             sharer closed their client). */}
         <video ref={videoRef} autoPlay playsInline style={{ display: hasVideo ? "block" : "none" }} />
         {hasVideo ? null : <div className="popout-waiting">{t("popout.waiting")}</div>}
+        {/* The minimized hint (2026-11-11): WGC freezes a minimized window's
+            last frame — the still picture gets an honest caption, not silence. */}
+        {hasVideo && shareUsername !== null && voiceState.iconicShareUsers.includes(shareUsername) ? (
+          <div className="popout-iconic-hint">{t("popout.minimizedHint")}</div>
+        ) : null}
         {hasVideo ? (
           <div ref={toolbarRef} className={"popout-toolbar" + (toolbarVisible ? " visible" : "")}>
             {/* The main window's voice panel, mirrored (user request): the same

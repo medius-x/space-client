@@ -1,5 +1,5 @@
 import { isSystemAudioAvailable, startSystemAudio, stopSystemAudio } from "./system-audio";
-import { getClientSize, isWindowConfirmedDead, watchSourceLiveness } from "./window-liveness";
+import { getClientSize, isWindowConfirmedDead, watchSourceIconic, watchSourceLiveness } from "./window-liveness";
 import { cancelProvisioningRun, hashLocalFile, probeMigrationDirectTransfer, startProvisioningRun } from "./provisioning";
 import { installUpdateIpc } from "./updates";
 import { installBackupIpc } from "./backups";
@@ -1139,6 +1139,16 @@ ipcMain.handle("space-capture:watchSource", (_event, sourceId: unknown) => {
   return watchSourceLiveness(sourceId, (deadSourceId) => {
     appendLog(`[share] watched window died (${deadSourceId})`);
     sendToMainWindow("space-capture:sourceDead", deadSourceId);
+  });
+});
+
+// The minimized twin (2026-11-11): a minimized shared window does not die —
+// WGC freezes the last frame, and the viewers deserve a "window minimized"
+// hint instead of a silent still picture. Flip events only, not a state poll.
+ipcMain.handle("space-capture:watchIconic", (_event, sourceId: unknown) => {
+  const id = typeof sourceId === "string" && sourceId.length > 0 ? sourceId : null;
+  return watchSourceIconic(id, (iconic) => {
+    sendToMainWindow("space-capture:sourceIconic", id, iconic);
   });
 });
 
