@@ -28,3 +28,8 @@ does not: CI, docs, refactoring, internal rework.
   the load passes.
 - Viewers see an honest hint when the presenter minimizes the shared window:
   the frozen frame gets a "window minimized" caption instead of silence.
+- Provisioning can harden the server's SSH: tick "SSH hardening" in Advanced
+  and the client generates a passphrase-protected key, installs it, verifies
+  it with a second login — and only then disables SSH password access. The
+  key is remembered per server, so future runs connect with it.
+

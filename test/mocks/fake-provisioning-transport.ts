@@ -21,6 +21,13 @@ export class FakeProvisioningTransport implements ProvisioningTransport {
   closed = false;
   /** Resume-ladder observability: how many times the pipeline reconnected. */
   reconnects = 0;
+  /** The hardening seam's fakes: what generateKeyPair returns and whether
+   *  verifyKeyLogin answers true (flip to false to script a broken key). */
+  generatedKey = {
+    publicOpenSsh: "ssh-ed25519 AAAAFakePublicKeyLineForTheTests= space@test.host",
+    privateOpenSsh: "-----BEGIN OPENSSH PRIVATE KEY-----\n(fake encrypted blob)\n-----END OPENSSH PRIVATE KEY-----\n",
+  };
+  keyLoginWorks = true;
   /** How many of the NEXT writeLocalFile calls lose the connection (each
    *  consumed throw = one ConnectionLostError for the ladder to resume). */
   localUploadDrops = 0;
@@ -120,6 +127,16 @@ export class FakeProvisioningTransport implements ProvisioningTransport {
     this.reconnects += 1;
     this.offlineUntilReconnect = false;
     return true;
+  }
+
+  async generateKeyPair(passphrase: string, comment: string): Promise<{ publicOpenSsh: string; privateOpenSsh: string }> {
+    this.commands.push(`(generateKeyPair ${comment}, passphrase ${passphrase.length} chars)`);
+    return this.generatedKey;
+  }
+
+  async verifyKeyLogin(privateKeyPem: string, passphrase: string | null): Promise<boolean> {
+    this.commands.push(`(verifyKeyLogin ${privateKeyPem.includes("BEGIN OPENSSH PRIVATE KEY") ? "openssh" : "?"}, passphrase ${passphrase === null ? "none" : "given"})`);
+    return this.keyLoginWorks;
   }
 
   isConnected(): boolean {

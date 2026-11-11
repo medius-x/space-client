@@ -18,10 +18,27 @@ export interface ProvisioningParams {
   sshPassword: string | null;
   /** Path to an SSH private key on THIS machine (optional). */
   sshKeyPath: string | null;
-  /** Passphrase of that key — null/empty for an unencrypted key. An encrypted
-   *  OpenSSH key without it fails the connect step with "no passphrase given"
-   *  (live log 2026-10-16), so the form carries the field (user report #2). */
+  /** The STORED per-host key pair (the KV ssh-access catalog) — takes the
+   *  place of sshKeyPath on repeat provisioning runs: the public half feeds
+   *  authorized_keys, the private half the login. Null on a first run (the
+   *  hardening block below may CREATE a pair). */
+  sshKey: { publicOpenSsh: string; privateOpenSsh: string } | null;
+  /** Passphrase of the PICKED key file (sshKeyPath) — null/empty for an
+   *  unencrypted key. Never persisted anywhere. An encrypted OpenSSH key
+   *  without it fails the connect step with "no passphrase given" (live log
+   *  2026-10-16), so the form carries the field (user report #2). */
   sshKeyPassphrase: string | null;
+  /** The SSH HARDENING block (backlog feature 2, 2026-11-11): generate an
+   *  ed25519 key pair, install the public key in authorized_keys, VERIFY the
+   *  key login works — and only then disable SSH password authentication on
+   *  the server. The key is remembered per host in KV; the passphrase itself
+   *  is never stored. */
+  sshHarden: boolean;
+  /** Passphrase for OUR OWN key — the generated one (sshHarden on a first
+   *  run) or the STORED per-host pair (a repeat run). MAY BE EMPTY (user
+   *  decision 2026-11-11): an empty phrase generates an UNENCRYPTED key — the
+   *  user's accepted risk; the per-host KV catalog then holds a bare key. */
+  sshHardenPassphrase: string | null;
   /** A domain pointing at the host — switches TLS to Let's Encrypt. Null =
    *  self-signed certificate + client TOFU pin. */
   domain: string | null;
@@ -103,7 +120,8 @@ export function validateProvisioningParams(params: ProvisioningParams): string |
   if (params.sshLogin.trim().length === 0) {
     return "SSH user must not be empty.";
   }
-  const hasKey = params.sshKeyPath !== null && params.sshKeyPath.trim().length > 0;
+  const hasKey = (params.sshKeyPath !== null && params.sshKeyPath.trim().length > 0)
+    || (params.sshKey !== null && params.sshKey.privateOpenSsh.length > 0);
   const hasPassword = params.sshPassword !== null && params.sshPassword.length > 0;
   if (!hasKey && !hasPassword) {
     return "Provide the SSH password or a path to a private key.";

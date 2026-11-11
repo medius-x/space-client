@@ -6,7 +6,7 @@
  * channel). Credentials live in this function's scope only — they are never
  * logged and never persisted.
  */
-import { Client } from "ssh2";
+import { Client, utils as ssh2Utils } from "ssh2";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
@@ -200,13 +200,79 @@ export class Ssh2Transport implements ProvisioningTransport {
       if (params.sshPassword !== null && params.sshPassword.length > 0) {
         connectOptions.password = params.sshPassword;
       }
-      if (params.sshKeyPath !== null && params.sshKeyPath.trim().length > 0) {
+      // The STORED per-host key (the KV ssh-access catalog) takes the place of
+      // the picked file key on repeat provisioning runs — same buffer either
+      // way, but OUR key unlocks with the hardening passphrase while the
+      // picked file uses its own field.
+      if (params.sshKey !== null && params.sshKey.privateOpenSsh.length > 0) {
+        connectOptions.privateKey = Buffer.from(params.sshKey.privateOpenSsh, "utf8");
+        if (params.sshHardenPassphrase !== null && params.sshHardenPassphrase.length > 0) {
+          connectOptions.passphrase = params.sshHardenPassphrase;
+        }
+      } else if (params.sshKeyPath !== null && params.sshKeyPath.trim().length > 0) {
         connectOptions.privateKey = fs.readFileSync(params.sshKeyPath.trim());
         if (params.sshKeyPassphrase !== null && params.sshKeyPassphrase.length > 0) {
           connectOptions.passphrase = params.sshKeyPassphrase;
         }
       }
       this.connection.connect(connectOptions);
+    });
+  }
+
+  /** The hardening block's key seam: an ed25519 pair, the private key
+   *  PASSPHRASE-encrypted (OpenSSH PEM, aes256-ctr + bcrypt KDF — ssh2's own
+   *  generator; nothing home-rolled). An EMPTY phrase generates an unencrypted
+   *  key (user decision 2026-11-11 — the accepted-risk option). */
+  async generateKeyPair(passphrase: string, comment: string): Promise<{ publicOpenSsh: string; privateOpenSsh: string }> {
+    return new Promise((resolve, reject) => {
+      const options: Record<string, unknown> = { comment };
+      if (passphrase.length > 0) {
+        options.passphrase = passphrase;
+        options.cipher = "aes256-ctr";
+      }
+      // ssh2's own typing widens the callback shape across versions — the
+      // buffers are what production always receives (probed live, 2026-11-11).
+      ssh2Utils.generateKeyPair("ed25519", options, (error: Error | null, keys: unknown) => {
+        if (error !== null) {
+          reject(new Error(`SSH key generation failed: ${error.message}`));
+          return;
+        }
+        const pair = keys as { public: Buffer; private: Buffer };
+        resolve({ publicOpenSsh: pair.public.toString("utf8"), privateOpenSsh: pair.private.toString("utf8") });
+      });
+    });
+  }
+
+  /** The authorized_keys proof: a SECOND connection with the key — MUST work
+   *  before the pipeline touches any sshd configuration (the password path
+   *  stays alive on any failure). */
+  verifyKeyLogin(privateKeyPem: string, passphrase: string | null): Promise<boolean> {
+    const params = this.connectParams;
+    if (params === null) {
+      return Promise.resolve(false);
+    }
+    return new Promise((resolve) => {
+      const probe = new Client();
+      let settled = false;
+      const finish = (result: boolean): void => {
+        if (!settled) {
+          settled = true;
+          probe.end();
+          resolve(result);
+        }
+      };
+      probe.once("ready", () => finish(true));
+      probe.once("error", () => finish(false));
+      const timer = setTimeout(() => finish(false), 20_000);
+      timer.unref?.();
+      probe.connect({
+        host: params.host.trim(),
+        port: params.sshPort,
+        username: params.sshLogin.trim(),
+        privateKey: Buffer.from(privateKeyPem, "utf8"),
+        ...(passphrase !== null && passphrase.length > 0 ? { passphrase } : {}),
+        readyTimeout: 20_000,
+      });
     });
   }
 
@@ -909,7 +975,10 @@ export async function probeMigrationDirectTransfer(request: MigrationProbeReques
     sshLogin: request.sshLogin,
     sshPassword: request.sshPassword,
     sshKeyPath: request.sshKeyPath,
+    sshKey: null,
     sshKeyPassphrase: request.sshKeyPassphrase,
+    sshHarden: false,
+    sshHardenPassphrase: null,
     domain: null,
     firewall: false,
     adminLogin: "probe",

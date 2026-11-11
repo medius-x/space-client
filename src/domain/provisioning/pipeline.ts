@@ -50,6 +50,14 @@ export interface ProvisioningTransport {
   /** onOutputLine fires per COMPLETE line of the command's combined output —
    *  the pipeline surfaces it as the step's live progress text. */
   exec(command: string, options?: { timeoutMs?: number; onOutputLine?: (line: string) => void }): Promise<ExecResult>;
+  /** Generates an ed25519 pair with the private key PASSPHRASE-encrypted
+   *  (OpenSSH PEM + bcrypt) — the hardening block's seam; fake transports
+   *  return deterministic test strings. */
+  generateKeyPair?(passphrase: string, comment: string): Promise<{ publicOpenSsh: string; privateOpenSsh: string }>;
+  /** Opens a SECOND connection authenticating with the given private key —
+   *  the authorized_keys proof BEFORE any sshd config line is touched. False
+   *  = the key login did not work; a working password path stays untouched. */
+  verifyKeyLogin?(privateKeyPem: string, passphrase: string | null): Promise<boolean>;
   /** Re-establishes the connection after a drop using the SAME credentials;
    *  false when it cannot (or the run was cancelled). Optional seam — fake
    *  transports implement it only when a test exercises the resume ladder. */
@@ -129,7 +137,8 @@ export type ProvisioningStage =
   | "compose"
   | "wait"
   | "restore"
-  | "register";
+  | "register"
+  | "harden";
 
 export interface ProvisioningStepEvent {
   stage: ProvisioningStage;
@@ -159,6 +168,12 @@ export interface ProvisioningOutcome {
    *  archive, the owner's password is known to the user alone — the finish
    *   phase is needsLogin, no automatic login is attempted. */
   restored: boolean;
+  /** The SSH hardening block's key pair (backlog feature 2, 2026-11-11): the
+   *  passphrase-encrypted private key (public half included) that the run
+   *  installed and VERIFIED — null when the block did not run. The renderer
+   *  remembers it per host in the KV ssh-access catalog; the passphrase itself
+   *  never leaves the run's scope. */
+  sshKey: { publicOpenSsh: string; privateOpenSsh: string } | null;
 }
 
 /** A step failure carrying the stage it died on (for the UI's step list). */
@@ -261,6 +276,92 @@ export function describeExecFailure(result: ExecResult): string {
 }
 
 type EmitFn = (event: ProvisioningStepEvent) => void;
+
+/**
+ * The SSH HARDENING block (backlog feature 2, 2026-11-11): install a
+ * passphrase-encrypted ed25519 key in authorized_keys, PROVE it logs in with
+ * a second connection, and only then disable SSH password authentication on
+ * the server. The order is the safety: any failure before the sshd reload
+ * leaves the server's password SSH exactly as it was — a broken hardening run
+ * must never lock the user out of their own box.
+ */
+async function runSshHardening(
+  transport: ProvisioningTransport,
+  params: ProvisioningParams,
+  publicHost: string,
+  emit: EmitFn,
+  t: Translator,
+): Promise<{ publicOpenSsh: string; privateOpenSsh: string }> {
+  const run = async (command: string, options?: { timeoutMs?: number }): Promise<ExecResult> => {
+    const result = await transport.exec(command, options);
+    if (result.code !== 0) {
+      const reason = (result.stderr.trim() || result.stdout.trim() || "no output").split("\n").pop() ?? "";
+      throw new ProvisioningFailure("harden", t("provisioning.err.hardenStep", { reason }));
+    }
+    return result;
+  };
+  emit({ stage: "harden", state: "start" });
+  // 1. The pair: the STORED per-host key on a repeat run, a fresh one on a
+  //    first run (the transport's seam — ssh2's generator in production).
+  const pair = params.sshKey !== null
+    ? params.sshKey
+    : await (transport.generateKeyPair !== undefined
+      ? transport.generateKeyPair(params.sshHardenPassphrase ?? "", `space@${publicHost}`)
+      : Promise.reject(new ProvisioningFailure("harden", t("provisioning.err.hardenNoKeygen"))));
+  const publicLine = pair.publicOpenSsh.trim().split("\n")[0] ?? "";
+  // The line is interpolated into single quotes below — anything beyond the
+  // ed25519 grammar (base64 key, our charset-safe comment, space-separated
+  // tokens) is rejected, so an apostrophe can never break out of the quoting.
+  if (!/^ssh-ed25519 [A-Za-z0-9+/=@.:-]+( [A-Za-z0-9+/=@.:-]+)*$/.test(publicLine)) {
+    throw new ProvisioningFailure("harden", t("provisioning.err.hardenBadKey"));
+  }
+  // 2. authorized_keys, idempotent and never world-readable.
+  await run(`mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`);
+  await run(`grep -qF '${publicLine}' ~/.ssh/authorized_keys || echo '${publicLine}' >> ~/.ssh/authorized_keys`);
+  emit({ stage: "harden", state: "log", detail: t("provisioning.detail.hardenKeyInstalled") });
+  // 3. The proof: a SECOND connection with the key — must work before the
+  //    sshd configuration is touched at all.
+  const loginWorks = transport.verifyKeyLogin !== undefined
+    ? await transport.verifyKeyLogin(pair.privateOpenSsh, params.sshHardenPassphrase)
+    : false;
+  if (!loginWorks) {
+    throw new ProvisioningFailure("harden", t("provisioning.err.hardenKeyLoginFailed"));
+  }
+  emit({ stage: "harden", state: "log", detail: t("provisioning.detail.hardenKeyVerified") });
+  // 4. Password off — via sshd_config.d ONLY (Ubuntu ships the Include). The
+  //    file name sorts BEFORE every provider fragment (cloud-init's
+  //    50-cloud-init.conf ships `PasswordAuthentication yes`, and sshd is
+  //    FIRST-MATCH-WINS — the live 2026-11-12 lesson: a 99-* file was silently
+  //    overridden and password SSH stayed on).
+  const includeProbe = await run(`grep -E '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config.d' /etc/ssh/sshd_config`, { timeoutMs: 15_000 });
+  if (includeProbe.stdout.trim().length === 0) {
+    throw new ProvisioningFailure("harden", t("provisioning.err.hardenNoInclude"));
+  }
+  const HARDENING_CONF = "/etc/ssh/sshd_config.d/00-space-hardening.conf";
+  await transport.writeFile(HARDENING_CONF, "PasswordAuthentication no\nKbdInteractiveAuthentication no\n", { mode: 0o644 });
+  const rollbackHardening = async (): Promise<void> => {
+    await transport.exec(`rm -f ${HARDENING_CONF} && (systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || service ssh reload)`);
+  };
+  const configCheck = await transport.exec(`sshd -t`);
+  if (configCheck.code !== 0) {
+    // Roll the config back — `sshd -t` rejected it; the server keeps its
+    // password SSH and the run fails honestly instead of half-hardened.
+    await rollbackHardening();
+    const reason = (configCheck.stderr.trim() || "no output").split("\n").pop() ?? "";
+    throw new ProvisioningFailure("harden", t("provisioning.err.hardenConfigInvalid", { reason }));
+  }
+  await run(`systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || service ssh reload`, { timeoutMs: 30_000 });
+  // The EFFECTIVE check (the live 2026-11-12 lesson): `sshd -t` validates
+  // syntax, not OUTCOME — only sshd -T's effective verdict proves password
+  // logins are actually off. Anything else rolls the whole block back.
+  const effective = await transport.exec(`sshd -T | grep -i '^passwordauthentication '`);
+  if (effective.code !== 0 || !/passwordauthentication\s+no/i.test(effective.stdout)) {
+    await rollbackHardening();
+    throw new ProvisioningFailure("harden", t("provisioning.err.hardenNotEffective"));
+  }
+  emit({ stage: "harden", state: "done", detail: t("provisioning.detail.hardenDone") });
+  return pair;
+}
 
 /** Thrown by the transport when the SSH CONNECTION (not the command) died —
  *  no exit status, no signal. The pipeline answers it with a bounded
@@ -1221,7 +1322,7 @@ export async function runProvisioningPipeline(
       emit({ stage: "wait", state: "done", detail: t("provisioning.detail.serverAnswers", { code: restorePoll.stdout.trim() }) });
       // Accounts and passwords come from the archive; the owner's password is
       // known to the USER alone — the finish phase is needsLogin, no register.
-      return { hostUrl, certFingerprint, ownerReady: false, adminUsername: params.adminLogin, restored: true };
+      return { hostUrl, certFingerprint, ownerReady: false, adminUsername: params.adminLogin, restored: true, sshKey: null };
     }
 
     // ── wait: the server answers over localhost HTTPS ────────────────────
@@ -1364,7 +1465,10 @@ export async function runProvisioningPipeline(
         : t("provisioning.detail.serverReadyManual"),
     });
 
-    return { hostUrl, certFingerprint, ownerReady, adminUsername: params.adminLogin, restored: false };
+    const sshKey = params.sshHarden
+      ? await runSshHardening(transport, params, publicHost, emit, t)
+      : null;
+    return { hostUrl, certFingerprint, ownerReady, adminUsername: params.adminLogin, restored: false, sshKey };
   } catch (error) {
     // A failed register step leaves the credential FILES behind (rm normally
     // runs on the success path) — best-effort scrub on EVERY failure; the

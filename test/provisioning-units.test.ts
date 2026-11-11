@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildEnvFile, generateEnvSecrets } from "../src/domain/provisioning/env-file";
+import { sanitizeSshAccess } from "../src/domain/provisioning/ssh-access";
 import {
   isValidProvisioningHost,
   provisionedHostUrl,
@@ -45,6 +46,9 @@ describe("provisioning params validation", () => {
       sshPassword: "pw",
       sshKeyPath: null,
       sshKeyPassphrase: null,
+      sshKey: null,
+      sshHarden: false,
+      sshHardenPassphrase: null,
       domain: null,
       firewall: true,
       adminLogin: "admin",
@@ -65,12 +69,18 @@ describe("provisioning params validation", () => {
       sshPassword: null,
       sshKeyPath: "C:\\keys\\id_ed25519",
       sshKeyPassphrase: "open sesame",
+      sshKey: null,
+      sshHarden: false,
+      sshHardenPassphrase: null,
     })).toBeNull();
     expect(validateProvisioningParams({
       ...params,
       sshPassword: null,
       sshKeyPath: null,
       sshKeyPassphrase: "open sesame",
+      sshKey: null,
+      sshHarden: false,
+      sshHardenPassphrase: null,
     })).toContain("password");
     expect(validateProvisioningParams({ ...params, domain: "not a domain" })).toContain("domain");
     expect(validateProvisioningParams({ ...params, adminPassword: "short" })).toContain("8 characters");
@@ -89,6 +99,9 @@ describe("provisioning params validation", () => {
       sshPassword: "pw",
       sshKeyPath: null,
       sshKeyPassphrase: null,
+      sshKey: null,
+      sshHarden: false,
+      sshHardenPassphrase: null,
       domain: "oak.example.com",
       firewall: false,
       adminLogin: "admin",
@@ -276,5 +289,25 @@ describe("describeExecFailure", () => {
 
   it("falls back to the bare exit code when there is no output", () => {
     expect(describeExecFailure({ code: 2, stdout: "", stderr: "" })).toBe("exit code 2");
+  });
+});
+
+describe("ssh-access catalog (the per-host hardening key store)", () => {
+  const valid = {
+    publicKey: "ssh-ed25519 AAAATestKey= space@host",
+    privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nblob\n-----END OPENSSH PRIVATE KEY-----\n",
+    login: "root",
+    port: 22,
+    addedAt: 1_768_000_000_000,
+  };
+
+  it("a valid record passes through; the port falls back and the shape is checked", () => {
+    expect(sanitizeSshAccess(valid)).toEqual(valid);
+    expect(sanitizeSshAccess({ ...valid, port: 99999 })?.port).toBe(22);
+    expect(sanitizeSshAccess({ ...valid, publicKey: "ssh-rsa AAAA x" })).toBeNull(); // not an ed25519 line
+    expect(sanitizeSshAccess({ ...valid, privateKey: "plain text" })).toBeNull(); // not an OpenSSH blob
+    expect(sanitizeSshAccess({ ...valid, login: "  " })).toBeNull();
+    expect(sanitizeSshAccess(null)).toBeNull();
+    expect(sanitizeSshAccess("junk")).toBeNull();
   });
 });

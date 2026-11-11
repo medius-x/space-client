@@ -672,6 +672,44 @@ ipcMain.handle("space-file:chooseDownloadsDir", async () => {
   return chosen.canceled || chosen.filePaths.length === 0 ? null : chosen.filePaths[0] ?? null;
 });
 
+import { normalizeAccessHost } from "../src/domain/provisioning/ssh-access";
+// The stored hardening key's FILE export (2026-11-11): the user may need to
+// log in by hand (ssh -i, PuTTYgen's Import) — the private half lives in the
+// KV catalog, so main itself reads it (the renderer never re-sends the key
+// over IPC) and writes the picked file.
+ipcMain.handle("space-provisioning:exportSshKey", async (_event, host: unknown) => {
+  if (typeof host !== "string" || host.trim().length === 0) {
+    return null;
+  }
+  const access = kvRead(`ssh-access:${normalizeAccessHost(host)}`) as { privateKey?: unknown; login?: unknown } | null;
+  const privateKey = access !== null && typeof access.privateKey === "string" && access.privateKey.length > 0
+    ? access.privateKey
+    : null;
+  if (privateKey === null) {
+    return null;
+  }
+  const login = access !== null && typeof access.login === "string" && access.login.length > 0 ? access.login : "ssh";
+  const safeHost = host.trim().replace(/[^a-z0-9.-]/gi, "_");
+  const chosen = await dialog.showSaveDialog({
+    title: "Save the SSH key",
+    defaultPath: `space-${login}-${safeHost}.key`,
+    filters: [{ name: "OpenSSH private key", extensions: ["key"] }],
+  });
+  if (chosen.canceled || chosen.filePath === undefined) {
+    return null;
+  }
+  await fs.promises.writeFile(chosen.filePath, privateKey, "utf8");
+  return chosen.filePath;
+});
+// The export button's second face (2026-11-12): reveal the saved key file in
+// its folder (Explorer opens with the file selected).
+ipcMain.handle("space-provisioning:revealPath", (_event, targetPath: unknown) => {
+  if (typeof targetPath !== "string" || targetPath.length === 0 || !fs.existsSync(targetPath)) {
+    return;
+  }
+  void shell.showItemInFolder(targetPath);
+});
+
 ipcMain.handle("space-file:openDownloadsDir", () => {
   const dir = resolveDownloadsDir();
   void shell.openPath(dir);

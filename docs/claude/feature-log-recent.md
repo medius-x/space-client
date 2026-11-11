@@ -1,5 +1,8 @@
 # Свежие фичи — решения
 
+## SSH-харденинг при провижене (КЛИЕНТ-ONLY, фича 2 из беклога, 2026-11-11)
+Галочка в Advanced → stage `harden` после register: ed25519-пара генерится `ssh2.utils.generateKeyPair` (aes256-ctr + bcrypt, passphrase ≥8 — НЕ персистится), pubkey идемпотентно в authorized_keys, **key-login доказывается вторым соединением ДО любых правок sshd**, затем `/etc/ssh/sshd_config.d/99-space-hardening.conf` (PasswordAuthentication/KbdInteractive no; только при живом Include-пробе), `sshd -t` с откатом конфига при reject, reload. Любой провал до reload оставляет парольный SSH нетронутым. Пара сохраняется в KV `ssh-access:<host>` (sanitize в domain/provisioning/ssh-access.ts); повторный прогон с passphrase подставляет пару в params.sshKey (transport ходит буфером вместо файла). Restored-ветка не харденит (первая партия). Швы транспорта: generateKeyPair/verifyKeyLogin (фейки в FakeProvisioningTransport).
+
 ## Версия сервера после adopt-провижна (КЛИЕНТ-ONLY)
 Профиль применялся только при handshake и `/topic/server`-пушами — рестарт сервера не пушет. Фикс: `ConnectionSession.applyServerProfile` — единая точка применения (`/topic/server`-хендлер на ней); `refreshServerProfile()` — REST-перечитывание (гварды disposed); runtime `refreshServerProfilesForHost(hostUrl)` — по всем живым сессиям хоста; вызов из ProvisioningPanel в succeeded-ветке до автологина (идемпотентен).
 

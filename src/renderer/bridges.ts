@@ -369,6 +369,10 @@ export interface ProvisioningOutcomeIpc {
    *  the archive, the owner's password is the user's alone — the finish phase
    *  is needsLogin, no automatic login is attempted. */
   restored: boolean;
+  /** The SSH hardening block's key pair (2026-11-11): the passphrase-encrypted
+   *  private key the run installed and verified; null when the block did not
+   *  run. The renderer remembers it per host in the KV ssh-access catalog. */
+  sshKey: { publicOpenSsh: string; privateOpenSsh: string } | null;
 }
 
 export type ProvisioningIpcEvent =
@@ -401,6 +405,12 @@ export interface ProvisioningBridge {
   start(params: ProvisioningFormParams): Promise<boolean>;
   /** Drop the SSH connection — the in-flight step fails as "cancelled". */
   cancel(): Promise<boolean>;
+  /** The stored hardening key's FILE export (2026-11-11): main reads the KV
+   *  catalog itself and writes the picked file — resolves to the saved path,
+   *  or null (no stored key / the dialog was cancelled). */
+  exportSshKey(host: string): Promise<string | null>;
+  /** Reveal a previously exported key file in its folder (Explorer, selected). */
+  revealPath(targetPath: string): Promise<void>;
   /** The migration leg's reachability probe (2026-11-02): one curl from the
    *  NEW server against the OLD one's transfer endpoint — direct=true arms
    *  the server-to-server route, false falls back to this computer. */

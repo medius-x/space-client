@@ -341,6 +341,16 @@ contextBridge.exposeInMainWorld("spaceProvisioning", {
   cancel(): Promise<unknown> {
     return ipcRenderer.invoke("provisioning:cancel");
   },
+  /** The stored hardening key's FILE export (2026-11-11): main reads the KV
+   *  catalog itself and writes the picked file — resoles to the saved path,
+   *  or null (no stored key / the dialog was cancelled). */
+  exportSshKey(host: string): Promise<string | null> {
+    return ipcRenderer.invoke("space-provisioning:exportSshKey", host);
+  },
+  /** Reveal a previously exported key file in its folder (Explorer, selected). */
+  revealPath(targetPath: string): Promise<void> {
+    return ipcRenderer.invoke("space-provisioning:revealPath", targetPath);
+  },
   /** The migration leg's reachability probe (2026-11-02): one curl from the
    *  NEW server to the OLD one's transfer endpoint. */
   probeMigration(request: Record<string, unknown>): Promise<unknown> {

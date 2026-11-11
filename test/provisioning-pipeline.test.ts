@@ -21,6 +21,9 @@ function baseParams(overrides: Partial<ProvisioningParams> = {}): ProvisioningPa
     sshPassword: "ssh-secret",
     sshKeyPath: null,
     sshKeyPassphrase: null,
+    sshKey: null,
+    sshHarden: false,
+    sshHardenPassphrase: null,
     domain: null,
     firewall: false,
     adminLogin: "admin",
@@ -294,6 +297,109 @@ describe("provisioning pipeline", () => {
 
     expect(outcome.ownerReady).toBe(true);
     expect(events.find((event) => event.state === "failed")).toBeUndefined();
+  });
+
+  it("SSH hardening installs the key, verifies the login and only then disables password SSH", async () => {
+    const transport = new FakeProvisioningTransport();
+    transport.files.set("/opt/oak/docker-compose.yml", "# existing deployment");
+    scriptHappyPath(transport);
+    transport.respond("test -f /opt/oak/caddy/certs/tls.crt", { stdout: "yes\n" });
+    transport.respond("api/auth/register", { stdout: `{"message":"Username already exists"}\n__STATUS__409` });
+    transport.respond("api/auth/login", { stdout: `{"token":"adopt.token"}\n__STATUS__200` });
+    transport.respond("api/server/connection", { stdout: `\n__STATUS__200` });
+    transport.respond("sshd_config.d", { stdout: "Include /etc/ssh/sshd_config.d/*.conf\n" }); // the Include probe
+    transport.respond("sshd -T", { stdout: "passwordauthentication no\n" }); // the EFFECTIVE post-reload verdict
+    const { events, emit } = collectEvents();
+
+    const outcome = await runProvisioningPipeline(
+      transport,
+      baseParams({ sshHarden: true, sshHardenPassphrase: "correct horse battery" }),
+      baseFiles(), emit, fixedRandomHex,
+    );
+
+    expect(outcome.sshKey).toEqual(transport.generatedKey); // the renderer remembers it per host
+    // The append command carries the key material itself (grep -qF '…' || echo '…').
+    expect(transport.commandWith(transport.generatedKey.publicOpenSsh.split(" ")[1]!)).toContain("authorized_keys");
+    expect(transport.writeToFile("/etc/ssh/sshd_config.d/00-space-hardening.conf"))
+      .toContain("PasswordAuthentication no");
+    expect(transport.commandWith("sshd -t")).not.toBeNull(); // validated BEFORE the reload
+    expect(transport.commandWith("reload sshd")).not.toBeNull();
+    expect(events.find((event) => event.stage === "harden" && event.state === "done")).toBeDefined();
+  });
+
+  it("an sshd -T verdict that STILL allows passwords fails and rolls the block back", async () => {
+    // The live 2026-11-12 lesson: `sshd -t` validates syntax, not outcome —
+    // an earlier fragment (cloud-init's PasswordAuthentication yes) overrides
+    // a 99-* file under sshd's first-match-wins. Only sshd -T's effective
+    // "no" proves the hardening; anything else must undo the whole block.
+    const transport = new FakeProvisioningTransport();
+    transport.files.set("/opt/oak/docker-compose.yml", "# existing deployment");
+    scriptHappyPath(transport);
+    transport.respond("test -f /opt/oak/caddy/certs/tls.crt", { stdout: "yes\n" });
+    transport.respond("api/auth/register", { stdout: `{"message":"Username already exists"}\n__STATUS__409` });
+    transport.respond("api/auth/login", { stdout: `{"token":"adopt.token"}\n__STATUS__200` });
+    transport.respond("api/server/connection", { stdout: `\n__STATUS__200` });
+    transport.respond("sshd_config.d", { stdout: "Include /etc/ssh/sshd_config.d/*.conf\n" });
+    transport.respond("sshd -T", { stdout: "passwordauthentication yes\n" }); // overridden, still on
+    const { events, emit } = collectEvents();
+
+    await expect(runProvisioningPipeline(
+      transport,
+      baseParams({ sshHarden: true, sshHardenPassphrase: "correct horse battery" }),
+      baseFiles(), emit, fixedRandomHex,
+    )).rejects.toBeInstanceOf(ProvisioningFailure);
+
+    expect(events.find((event) => event.stage === "harden" && event.state === "failed")).toBeDefined();
+    // The rollback removed the fragment AND reloaded — the server's own
+    // password path is exactly what it was before the run.
+    expect(transport.commandWith("rm -f /etc/ssh/sshd_config.d/00-space-hardening.conf")).not.toBeNull();
+  });
+
+  it("a FAILED key login never touches the sshd configuration", async () => {
+    const transport = new FakeProvisioningTransport();
+    transport.files.set("/opt/oak/docker-compose.yml", "# existing deployment");
+    scriptHappyPath(transport);
+    transport.respond("test -f /opt/oak/caddy/certs/tls.crt", { stdout: "yes\n" });
+    transport.respond("api/auth/register", { stdout: `{"message":"Username already exists"}\n__STATUS__409` });
+    transport.respond("api/auth/login", { stdout: `{"token":"adopt.token"}\n__STATUS__200` });
+    transport.respond("api/server/connection", { stdout: `\n__STATUS__200` });
+    transport.keyLoginWorks = false; // the proof step's negative verdict
+    const { events, emit } = collectEvents();
+
+    await expect(runProvisioningPipeline(
+      transport,
+      baseParams({ sshHarden: true, sshHardenPassphrase: "correct horse battery" }),
+      baseFiles(), emit, fixedRandomHex,
+    )).rejects.toBeInstanceOf(ProvisioningFailure);
+
+    expect(events.find((event) => event.stage === "harden" && event.state === "failed")).toBeDefined();
+    expect(transport.writeToFile("/etc/ssh/sshd_config.d/00-space-hardening.conf")).toBeNull(); // password SSH untouched
+    expect(transport.commandWith("reload sshd")).toBeNull();
+  });
+
+  it("an sshd -t rejection rolls the hardening config back", async () => {
+    const transport = new FakeProvisioningTransport();
+    transport.files.set("/opt/oak/docker-compose.yml", "# existing deployment");
+    scriptHappyPath(transport);
+    transport.respond("test -f /opt/oak/caddy/certs/tls.crt", { stdout: "yes\n" });
+    transport.respond("api/auth/register", { stdout: `{"message":"Username already exists"}\n__STATUS__409` });
+    transport.respond("api/auth/login", { stdout: `{"token":"adopt.token"}\n__STATUS__200` });
+    transport.respond("api/server/connection", { stdout: `\n__STATUS__200` });
+    transport.respond("sshd_config.d", { stdout: "Include /etc/ssh/sshd_config.d/*.conf\n" });
+    transport.respond("sshd -t", { code: 1, stderr: "/etc/ssh/sshd_config: line 1: bad option\n" });
+    const { events, emit } = collectEvents();
+
+    await expect(runProvisioningPipeline(
+      transport,
+      baseParams({ sshHarden: true, sshHardenPassphrase: "correct horse battery" }),
+      baseFiles(), emit, fixedRandomHex,
+    )).rejects.toBeInstanceOf(ProvisioningFailure);
+
+    expect(events.find((event) => event.stage === "harden" && event.state === "failed")).toBeDefined();
+    // Rolled back IN ONE STEP: the fragment removal and the reload that
+    // restores the server's prior auth state ride the same command.
+    const rollback = transport.commandWith("rm -f /etc/ssh/sshd_config.d/00-space-hardening.conf");
+    expect(rollback).toContain("reload sshd");
   });
 
   it("rejects non-Linux hosts with a probe failure", async () => {

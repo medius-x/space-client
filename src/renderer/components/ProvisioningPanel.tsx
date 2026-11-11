@@ -6,6 +6,7 @@ import {
   type MigrationTransferParams,
   type ProvisioningParams,
 } from "../../domain/provisioning/params";
+import { loadSshAccess, saveSshAccess, type SshAccess } from "../../domain/provisioning/ssh-access";
 import { hasServerCapability } from "../../domain/logic/server-capabilities";
 import { humanByteSize } from "../../domain/logic/file-size";
 import type { ConnectionSession } from "../../domain/session/connection-session";
@@ -14,6 +15,7 @@ import { downloadMigrationArchive, waitForBuiltBackup } from "../backup-run";
 import { releaseBackupScheduleFor, suppressBackupScheduleFor } from "../backup-schedule";
 import { PasswordInput } from "./PasswordInput";
 import { refreshServerProfilesForHost, startSession } from "../runtime";
+import { log } from "../../logging";
 import type { MessageKey } from "../../domain/i18n/i18n";
 import { useT } from "../hooks/useT";
 
@@ -41,6 +43,7 @@ const STAGE_ORDER = [
   "wait",
   "restore",
   "register",
+  "harden",
 ] as const;
 
 type StageId = (typeof STAGE_ORDER)[number];
@@ -61,6 +64,7 @@ const STAGE_LABEL_KEYS: Record<StageId, MessageKey> = {
   wait: "provisioning.stage.wait",
   restore: "provisioning.stage.restore",
   register: "provisioning.stage.register",
+  harden: "provisioning.stage.harden",
 };
 
 interface StepState {
@@ -101,6 +105,37 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange, mode = "setup
   const [sshPort, setSshPort] = useState("22");
   const [sshKeyPath, setSshKeyPath] = useState("");
   const [sshKeyPassphrase, setSshKeyPassphrase] = useState("");
+  const [sshHarden, setSshHarden] = useState(false);
+  const [sshHardenPassphrase, setSshHardenPassphrase] = useState("");
+  const [storedSshAccess, setStoredSshAccess] = useState<SshAccess | null>(null);
+  // The terminal-event listener mounts ONCE with empty deps — the form fields
+  // it must read at completion time (host, ssh login/port for the ssh-access
+  // catalog) reach it through this ref, never through the stale closure. The
+  // live incident (2026-11-11): the hardening key was installed and password
+  // SSH disabled on the server, but the EMPTY mount-time host silently ate
+  // the save — the private key existed only in the run's memory.
+  const formRef = useRef({ host, sshLogin, sshPort });
+  formRef.current = { host, sshLogin, sshPort };
+
+  // A typed host may already have a hardened key in the per-host catalog —
+  // surface it so the form can offer the key path (with its passphrase)
+  // instead of the password.
+  useEffect(() => {
+    const normalized = host.trim().toLowerCase();
+    if (normalized.length === 0) {
+      setStoredSshAccess(null);
+      return;
+    }
+    let cancelled = false;
+    void loadSshAccess(normalized).then((access) => {
+      if (!cancelled) {
+        setStoredSshAccess(access);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [host]);
   const [domain, setDomain] = useState("");
   const [firewall, setFirewall] = useState(true);
   const [jarPath, setJarPath] = useState("");
@@ -171,8 +206,8 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange, mode = "setup
         // over (the register stage's owner-only steps are the live example):
         // repaint the live sessions' cached profile anyway — one cheap GET,
         // quietly harmless when the server never moved.
-        if (host.trim().length > 0) {
-          refreshServerProfilesForHost(host.trim());
+        if (formRef.current.host.trim().length > 0) {
+          refreshServerProfilesForHost(formRef.current.host.trim());
         }
         // The migration window is over (the run failed any way) — the old
         // server's backup schedule may fire again.
@@ -188,6 +223,22 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange, mode = "setup
           releaseBackupScheduleFor(session.recordId);
         }
         setRestoredOutcome(event.outcome.restored);
+        // The hardening block's key lands in the per-host KV catalog (the
+        // passphrase never does — it exists only in this run's scope). The
+        // form fields come through the REF: this listener's closure is as old
+        // as the panel's mount (the live 2026-11-11 save-eaten-by-empty-host).
+        if (event.outcome.sshKey !== null && formRef.current.host.trim().length > 0) {
+          const access: SshAccess = {
+            publicKey: event.outcome.sshKey.publicOpenSsh,
+            privateKey: event.outcome.sshKey.privateOpenSsh,
+            login: formRef.current.sshLogin,
+            port: Number(formRef.current.sshPort),
+            addedAt: Date.now(),
+          };
+          log.info("provisioning", `ssh access key remembered for ${formRef.current.host.trim()} (login ${access.login})`);
+          void saveSshAccess(formRef.current.host.trim(), access);
+          setStoredSshAccess(access);
+        }
         // The server may have just been REDEPLOYED under live sessions (the
         // adopt path): repaint their cached profile — the Server Settings
         // version line — without a client restart.
@@ -234,13 +285,23 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange, mode = "setup
     const effectiveAdminLogin = accountLogin.trim().length > 0 ? accountLogin.trim() : DEFAULT_ACCOUNT_LOGIN;
     const effectiveAdminNickname = accountNickname.trim().length > 0 ? accountNickname.trim() : null;
     const effectiveAdminPassword = accountPassword.length > 0 ? accountPassword : DEFAULT_ACCOUNT_PASSWORD;
+    // The STORED per-host key counts as an SSH credential when the hardening
+    // block is on (our key, our passphrase field — which may be EMPTY for an
+    // unencrypted key): a host provisioned by key starts a run without the
+    // password fields (live report 2026-11-11: the form demanded a password).
+    const storedKey = sshHarden && storedSshAccess !== null
+      ? { publicOpenSsh: storedSshAccess.publicKey, privateOpenSsh: storedSshAccess.privateKey }
+      : null;
     const baseParams: ProvisioningParams = {
       host,
       sshPort: Number(sshPort),
       sshLogin,
       sshPassword: sshPassword.length > 0 ? sshPassword : null,
       sshKeyPath: sshKeyPath.trim().length > 0 ? sshKeyPath.trim() : null,
+      sshKey: storedKey,
       sshKeyPassphrase: sshKeyPassphrase.length > 0 ? sshKeyPassphrase : null,
+      sshHarden,
+      sshHardenPassphrase: sshHardenPassphrase.length > 0 ? sshHardenPassphrase : null,
       domain: domain.trim().length > 0 ? domain.trim() : null,
       firewall,
       adminLogin: effectiveAdminLogin,
@@ -561,16 +622,21 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange, mode = "setup
           <span>{t("provisioning.sshPort")}</span>
           <input type="text" value={sshPort} onChange={(event) => setSshPort(event.target.value)} placeholder="22" />
         </label>
-        <label className="settings-field">
-          <span>{t("provisioning.keyFile")}</span>
-          <input type="text" value={sshKeyPath} onChange={(event) => setSshKeyPath(event.target.value)} placeholder="C:\Users\you\.ssh\id_ed25519" />
-        </label>
-        {sshKeyPath.trim().length > 0 ? (
-          <label className="settings-field">
-            <span>{t("provisioning.keyPassphrase")}</span>
-            <PasswordInput value={sshKeyPassphrase} onChange={setSshKeyPassphrase} placeholder={t("provisioning.keyPassphraseHint")} autoComplete="off" />
-          </label>
-        ) : null}
+        {/* The picked-key pair HIDES while the hardening block owns the SSH
+            credentials (user request 2026-11-11): hardening generates its own
+            key, so a file path beside it would only confuse. */}
+        {sshHarden ? null : (
+          <>
+            <label className="settings-field">
+              <span>{t("provisioning.keyFile")}</span>
+              <input type="text" value={sshKeyPath} onChange={(event) => setSshKeyPath(event.target.value)} placeholder="C:\Users\you\.ssh\id_ed25519" />
+            </label>
+            <label className="settings-field">
+              <span>{t("provisioning.keyPassphrase")}</span>
+              <PasswordInput value={sshKeyPassphrase} onChange={setSshKeyPassphrase} placeholder={t("provisioning.keyPassphraseHint")} autoComplete="off" />
+            </label>
+          </>
+        )}
         <label className="settings-field">
           <span>{t("provisioning.domain")}</span>
           <input type="text" value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="oak.example.com" />
@@ -579,6 +645,27 @@ export function ProvisioningPanel({ onBusyChange, onRunningChange, mode = "setup
           <input type="checkbox" checked={firewall} onChange={(event) => setFirewall(event.target.checked)} />
           <span>{t("provisioning.firewall")}</span>
         </label>
+        {/* The SSH hardening block (backlog feature 2, 2026-11-11): a fresh
+            key, an authorized_keys install, a verified key login — and only
+            then password SSH goes off. The passphrase is for OUR key (the
+            generated one, or the stored pair on a repeat run) and may be
+            EMPTY — an empty phrase means an unencrypted key (user decision). */}
+        <label className="settings-field prov-check">
+          <input type="checkbox" checked={sshHarden} onChange={(event) => setSshHarden(event.target.checked)} />
+          <span>{t("provisioning.sshHardenLabel")}</span>
+        </label>
+        {sshHarden ? (
+          <>
+            <label className="settings-field">
+              <span>{t("provisioning.hardenKeyPassphrase")}</span>
+              <PasswordInput value={sshHardenPassphrase} onChange={setSshHardenPassphrase} placeholder={t("provisioning.hardenKeyPassphraseHint")} autoComplete="off" />
+            </label>
+            <div className="settings-hint">{t("provisioning.sshHardenHint")}</div>
+            {storedSshAccess !== null ? (
+              <div className="settings-hint">{t("provisioning.sshStoredKey")}</div>
+            ) : null}
+          </>
+        ) : null}
         <label className="settings-field">
           <span>{t("provisioning.jarOverride")}</span>
           <input type="text" value={jarPath} onChange={(event) => setJarPath(event.target.value)} placeholder="C:\Users\you\Downloads\oak-server.jar" />

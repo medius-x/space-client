@@ -9,6 +9,7 @@ import {
   settingsStore,
 } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
+import { loadSshAccess, type SshAccess } from "../../domain/provisioning/ssh-access";
 import { connectionDirectory } from "../runtime";
 import { downloadBuiltBackup, takeBackupAndDownload } from "../backup-run";
 import { BACKUP_KEEP_MAX, BACKUP_KEEP_MIN, clampBackupKeepCount } from "../../domain/logic/backup-files";
@@ -3616,7 +3617,67 @@ function ServerStorageSection({ session }: { session: ConnectionSession }): Reac
       </div>
 
       <BackupSection session={session} />
+      <SshKeySection session={session} />
     </div>
+  );
+}
+
+/**
+ * The server's stored SSH key block (2026-11-12, user request): the
+ * passphrase-protected key a hardening provisioning run installed, surfaced
+ * where it belongs — the SERVER's own settings, below the migrations. The
+ * export writes the private half to a picked file for manual logins (ssh -i,
+ * PuTTYgen's Import); after a save the button flips to revealing the file in
+ * its folder. Purely client-side state — no REST, no permissions beyond the
+ * tab's own gate.
+ */
+function SshKeySection({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const t = useT();
+  const [stored, setStored] = useState<SshAccess | null | undefined>(undefined); // undefined = loading
+  const [exportedPath, setExportedPath] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadSshAccess(session.hostUrl()).then((access) => {
+      if (!cancelled) {
+        setStored(access);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [session]);
+
+  if (stored === undefined) {
+    return <></>; // the block appears once the catalog answers
+  }
+  return (
+    <>
+      <h3 style={{ marginTop: 20 }}>{t("serverSettings.privateKeyHeader")}</h3>
+      <div className="settings-hint">{t("serverSettings.privateKeyHint")}</div>
+      {stored === null ? (
+        <div className="settings-hint">{t("serverSettings.privateKeyNone")}</div>
+      ) : (
+        <div className="modal-actions left">
+          {exportedPath === null ? (
+            <button onClick={() => {
+              void window.spaceProvisioning?.exportSshKey(session.hostUrl()).then((saved) => {
+                if (saved !== null) {
+                  setExportedPath(saved);
+                }
+              });
+            }}>{t("serverSettings.privateKeyExport")}</button>
+          ) : (
+            <>
+              <button className="ghost" onClick={() => {
+                void window.spaceProvisioning?.revealPath(exportedPath);
+              }}>{t("serverSettings.privateKeyOpenFolder")}</button>
+              <span className="settings-status">{t("serverSettings.privateKeyExported", { file: exportedPath.split(/[\\/]/).pop() ?? exportedPath })}</span>
+            </>
+          )}
+        </div>
+      )}
+    </>
   );
 }
 
