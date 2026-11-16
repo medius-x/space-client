@@ -15,3 +15,8 @@ does not: CI, docs, refactoring, internal rework.
   in its circle. A long file name no longer stretches the card wider
   than its preview — the name trims to the frame with an ellipsis while
   the extension (".mp4" and friends) stays readable at the end.
+- Elongated pictures (wide strips, tall strips) no longer shrink to a
+  thumbnail in chat: the single-image preview now fits the 320px size cap
+  on each side independently instead of being bounded by the image's
+  smaller side — a wide strip shows at full preview width, small square
+  pictures still stay exactly their natural size.

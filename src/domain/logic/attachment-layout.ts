@@ -1,9 +1,9 @@
 /**
  * oak's image mosaic (AttachmentLayout.java), pure math, unit-tested:
- * 1 image renders as a SQUARE bounded by the row's usable width, its OWN
- * smaller natural side and MAX_IMAGE_TILE_SIDE — NEVER upscaled past its
- * natural size (64×64 stays 64×64); 2–3 images render in ONE row of square,
- * center-cropped tiles; 4–10
+ * 1 image renders as an aspect-hugging box, no-upscale-fitted into the
+ * MAX_IMAGE_TILE_SIDE ceiling on each axis and the row width — NEVER
+ * upscaled past its natural size (64×64 stays 64×64); 2–3 images render in
+ * ONE row of square, center-cropped tiles; 4–10
  * render in a 2-column grid of square, center-cropped tiles (a crop — not a
  * fit — is what keeps the grid compact; the Discord way). The caller caps the
  * count at MAX_ATTACHMENTS (the server's limit).
@@ -40,33 +40,34 @@ export function gridTileSide(usableWidth: number, columns: number): number {
   return Math.min(MAX_IMAGE_TILE_SIDE, Math.floor((usableWidth - TILE_GAP * (columns - 1)) / columns));
 }
 
-/** The SINGLE image's square side: the row width capped by the image's own
- *  SMALLER natural side — no upscale (a negative natural side = unknown → the
- *  full usable width, the decode replaces it). Aspect ratio is PRESERVED
- *  inside the square (contain, not cover — the caller's CSS). */
-export function singleTileSide(usableWidth: number, naturalWidth: number, naturalHeight: number): number {
-  const naturalSide = naturalWidth > 0 && naturalHeight > 0 ? Math.min(naturalWidth, naturalHeight) : usableWidth;
-  return Math.min(usableWidth, MAX_IMAGE_TILE_SIDE, naturalSide);
-}
-
-/** The single image's actual BOX (user decision, 2026-09-15): the image as it
- *  fits into the singleTileSide square — the letterbox padding TRIMMED, so the
- *  box hugs the visible image exactly (oak keeps the square bounding box; the
- *  black bars read as broken rendering). One side equals the square side. */
+/** The single image's actual BOX (user decision, 2026-09-15: the box HUGS the
+ *  image's aspect ratio — oak keeps the square bounding box, and the black
+ *  padding read as broken rendering): a true no-upscale fit into the tile-side
+ *  ceiling on EACH axis and the row width — each side of the box never exceeds
+ *  the image's own side (64×64 stays 64×64). The old oak-ported rule bounded
+ *  the box by the image's SMALLER side, which crushed elongated pictures (an
+ *  800×150 strip rendered 150×28 — "tiny in chat, large in the lightbox",
+ *  live report 2026-11-17); with an aspect-hugging box the bound belongs on
+ *  each side separately. */
 export function singleTileBox(usableWidth: number, naturalWidth: number, naturalHeight: number): { width: number; height: number } {
-  const side = singleTileSide(usableWidth, naturalWidth, naturalHeight);
   if (naturalWidth <= 0 || naturalHeight <= 0) {
-    return { width: side, height: side }; // unknown yet — the square placeholder
+    const side = Math.min(usableWidth, MAX_IMAGE_TILE_SIDE); // unknown yet — the square placeholder
+    return { width: side, height: side };
   }
-  const larger = Math.max(naturalWidth, naturalHeight);
+  const scale = Math.min(
+    MAX_IMAGE_TILE_SIDE / naturalWidth,
+    MAX_IMAGE_TILE_SIDE / naturalHeight,
+    usableWidth / naturalWidth,
+    1, // never upscale
+  );
   return {
-    width: Math.max(1, Math.round((side * naturalWidth) / larger)),
-    height: Math.max(1, Math.round((side * naturalHeight) / larger)),
+    width: Math.max(1, Math.round(naturalWidth * scale)),
+    height: Math.max(1, Math.round(naturalHeight * scale)),
   };
 }
 
 /** The 2+ tiles — all square, all the same side. The single image is NOT here:
- *  it is sized by singleTileSide against its own natural dimensions. */
+ *  it is sized by singleTileBox against its own natural dimensions. */
 export function computeMosaicTiles(count: number, containerWidth: number): MosaicTile[] {
   const usable = Math.max(120, Math.floor(containerWidth));
   if (count <= 1) {
