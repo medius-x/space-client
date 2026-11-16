@@ -24,6 +24,13 @@ export const TILE_GAP = 4;
  *  remains the full-size view. */
 export const MAX_IMAGE_TILE_SIDE = 320;
 
+/** The video card's horizontal chrome (.video-card: 6+6 padding, 1+1 border).
+ *  The preview's WIDTH cap subtracts it, so the card's outer width
+ *  (preview + chrome) aligns exactly with the 320px image tiles rendered
+ *  beside it in neighbouring messages (live report 2026-11-17: the video
+ *  card's edge stuck 14px past the pictures). */
+export const VIDEO_CARD_CHROME = 14;
+
 /** oak's columnsFor: 1 → 1, 2–3 → count, 4+ → 2. */
 export function mosaicColumns(count: number): number {
   if (count <= 1) {
@@ -126,13 +133,15 @@ export function splitFileNameExt(fileName: string): { base: string; ext: string 
 
 /** The video card's thumb box (2026-09-25, the exact-reservation round): the
  *  preview at its own aspect, capped by the IMAGE-TILE side ceiling on BOTH
- *  axes — the caller passes MAX_IMAGE_TILE_SIDE, NOT the row width (user
- *  decision 2026-11-17: the preview and its card stay put when the window
- *  narrows; a too-narrow row lets the card overflow rather than shrink the
- *  frame). This is the same fit computed BEFORE the bytes arrive, from
- *  the wire's intrinsic dimensions (or a learned-cache aspect) — the row then
- *  reserves the exact height and the decode never shifts the layout. Zero/absent
- *  dimensions fall back to the historical 16:9 plate (320×180). */
+ *  axes — for the WIDTH the caller passes MAX_IMAGE_TILE_SIDE minus
+ *  VIDEO_CARD_CHROME (the card then aligns with the image tiles), for the
+ *  height the ceiling itself; NOT the row width (user decision 2026-11-17:
+ *  the preview and its card stay put when the window narrows; a too-narrow
+ *  row lets the card overflow rather than shrink the frame). This is the
+ *  same fit computed BEFORE the bytes arrive, from the wire's intrinsic
+ *  dimensions (or a learned-cache aspect) — the row then reserves the exact
+ *  height and the decode never shifts the layout. Zero/absent dimensions
+ *  fall back to the historical 16:9 plate. */
 export function reservedVideoThumbBox(naturalWidth: number, naturalHeight: number, maxWidth: number, maxHeight: number):
   { width: number; height: number } {
   if (naturalWidth <= 0 || naturalHeight <= 0) {

@@ -1955,7 +1955,9 @@ button.wide-add { width: 100%; }
   width: 48px;
   height: 48px;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.65);
+  /* Translucent BLURPLE (user request 2026-11-17: videos should read
+     distinct from pictures at a glance) — follows the accent variable. */
+  background: color-mix(in srgb, var(--sp-accent) 75%, transparent);
   color: #fff;
   display: flex;
   align-items: center;

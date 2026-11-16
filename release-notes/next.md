@@ -20,3 +20,7 @@ does not: CI, docs, refactoring, internal rework.
   on each side independently instead of being bounded by the image's
   smaller side — a wide strip shows at full preview width, small square
   pictures still stay exactly their natural size.
+- Video cards now align exactly with the picture tiles next to them (the
+  card's outer edge is the same 320px), and the play button is a
+  translucent blurple circle — video attachments are easier to tell from
+  pictures at a glance.

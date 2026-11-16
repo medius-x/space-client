@@ -12,6 +12,7 @@ import {
   reservedVideoThumbBox,
   singleTileBox,
   splitFileNameExt,
+  VIDEO_CARD_CHROME,
 } from "../../domain/logic/attachment-layout";
 import { learnedDims, rememberDims } from "../media-dims";
 import { humanByteSize } from "../../domain/logic/file-size";
@@ -289,11 +290,12 @@ function VideoCardView({ session, attachment, onOpen }: {
   // historical 16:9 plate — capped at the image-tile side on BOTH axes and
   // INDEPENDENT of the row width (user decision 2026-11-17): narrowing the
   // window never shrinks the preview or its card — a too-narrow row lets the
-  // card overflow the block instead.
+  // card overflow the block instead. The WIDTH cap subtracts the card chrome,
+  // so the card's outer edge aligns with the 320px image tiles next door.
   const known = attachment.width !== null && attachment.height !== null
     ? { width: attachment.width, height: attachment.height }
     : learnedDims(attachment.key);
-  const reserved = reservedVideoThumbBox(known?.width ?? 0, known?.height ?? 0, MAX_IMAGE_TILE_SIDE, 320);
+  const reserved = reservedVideoThumbBox(known?.width ?? 0, known?.height ?? 0, MAX_IMAGE_TILE_SIDE - VIDEO_CARD_CHROME, 320);
   // The name row is capped at the PREVIEW's width (inline maxWidth) so it can
   // never widen the card past its frame — inside, the base ellipsizes while
   // the extension stays pinned at the end ("long_na….mp4").

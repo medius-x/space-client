@@ -11,6 +11,7 @@ import {
   reservedVideoThumbBox,
   singleTileBox,
   splitFileNameExt,
+  VIDEO_CARD_CHROME,
 } from "../src/domain/logic/attachment-layout";
 
 // The math mirrors oak's AttachmentLayoutTest (TILE_GAP = 4, square mosaic
@@ -100,24 +101,23 @@ describe("computeMosaicTiles", () => {
 });
 
 describe("reservedVideoThumbBox", () => {
-  it("a 1080p landscape lands on the 320 cap like every picture (used to render 569 wide)", () => {
-    expect(reservedVideoThumbBox(1920, 1080, MAX_IMAGE_TILE_SIDE, 320)).toEqual({ width: 320, height: 180 });
+  it("a 1080p landscape preview caps at the tile cap MINUS the card chrome — the card aligns with the 320 image tiles", () => {
+    expect(reservedVideoThumbBox(1920, 1080, MAX_IMAGE_TILE_SIDE - VIDEO_CARD_CHROME, 320)).toEqual({ width: 306, height: 172 });
   });
 
   it("a portrait preview keeps the height cap and its own aspect", () => {
-    expect(reservedVideoThumbBox(1080, 1920, MAX_IMAGE_TILE_SIDE, 320)).toEqual({ width: 180, height: 320 });
+    expect(reservedVideoThumbBox(1080, 1920, MAX_IMAGE_TILE_SIDE - VIDEO_CARD_CHROME, 320)).toEqual({ width: 180, height: 320 });
   });
 
   it("the box is width-row-INDEPENDENT — narrowing the window never shrinks the preview (user decision)", () => {
-    // The maxWidth ceiling is the tile cap, not the row: same box whatever
-    // the caller's row width is — the card may overflow a narrow row instead.
-    const wideRow = reservedVideoThumbBox(2560, 1440, MAX_IMAGE_TILE_SIDE, 320);
-    expect(wideRow).toEqual({ width: 320, height: 180 });
-    expect(reservedVideoThumbBox(2560, 1440, MAX_IMAGE_TILE_SIDE, 320)).toEqual(wideRow);
+    // The maxWidth ceiling is the tile cap (minus chrome), not the row: the
+    // same box whatever the caller's row width is — the card may overflow a
+    // narrow row instead.
+    expect(reservedVideoThumbBox(2560, 1440, MAX_IMAGE_TILE_SIDE - VIDEO_CARD_CHROME, 320)).toEqual({ width: 306, height: 172 });
   });
 
   it("unknown dimensions fall back to the 16:9 plate", () => {
-    expect(reservedVideoThumbBox(0, 0, 320, 320)).toEqual({ width: 320, height: 180 });
+    expect(reservedVideoThumbBox(0, 0, 306, 320)).toEqual({ width: 306, height: 172 });
   });
 });
 
