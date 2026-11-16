@@ -111,8 +111,11 @@ export function isVideoFile(fileName: string): boolean {
 }
 
 /** The video card's thumb box (2026-09-25, the exact-reservation round): the
- *  CSS shows the preview at its own aspect, capped by max-height 320 and the
- *  block's width. This is the same fit computed BEFORE the bytes arrive, from
+ *  preview at its own aspect, capped by the IMAGE-TILE side ceiling on BOTH
+ *  axes — the caller passes MAX_IMAGE_TILE_SIDE, NOT the row width (user
+ *  decision 2026-11-17: the preview and its card stay put when the window
+ *  narrows; a too-narrow row lets the card overflow rather than shrink the
+ *  frame). This is the same fit computed BEFORE the bytes arrive, from
  *  the wire's intrinsic dimensions (or a learned-cache aspect) — the row then
  *  reserves the exact height and the decode never shifts the layout. Zero/absent
  *  dimensions fall back to the historical 16:9 plate (320×180). */

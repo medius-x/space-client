@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   computeMosaicTiles,
+  MAX_IMAGE_TILE_SIDE,
   mosaicHeight,
   reservedVideoThumbBox,
   singleTileBox,
@@ -112,7 +113,9 @@ describe("estimateRowHeight — the estimate IS the first paint (render-math mir
       messageOf({ attachments: [imageAttachment({ key: "vid/a.mp4", fileName: "a.mp4", width: 1920, height: 1080 })] }),
       inputs({ usableWidth: 700 }),
     );
-    expect(height - textOnlyHeight(null)).toBe(reservedVideoThumbBox(1920, 1080, 700, 320).height + 24);
+    // MAX_IMAGE_TILE_SIDE — the SAME width ceiling the render uses, not the
+    // raw row width: the video preview never shrinks on narrow rows.
+    expect(height - textOnlyHeight(null)).toBe(reservedVideoThumbBox(1920, 1080, MAX_IMAGE_TILE_SIDE, 320).height + 24);
   });
 
   it("audio and plain files estimate the card height", () => {

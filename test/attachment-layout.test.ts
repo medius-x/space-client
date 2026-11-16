@@ -5,8 +5,10 @@ import {
   isAudioFile,
   isImageFile,
   isVideoFile,
+  MAX_IMAGE_TILE_SIDE,
   mosaicColumns,
   mosaicHeight,
+  reservedVideoThumbBox,
   singleTileBox,
   singleTileSide,
 } from "../src/domain/logic/attachment-layout";
@@ -105,6 +107,28 @@ describe("computeMosaicTiles", () => {
     expect(mosaicHeight(computeMosaicTiles(3, 416))).toBe(136);
     expect(mosaicHeight(computeMosaicTiles(6, 408))).toBe(3 * 202 + 2 * 4); // 3 rows + gaps
     expect(mosaicHeight([])).toBe(0);
+  });
+});
+
+describe("reservedVideoThumbBox", () => {
+  it("a 1080p landscape lands on the 320 cap like every picture (used to render 569 wide)", () => {
+    expect(reservedVideoThumbBox(1920, 1080, MAX_IMAGE_TILE_SIDE, 320)).toEqual({ width: 320, height: 180 });
+  });
+
+  it("a portrait preview keeps the height cap and its own aspect", () => {
+    expect(reservedVideoThumbBox(1080, 1920, MAX_IMAGE_TILE_SIDE, 320)).toEqual({ width: 180, height: 320 });
+  });
+
+  it("the box is width-row-INDEPENDENT — narrowing the window never shrinks the preview (user decision)", () => {
+    // The maxWidth ceiling is the tile cap, not the row: same box whatever
+    // the caller's row width is — the card may overflow a narrow row instead.
+    const wideRow = reservedVideoThumbBox(2560, 1440, MAX_IMAGE_TILE_SIDE, 320);
+    expect(wideRow).toEqual({ width: 320, height: 180 });
+    expect(reservedVideoThumbBox(2560, 1440, MAX_IMAGE_TILE_SIDE, 320)).toEqual(wideRow);
+  });
+
+  it("unknown dimensions fall back to the 16:9 plate", () => {
+    expect(reservedVideoThumbBox(0, 0, 320, 320)).toEqual({ width: 320, height: 180 });
   });
 });
 

@@ -1922,11 +1922,12 @@ button.wide-add { width: 100%; }
 .file-card-body { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .file-size { color: var(--sp-text-dim); font-size: 11px; font-family: Consolas, monospace; }
 
-/* oak's video card: the preview keeps its OWN aspect ratio, height capped at
-   320 (portrait grabs don't dominate the row), width never upscaled past the
-   row (fitWidth = min(usable, natural)). */
+/* oak's video card: the preview keeps its OWN aspect ratio, capped at the
+   image-tile side on BOTH axes. NO max-width: 100% (user decision 2026-11-17):
+   it squeezed the border on window resizes while the inline-sized preview did
+   not follow — the card now stays exactly as wide as its preview (a row
+   narrower than the card overflows instead of shrinking the frame). */
 .video-card {
-  max-width: 100%;
   background: var(--sp-surface);
   border: 1px solid var(--sp-control);
   border-radius: 8px;
@@ -1959,8 +1960,12 @@ button.wide-add { width: 100%; }
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
 }
+/* The MDI triangle (the Unicode "▶" glyph sat low-left on its baseline, live
+   report 2026-11-17) — with the same optical nudge the audio button uses:
+   the ink is drawn right-of-center in the glyph box, so the audio button's
+   -1px@14px compensation scales to -1.5px at this size. */
+.video-play-overlay .icon { font-size: 22px; margin-left: -1.5px; }
 .video-duration-badge {
   position: absolute;
   right: 6px;

@@ -8,6 +8,7 @@ import {
   isAudioFile,
   isImageFile,
   isVideoFile,
+  MAX_IMAGE_TILE_SIDE,
   reservedVideoThumbBox,
   singleTileBox,
 } from "../../domain/logic/attachment-layout";
@@ -84,10 +85,17 @@ export function AttachmentView({ session, message, onForwardBegin, removal }: {
       return;
     }
     const adoptWidth = (width: number): void => {
-      if (width >= 120 && width !== lastMeasuredAttachmentWidth) {
-        lastMeasuredAttachmentWidth = width;
-        setContainerWidth(width);
+      if (width < 120) {
+        return;
       }
+      // The global is the SEED for rows mounting later — it must never gate
+      // THIS row's own update: with a shared-value check every mounted
+      // AttachmentView but the first skipped setContainerWidth on a window
+      // resize (the first one had already refreshed the global), their
+      // previews kept the stale width while the CSS card border squeezed
+      // live — the "border narrows, preview does not" live report 2026-11-17.
+      lastMeasuredAttachmentWidth = width;
+      setContainerWidth(width); // an unchanged value bails out in React
     };
     const observer = new ResizeObserver(() => adoptWidth(element.clientWidth));
     observer.observe(element);
@@ -131,7 +139,7 @@ export function AttachmentView({ session, message, onForwardBegin, removal }: {
         </div>
       ) : null}
       {videos.map((attachment) => (
-        <VideoCardView key={attachment.key} session={session} attachment={attachment} usableWidth={usable} onOpen={() => setVideo(attachment)} />
+        <VideoCardView key={attachment.key} session={session} attachment={attachment} onOpen={() => setVideo(attachment)} />
       ))}
       {audios.map((attachment) => (
         <AudioCardView key={attachment.key} session={session} attachment={attachment} />
@@ -263,10 +271,9 @@ function MosaicTileView({ session, attachment, tile, removal, onClick }: {
   );
 }
 
-function VideoCardView({ session, attachment, usableWidth, onOpen }: {
+function VideoCardView({ session, attachment, onOpen }: {
   session: ConnectionSession;
   attachment: Attachment;
-  usableWidth: number;
   onOpen(): void;
 }): React.JSX.Element {
   const thumbUrl = useAttachmentImage(
@@ -278,14 +285,14 @@ function VideoCardView({ session, attachment, usableWidth, onOpen }: {
   const durationSeconds = attachment.durationMillis !== null ? attachment.durationMillis / 1000 : null;
   // The reserved box: the wire's intrinsic frame dimensions when present, else
   // the learned cache (the preview shares the frame's aspect), else the
-  // historical 16:9 plate — sized against the LIVE row width (the CSS caps at
-  // max-height 320 / max-width 100% of the block). The old nominal 480 made
-  // the reserved box smaller than the real card on wide windows — the estimate
-  // and the first paint disagreed and the row grew on measurement.
+  // historical 16:9 plate — capped at the image-tile side on BOTH axes and
+  // INDEPENDENT of the row width (user decision 2026-11-17): narrowing the
+  // window never shrinks the preview or its card — a too-narrow row lets the
+  // card overflow the block instead.
   const known = attachment.width !== null && attachment.height !== null
     ? { width: attachment.width, height: attachment.height }
     : learnedDims(attachment.key);
-  const reserved = reservedVideoThumbBox(known?.width ?? 0, known?.height ?? 0, usableWidth, 320);
+  const reserved = reservedVideoThumbBox(known?.width ?? 0, known?.height ?? 0, MAX_IMAGE_TILE_SIDE, 320);
   return (
     <div className="video-card" onClick={onOpen} title={attachment.fileName}>
       {thumbUrl !== null ? (
@@ -307,7 +314,7 @@ function VideoCardView({ session, attachment, usableWidth, onOpen }: {
               rememberDims(attachment.key, event.currentTarget.naturalWidth, event.currentTarget.naturalHeight);
             }}
           />
-          <span className="video-play-overlay">▶</span>
+          <span className="video-play-overlay"><span className="icon mdi-play" /></span>
           {durationSeconds !== null ? <span className="video-duration-badge">{formatClock(durationSeconds)}</span> : null}
         </div>
       ) : attachment.thumbnailKey !== null ? (
@@ -317,7 +324,7 @@ function VideoCardView({ session, attachment, usableWidth, onOpen }: {
       ) : (
         <div className="video-thumb video-thumb-fallback" style={{ width: reserved.width, height: reserved.height }}>
           <span className="video-thumb-glyph"><span className="icon mdi-file-video-outline" /></span>
-          <span className="video-play-overlay">▶</span>
+          <span className="video-play-overlay"><span className="icon mdi-play" /></span>
           {durationSeconds !== null ? <span className="video-duration-badge">{formatClock(durationSeconds)}</span> : null}
         </div>
       )}

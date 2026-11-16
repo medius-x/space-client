@@ -4,6 +4,7 @@ import {
   isAudioFile,
   isImageFile,
   isVideoFile,
+  MAX_IMAGE_TILE_SIDE,
   mosaicHeight,
   reservedVideoThumbBox,
   singleTileBox,
@@ -121,8 +122,10 @@ export function estimateRowHeight(message: Message, inputs: RowHeightInputs): nu
         singleImage = known;
       }
     } else if (isVideoFile(attachment.fileName)) {
+      // The tile-side cap on BOTH axes, NOT the row width: the preview does
+      // not shrink on narrow rows (the renderer's own contract).
       attachmentEstimate += known !== null
-        ? reservedVideoThumbBox(known.width, known.height, inputs.usableWidth, 320).height + 24
+        ? reservedVideoThumbBox(known.width, known.height, MAX_IMAGE_TILE_SIDE, 320).height + 24
         : 340; // unknown aspect — the historical flat card
     } else if (isAudioFile(attachment.fileName)) {
       attachmentEstimate += 56;
