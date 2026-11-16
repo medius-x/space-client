@@ -472,6 +472,7 @@ export const RU: Dict = {
   "settings.savedStatus": "Сохранено.",
   "settings.exportFailed": "Не удалось выгрузить — см. лог.",
   "settings.downloadClientLogs": "Скачать логи клиента",
+  "settings.showLogsFolder": "Показать скачанный архив логов в папке",
   "settings.pwTooShort": "Новый пароль должен быть не короче 8 символов.",
   "settings.pwNoMatch": "Новые пароли не совпадают.",
   "settings.pwSame": "Новый пароль должен отличаться от текущего.",

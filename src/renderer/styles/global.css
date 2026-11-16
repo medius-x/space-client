@@ -964,6 +964,11 @@ body.rail-dragging * { cursor: grabbing !important; }
 /* oak's member-actions HBox sits at the LEFT (dialog-style right alignment is
    for Cancel/Confirm rows only). */
 .modal-actions.left { justify-content: flex-start; }
+/* The log-archive reveal button (RevealIconButton, user request 2026-11-17)
+   stretches to the TEXT buttons' height instead of its fixed 30px; the
+   SQUARE width is set by the component's ResizeObserver — CSS cannot derive
+   a main size from a stretched cross size (aspect-ratio ignores it). */
+.modal-actions .reveal-button { align-self: stretch; height: auto; }
 /* oak's .add-button: a full-width row button (Add member / Add role…). */
 button.wide-add { width: 100%; }
 .modal-row { display: flex; gap: 8px; }

@@ -26,14 +26,16 @@ declare global {
   }
 }
 
-export type ClientLogsDownloadResult = "saved" | "failed";
+/** The saved archive's PATH rides along (user request 2026-11-17): the caller
+ *  offers a "show in folder" reveal button for the LAST download. */
+export type ClientLogsResult = { outcome: "saved"; path: string } | { outcome: "failed" };
 
-export async function downloadClientLogs(): Promise<ClientLogsDownloadResult> {
+export async function downloadClientLogs(): Promise<ClientLogsResult> {
   try {
     const files = await window.spaceLogs?.collect();
     if (!files || files.length === 0) {
       log.warn("logs", "client log collect returned no files");
-      return "failed";
+      return { outcome: "failed" };
     }
     const entries: Record<string, Uint8Array> = {};
     for (const file of files) {
@@ -42,15 +44,16 @@ export async function downloadClientLogs(): Promise<ClientLogsDownloadResult> {
     const archive = zipSync(entries, { level: 6 });
     const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
     // No dialog anymore (the downloads-folder round, 2026-10-19): null is a
-    // WRITE failure, nothing else.
-    const savedPath = await window.spaceMedia?.saveFile(`client-logs-${stamp}.zip`, archive);
-    if (savedPath == null || savedPath === undefined) {
-      return "failed";
+    // WRITE failure, nothing else. The "logs" subfolder mirrors the backup
+    // folder (user request 2026-11-17): <downloads>/SPACE/logs.
+    const savedPath = await window.spaceMedia?.saveFile(`client-logs-${stamp}.zip`, archive, "logs");
+    if (typeof savedPath !== "string" || savedPath.length === 0) {
+      return { outcome: "failed" };
     }
-    log.info("logs", `client logs exported: ${files.length} file(s), ${archive.byteLength} bytes → ${String(savedPath)}`);
-    return "saved";
+    log.info("logs", `client logs exported: ${files.length} file(s), ${archive.byteLength} bytes → ${savedPath}`);
+    return { outcome: "saved", path: savedPath };
   } catch (error: unknown) {
     log.warn("logs", `client log export failed: ${error instanceof Error ? error.message : String(error)}`);
-    return "failed";
+    return { outcome: "failed" };
   }
 }

@@ -60,8 +60,10 @@ contextBridge.exposeInMainWorld("spaceMedia", {
   openExternal(url: string): Promise<unknown> {
     return ipcRenderer.invoke("space-shell:openExternal", url);
   },
-  saveFile(fileName: string, bytes: Uint8Array): Promise<unknown> {
-    return ipcRenderer.invoke("space-file:save", fileName, bytes);
+  /** An optional subfolder name (single path segment — "logs" for the log
+   *  archives, mirroring the backup folder) under the downloads root. */
+  saveFile(fileName: string, bytes: Uint8Array, subfolder?: string): Promise<unknown> {
+    return ipcRenderer.invoke("space-file:save", fileName, bytes, subfolder);
   },
   showInFolder(savedPath: string): Promise<unknown> {
     return ipcRenderer.invoke("space-file:showInFolder", savedPath);

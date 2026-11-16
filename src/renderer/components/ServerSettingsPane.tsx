@@ -90,6 +90,7 @@ import { currentLang, type MessageKey, type Translator } from "../../domain/i18n
 import { formatTimeOfDay } from "../../domain/logic/message-grouping";
 import { useT } from "../hooks/useT";
 import { Modal } from "./Modal";
+import { RevealIconButton } from "./RevealIconButton";
 import { AFK_TIMEOUT_PRESETS, CreateChannelModal, afkTimeoutLabel } from "./CreateChannelModal";
 import { Avatar } from "./Avatar";
 import { AvatarEditor, serverAvatarApi } from "./ProfileModal";
@@ -3323,6 +3324,9 @@ function ServerStorageSection({ session }: { session: ConnectionSession }): Reac
   // The logs download pair (logging round, 2026-10-06) — its OWN busy/status so a
   // logs failure never reads as a storage-policy failure.
   const [logsBusy, setLogsBusy] = useState(false);
+  /** The LAST downloaded log archive's path (either kind): feeds the reveal
+   *  button next to the download buttons (user request 2026-11-17). */
+  const [lastLogsPath, setLastLogsPath] = useState<string | null>(null);
   const [logsStatus, setLogsStatus] = useState<string | null>(null);
   // Service health (healthcheck round, 2026-10-07) — its own states too: a dead
   // janus must not look like a storage-policy error, and vice versa.
@@ -3377,9 +3381,15 @@ function ServerStorageSection({ session }: { session: ConnectionSession }): Reac
     try {
       const archive = await session.rest.downloadServerLogs();
       const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
-      // A dismissed dialog is not an error (the expression-export contract).
-      const savedPath = await window.spaceMedia?.saveFile(`server-logs-${stamp}.zip`, archive);
-      setLogsStatus(savedPath == null ? null : t("settings.savedStatus"));
+      // The "logs" subfolder mirrors the backup folder (user request
+      // 2026-11-17): <downloads>/SPACE/logs.
+      const savedPath = await window.spaceMedia?.saveFile(`server-logs-${stamp}.zip`, archive, "logs");
+      if (typeof savedPath === "string" && savedPath.length > 0) {
+        setLastLogsPath(savedPath);
+        setLogsStatus(t("settings.savedStatus"));
+      } else {
+        setLogsStatus(null);
+      }
     } catch (downloadError: unknown) {
       setLogsStatus(downloadError instanceof Error ? downloadError.message : String(downloadError));
     } finally {
@@ -3393,9 +3403,23 @@ function ServerStorageSection({ session }: { session: ConnectionSession }): Reac
     }
     setLogsBusy(true);
     setLogsStatus(t("settings.preparing"));
-    const outcome = await downloadClientLogs();
-    setLogsStatus(outcome === "saved" ? t("settings.savedStatus") : t("settings.exportFailed"));
+    const result = await downloadClientLogs();
+    if (result.outcome === "saved") {
+      setLastLogsPath(result.path);
+    }
+    setLogsStatus(result.outcome === "saved" ? t("settings.savedStatus") : t("settings.exportFailed"));
     setLogsBusy(false);
+  };
+
+  const revealLastLogs = (): void => {
+    if (lastLogsPath === null) {
+      return;
+    }
+    void window.spaceMedia?.showInFolder(lastLogsPath).then((reveal) => {
+      if (reveal === "missing" || reveal === "rejected") {
+        setLastLogsPath(null); // deleted/moved — the button self-heals away
+      }
+    });
   };
 
   const applyStatus = (next: StorageStatus): void => {
@@ -3613,6 +3637,9 @@ function ServerStorageSection({ session }: { session: ConnectionSession }): Reac
       <div className="modal-actions left">
         <button disabled={logsBusy} onClick={() => void downloadServerArchive()}>{t("serverSettings.downloadServerLogs")}</button>
         <button disabled={logsBusy} onClick={() => void downloadClientArchive()}>{t("settings.downloadClientLogs")}</button>
+        {lastLogsPath !== null ? (
+          <RevealIconButton title={t("settings.showLogsFolder")} onClick={revealLastLogs} />
+        ) : null}
         <span className="settings-status">{logsStatus ?? ""}</span>
       </div>
 

@@ -15,9 +15,11 @@ interface MediaBridge {
   cacheGet(key: string): Promise<unknown>;
   cacheTrim(maxBytes: number): Promise<unknown>;
   openExternal(url: string): Promise<unknown>;
-  /** Saves into the downloads folder; resolves to the saved file's absolute
-   *  path (null = the write failed) — the download registry feeds on it. */
-  saveFile(fileName: string, bytes: Uint8Array): Promise<string | null>;
+  /** Saves into the downloads folder (optionally into a single named
+   *  SUBFOLDER under it — the log archives use "logs"); resolves to the saved
+   *  file's absolute path (null = the write failed) — the download registry
+   *  feeds on it. */
+  saveFile(fileName: string, bytes: Uint8Array, subfolder?: string): Promise<string | null>;
   /** "Show in folder" for a path saveFile returned: "shown" = Explorer open
    *  with the file selected, "missing" = gone from disk (self-heal the
    *  button back to Download), "rejected" = outside the downloads folder. */

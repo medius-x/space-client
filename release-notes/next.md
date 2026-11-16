@@ -24,3 +24,7 @@ does not: CI, docs, refactoring, internal rework.
   card's outer edge is the same 320px), and the play button is a
   translucent blurple circle — video attachments are easier to tell from
   pictures at a glance.
+- Downloaded log archives (client and server) land in their own
+  downloads/SPACE/logs subfolder instead of the root, and a button
+  appears next to the download buttons that opens the folder with the
+  latest archive selected in Explorer.

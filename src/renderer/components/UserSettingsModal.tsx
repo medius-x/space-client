@@ -16,6 +16,7 @@ import {
   updateNotificationPrefs,
 } from "../runtime";
 import { notifications } from "../notifications";
+import { RevealIconButton } from "./RevealIconButton";
 import { ApiError } from "../../core/rest";
 import type { ClientSettings } from "../../domain/stores/SettingsStore";
 import type { LanguageSetting } from "../../domain/i18n/i18n";
@@ -484,11 +485,14 @@ function AccountSection({ session }: { session: ConnectionSession }): React.JSX.
 /** "Download client logs": a plain utility row (not a profile action — no primary
  *  button), PasswordForm's busy/status idiom. Lives in Diagnostics (any member,
  *  no permissions) and is duplicated in Server Settings → Server (the admin
- *  downloads everything from one place). */
+ *  downloads everything from one place). A successful download grows a reveal
+ *  button (user request 2026-11-17): Explorer opens on the logs subfolder with
+ *  the LAST archive selected. */
 function ClientLogsRow(): React.JSX.Element {
   const t = useT();
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [savedPath, setSavedPath] = useState<string | null>(null);
 
   const download = async (): Promise<void> => {
     if (busy) {
@@ -496,14 +500,33 @@ function ClientLogsRow(): React.JSX.Element {
     }
     setBusy(true);
     setStatus(t("settings.preparing"));
-    const outcome = await downloadClientLogs();
-    setStatus(outcome === "saved" ? t("settings.savedStatus") : t("settings.exportFailed"));
+    const result = await downloadClientLogs();
+    if (result.outcome === "saved") {
+      setSavedPath(result.path);
+      setStatus(t("settings.savedStatus"));
+    } else {
+      setStatus(t("settings.exportFailed"));
+    }
     setBusy(false);
+  };
+
+  const reveal = (): void => {
+    if (savedPath === null) {
+      return;
+    }
+    void window.spaceMedia?.showInFolder(savedPath).then((revealOutcome) => {
+      if (revealOutcome === "missing" || revealOutcome === "rejected") {
+        setSavedPath(null); // deleted/moved — the button self-heals away
+      }
+    });
   };
 
   return (
     <div className="modal-actions left">
       <button disabled={busy} onClick={() => void download()}>{t("settings.downloadClientLogs")}</button>
+      {savedPath !== null ? (
+        <RevealIconButton title={t("settings.showLogsFolder")} onClick={reveal} />
+      ) : null}
       <span className="settings-status">{status ?? ""}</span>
     </div>
   );

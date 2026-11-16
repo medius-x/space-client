@@ -642,14 +642,29 @@ function uniqueDownloadPath(dir: string, fileName: string): string {
   return path.join(dir, `${base} (${Date.now()})${extension}`);
 }
 
-ipcMain.handle("space-file:save", async (_event, fileName: unknown, bytes: unknown) => {
+ipcMain.handle("space-file:save", async (_event, fileName: unknown, bytes: unknown, subfolder: unknown) => {
   if (typeof fileName !== "string" || !(bytes instanceof Uint8Array)) {
     return null;
   }
   // A bare NAME only: the save target is ALWAYS the downloads folder — the
   // basename call keeps a hostile renderer from steering the write elsewhere.
   const safeName = path.basename(fileName).trim() || "download.bin";
-  const dir = resolveDownloadsDir();
+  // An optional SUBFOLDER (user request 2026-11-17: log archives land in
+  // <downloads>/SPACE/logs, mirroring the backup folder): a single path
+  // segment — a strict charset WITHOUT dots, so "." and ".." (path walks)
+  // are impossible by construction; anything else saves to the root.
+  const dir = typeof subfolder === "string" && /^[\w-]+$/.test(subfolder)
+    ? (() => {
+      const subdir = path.join(resolveDownloadsDir(), subfolder);
+      try {
+        fs.mkdirSync(subdir, { recursive: true });
+        return subdir;
+      } catch (error) {
+        appendLog(`[file] subfolder "${subfolder}" create failed: ${error instanceof Error ? error.message : String(error)} — saving to the downloads root`);
+        return resolveDownloadsDir();
+      }
+    })()
+    : resolveDownloadsDir();
   const target = uniqueDownloadPath(dir, safeName);
   try {
     fs.writeFileSync(target, bytes);

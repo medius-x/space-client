@@ -468,6 +468,7 @@ export const EN = {
   "settings.savedStatus": "Saved.",
   "settings.exportFailed": "Export failed — see the log.",
   "settings.downloadClientLogs": "Download client logs",
+  "settings.showLogsFolder": "Show the downloaded log archive in its folder",
   "settings.pwTooShort": "New password must be at least 8 characters.",
   "settings.pwNoMatch": "New passwords do not match.",
   "settings.pwSame": "New password must be different from the current one.",
