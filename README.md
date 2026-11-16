@@ -86,6 +86,10 @@ accounts and client trust pins are preserved.
 - Discussion threads attached to any message
 - Attachments: images, video, audio and files — gallery layout, fullscreen
   viewer, link previews
+- Activity lines in the member list ("playing CS2", "listening to the radio"):
+  register an application once (picked from the running list, Task-Manager
+  style) and while it runs, everyone sees the line under your name — with a
+  no-prefix mode and a one-switch pause
 
 ### Voice & calls
 
@@ -117,6 +121,10 @@ accounts and client trust pins are preserved.
 - Ownership transfer
 - Per-role restriction of direct messages
 - Storage housekeeping with high/low disk watermarks
+- Optional SSH hardening during server setup: the client generates a key,
+  installs and VERIFIES it with a second login — and only then disables SSH
+  password access. The key is remembered per server and can be exported to a
+  file from Server settings for manual logins
 - Service health panel; server and client log export for problem reports
 - Full-instance backups: one archive with every conversation, account and
   attachment, downloaded to your computer on demand or daily while the client
