@@ -22,7 +22,6 @@
 .icon.mdi-alert::before { content: "\F0026"; }
 .icon.mdi-application::before { content: "\F08C6"; }
 .icon.mdi-arrow-left::before { content: "\F004D"; }
-.icon.mdi-cast-connected::before { content: "\F0119"; }
 .icon.mdi-check::before { content: "\F012C"; }
 .icon.mdi-chevron-down::before { content: "\F0140"; }
 .icon.mdi-chevron-left::before { content: "\F0141"; }
@@ -54,6 +53,7 @@
 .icon.mdi-microphone-off::before { content: "\F036D"; }
 .icon.mdi-monitor::before { content: "\F0379"; }
 .icon.mdi-monitor-eye::before { content: "\F13B4"; }
+.icon.mdi-monitor-share::before { content: "\F1483"; }
 .icon.mdi-open-in-new::before { content: "\F03CC"; }
 .icon.mdi-paperclip::before { content: "\F03E2"; }
 .icon.mdi-pause::before { content: "\F03E4"; }

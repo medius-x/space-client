@@ -371,7 +371,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
               }
             }}
           >
-            <span className="icon mdi-cast-connected" />
+            <span className="icon mdi-monitor-share" />
           </button>
           <button className="voice-toggle icon-button leave" title={ringingOut ? t("common.cancel") : t("voice.hangUp")} onClick={hangUpCall}>
             <span className="icon mdi-phone-hangup" />
@@ -515,7 +515,7 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
               }
             }}
           >
-            <span className="icon mdi-cast-connected" />
+            <span className="icon mdi-monitor-share" />
           </button>
         ) : null}
         <button className="voice-toggle icon-button leave" title={t("voice.disconnect")} onClick={() => void leaveVoice()}>

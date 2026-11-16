@@ -28,3 +28,5 @@ does not: CI, docs, refactoring, internal rework.
   downloads/SPACE/logs subfolder instead of the root, and a button
   appears next to the download buttons that opens the folder with the
   latest archive selected in Explorer.
+- The screen-share button in voice panels now uses the monitor-with-arrow
+  glyph, matching the common screen-sharing symbol.
