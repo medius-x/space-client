@@ -11,6 +11,7 @@ import {
   MAX_IMAGE_TILE_SIDE,
   reservedVideoThumbBox,
   singleTileBox,
+  splitFileNameExt,
 } from "../../domain/logic/attachment-layout";
 import { learnedDims, rememberDims } from "../media-dims";
 import { humanByteSize } from "../../domain/logic/file-size";
@@ -293,6 +294,10 @@ function VideoCardView({ session, attachment, onOpen }: {
     ? { width: attachment.width, height: attachment.height }
     : learnedDims(attachment.key);
   const reserved = reservedVideoThumbBox(known?.width ?? 0, known?.height ?? 0, MAX_IMAGE_TILE_SIDE, 320);
+  // The name row is capped at the PREVIEW's width (inline maxWidth) so it can
+  // never widen the card past its frame — inside, the base ellipsizes while
+  // the extension stays pinned at the end ("long_na….mp4").
+  const nameParts = splitFileNameExt(attachment.fileName);
   return (
     <div className="video-card" onClick={onOpen} title={attachment.fileName}>
       {thumbUrl !== null ? (
@@ -328,7 +333,10 @@ function VideoCardView({ session, attachment, onOpen }: {
           {durationSeconds !== null ? <span className="video-duration-badge">{formatClock(durationSeconds)}</span> : null}
         </div>
       )}
-      <div className="file-name">{attachment.fileName}</div>
+      <div className="file-name" style={{ maxWidth: reserved.width }}>
+        <span className="file-name-base">{nameParts.base}</span>
+        {nameParts.ext !== "" ? <span className="file-name-ext">{nameParts.ext}</span> : null}
+      </div>
     </div>
   );
 }

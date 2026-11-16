@@ -110,6 +110,19 @@ export function isVideoFile(fileName: string): boolean {
   return VIDEO_EXTENSIONS.has(extensionOf(fileName));
 }
 
+/** Splits a file name for the video card's name row: the BASE ellipsizes,
+ *  the extension (with its dot) stays pinned at the end — "long_na….mp4"
+ *  (user request 2026-11-17: the card must never grow wider than its
+ *  preview, yet the extension stays readable). A leading-dot name
+ *  (".hidden") has no extension part. */
+export function splitFileNameExt(fileName: string): { base: string; ext: string } {
+  const dot = fileName.lastIndexOf(".");
+  if (dot <= 0) {
+    return { base: fileName, ext: "" };
+  }
+  return { base: fileName.slice(0, dot), ext: fileName.slice(dot) };
+}
+
 /** The video card's thumb box (2026-09-25, the exact-reservation round): the
  *  preview at its own aspect, capped by the IMAGE-TILE side ceiling on BOTH
  *  axes — the caller passes MAX_IMAGE_TILE_SIDE, NOT the row width (user

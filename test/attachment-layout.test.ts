@@ -10,6 +10,7 @@ import {
   mosaicHeight,
   reservedVideoThumbBox,
   singleTileBox,
+  splitFileNameExt,
   singleTileSide,
 } from "../src/domain/logic/attachment-layout";
 
@@ -142,5 +143,17 @@ describe("file-type sniffing by extension", () => {
     expect(isAudioFile("voice.opus")).toBe(true);
     expect(isImageFile("archive.zip")).toBe(false);
     expect(isVideoFile("noext")).toBe(false);
+  });
+});
+
+describe("splitFileNameExt", () => {
+  it("the LAST dot splits base from a dotted extension", () => {
+    expect(splitFileNameExt("clip.mp4")).toEqual({ base: "clip", ext: ".mp4" });
+    expect(splitFileNameExt("archive.tar.gz")).toEqual({ base: "archive.tar", ext: ".gz" });
+  });
+
+  it("no extension or a LEADING dot keeps everything in the base", () => {
+    expect(splitFileNameExt("noext")).toEqual({ base: "noext", ext: "" });
+    expect(splitFileNameExt(".hidden")).toEqual({ base: ".hidden", ext: "" });
   });
 });

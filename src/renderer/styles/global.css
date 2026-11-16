@@ -1977,7 +1977,13 @@ button.wide-add { width: 100%; }
   font-size: 12px;
   font-family: Consolas, monospace;
 }
-.video-card .file-name { margin-top: 4px; display: block; }
+/* The name row NEVER widens the card: the renderer caps it at the preview's
+   width (inline maxWidth) and splits base+extension — the base ellipsizes,
+   the extension stays pinned at the end ("long_na….mp4", user request
+   2026-11-17: a long name used to stretch the frame wider than the preview). */
+.video-card .file-name { margin-top: 4px; display: flex; }
+.video-card .file-name .file-name-base { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.video-card .file-name .file-name-ext { flex-shrink: 0; }
 
 .audio-card {
   display: flex;
