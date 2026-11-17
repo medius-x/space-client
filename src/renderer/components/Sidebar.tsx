@@ -553,7 +553,9 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
   return (
     <aside className="sidebar" ref={listRef}>
       {dmMode ? (
-        <DmSidebar session={session} />
+        <div className="sidebar-scroll">
+          <DmSidebar session={session} />
+        </div>
       ) : (
         <>
           <div
@@ -579,53 +581,59 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
             </span>
             <span className="icon mdi-chevron-down sidebar-server-chevron" />
           </div>
-          {/* The client self-update banner (2026-10-20) sits ABOVE the ownership
-              offer — an update of the app itself outranks a server matter. */}
-          <UpdateBanner />
-          {/* The recipient's PERSISTENT ownership notification: rendered while THIS
-              member holds an incoming pending offer (fetched at session start — it
-              survives the recipient being offline — and refreshed on every
-              /user/queue/ownership push). */}
-          <OwnershipBanner session={session} />
-          {sidebarDiscussions ? (
-            <>
-              {/* No switch dropdown anymore (user decision 2026-10-05): entering
-                  the discussions side is the channel-row badge alone; leaving is
-                  this back button — the room-view back glyph, compact so the
-                  section row keeps its fixed 24px. It also closes an open thread
-                  view: "back" lands on the last text channel, not just the list. */}
-              <div className="sidebar-section-title">
-                <span>{t("sidebar.discussionsTitle")}</span>
-                <button
-                  className="sidebar-back"
-                  title={t("sidebar.backToChannels")}
-                  onClick={() => {
-                    setSidebarDiscussions(false);
-                    closeDiscussionView();
-                  }}
-                >
-                  <span className="icon mdi-chevron-left" />
-                </button>
-              </div>
-              <DiscussionsList
-                session={session}
-                channels={channels}
-                discussions={trackedDiscussions}
-              />
-            </>
-          ) : (
-            <>
-              <div className="sidebar-section-title">
-                <span>{t("sidebar.channelsTitle")}</span>
-                {canManageChannels ? (
-                  <button className="section-add" title={t("sidebar.createChannel")} onClick={() => setCreateRequest({ kind: "TEXT", parentId: null, inCategory: false })}>+</button>
-                ) : null}
-              </div>
-              {viewGroups.uncategorizedText.map((channel) => textChannelRow(channel, "uncat-text"))}
-              {viewGroups.uncategorizedVoice.map((channel) => voiceChannelBlock(channel, "uncat-voice"))}
-              {viewGroups.categories.map(categoryBlock)}
-            </>
-          )}
+          {/* Only the list scrolls — the server header (and its divider) stay
+              pinned like the roster's search row and the chat's header (user
+              request 2026-11-18: the whole column used to slide under the
+              scroll, drifting out of line with the neighbouring columns). */}
+          <div className="sidebar-scroll">
+            {/* The client self-update banner (2026-10-20) sits ABOVE the ownership
+                offer — an update of the app itself outranks a server matter. */}
+            <UpdateBanner />
+            {/* The recipient's PERSISTENT ownership notification: rendered while THIS
+                member holds an incoming pending offer (fetched at session start — it
+                survives the recipient being offline — and refreshed on every
+                /user/queue/ownership push). */}
+            <OwnershipBanner session={session} />
+            {sidebarDiscussions ? (
+              <>
+                {/* No switch dropdown anymore (user decision 2026-10-05): entering
+                    the discussions side is the channel-row badge alone; leaving is
+                    this back button — the room-view back glyph, compact so the
+                    section row keeps its fixed 24px. It also closes an open thread
+                    view: "back" lands on the last text channel, not just the list. */}
+                <div className="sidebar-section-title">
+                  <span>{t("sidebar.discussionsTitle")}</span>
+                  <button
+                    className="sidebar-back"
+                    title={t("sidebar.backToChannels")}
+                    onClick={() => {
+                      setSidebarDiscussions(false);
+                      closeDiscussionView();
+                    }}
+                  >
+                    <span className="icon mdi-chevron-left" />
+                  </button>
+                </div>
+                <DiscussionsList
+                  session={session}
+                  channels={channels}
+                  discussions={trackedDiscussions}
+                />
+              </>
+            ) : (
+              <>
+                <div className="sidebar-section-title">
+                  <span>{t("sidebar.channelsTitle")}</span>
+                  {canManageChannels ? (
+                    <button className="section-add" title={t("sidebar.createChannel")} onClick={() => setCreateRequest({ kind: "TEXT", parentId: null, inCategory: false })}>+</button>
+                  ) : null}
+                </div>
+                {viewGroups.uncategorizedText.map((channel) => textChannelRow(channel, "uncat-text"))}
+                {viewGroups.uncategorizedVoice.map((channel) => voiceChannelBlock(channel, "uncat-voice"))}
+                {viewGroups.categories.map(categoryBlock)}
+              </>
+            )}
+          </div>
         </>
       )}
 

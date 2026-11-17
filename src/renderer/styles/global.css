@@ -93,9 +93,16 @@ body:has(.toast-stack) {
   background: var(--sp-surface);
   border-radius: 10px 0 0 0;
   padding: 12px;
-  overflow-y: auto;
+  /* The column is a flex stack: the server header stays PINNED and only the
+     list scrolls (user request 2026-11-18 — the roster's search-row and the
+     chat's header idiom; the whole column used to slide under the scroll). */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   flex-shrink: 0;
 }
+/* The scrollable remainder (the DM list too — its side has no pinned header). */
+.sidebar-scroll { overflow-y: auto; min-height: 0; }
 
 /* oak's .pane-title — the column/section caption: bold muted, no uppercasing. */
 .sidebar-section-title,
@@ -709,7 +716,18 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   flex-direction: column;
   align-items: center;
   padding: 8px 0 12px;
+  /* Three bands (2026-11-18): pinned home + separator, the scrolling server
+     list, pinned add — the whole column must not slide under the scroll. */
+  overflow: hidden;
+}
+/* The server list — the rail's only scrolling band. */
+.rail-scroll {
   overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
 }
 
 /* Row wrapper — oak's ServerNode: a 72×56 click zone carrying the white

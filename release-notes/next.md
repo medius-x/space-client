@@ -57,3 +57,7 @@ does not: CI, docs, refactoring, internal rework.
 - The screen-share picker is a bit wider, its source previews shrank to sit
   two per row instead of one, and the quality step's buttons and inputs grew
   to match the wider card.
+- Long lists no longer slide their whole column: the channel panel keeps its
+  server header pinned while the channel list scrolls, and the server rail
+  keeps the home button on top and the add-server button at the bottom while
+  only the server icons scroll.

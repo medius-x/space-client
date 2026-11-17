@@ -204,42 +204,49 @@ export function ServerRail({ activeRecordId, session }: {
 
   return (
     <nav className="server-rail" ref={railRef}>
+      {/* The rail is a three-band stack (user request 2026-11-18): the home
+          button + separator stay pinned on top, the SERVER LIST is the only
+          scrolling band, and the add button stays pinned at the bottom — a long
+          list must not slide the whole column (and "+" stays reachable without
+          scrolling to the end). */}
       {session !== null ? <HomeRailButton session={session} /> : <DisabledHomeRailButton />}
       <div className="rail-separator" />
-      {viewIds.map((recordId) => {
-        const record = recordById.get(recordId);
-        return record === undefined ? null : (
-          <RailRow
-            key={record.id}
-            record={record}
-            active={record.id === activeRecordId && !dmMode}
-            expired={record.token === EXPIRED_MARKER}
-            session={session}
-            dragging={record.id === draggedId}
-            ghostRef={ghostRef}
-            onDragPointerDown={onRowPointerDown(record.id)}
-            onActivate={() => {
-              if (suppressNextClickRef.current) {
-                suppressNextClickRef.current = false;
-                return; // the click that follows a completed drag
-              }
-              if (record.id === activeRecordId) {
-                // In Home mode the ACTIVE server icon is the "back to the server"
-                // affordance — without this the click hits the same-record guard
-                // and does nothing (live M6 smoke).
-                exitHomeMode();
-                return;
-              }
-              // NEVER busy-gated: the rail is the primary navigation and a switching
-              // attempt in flight must not eat clicks (user decision 2026-10-08) —
-              // switchConnection/openSession tolerate the overlap. A live voice
-              // room only gets a CONFIRM first (user request 2026-10-28) — the
-              // switch always leaves the room.
-              requestServerSwitch(record.id);
-            }}
-          />
-        );
-      })}
+      <div className="rail-scroll">
+        {viewIds.map((recordId) => {
+          const record = recordById.get(recordId);
+          return record === undefined ? null : (
+            <RailRow
+              key={record.id}
+              record={record}
+              active={record.id === activeRecordId && !dmMode}
+              expired={record.token === EXPIRED_MARKER}
+              session={session}
+              dragging={record.id === draggedId}
+              ghostRef={ghostRef}
+              onDragPointerDown={onRowPointerDown(record.id)}
+              onActivate={() => {
+                if (suppressNextClickRef.current) {
+                  suppressNextClickRef.current = false;
+                  return; // the click that follows a completed drag
+                }
+                if (record.id === activeRecordId) {
+                  // In Home mode the ACTIVE server icon is the "back to the server"
+                  // affordance — without this the click hits the same-record guard
+                  // and does nothing (live M6 smoke).
+                  exitHomeMode();
+                  return;
+                }
+                // NEVER busy-gated: the rail is the primary navigation and a switching
+                // attempt in flight must not eat clicks (user decision 2026-10-08) —
+                // switchConnection/openSession tolerate the overlap. A live voice
+                // room only gets a CONFIRM first (user request 2026-10-28) — the
+                // switch always leaves the room.
+                requestServerSwitch(record.id);
+              }}
+            />
+          );
+        })}
+      </div>
       <div className="rail-wrap" title={t("rail.addServer")} onClick={beginAddServer}>
         <div className="rail-icon add"><span className="icon mdi-plus" /></div>
       </div>
