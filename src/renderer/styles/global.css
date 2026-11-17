@@ -715,20 +715,30 @@ input:focus { outline: none; border-color: var(--sp-accent); }
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 8px 0 12px;
+  /* The bottom clearance matches the sidebar's (.left-overlay): the user
+     panel FLOATS over the columns' bottom edge, and the pinned "+" must sit
+     ABOVE it, not half-hidden underneath (live report 2026-11-18). */
+  padding: 8px 0 88px;
   /* Three bands (2026-11-18): pinned home + separator, the scrolling server
      list, pinned add — the whole column must not slide under the scroll. */
   overflow: hidden;
 }
-/* The server list — the rail's only scrolling band. */
+/* The server list — the rail's only scrolling band. No horizontal pan: the
+   vertical scrollbar shaves the 100% width and the 72px icons would otherwise
+   poke out (the stray horizontal scroll, live report 2026-11-18). The bar
+   itself is HIDDEN: a reserved 12px strip shifts the centered icons off the
+   home button's line (live report 2026-11-18) — the wheel still scrolls, and
+   the bar was near-invisible at rest anyway (0.1 alpha). */
 .rail-scroll {
   overflow-y: auto;
+  overflow-x: hidden;
   min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   width: 100%;
 }
+.rail-scroll::-webkit-scrollbar { width: 0; height: 0; }
 
 /* Row wrapper — oak's ServerNode: a 72×56 click zone carrying the white
    selection pill at the RAIL's left edge, the 48×48 icon and the badge. */
