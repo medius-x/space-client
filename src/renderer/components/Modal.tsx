@@ -8,12 +8,14 @@ import { useEffect } from "react";
  *  (the provisioning run — live report 2026-10-13: a backdrop click hid the
  *  15-minute install screen; the run survived in the main process, but the
  *  UI was gone). Such a surface always offers its own explicit exit. */
-export function Modal({ title, children, onClose, wide, narrow, bare = false, elevated = false, locked = false }: {
+export function Modal({ title, children, onClose, wide, medium, narrow, bare = false, elevated = false, locked = false }: {
   title: string;
   children: React.ReactNode;
   onClose: () => void;
   /** Wider card for multi-pane settings surfaces (M7). */
   wide?: boolean;
+  /** The in-between width (the share picker, 2026-11-18: two preview columns). */
+  medium?: boolean;
   /** Narrower card for compact pickers (~⅔ width — the voice-invite dialog). */
   narrow?: boolean;
   /** No dark backdrop (the dialog dims its own content instead). */
@@ -42,7 +44,7 @@ export function Modal({ title, children, onClose, wide, narrow, bare = false, el
         }
       }}
     >
-      <div className={"modal-card" + (wide === true ? " wide" : "") + (narrow === true ? " narrow" : "")}>
+      <div className={"modal-card" + (wide === true ? " wide" : "") + (medium === true ? " medium" : "") + (narrow === true ? " narrow" : "")}>
         <div className="modal-titlebar">
           <div className="modal-title">{title}</div>
           <button className="modal-close" title={locked ? "Close (not while a setup run is in progress)" : "Close"} onClick={onClose} disabled={locked}>

@@ -354,7 +354,7 @@ export function SharePickerModal({ onTarget, onClose }: {
     [sourceSize.width, sourceSize.height]);
 
   return (
-    <Modal title={step === 1 ? t("share.title") : t("share.qualityTitle")} onClose={onClose}>
+    <Modal title={step === 1 ? t("share.title") : t("share.qualityTitle")} medium onClose={onClose}>
       {step === 1 ? (
         <>
           <div className="modal-row picker-tabs">

@@ -2729,13 +2729,22 @@ button.wide-add { width: 100%; }
 .room-toolbar .voice-toggle.on { background: var(--sp-red); color: #fff; }
 
 .picker-tabs { justify-content: flex-start; }
+/* Two preview columns (user request 2026-11-18): the medium card's content
+   (~518px) splits into ~254px tiles — previews roughly 1.5× SMALLER than the
+   old full-width single column, but two abreast; a lone source takes the left
+   cell. Hard TWO columns by request — no auto-fill back to one. */
 .picker-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   max-height: 320px;
   overflow-y: auto;
 }
+/* The loading spinner and the no-sources note span BOTH columns — a grid child
+   defaults to the first column and read as shifted left (live report
+   2026-11-18). */
+.picker-grid .picker-loading,
+.picker-grid .modal-note { grid-column: 1 / -1; }
 .picker-tile {
   border: 2px solid var(--sp-control);
   border-radius: 8px;
@@ -2811,11 +2820,13 @@ button.wide-add { width: 100%; }
   min-width: 0;
 }
 .quality-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+/* The label/segment sizes grew with the medium card (2026-11-18) — the old
+   84px label + 4px 10px pills left the widened step 2 reading empty. */
 .quality-row-label {
-  width: 84px;
+  width: 96px;
   flex-shrink: 0;
   color: var(--sp-text-muted);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
 }
 .quality-select-wrap { position: relative; display: flex; flex: 1; min-width: 0; }
@@ -2830,9 +2841,9 @@ button.wide-add { width: 100%; }
   border: 1px solid var(--sp-control);
   border-radius: 4px;
   color: var(--sp-text);
-  font-size: 12px;
+  font-size: 13px;
   font-family: inherit;
-  padding: 5px 8px;
+  padding: 6px 10px;
   text-align: left;
 }
 .quality-select-trigger:hover { background: var(--sp-hover); }
@@ -2892,12 +2903,12 @@ button.wide-add { width: 100%; }
 .quality-preset-delete:hover { background: var(--sp-red); color: #fff; }
 .quality-segments { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; min-width: 0; }
 .quality-segment {
-  padding: 4px 10px;
+  padding: 6px 12px;
   border: 1px solid var(--sp-control);
   border-radius: 4px;
   background: transparent;
   color: var(--sp-text-muted);
-  font-size: 12px;
+  font-size: 13px;
   font-family: inherit;
   cursor: pointer;
 }
@@ -2907,7 +2918,7 @@ button.wide-add { width: 100%; }
   background: var(--sp-accent);
   color: #fff;
 }
-.quality-save-row { display: flex; gap: 8px; margin-left: 94px; }
+.quality-save-row { display: flex; gap: 8px; margin-left: 106px; }
 .quality-save-row input {
   flex: 1;
   min-width: 0;
@@ -2917,19 +2928,19 @@ button.wide-add { width: 100%; }
   color: var(--sp-text);
   font-size: 13px;
   font-family: inherit;
-  padding: 6px 8px;
+  padding: 7px 10px;
   outline: none;
 }
 .quality-audio {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-left: 94px;
+  margin-left: 106px;
   color: var(--sp-text);
   font-size: 13px;
   cursor: pointer;
 }
-.quality-summary { color: var(--sp-text-muted); font-size: 12px; margin-left: 94px; }
+.quality-summary { color: var(--sp-text-muted); font-size: 12px; margin-left: 106px; }
 
 /* The pop-out is a borderless window like the main one (2026-09-25 style
    round): the app CaptionBar on top, the video below it. */
@@ -4103,8 +4114,14 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 .tri-label small { font-size: 11px; color: var(--sp-text-dim); font-weight: 400; }
 
 .modal-card.wide { width: 720px; max-width: 92vw; }
+/* The in-between width (the share picker, 2026-11-18: room for two preview
+   columns; the Quality step's controls scale up so the card doesn't read
+   empty). */
+.modal-card.medium { width: 560px; max-width: 92vw; }
 /* Compact pickers (the voice-invite dialog) — ~⅔ of the default width. */
 .modal-card.narrow { width: 300px; }
+/* The bigger card carries bigger action buttons (the share picker's step 2). */
+.modal-card.medium .modal-actions button { padding: 9px 18px; }
 
 .mention-popup {
   background: var(--sp-surface);

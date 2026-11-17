@@ -54,3 +54,6 @@ does not: CI, docs, refactoring, internal rework.
   carries a small square preview of the original's first image beside the text
   snippet (freshly linked on every load, so it never goes stale; quotes inside
   forwarded messages stay text-only).
+- The screen-share picker is a bit wider, its source previews shrank to sit
+  two per row instead of one, and the quality step's buttons and inputs grew
+  to match the wider card.
