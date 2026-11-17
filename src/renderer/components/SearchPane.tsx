@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../hooks/useStore";
-import { appStore, openChannelAtMessage, setSearchScope } from "../runtime";
+import { appStore, openChannelAtMessage, openDiscussionAtMessage, setSearchScope } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import { displayNameOf } from "../../domain/logic/display-name";
 import { formatHeaderStamp, toEpochMs } from "../../domain/logic/message-grouping";
 import { flattenForSearch, groupSearchResultsByDay, highlightSegments } from "../../domain/logic/search-results";
 import { currentLang } from "../../domain/i18n/i18n";
-import type { Message } from "../../types";
+import type { Message, SearchDiscussionHit } from "../../types";
 import { Avatar } from "./Avatar";
 import { MembersPane } from "./MembersPane";
 import { useT } from "../hooks/useT";
@@ -140,6 +140,9 @@ export function SearchPane({ session, query, onQueryChange }: {
   const [authorFocused, setAuthorFocused] = useState(false);
   const [authorIndex, setAuthorIndex] = useState(0);
   const [results, setResults] = useState<readonly Message[]>([]);
+  /** The loaded pages' thread contexts (2026-11-18): discussion channel id → hit row.
+   *  A fresh search REPLACES the map; a "load more" page merges into it. */
+  const [discussionHits, setDiscussionHits] = useState<Map<number, SearchDiscussionHit>>(new Map());
   const [total, setTotal] = useState(0);
   const [searched, setSearched] = useState(false);
   const [searchedAtMs, setSearchedAtMs] = useState(() => Date.now());
@@ -174,12 +177,20 @@ export function SearchPane({ session, query, onQueryChange }: {
         author: authorFilter?.username ?? null,
         beforeId,
         limit: SEARCH_LIMIT,
+        includeDiscussions: true, // threads join both scopes (2026-11-18)
       });
       if (seqRef.current !== seq || session.isDisposed()) {
         return; // a newer search already answered — drop the stale page
       }
       setTotal(response.total);
       setResults((previous) => (beforeId === undefined ? response.results : [...previous, ...response.results]));
+      setDiscussionHits((previous) => {
+        const next = beforeId === undefined ? new Map<number, SearchDiscussionHit>() : previous;
+        for (const hit of response.discussions ?? []) {
+          next.set(hit.id, hit);
+        }
+        return next;
+      });
       setSearched(true);
     } catch (searchError) {
       if (seqRef.current === seq) {
@@ -315,6 +326,7 @@ export function SearchPane({ session, query, onQueryChange }: {
                 query={trimmedQuery.length >= MIN_QUERY_CHARS ? trimmedQuery : null}
                 showChannel={effectiveScope === "server"}
                 channels={channels}
+                discussion={discussionHits.get(message.channelId) ?? null}
               />
             ))}
           </div>
@@ -329,12 +341,15 @@ export function SearchPane({ session, query, onQueryChange }: {
   );
 }
 
-function SearchResultCard({ session, message, query, showChannel, channels }: {
+function SearchResultCard({ session, message, query, showChannel, channels, discussion }: {
   session: ConnectionSession;
   message: Message;
   query: string | null;
   showChannel: boolean;
   channels: readonly { id: number; name: string }[];
+  /** The hit's thread context when it lives in a discussion (2026-11-18) —
+   *  resolved from the page's `discussions` by the message's channelId. */
+  discussion: SearchDiscussionHit | null;
 }): React.JSX.Element {
   const t = useT();
   const users = useStore(session.rosterStore, (state) => state.users);
@@ -344,10 +359,32 @@ function SearchResultCard({ session, message, query, showChannel, channels }: {
   // A sticker-only hit has no text to highlight — show the same label the reply
   // quote and the toast use, so the card never renders as an empty author-only tile.
   const stickerLabel = message.sticker !== null ? t("common.stickerLabel", { name: message.sticker.name }) : null;
-  const channelName = showChannel ? channels.find((entry) => entry.id === message.channelId)?.name ?? null : null;
+  // A THREAD hit labels itself "#parent → origin snippet" (the channel list has no
+  // discussions — the context row is the only "where"); a plain hit keeps the bare
+  // channel name in the server scope.
+  const channelName = discussion !== null
+    ? channels.find((entry) => entry.id === discussion.parentChannelId)?.name ?? null
+    : showChannel ? channels.find((entry) => entry.id === message.channelId)?.name ?? null : null;
+  const threadLabel = discussion !== null && channelName !== null
+    ? `#${channelName} → ${discussion.originSnippet}`
+    : null;
   return (
-    <button className="search-hit" onClick={() => openChannelAtMessage(message.channelId, message.id)}>
-      {channelName !== null ? (
+    <button
+      className="search-hit"
+      onClick={() => {
+        if (discussion !== null) {
+          openDiscussionAtMessage(
+            { id: discussion.id, parentChannelId: discussion.parentChannelId, originMessageId: discussion.originMessageId },
+            message.id,
+          );
+          return;
+        }
+        openChannelAtMessage(message.channelId, message.id);
+      }}
+    >
+      {threadLabel !== null ? (
+        <div className="search-hit-channel"><span className="icon mdi-comment-text-outline" />{threadLabel}</div>
+      ) : channelName !== null ? (
         <div className="search-hit-channel"><span className="icon mdi-pound" />{channelName}</div>
       ) : null}
       <div className="search-hit-row">

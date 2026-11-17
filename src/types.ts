@@ -157,6 +157,19 @@ export interface Message {
 export interface SearchMessagesResult {
   total: number;
   results: Message[];
+  /** The thread context for THIS page's hits that live in discussions (2026-11-18):
+   *  `id` matches a hit's `channelId` — the resolver pair. Absent on pre-thread-search
+   *  servers and empty when the page has no thread hits. */
+  discussions?: SearchDiscussionHit[];
+}
+
+/** One discussion context row of a search page — enough for the client to label the
+ *  hit ("#channel → thread") and to open the thread view without extra fetches. */
+export interface SearchDiscussionHit {
+  id: number;
+  parentChannelId: number;
+  originMessageId: number;
+  originSnippet: string;
 }
 
 // ---------------------------------------------------------------------------

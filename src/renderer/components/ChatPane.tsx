@@ -411,9 +411,12 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
     [dm, ownUsername, channel],
   );
   const activeAround = useStore(appStore, (state) => state.activeAround);
-  // The around target only applies to THIS chat (a search hit in another channel
+  // The around target only applies to the list ON SCREEN (a search hit elsewhere
   // first switches the channel; the field then survives into the new mount).
-  const aroundTarget = activeAround !== null && viewChannel !== null && activeAround.channelId === viewChannel.id
+  // Matched against chatChannelId, NOT viewChannel.id — in a THREAD view the
+  // shown list is the thread's (chatChannelId = discussionId) while viewChannel
+  // stays the parent (live report 2026-11-18: the thread hit never highlighted).
+  const aroundTarget = activeAround !== null && chatChannelId !== null && activeAround.channelId === chatChannelId
     ? activeAround.messageId
     : null;
   // The DM restriction (the subtractive RESTRICT_PRIVATE_MESSAGES role bit): a
@@ -1052,11 +1055,19 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
   const [scrolledUp, setScrolledUp] = useState(false);
   const [dividerReadId, setDividerReadId] = useState<number | null>(null);
   const [highlightId, setHighlightId] = useState<number | null>(null);
+  /** The highlight's TTL timer — extended (not restarted from dark) by every
+   *  settling re-assertion, so the row glows CONTINUOUSLY through the ladder. */
+  const highlightTtlTimerRef = useRef(0);
   const [beginReached, setBeginReached] = useState(false);
   // One settling-jump ladder at a time — a new jump cancels the previous
   // ladder's re-assertions (two ladders would fight over the viewport).
   const settlingJumpCancelRef = useRef<(() => void) | null>(null);
   useEffect(() => () => settlingJumpCancelRef.current?.(), []);
+  useEffect(() => () => {
+    if (highlightTtlTimerRef.current !== 0) {
+      window.clearTimeout(highlightTtlTimerRef.current);
+    }
+  }, []);
 
   // Row keys are scoped by the server RECORD. Message ids are per-database
   // sequences — two servers' ids collide head-on — and the virtualizer
@@ -1251,10 +1262,17 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
     setJumpToPresent(around);
     settlingJumpCancelRef.current?.();
     settlingJumpCancelRef.current = scheduleSettlingJump(listRef, rowKeyOf(aroundTarget), () => {
-      // Re-flash with every re-assertion: the row may only ENTER the viewport
-      // on a late attempt, when the original highlight is long gone.
+      // Re-assertions re-arm the highlight, but the TTL EXTENDS instead of
+      // expiring in between — the settling ladder used to blink the row on and
+      // off with the ladder's own cadence (live report 2026-11-18).
       setHighlightId(aroundTarget);
-      window.setTimeout(() => setHighlightId(null), HIGHLIGHT_TTL_MS);
+      if (highlightTtlTimerRef.current !== 0) {
+        window.clearTimeout(highlightTtlTimerRef.current);
+      }
+      highlightTtlTimerRef.current = window.setTimeout(() => {
+        highlightTtlTimerRef.current = 0;
+        setHighlightId(null);
+      }, HIGHLIGHT_TTL_MS);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [aroundTarget, messages]);

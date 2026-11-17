@@ -2494,8 +2494,14 @@ export function openChannelAtMessage(channelId: number, messageId: number): void
   if (session.channelStore.get(channelId) !== null) {
     const state = appStore.getSnapshot();
     if (!state.dmMode && state.activeChannelId === channelId) {
-      // Already looking at it — re-arm the window (an around jump within the channel).
-      appStore.patch({ activeAround: { channelId, messageId } });
+      // Already looking at it — re-arm the window (an around jump within the
+      // channel). With a THREAD view open on this channel the channel's own
+      // list is not what is on screen: leave the thread first (live report
+      // 2026-11-18 — the jump silently landed behind the thread view).
+      appStore.patch({
+        ...(state.activeDiscussion !== null ? { activeDiscussion: null } : {}),
+        activeAround: { channelId, messageId },
+      });
       void session.loadAround(channelId, messageId).catch((error: unknown) => {
         log.warn("chat", `around open failed: ${errorMessage(error)}`);
         appStore.patch({ activeAround: null });
@@ -2535,10 +2541,10 @@ export function setSidebarDiscussions(shown: boolean): void {
 /** Open a discussion view: the parent channel becomes the active channel (sidebar
  *  highlight stays), the chat area swaps to the thread. The parent's own chat state
  *  (around window etc.) is reset by the setActiveChannel pass-through. */
-export function openDiscussion(discussion: { id: number; parentChannelId: number; originMessageId: number }): void {
+export function openDiscussion(discussion: { id: number; parentChannelId: number; originMessageId: number }): Promise<void> {
   const session = activeSession;
   if (!session) {
-    return;
+    return Promise.resolve();
   }
   const state = appStore.getSnapshot();
   if (state.dmMode || state.activeChannelId !== discussion.parentChannelId) {
@@ -2552,9 +2558,28 @@ export function openDiscussion(discussion: { id: number; parentChannelId: number
     activeAround: null,
     roomViewOpen: false,
   });
-  void session.openDiscussion(discussion.id).catch((error: unknown) => {
+  return session.openDiscussion(discussion.id).catch((error: unknown) => {
     log.warn("chat", `discussion open failed: ${errorMessage(error)}`);
     closeDiscussionView();
+  });
+}
+
+/** A SEARCH hit inside a discussion (2026-11-18): open the thread's view and land
+ *  the around window on the hit message. CHAINED on the discussion's own history
+ *  load — both write the same store, and an around window that lands FIRST is
+ *  overwritten by the thread snapshot (the jump died, the highlight expired
+ *  before any paint could show it, live report 2026-11-18). */
+export function openDiscussionAtMessage(discussion: { id: number; parentChannelId: number; originMessageId: number }, messageId: number): void {
+  const session = activeSession;
+  if (!session) {
+    return;
+  }
+  void openDiscussion(discussion).then(() => {
+    appStore.patch({ activeAround: { channelId: discussion.id, messageId } });
+    return session.loadAround(discussion.id, messageId).catch((error: unknown) => {
+      log.warn("chat", `discussion around open failed: ${errorMessage(error)}`);
+      appStore.patch({ activeAround: null });
+    });
   });
 }
 

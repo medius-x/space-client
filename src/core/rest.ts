@@ -282,13 +282,18 @@ export class RestClient {
   /** Message search (Discord-style substring match), newest first. `channelId` scopes to one
    *  channel (a DM works); omitted — the whole server (the server never returns DMs there).
    *  `q` and `author` are both optional, at least one required server-side; `beforeId` pages
-   *  older; `total` is the cursor-independent hit count. */
+   *  older; `total` is the cursor-independent hit count. `includeDiscussions` (2026-11-18)
+   *  pulls the threads into the search — a channel scope covers the channel PLUS its
+   *  discussions, the server-wide scope every readable thread — and the response carries
+   *  the `discussions` context for thread hits. The parameter doubles as the compatibility
+   *  gate: pre-thread-search servers ignore it (old behaviour). */
   async searchMessages(request: {
     q?: string | null;
     channelId?: number | null;
     author?: string | null;
     beforeId?: number;
     limit?: number;
+    includeDiscussions?: boolean;
   }): Promise<SearchMessagesResult> {
     const params = new URLSearchParams();
     if (request.q != null && request.q !== "") {
@@ -305,6 +310,9 @@ export class RestClient {
     }
     if (request.limit !== undefined) {
       params.set("limit", String(request.limit));
+    }
+    if (request.includeDiscussions === true) {
+      params.set("includeDiscussions", "true");
     }
     const query = params.toString();
     return this.request<SearchMessagesResult>(`/api/search/messages${query ? `?${query}` : ""}`, { method: "GET" });

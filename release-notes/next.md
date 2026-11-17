@@ -72,3 +72,7 @@ does not: CI, docs, refactoring, internal rework.
   next unread — repeating until you reach the end. The jump-down chevron
   dismisses it instantly, and live messages stack up under a divider you are
   reading towards.
+- Message search now covers discussion threads: the "everywhere" scope walks
+  the readable threads too, and a channel-scoped search also searches the
+  threads started in that channel. A thread hit is labelled "#channel →
+  origin snippet" and clicking it opens the thread right on the message.
