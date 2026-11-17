@@ -65,3 +65,10 @@ does not: CI, docs, refactoring, internal rework.
   left at the bottom reopens at the (possibly grown) bottom, and a chat you
   were reading mid-history reopens on the very message you were looking at,
   with the jump-to-bottom chevron back.
+- The NEW-messages divider now follows your reading: a channel with unreads
+  opens with the divider at the top of the window; whatever stays visible for
+  a moment and a half counts as read (the read marker moves there and the
+  badge melts down gradually), and the divider jumps below the viewport to the
+  next unread — repeating until you reach the end. The jump-down chevron
+  dismisses it instantly, and live messages stack up under a divider you are
+  reading towards.

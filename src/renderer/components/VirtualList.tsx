@@ -63,6 +63,10 @@ interface VirtualListProps<Item> {
    *  open on" after a server switch, 2026-11-18). Fired from the rAF geometry
    *  pass: real viewport rows only, no overscan. */
   onAnchorChange?: (key: string) => void;
+  /** Fires from the rAF geometry pass whenever the viewport MOVES, carrying
+   *  the REAL viewport row range (no overscan) — the caller's viewport-driven
+   *  logic (the NEW-divider reading cursor, 2026-11-18). */
+  onViewportChange?: (geometry: { scrollTop: number; viewportHeight: number; firstIndex: number; lastIndex: number }) => void;
   /** Synchronous USER intent: wheel/keys, before any scroll event lands. The
    *  caller's stick-to-bottom must un-pin on the FIRST notch upward — the
    *  proximity gate only reports one rAF later (paced 250 ms), and a batch
@@ -74,7 +78,7 @@ interface VirtualListProps<Item> {
 }
 
 export function VirtualList<Item>(props: VirtualListProps<Item>): React.JSX.Element {
-  const { items, itemKey, estimateHeight, renderItem, onNearTop, onBottomProximity, onUserScrollIntent, onAnchorChange, className, ref } = props;
+  const { items, itemKey, estimateHeight, renderItem, onNearTop, onBottomProximity, onUserScrollIntent, onAnchorChange, onViewportChange, className, ref } = props;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const scrollIdleTimerRef = useRef<number | null>(null);
@@ -89,6 +93,8 @@ export function VirtualList<Item>(props: VirtualListProps<Item>): React.JSX.Elem
   onUserScrollIntentRef.current = onUserScrollIntent;
   const onAnchorChangeRef = useRef(onAnchorChange);
   onAnchorChangeRef.current = onAnchorChange;
+  const onViewportChangeRef = useRef(onViewportChange);
+  onViewportChangeRef.current = onViewportChange;
   /** The last reported anchor key — the callback fires on CHANGE only. */
   const lastAnchorKeyRef = useRef<string | null>(null);
   const gate = useMemo(
@@ -306,9 +312,18 @@ export function VirtualList<Item>(props: VirtualListProps<Item>): React.JSX.Elem
       if (decisions.fireNearTop) {
         onNearTopRef.current?.();
       }
+      // The viewport-move signal: the real row range (no overscan) rides along.
+      const range = virtualizer.range;
+      if (range !== null) {
+        onViewportChangeRef.current?.({
+          scrollTop,
+          viewportHeight: viewport,
+          firstIndex: range.startIndex,
+          lastIndex: range.endIndex,
+        });
+      }
       // The scroll-anchor memory: the first REAL viewport row (the range
       // excludes overscan), reported on change only.
-      const range = virtualizer.range;
       const anchorItem = range !== null ? itemsRef.current[range.startIndex] : undefined;
       const anchorKey = anchorItem !== undefined ? itemKey(anchorItem) : null;
       if (anchorKey !== null && anchorKey !== lastAnchorKeyRef.current) {

@@ -1072,48 +1072,62 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
     [session.recordId],
   );
 
-  // oak's divider lifecycle (MainController, Java-ported): it appears above the
-  // first unread (channel open, or a live batch while the user is away) and is
-  // dismissed ONLY by the pinned-bottom timer — 1.5s, RESTARTED by every
-  // scroll/click/keypress while pinned, CANCELLED by scrolling away. No
-  // TTL-at-open, no instant clear on the auto-scroll (that made it flash for a
-  // frame, live report).
-  const dismissTimerRef = useRef(0);
-  const cancelDividerDismiss = () => {
-    if (dismissTimerRef.current !== 0) {
-      window.clearTimeout(dismissTimerRef.current);
-      dismissTimerRef.current = 0;
+  // The NEW divider as a READING CURSOR (user spec 2026-11-18): it stands in
+  // the flow above the FIRST unread; whatever the viewport holds still for
+  // READ_TICK_MS counts as read (the ack is MONOTONIC — acking a later id
+  // covers everything flashed past on the way, user decision), and the divider
+  // then jumps to stand above the first message BELOW the viewport. Repeat
+  // until the last unread is read (divider gone). The jump-down chevron clears
+  // it instantly. No dismiss timers keyed to clicks/typing — only to the
+  // viewport settling.
+  const READ_TICK_MS = 1500;
+  const readTickTimerRef = useRef(0);
+  /** The last reported REAL viewport row range (no overscan). */
+  const lastRangeRef = useRef<{ firstIndex: number; lastIndex: number } | null>(null);
+  /** The tick body, re-bound every render — a timer armed on one render must
+   *  read the CURRENT messages/divider, not the stale closure's. */
+  const readTickRef = useRef<() => void>(() => undefined);
+  readTickRef.current = () => {
+    const range = lastRangeRef.current;
+    if (range === null || dividerReadId === null) {
+      return;
     }
-  };
-  const scheduleDividerDismiss = () => {
-    cancelDividerDismiss();
-    if (!nearBottomRef.current) {
-      return; // scrolled away — the divider STAYS until the user comes back
+    const lastVisible = messages[range.lastIndex];
+    if (lastVisible === undefined || lastVisible.id <= dividerReadId) {
+      return; // nothing new crossed into view
     }
-    dismissTimerRef.current = window.setTimeout(() => {
-      dismissTimerRef.current = 0;
-      setDividerReadId(null);
-    }, 1500);
+    // Read: the server pointer moves to the last visible id (monotonic — it
+    // covers everything above), and the divider jumps above the first message
+    // BELOW the viewport — or dies when nothing unread remains.
+    session.ackChannelRead(channel.id, lastVisible.id);
+    const unreadRemain = messages.some((message) => message.id > lastVisible.id);
+    setDividerReadId(unreadRemain ? lastVisible.id : null);
   };
-  useEffect(() => cancelDividerDismiss, []);
-
-  // While the divider is up, ANY user activity restarts the dismiss countdown —
-  // the same restart-on-scroll/click contract oak's markReadDelay has.
-  useEffect(() => {
+  const scheduleReadTick = () => {
+    if (readTickTimerRef.current !== 0) {
+      window.clearTimeout(readTickTimerRef.current);
+      readTickTimerRef.current = 0;
+    }
     if (dividerReadId === null) {
       return;
     }
-    const onActivity = () => scheduleDividerDismiss();
-    window.addEventListener("wheel", onActivity);
-    window.addEventListener("pointerdown", onActivity);
-    window.addEventListener("keydown", onActivity);
+    readTickTimerRef.current = window.setTimeout(() => {
+      readTickTimerRef.current = 0;
+      readTickRef.current();
+    }, READ_TICK_MS);
+  };
+  // Arm on the divider's appearance and on every list change (live growth
+  // restarts the settling window); the viewport pass re-arms on every move.
+  useEffect(() => {
+    scheduleReadTick();
     return () => {
-      window.removeEventListener("wheel", onActivity);
-      window.removeEventListener("pointerdown", onActivity);
-      window.removeEventListener("keydown", onActivity);
+      if (readTickTimerRef.current !== 0) {
+        window.clearTimeout(readTickTimerRef.current);
+        readTickTimerRef.current = 0;
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dividerReadId]);
+  }, [dividerReadId, messages]);
 
   // Snapshot the unread divider at open (before the ack moves the pointer).
   // prevSessionRef lives OUTSIDE: a SESSION change (server switch) is the case
@@ -1277,7 +1291,10 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
           && message.authorUsername !== session.username());
         const firstUnread = index > 0 ? messages[index] : undefined;
         if (firstUnread !== undefined) {
-          listRef.current?.scrollToKey(rowKeyOf(firstUnread.id), "center");
+          // START, not CENTER (user spec 2026-11-18): the NEW divider opens at
+          // the TOP of the viewport — with more unreads than fit, the reader
+          // starts at the first one and reads down, the divider riding above.
+          listRef.current?.scrollToKey(rowKeyOf(firstUnread.id), "start");
         }
       }, 60);
     } else {
@@ -1316,7 +1333,11 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
     if (grew && tailLandingSuppressRef.current) {
       tailLandingSuppressRef.current = false; // the tail-landing batch: history walked through by hand
     } else if (grew && previousTailRef.current !== null && !watching && !ownBatch && !belowEndRef.current) {
-      setDividerReadId(previousTailRef.current);
+      // Live arrivals while scrolled away stack BELOW the reading cursor —
+      // an ALREADY-STANDING divider keeps its place (user spec 2026-11-18:
+      // the new messages accumulate under it); only a divider-less channel
+      // raises a fresh one above the batch.
+      setDividerReadId((current) => current ?? previousTailRef.current);
     }
     // Server ids only — the optimistic tail (negative ids) must not become the
     // unread divider's anchor or the own-batch filter's threshold.
@@ -1362,16 +1383,8 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
     warmLegacyAttachmentDims(messages, session.attachmentCache);
   }, [messages, channel.id, session.recordId, session.attachmentCache]);
 
-  useEffect(() => {
-    const onFocus = () => {
-      if (nearBottomRef.current) {
-        scheduleDividerDismiss(); // focus while pinned restarts the countdown
-      }
-    };
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // (No focus-driven divider dismissal anymore — the read-the-divider model
+  // clears it on READING past the unreads, not on timers or focus.)
 
   // Back-filled jump: scroll + flash when the target arrives.
   useEffect(() => {
@@ -1622,7 +1635,6 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
         pinnedByRecordRef.current.set(session.recordId, nearBottom);
         setScrolledUp(!nearBottom);
         if (nearBottom) {
-          scheduleDividerDismiss(); // back at the bottom → restart the countdown
           // The reader reached the LOADED list's bottom edge. That is the
           // chat's real bottom ONLY without a gap below — during around
           // pagination this same edge fires with belowEnd still armed, and
@@ -1630,13 +1642,25 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
           // vanish at the first page boundary (live report 2026-10-27).
           if (!belowEndRef.current) {
             setJumpToPresent(false);
+            // The REAL bottom: everything above is read — the divider has
+            // nothing left to mark (user spec 2026-11-18: instant clear; the
+            // ack keeps the read pointer at the tail).
+            if (dividerReadId !== null) {
+              setDividerReadId(null);
+              ackActiveChannel();
+            }
           }
           if (belowEndRef.current) {
             loadNewer(); // pinned at the window's lower edge → page towards the tail
           }
-        } else {
-          cancelDividerDismiss(); // scrolled away — the divider stays put
         }
+      }}
+      onViewportChange={({ firstIndex, lastIndex }) => {
+        // The reading-cursor feed (2026-11-18): remember the real viewport
+        // range and re-arm the settling tick — what the viewport holds still
+        // for READ_TICK_MS becomes read, the divider jumping below it.
+        lastRangeRef.current = { firstIndex, lastIndex };
+        scheduleReadTick();
       }}
       renderItem={(message, index) => (
         <>
@@ -1682,6 +1706,13 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
           className="chat-scroll-down"
           title={t("chat.jumpToLatest")}
           onClick={() => {
+            // The jump-down abandons the reading — the NEW divider goes NOW
+            // (user spec 2026-11-18), the ack marks the tail read; the tick
+            // timer dies with the divider's effect.
+            if (dividerReadId !== null) {
+              setDividerReadId(null);
+              ackActiveChannel();
+            }
             if (belowEndRef.current) {
               // An id-unknown gap sits below — only a tail reload truly lands
               // on the newest message (the old "Jump To Present" behavior).
