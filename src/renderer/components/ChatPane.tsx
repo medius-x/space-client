@@ -65,7 +65,7 @@ import { notifications } from "../notifications";
 import { dmDisplayName } from "../../domain/logic/dm-display";
 import { memberNameColor } from "../../domain/logic/roster-grouping";
 import { paletteColor } from "../../domain/logic/user-palette";
-import type { Channel, ChannelMyPermissions, CustomEmoji, Discussion, DmChannel, ForwardInfo, Message, ReplyInfo, Sticker, StickerRef } from "../../types";
+import type { Channel, ChannelMyPermissions, CustomEmoji, Discussion, DmChannel, ForwardInfo, Message, QuoteImageRef, ReplyInfo, Sticker, StickerRef } from "../../types";
 import { REACTION_CATALOG, REACTION_GLYPH_BY_SLUG } from "../../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { Modal } from "./Modal";
@@ -2090,7 +2090,7 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
           /* oak: a forward renders the BODY + attachments INSIDE the card — the
              forwarded content reads as the quoted original, not as a plain
              message under a one-line marker. The inline editor keeps the flat order. */
-          <ForwardCard forward={message.forward} nameOf={nameOf}>
+          <ForwardCard forward={message.forward} nameOf={nameOf} session={session}>
             {body}
             {attachmentView}
             {previewUrl !== null ? <LinkPreviewCard url={previewUrl} /> : null}
@@ -2099,7 +2099,7 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
         ) : (
           <>
             {message.reply !== null
-              ? <QuoteCard level={message.reply} depth={0} clickable onJump={actions.jumpTo} nameOf={nameOf} />
+              ? <QuoteCard level={message.reply} depth={0} clickable onJump={actions.jumpTo} nameOf={nameOf} session={session} />
               : null}
             {body}
             {previewUrl !== null ? <LinkPreviewCard url={previewUrl} /> : null}
@@ -2296,7 +2296,7 @@ function DiscussionOriginPanel({ session, discussion, originFull, onCloseRequest
   );
 }
 
-function QuoteCard({ level, depth, clickable, onJump, nameOf }: {
+function QuoteCard({ level, depth, clickable, onJump, nameOf, session }: {
   level: ReplyInfo;
   depth: number;
   /** Live tree rows jump on click; FROZEN snapshots (inside a forward) never do. */
@@ -2304,32 +2304,90 @@ function QuoteCard({ level, depth, clickable, onJump, nameOf }: {
   onJump: (messageId: number) => void;
   /** Resolves the RENDERED name (nickname) from the live roster. */
   nameOf: (username: string) => string;
+  /** Loads the quote's image preview through the shared attachment cache. */
+  session: ConnectionSession;
 }): React.JSX.Element {
   const t = useT();
   if (level.deleted) {
     return <div className="quote-card deleted">{t("chat.originalDeleted")}</div>;
   }
+  // oak's quote level: [reply glyph]["Reply to" bold][nick in palette color] →
+  // optional nested forward context → nested reply card → one-line preview.
+  const headLine = (
+    <div
+      className="quote-head"
+      onClick={clickable ? () => onJump(level.messageId) : undefined}
+    >
+      <span className="icon mdi-reply" />
+      <span className="quote-prefix">{t("chat.replyToPrefix")}</span>
+      <span className="quote-author" style={{ color: paletteColor(level.authorUsername) }}>{nameOf(level.authorUsername)}</span>
+    </div>
+  );
+  const forwardLine = level.forward !== null
+    ? <span className="quote-forward">{t("chat.quoteForwardFrom", { name: nameOf(level.forward.authorUsername) })}</span>
+    : null;
+  const nestedCard = level.reply !== null && depth < QUOTE_DEPTH_MAX
+    ? <QuoteCard level={level.reply} depth={depth + 1} clickable={clickable} onJump={onJump} nameOf={nameOf} session={session} />
+    : null;
+  // The MEDIA layout (user request 2026-11-17): the 50×50 square LEADS, and to
+  // its right the head rides the top with the original's text below it (capped
+  // at 20 chars + "…" — the little column beside the square fits a tweet, not a
+  // sentence). An attachment-only original's preview IS the file name (the
+  // server's fallback) — a duplicate under the very picture is noise, so the
+  // text line drops to nothing (the name stays in the thumbnail's tooltip).
+  // Frozen forward snapshots and old servers leave image absent → text-only
+  // layout below, unchanged.
+  if (level.image != null) {
+    const snippet = level.preview === level.image.fileName
+      ? null
+      : capQuoteSnippet(level.preview);
+    return (
+      <div className={"quote-card" + (clickable ? " live" : "")}>
+        <div className="quote-media-row">
+          <QuoteImageThumb session={session} image={level.image} />
+          <div className="quote-media-text">
+            {headLine}
+            {forwardLine}
+            {nestedCard}
+            {snippet !== null
+              ? <span className="quote-preview">{renderMessageSegments(segmentMessageContent(snippet, []), FLAT_SEGMENT_DECORATORS, "")}</span>
+              : null}
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className={"quote-card" + (clickable ? " live" : "")}>
-      {/* oak's quote level: [reply glyph]["Reply to" bold][nick in palette color] →
-          optional nested forward context → nested reply card → one-line preview. */}
-      <div
-        className="quote-head"
-        onClick={clickable ? () => onJump(level.messageId) : undefined}
-      >
-        <span className="icon mdi-reply" />
-        <span className="quote-prefix">{t("chat.replyToPrefix")}</span>
-        <span className="quote-author" style={{ color: paletteColor(level.authorUsername) }}>{nameOf(level.authorUsername)}</span>
-      </div>
-      {level.forward !== null ? <span className="quote-forward">{t("chat.quoteForwardFrom", { name: nameOf(level.forward.authorUsername) })}</span> : null}
-      {level.reply !== null && depth < QUOTE_DEPTH_MAX
-        ? <QuoteCard level={level.reply} depth={depth + 1} clickable={clickable} onJump={onJump} nameOf={nameOf} />
-        : null}
-      {/* The preview keeps its markers ("**bold**" arrived as plain text) but now
-          renders them: the same segmenter, FLAT decorators (the string is
-          server-truncated — a cut URL must stay non-clickable text). */}
+      {headLine}
+      {forwardLine}
+      {nestedCard}
       <span className="quote-preview">{renderMessageSegments(segmentMessageContent(level.preview, []), FLAT_SEGMENT_DECORATORS, "")}</span>
     </div>
+  );
+}
+
+/** The quote-media snippet cap (user request 2026-11-17): the text beside the
+ *  square thumbnail fits ~20 chars — past that an ellipsis, like the server's
+ *  own 100-char preview cap but tighter. */
+const QUOTE_SNIPPET_MAX = 20;
+
+function capQuoteSnippet(preview: string): string {
+  return preview.length > QUOTE_SNIPPET_MAX ? `${preview.slice(0, QUOTE_SNIPPET_MAX)}…` : preview;
+}
+
+/** The quote's 50×50 center-cropped thumbnail — the replied-to message's first
+ *  image, loaded through the shared per-session attachment cache (the quote's
+ *  URL is re-presigned on every fetch, so it never goes stale while rendered). */
+function QuoteImageThumb({ session, image }: {
+  session: ConnectionSession;
+  image: QuoteImageRef;
+}): React.JSX.Element {
+  const url = useAttachmentImage(session, { key: image.key, url: image.url });
+  return (
+    <span className="quote-image-thumb" title={image.fileName}>
+      {url !== null ? <img src={url} alt={image.fileName} draggable={false} /> : null}
+    </span>
   );
 }
 
@@ -2339,7 +2397,7 @@ function QuoteCard({ level, depth, clickable, onJump, nameOf }: {
  * author (palette color) + their timestamp; the frozen quote tree and then the
  * BODY + attachments live INSIDE the card — a forward reads as the quoted original.
  */
-function ForwardCard({ forward, children, nameOf }: { forward: ForwardInfo; children: React.ReactNode; nameOf: (username: string) => string }): React.JSX.Element {
+function ForwardCard({ forward, children, nameOf, session }: { forward: ForwardInfo; children: React.ReactNode; nameOf: (username: string) => string; session: ConnectionSession }): React.JSX.Element {
   const t = useT();
   // Subscribed like MessageList: a relative-dates toggle repaints the stamp.
   const relativeDates = useStore(settingsStore, (settings) => settings.relativeDates);
@@ -2355,7 +2413,7 @@ function ForwardCard({ forward, children, nameOf }: { forward: ForwardInfo; chil
         <span className="forward-author" style={{ color: paletteColor(forward.authorUsername) }}>{nameOf(forward.authorUsername)}</span>
         <span className="forward-time">{formatHeaderStamp(toEpochMs(forward.createdAt), Date.now(), relativeDates, currentLang())}</span>
       </div>
-      {forward.reply !== null ? <QuoteCard level={forward.reply} depth={1} clickable={false} onJump={() => undefined} nameOf={nameOf} /> : null}
+      {forward.reply !== null ? <QuoteCard level={forward.reply} depth={1} clickable={false} onJump={() => undefined} nameOf={nameOf} session={session} /> : null}
       {children}
     </div>
   );

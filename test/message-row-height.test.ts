@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   computeMosaicTiles,
+  FORWARD_CARD_CHROME,
   mosaicHeight,
   reservedVideoThumbBox,
+  singleMediaCapSide,
   singleTileBox,
 } from "../src/domain/logic/attachment-layout";
 import { estimateRowHeight, QUOTE_DEPTH_MAX } from "../src/domain/logic/message-row-height";
-import type { Attachment, ForwardInfo, Message, ReplyInfo } from "../src/types";
+import type { Attachment, ForwardInfo, Message, QuoteImageRef, ReplyInfo } from "../src/types";
 
 const NO_DIMS = (): null => null;
 
@@ -199,6 +201,12 @@ describe("estimateRowHeight — the nested-reply quote stack (render mirror)", (
     expect(height - textOnlyHeight(null)).toBe(49 + 16);
   });
 
+  it("a level with the quote's image thumbnail collapses into the 50px media row", () => {
+    const image: QuoteImageRef = { fileName: "pic.png", url: "https://x/pic", key: "attachments/1", width: 800, height: 600 };
+    const height = estimateRowHeight(messageOf({ reply: replyLevel(null, { image }) }), inputs());
+    expect(height - textOnlyHeight(null)).toBe(49 + 15);
+  });
+
   it("a forwarded message pays its card rows AND the frozen quote tree (one level deeper)", () => {
     const forward: ForwardInfo = {
       serverName: "srv", channelName: "general", authorId: 2, authorUsername: "bob",
@@ -208,5 +216,21 @@ describe("estimateRowHeight — the nested-reply quote stack (render mirror)", (
     // 30 = the forward card's own two rows; the frozen tree renders from depth 1
     // — with the cutoff, a 2-level tree at depth 1..2 shows BOTH cards.
     expect(height - textOnlyHeight(null)).toBe(30 + 2 * 49);
+  });
+
+  it("a forwarded attachment lays out inside the CAPPED card (media cap minus chrome)", () => {
+    const forward: ForwardInfo = {
+      serverName: "srv", channelName: "general", authorId: 2, authorUsername: "bob",
+      createdAt: "2026-10-19T00:00:00Z", trusted: true, reply: null,
+    };
+    // 900-wide row: the card tops out at the media cap (480), the interior at
+    // 480 − FORWARD_CARD_CHROME — the lone picture inside must not estimate as
+    // a full-width one (the flush right edge, user decision 2026-11-18).
+    const interior = singleMediaCapSide(900) - FORWARD_CARD_CHROME;
+    const height = estimateRowHeight(
+      messageOf({ attachments: [imageAttachment({ key: "a/p.png", fileName: "p.png", width: 1920, height: 1080 })], forward }),
+      inputs({ usableWidth: 900 }),
+    );
+    expect(height - textOnlyHeight(null, 900)).toBe(30 + singleTileBox(interior, 1920, 1080).height);
   });
 });

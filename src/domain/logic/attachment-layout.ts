@@ -52,6 +52,14 @@ export function singleMediaCapSide(usableWidth: number): number {
  *  card's edge stuck 14px past the pictures). */
 export const VIDEO_CARD_CHROME = 14;
 
+/** The FORWARD card's horizontal chrome (.forward-card: 3px yellow bar + 8+8
+ *  padding). The card's outer width tops out at the live single-media cap
+ *  (user decision 2026-11-18: every tile's right edge flush with the lone
+ *  pictures; mosaics stay wider, a conscious exception), so attachments and
+ *  text INSIDE a forward lay out against (cap − this chrome) — the height
+ *  estimate must use the same narrowed width or the wrap line counts drift. */
+export const FORWARD_CARD_CHROME = 19;
+
 /** oak's columnsFor: 1 → 1, 2–3 → count, 4+ → 2. */
 export function mosaicColumns(count: number): number {
   if (count <= 1) {

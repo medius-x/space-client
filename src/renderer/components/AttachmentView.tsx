@@ -5,10 +5,13 @@ import { useAttachmentImage } from "../hooks/useAttachmentImage";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import {
   computeMosaicTiles,
+  FORWARD_CARD_CHROME,
   isAudioFile,
   isImageFile,
   isVideoFile,
+  MIN_TILE_SIDE,
   reservedVideoThumbBox,
+  singleMediaCapSide,
   singleTileBox,
   splitFileNameExt,
 } from "../../domain/logic/attachment-layout";
@@ -86,22 +89,39 @@ export function AttachmentView({ session, message, onForwardBegin, removal }: {
     if (element === null) {
       return;
     }
-    const adoptWidth = (width: number): void => {
-      if (width < 120) {
-        return;
+    // The width SOURCE is the MESSAGE COLUMN (.message-body), not this block:
+    // a block nested inside a forward card sits in the card's fit-content
+    // interior, which never moves on its own — measuring the block itself
+    // froze shrunken tiles after a window WIDENED (the block waited for the
+    // card, the card for its content, the content for the block, 2026-11-18).
+    // The column changes on every resize, so both directions stay live.
+    const columnElement = element.closest(".message-body");
+    const nestedInForward = element.closest(".forward-card") !== null;
+    const adoptWidths = (): void => {
+      const columnWidth = Math.max(MIN_TILE_SIDE, Math.floor(columnElement?.clientWidth ?? element.clientWidth));
+      // The global seed and the media cap describe the COLUMN: a nested block
+      // must never feed its narrowed interior back (the cap sizes the forward
+      // card, the card narrows the block, the block lowers the cap — the
+      // collapse loop, 2026-11-18).
+      lastMeasuredAttachmentWidth = columnWidth;
+      const mediaCap = `${singleMediaCapSide(columnWidth)}px`;
+      if (document.documentElement.style.getPropertyValue("--sp-media-cap") !== mediaCap) {
+        document.documentElement.style.setProperty("--sp-media-cap", mediaCap);
       }
-      // The global is the SEED for rows mounting later — it must never gate
-      // THIS row's own update: with a shared-value check every mounted
-      // AttachmentView but the first skipped setContainerWidth on a window
-      // resize (the first one had already refreshed the global), their
-      // previews kept the stale width while the CSS card border squeezed
-      // live — the "border narrows, preview does not" live report 2026-11-17.
-      lastMeasuredAttachmentWidth = width;
-      setContainerWidth(width); // an unchanged value bails out in React
+      // The layout width: the column, or — nested inside a forward — the
+      // media-capped card interior (cap minus chrome; the same arithmetic the
+      // height estimate uses). The card then hugs its content up to the very
+      // same cap, so the picture inside ends flush at the tile's inner edge.
+      setContainerWidth(nestedInForward
+        ? Math.max(MIN_TILE_SIDE, singleMediaCapSide(columnWidth) - FORWARD_CARD_CHROME)
+        : columnWidth); // an unchanged value bails out in React
     };
-    const observer = new ResizeObserver(() => adoptWidth(element.clientWidth));
+    const observer = new ResizeObserver(adoptWidths);
     observer.observe(element);
-    adoptWidth(element.clientWidth);
+    if (columnElement !== null && columnElement !== element) {
+      observer.observe(columnElement);
+    }
+    adoptWidths();
     return () => observer.disconnect();
   }, []);
 

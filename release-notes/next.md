@@ -50,3 +50,7 @@ does not: CI, docs, refactoring, internal rework.
   other at every width. Every kind of media (single pictures, video cards,
   mosaic tiles) now stops shrinking at the same small floor and overflows
   instead of crumbling into unreadable squares.
+- Replying to a message with a picture now shows the picture: the quote card
+  carries a small square preview of the original's first image beside the text
+  snippet (freshly linked on every load, so it never goes stale; quotes inside
+  forwarded messages stay text-only).

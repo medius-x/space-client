@@ -78,6 +78,18 @@ export interface ReactionSummary {
   usernames: string[];
 }
 
+/** The quote's square-preview snapshot (2026-11-17): the replied-to message's
+ *  FIRST image attachment, LIVE-assembled at response time (the URL is a fresh
+ *  presigned). Optional forever: absent on pre-quote-image servers and inside
+ *  frozen forward snapshots (a persisted URL would outlive its hour). */
+export interface QuoteImageRef {
+  fileName: string;
+  url: string;
+  key: string;
+  width: number | null;
+  height: number | null;
+}
+
 export interface ReplyInfo {
   messageId: number;
   authorId: number;
@@ -87,6 +99,7 @@ export interface ReplyInfo {
   deleted: boolean;
   forward: ForwardInfo | null;
   reply: ReplyInfo | null; // null = depth-5 cutoff
+  image?: QuoteImageRef | null;
 }
 
 export interface ForwardInfo {

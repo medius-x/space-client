@@ -1,11 +1,14 @@
 import type { Message, ReplyInfo } from "../../types";
 import {
   computeMosaicTiles,
+  FORWARD_CARD_CHROME,
   isAudioFile,
   isImageFile,
   isVideoFile,
+  MIN_TILE_SIDE,
   mosaicHeight,
   reservedVideoThumbBox,
+  singleMediaCapSide,
   singleTileBox,
 } from "./attachment-layout";
 import { jumboEmojiEstimateExtra } from "./emoji-picker";
@@ -63,6 +66,11 @@ export const QUOTE_DEPTH_MAX = 5;
  *  line 17 + one-line preview 16 (nowrap/ellipsis — ALWAYS one line) + 2px of
  *  column gaps. */
 const QUOTE_LEVEL_HEIGHT = 49;
+/** A level carrying the quote's image thumbnail (2026-11-17 media layout): the
+ *  level collapses into one 50px media row (the head and the capped snippet
+ *  ride BESIDE the square, inside its height) — 64-65px total vs the text
+ *  level's 49. */
+const QUOTE_IMAGE_EXTRA = 15;
 /** The nested-forward context line ("↗ from …", 11px + gap). */
 const QUOTE_FORWARD_LINE_HEIGHT = 16;
 /** The deleted marker renders a single italic line — and NO children. */
@@ -81,12 +89,21 @@ function quoteStackHeight(level: ReplyInfo, depth: number): number {
     ? quoteStackHeight(level.reply, depth + 1)
     : 0;
   return QUOTE_LEVEL_HEIGHT
+    + (level.image != null ? QUOTE_IMAGE_EXTRA : 0)
     + (level.forward !== null ? QUOTE_FORWARD_LINE_HEIGHT : 0)
     + child;
 }
 
 export function estimateRowHeight(message: Message, inputs: RowHeightInputs): number {
-  const lines = message.content === null ? 0 : Math.max(1, Math.ceil(message.content.length / charsPerLine(inputs.usableWidth, inputs.glyphWidthPx ?? 7)));
+  // A forward's whole body (text AND attachments) renders INSIDE the forward
+  // card, whose width tops out at the live single-media cap minus its chrome
+  // (user decision 2026-11-18 — the flush right edge). The estimate must use
+  // that narrowed width or the text wraps into more lines than predicted and
+  // the first-measure drift returns through the back door.
+  const layoutWidth = message.forward !== null
+    ? Math.max(MIN_TILE_SIDE, singleMediaCapSide(inputs.usableWidth) - FORWARD_CARD_CHROME)
+    : inputs.usableWidth;
+  const lines = message.content === null ? 0 : Math.max(1, Math.ceil(message.content.length / charsPerLine(layoutWidth, inputs.glyphWidthPx ?? 7)));
   let height = (inputs.startsGroup ? 30 : 24) + lines * 21;
   // A potentially-jumbo row (emoji-only content) grows with the reader's size
   // setting — prepaid here so measurement does not shift rows below it.
@@ -107,7 +124,8 @@ export function estimateRowHeight(message: Message, inputs: RowHeightInputs): nu
   if (inputs.hasDiscussionTile) {
     height += 24;
   }
-  // Attachments — mirrored from AttachmentView's own math at the same width.
+  // Attachments — mirrored from AttachmentView's own math at the same width
+  // (layoutWidth: the narrowed forward interior for forward messages).
   let attachmentEstimate = 0;
   let imageTiles = 0;
   let singleImage: { width: number; height: number } | null = null;
@@ -126,8 +144,8 @@ export function estimateRowHeight(message: Message, inputs: RowHeightInputs): nu
       // reservedVideoThumbBox — one source); +24 is the card's name row and
       // padding. The unknown-dims case flows through the same 16:9 plate.
       attachmentEstimate += (known !== null
-        ? reservedVideoThumbBox(inputs.usableWidth, known.width, known.height)
-        : reservedVideoThumbBox(inputs.usableWidth, 0, 0)).height + 24;
+        ? reservedVideoThumbBox(layoutWidth, known.width, known.height)
+        : reservedVideoThumbBox(layoutWidth, 0, 0)).height + 24;
     } else if (isAudioFile(attachment.fileName)) {
       attachmentEstimate += 56;
     } else {
@@ -137,8 +155,8 @@ export function estimateRowHeight(message: Message, inputs: RowHeightInputs): nu
   if (imageTiles > 0) {
     const tiles = Math.min(imageTiles, 10);
     attachmentEstimate += tiles === 1
-      ? singleTileBox(inputs.usableWidth, singleImage?.width ?? 0, singleImage?.height ?? 0).height
-      : mosaicHeight(computeMosaicTiles(tiles, inputs.usableWidth));
+      ? singleTileBox(layoutWidth, singleImage?.width ?? 0, singleImage?.height ?? 0).height
+      : mosaicHeight(computeMosaicTiles(tiles, layoutWidth));
   }
   height += attachmentEstimate;
   return height;
