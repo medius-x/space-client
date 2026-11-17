@@ -1,5 +1,6 @@
 import { log } from "../logging";
 import { decideNotification, messageHasEveryoneHere, messageMentionsRole, messageMentionsUser, type MentionIdentity } from "../domain/logic/notification-decider";
+import { notificationPolicy, type NotificationPolicy } from "../domain/logic/notification-policy";
 import { toastBodyFallback, toastPreviewSegments } from "../domain/logic/toast-preview";
 import { knockSchedule } from "../domain/logic/knock-sound";
 import { deafenCue, muteCue } from "../domain/logic/mute-cue";
@@ -47,6 +48,12 @@ export interface ToastConfig {
   maxToasts(): number;
 }
 
+/** The STATUS-driven policy's live accessor (user request 2026-11-17): the
+ *  runtime hands a function reading the CURRENT status mode — the hub asks it
+ *  at the moment of each notification, so no re-wiring on flips. Falls back to
+ *  the plain online policy until the runtime installs one. */
+const ONLINE_POLICY = notificationPolicy("online");
+
 export interface ToastPayload {
   title: string;
   channelName: string;
@@ -57,6 +64,9 @@ export interface ToastPayload {
   onClick?: () => void;
   /** Draws the 2px blurple frame (oak's mention toast). */
   mention?: boolean;
+  /** No auto-dismiss — the card waits for a hand close or the "message-unstick"
+   *  nudge (the auto-away lane, user request 2026-11-17). */
+  sticky?: boolean;
 }
 
 class NotificationHub {
@@ -77,6 +87,8 @@ class NotificationHub {
     dismissSeconds: () => 5,
     maxToasts: () => 3,
   };
+  /** The status policy accessor — see {@link ONLINE_POLICY}. */
+  private statusPolicy: () => NotificationPolicy = () => ONLINE_POLICY;
   /** Card ids → their onClick callbacks (they close over runtime state, so they
    *  run HERE in the main window; the toast window only knows the id). */
   private readonly cardCallbacks = new Map<number, (() => void) | null>();
@@ -115,6 +127,18 @@ class NotificationHub {
 
   setToastConfig(config: ToastConfig): void {
     this.toastConfig = config;
+  }
+
+  /** Install the status policy accessor (the runtime's status machine feeds it). */
+  setStatusPolicy(accessor: () => NotificationPolicy): void {
+    this.statusPolicy = accessor;
+  }
+
+  /** The CURRENT status policy — for the call sites that build a message-ish
+   *  notification OUTSIDE handleMessage (the discussion-ping paths): they gate
+   *  their toast/sound with the very same matrix. */
+  currentStatusPolicy(): NotificationPolicy {
+    return this.statusPolicy();
   }
 
   /** Re-points every UI sound at the chosen speaker; remembered for the lazy
@@ -214,6 +238,13 @@ class NotificationHub {
     if (action === "none") {
       return;
     }
+    // The STATUS gate (user request 2026-11-17): manual/auto status decides what
+    // the hub may do AT ALL — hidden toasts return before any card exists, the
+    // sound lane checks the policy separately (a silent toast can still show).
+    const policy = this.statusPolicy();
+    if (policy.messageToast === "hidden") {
+      return;
+    }
     // Tint ONLY spans that ping the recipient — my @user, a role I hold, an
     // unsuppressed @everyone (live report: every valid mention lit up grey-equal).
     const segments = toastPreviewSegments(message.content, message.mentions, {
@@ -230,8 +261,12 @@ class NotificationHub {
       // The blurple frame follows the MENTION, not the sound decision (oak passes
       // the mention flag into the toast; a mention with sound off still frames).
       mention: effectiveMention,
+      // The auto-away lane: STICKY (no auto-dismiss) — the user is away from the
+      // computer, the toasts must wait for their hand (or the return-to-online
+      // unstick), not evaporate in five seconds.
+      sticky: policy.messageToast === "sticky",
     });
-    if (action === "toast-sound") {
+    if (action === "toast-sound" && policy.messageSound) {
       this.playBell();
     }
   }
@@ -257,10 +292,17 @@ class NotificationHub {
         body: payload.body,
         segments: payload.segments, // the tinted spans (dropped here once — everything rendered grey)
         mention: payload.mention === true,
-        dismissSeconds: this.toastConfig.dismissSeconds(),
+        // 0 = the sticky lane's "no timer" marker (ToastStackScreen).
+        dismissSeconds: payload.sticky === true ? 0 : this.toastConfig.dismissSeconds(),
         maxToasts: this.toastConfig.maxToasts(),
       },
     });
+  }
+
+  /** The return-to-online nudge (user decision 2026-11-17 б): standing STICKY
+   *  message toasts drop their stickiness and take the usual auto-dismiss. */
+  unstickMessageToasts(): void {
+    window.spaceToast?.show({ kind: "message-unstick", dismissSeconds: this.toastConfig.dismissSeconds() });
   }
 
   /** The sticky incoming-call card (oak's CallOverlay): bottom-right of the
@@ -424,8 +466,13 @@ class NotificationHub {
 
   /** Callee's chime: ONE long fading bell per incoming call (not a repeating ring).
    *  oak's CallChime recipe: the three partials share ONE exponential decay —
-   *  setTargetAtTime IS that e^(-t/τ) curve with τ = 0.55 s. */
+   *  setTargetAtTime IS that e^(-t/τ) curve with τ = 0.55 s. Gated by the status
+   *  policy (dnd/invisible silence it; the call CARD still shows, user request
+   *  2026-11-17). */
   playChime(): void {
+    if (!this.statusPolicy().callSound) {
+      return;
+    }
     try {
       const context = this.ensureAudioContext();
       const now = context.currentTime;

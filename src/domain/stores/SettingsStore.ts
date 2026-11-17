@@ -201,6 +201,14 @@ export interface ClientSettings {
    *  addWordToSpellCheckerDictionary does NOT survive restarts, so the words
    *  persist here and main re-seeds them at every boot. */
   spellCheckWords: string[];
+  /** The roster STATUS override (the status menu, 2026-11-17): "auto" = the
+   *  auto-detect decides (idle → away, any voice room or 1:1 call → dnd, else
+   *  online); a manual pick pins the status and switches the auto-detect off
+   *  until "auto" is picked again. "invisible" is the presence MASK: the user
+   *  looks offline to everyone while their sessions stay alive (rooms, calls
+   *  and messages keep working). "offline" is not a choice — it is what the
+   *  presence dimension tells when the client is gone, always automatic. */
+  statusOverride: "auto" | "online" | "away" | "dnd" | "invisible";
 }
 
 export interface BackupSchedule {
@@ -250,6 +258,7 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   backupSchedules: {},
   spellCheckEnabled: true,
   spellCheckWords: [],
+  statusOverride: "auto",
 };
 
 const KV_KEY = "client-settings";
@@ -350,6 +359,12 @@ export class SettingsStore extends Emitter {
       // The Latest MRU is sanitized against the expression grammar (unknown slugs,
       // junk, duplicates) — never trust hand-edited KV arrays.
       this.settings = { ...this.settings, recentExpressions: sanitizeRecentExpressions(rest.recentExpressions) };
+      // The status override is a closed union — anything else (hand-edited KV,
+      // a renamed status) falls back to auto.
+      if (rest.statusOverride !== "online" && rest.statusOverride !== "away"
+          && rest.statusOverride !== "dnd" && rest.statusOverride !== "invisible") {
+        this.settings = { ...this.settings, statusOverride: "auto" };
+      }
       // The DFN3 ceiling remaps into the 6..40 dB band, preserving legacy
       // intent (0 = "no limiter = strongest" → the max; garbage → the default).
       this.settings = {

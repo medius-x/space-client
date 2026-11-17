@@ -21,6 +21,12 @@ export type ContextMenuItem =
     action: () => void;
     /** Narrowing tag only — a regular row is never a separator. */
     separator?: false;
+    /** A small colored dot BEFORE the label (the status menu's status rows,
+     *  user request 2026-11-17) — a CSS color string. */
+    dot?: string;
+    /** The row is the currently-chosen entry (the status submenu, user
+     *  follow-up 2026-11-17) — a trailing check mark. */
+    checked?: boolean;
     /** A nested menu opening to the RIGHT on hover (the spelling block,
      *  Telegram-style, user request 2026-11-03). One level deep; the parent
      *  row's action is a no-op — the submenu items do the work. */
@@ -113,6 +119,7 @@ export function ContextMenu({ x, y, items, onClose, anchor }: {
             disabled={item.disabled === true}
             onClick={() => setOpenSubmenu(item.label)}
           >
+            {item.dot !== undefined ? <span className="context-menu-dot" style={{ background: item.dot }} /> : null}
             {item.label}
             <span className="submenu-arrow" />
           </button>
@@ -130,7 +137,9 @@ export function ContextMenu({ x, y, items, onClose, anchor }: {
                     child.action();
                   }}
                 >
+                  {child.dot !== undefined ? <span className="context-menu-dot" style={{ background: child.dot }} /> : null}
                   {child.label}
+                  {child.checked === true ? <span className="icon mdi-check context-menu-check" /> : null}
                 </button>
               ))}
             </div>
@@ -147,6 +156,7 @@ export function ContextMenu({ x, y, items, onClose, anchor }: {
             item.action();
           }}
         >
+          {item.dot !== undefined ? <span className="context-menu-dot" style={{ background: item.dot }} /> : null}
           {item.label}
         </button>
       ))}

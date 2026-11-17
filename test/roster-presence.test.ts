@@ -78,3 +78,52 @@ describe("RosterStore afk race", () => {
     expect(store.getSnapshot().afk.has("bob")).toBe(true);
   });
 });
+
+/** The STATUS dimension (the status menu, 2026-11-17): the same snapshot/delta
+ *  discipline as presence, over the away/dnd sets. */
+describe("RosterStore status race", () => {
+  it("flips racing the snapshot are replayed OVER it", () => {
+    const store = new RosterStore();
+    store.beginStatusSnapshot();
+    store.applyStatusEvent({ username: "bob", status: "dnd" });
+    store.applyStatusEvent({ username: "carol", status: "online" });
+    store.setStatuses({ away: [], dnd: [] }); // stale server answer
+    expect(store.getSnapshot().statuses.get("bob")).toBe("dnd"); // the buffered flip survives
+    expect(store.getSnapshot().statuses.has("carol")).toBe(false); // the buffered clear survives
+  });
+
+  it("last write per user wins inside the buffer", () => {
+    const store = new RosterStore();
+    store.beginStatusSnapshot();
+    store.applyStatusEvent({ username: "bob", status: "away" });
+    store.applyStatusEvent({ username: "bob", status: "dnd" });
+    store.setStatuses({ away: [], dnd: [] });
+    expect(store.getSnapshot().statuses.get("bob")).toBe("dnd");
+  });
+
+  it("a no-op flip keeps the state as-is; online removes the entry", () => {
+    const store = new RosterStore();
+    store.setStatuses({ away: ["bob"], dnd: [] });
+    store.applyStatusEvent({ username: "bob", status: "away" }); // already away
+    expect(store.getSnapshot().statuses.get("bob")).toBe("away");
+    store.applyStatusEvent({ username: "bob", status: "online" });
+    expect(store.getSnapshot().statuses.has("bob")).toBe(false);
+  });
+
+  it("going offline drops the status tint (the grey dot wins)", () => {
+    const store = new RosterStore();
+    store.setStatuses({ away: ["bob"], dnd: ["carol"] });
+    store.applyPresenceEvent({ username: "bob", status: "OFFLINE" } as PresenceEvent);
+    store.applyPresenceEvent({ username: "carol", status: "OFFLINE" } as PresenceEvent);
+    expect(store.getSnapshot().statuses.has("bob")).toBe(false);
+    expect(store.getSnapshot().statuses.has("carol")).toBe(false);
+  });
+
+  it("a failed snapshot unbufers onto the current state", () => {
+    const store = new RosterStore();
+    store.beginStatusSnapshot();
+    store.applyStatusEvent({ username: "bob", status: "away" });
+    store.abortStatusSnapshot();
+    expect(store.getSnapshot().statuses.get("bob")).toBe("away");
+  });
+});

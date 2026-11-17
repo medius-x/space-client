@@ -38,6 +38,7 @@ import type {
   BackupStatus,
   MigrationTransfer,
   PresenceActivityEvent,
+  RosterStatusSnapshot,
   UserRenamedResponse,
   UserResponse,
   UserSummary,
@@ -223,6 +224,20 @@ export class RestClient {
     } catch (error: unknown) {
       if (error instanceof ApiError && error.status === 404) {
         return [];
+      }
+      throw error;
+    }
+  }
+
+  /** STATUS-dimension snapshot (the status menu's seed, 2026-11-17): the away/dnd
+   *  sets; 404 on an older server degrades to "everyone online" — the client also
+   *  gates on the roster-status capability. */
+  async getPresenceStatus(): Promise<RosterStatusSnapshot> {
+    try {
+      return await this.request<RosterStatusSnapshot>("/api/presence/status", { method: "GET" });
+    } catch (error: unknown) {
+      if (error instanceof ApiError && error.status === 404) {
+        return { away: [], dnd: [] };
       }
       throw error;
     }

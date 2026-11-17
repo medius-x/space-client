@@ -66,9 +66,9 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
   // (user request 2026-10-19 — the server-menu pattern; Delete server in the
   // rail is red, so are Remove/Ban here).
   const personalMenuItems: ContextMenuItem[] = memberMenu === null ? [] : [
-    ...(roster.presence.has(memberMenu.member.username)
-      ? [{ label: t("members.call"), action: () => callUser(memberMenu.member.username) }]
-      : []),
+    // Calling offline members is ALLOWED (user feedback 2026-11-17): an offline
+    // member rings out to the timeout; an INVISIBLE one's sessions receive it.
+    { label: t("members.call"), action: () => callUser(memberMenu.member.username) },
     // Personal actions (user request 2026-10-19): jump into a DM straight from
     // the roster, and befriend strangers without the Friends pane round-trip.
     // A block in either direction removes BOTH (the server would 403 the DM
@@ -141,7 +141,8 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
                 session={session}
                 member={entry.member}
                 online={entry.online}
-                away={roster.afk.has(entry.member.username)}
+                away={roster.afk.has(entry.member.username) || roster.statuses.get(entry.member.username) === "away"}
+                dnd={roster.statuses.get(entry.member.username) === "dnd"}
                 isSelf={entry.isSelf}
                 nameColor={entry.nameColor}
                 activity={roster.activities.get(entry.member.username) ?? null}
@@ -162,8 +163,17 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
           })}</div>
           {roster.users.map((user) => (
             <div key={user.id} className="member-row">
-              {/* The dot rides EVERY avatar (Discord): green = online, grey = offline, yellow = AFK. */}
-              <Avatar session={session} username={user.username} size={32} showPresence online={roster.presence.has(user.username)} away={roster.afk.has(user.username)} />
+              {/* The dot rides EVERY avatar (Discord): green = online, grey = offline,
+                  yellow = AFK, red = do-not-disturb (the status menu, 2026-11-17). */}
+              <Avatar
+                session={session}
+                username={user.username}
+                size={32}
+                showPresence
+                online={roster.presence.has(user.username)}
+                away={roster.afk.has(user.username) || roster.statuses.get(user.username) === "away"}
+                dnd={roster.statuses.get(user.username) === "dnd"}
+              />
               <span className="member-name">{user.displayName ?? user.username}</span>
             </div>
           ))}
@@ -194,11 +204,12 @@ export function MembersPane({ session }: { session: ConnectionSession }): React.
 }
 
 /** One roster row: 36px avatar with the presence dot overlaid (oak's MemberNode). */
-function MemberRow({ session, member, online, away, isSelf, nameColor, activity, onMenu }: {
+function MemberRow({ session, member, online, away, dnd, isSelf, nameColor, activity, onMenu }: {
   session: ConnectionSession;
   member: ServerMember;
   online: boolean;
   away: boolean;
+  dnd: boolean;
   isSelf: boolean;
   nameColor: string | null;
   activity: PresenceActivity | null;
@@ -209,8 +220,9 @@ function MemberRow({ session, member, online, away, isSelf, nameColor, activity,
     <div className={"member-row" + (online ? "" : " offline")} onContextMenu={onMenu}>
       {/* Discord: the presence dot rides EVERY avatar — green online, grey
           offline (a missing dot read as "no status", live report); yellow tints
-          an online member idle past the AFK timeout (2026-11-04). */}
-      <Avatar session={session} username={member.username} size={36} showPresence online={online} away={away} />
+          an online member idle past the AFK timeout (2026-11-04); red marks a
+          do-not-disturb pick (the status menu, 2026-11-17). */}
+      <Avatar session={session} username={member.username} size={36} showPresence online={online} away={away} dnd={dnd} />
       <span className="member-line">
         <span className="member-name" style={{ color: nameColor ?? (online ? "var(--sp-text)" : "var(--sp-text-muted)") }}>
           {member.nickname}{isSelf ? ` ${t("members.you")}` : ""}

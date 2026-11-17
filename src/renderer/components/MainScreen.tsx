@@ -1,19 +1,22 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useStore } from "../hooks/useStore";
-import { appStore, connectionDirectory, openAccountSettings, retryConnection, toggleUserSettings } from "../runtime";
+import { appStore, connectionDirectory, openAccountSettings, retryConnection, setRosterStatusOverride, settingsStore, toggleUserSettings } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { ConnectionQualitySnapshot } from "../../domain/logic/connection-quality";
 import type { MessageKey } from "../../domain/i18n/i18n";
+import { hasServerCapability } from "../../domain/logic/server-capabilities";
 import { ServerRail } from "./ServerRail";
 import { Sidebar } from "./Sidebar";
 import { ChatPane } from "./ChatPane";
 import { FriendsPane } from "./FriendsPane";
 import { RightPane } from "./SearchPane";
 import { VoiceBar, RoomView, CallConflictModal } from "./VoiceRoom";
+import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { useDisplayName } from "../hooks/useDisplayName";
 import { useT } from "../hooks/useT";
 import { Diagnostics } from "./Diagnostics";
 import { Avatar } from "./Avatar";
+import type { RosterStatus } from "../../types";
 
 /** The status line's key per STOMP state (labels come from the dictionaries). */
 const STOMP_STATUS_KEYS: Record<string, { key: MessageKey; className: string }> = {
@@ -123,9 +126,19 @@ export function UserBar({ session }: { session: ConnectionSession | null }): Rea
   return <ConnectedUserBar session={session} />;
 }
 
+/** The dot color of each roster status (the status menu's circles). */
+const STATUS_DOT_COLORS: Record<RosterStatus, string> = {
+  online: "var(--sp-green)",
+  away: "var(--sp-yellow)",
+  dnd: "var(--sp-red)",
+};
+
 function ConnectedUserBar({ session }: { session: ConnectionSession }): React.JSX.Element {
   const t = useT();
+  const [statusMenu, setStatusMenu] = useState<{ x: number; y: number } | null>(null);
   const ownUsername = useStore(appStore, (state) => state.ownUsername) ?? session.username();
+  const ownRosterStatus = useStore(appStore, (state) => state.ownRosterStatus);
+  const ownInvisible = useStore(appStore, (state) => state.ownInvisible);
   // The rename model: the bar shows the NICKNAME; the login never renders.
   const ownDisplayName = useDisplayName(session, ownUsername);
   // The own avatar's key from the record — in the ACTIVE OFFLINE view the
@@ -151,32 +164,43 @@ function ConnectedUserBar({ session }: { session: ConnectionSession }): React.JS
   const retryable = stompState === "lost" || stompState === "connecting";
   return (
     <div className={"user-bar" + (voiceConnected ? " with-voice" : "")}>
-      {/* The avatar and the NICK open Account settings (user request 2026-11-03;
-          follow-up: ONLY those two hit targets — not the whole row). Offline
-          they disable — account mutations are REST calls. The ⚙ stays the
-          CLIENT-scoped surface (sound, keybinds, diagnostics). */}
+      {/* The avatar opens the STATUS menu on a roster-status server (user
+          request 2026-11-17): Account settings rides its top row, the status
+          picker sits below the separator, and the avatar itself carries the
+          status dot (the roster's own dot, mirrored from the broadcast
+          verdict). An older server keeps the direct Account-settings jump —
+          the status wire would 404. Offline it disables — account mutations
+          are REST calls. The ⚙ stays the CLIENT-scoped surface (sound,
+          keybinds, diagnostics). */}
       <div className={"user-bar-id" + (stompState === "connected" ? "" : " offline")}>
         <span
           className="user-bar-avatar"
           title={t("userBar.accountSettings")}
-          onClick={stompState === "connected" ? openAccountSettings : undefined}
-        >
-          <Avatar session={session} username={ownUsername} size={32} diskFallbackKey={ownAvatarKey} />
-        </span>
-        <div className="user-bar-text">
-          <span
-            className="user-bar-name"
-            role="button"
-            tabIndex={stompState === "connected" ? 0 : -1}
-            title={t("userBar.accountSettings")}
-            onClick={stompState === "connected" ? openAccountSettings : undefined}
-            onKeyDown={(event) => {
-              if (stompState === "connected" && (event.key === "Enter" || event.key === " ")) {
-                event.preventDefault();
+          onClick={stompState === "connected"
+            ? (event) => {
+              if (hasServerCapability(session.serverProfile, "roster-status")) {
+                setStatusMenu({ x: event.clientX, y: event.clientY });
+              } else {
                 openAccountSettings();
               }
-            }}
-          >
+            }
+            : undefined}
+        >
+          <Avatar
+            session={session}
+            username={ownUsername}
+            size={32}
+            diskFallbackKey={ownAvatarKey}
+            showPresence
+            online={stompState === "connected" && !ownInvisible}
+            away={!ownInvisible && ownRosterStatus === "away"}
+            dnd={!ownInvisible && ownRosterStatus === "dnd"}
+          />
+        </span>
+        <div className="user-bar-text">
+          {/* The nick is PLAIN TEXT now (user request 2026-11-17): the avatar is
+              the one hit target for the status menu / account settings. */}
+          <span className="user-bar-name">
             {ownDisplayName}
           </span>
           <span className="user-bar-status-row">
@@ -201,13 +225,70 @@ function ConnectedUserBar({ session }: { session: ConnectionSession }): React.JS
       <button className="ghost user-bar-button" title={t("userBar.settings")} onClick={toggleUserSettings}>
         <span className="icon mdi-cog" />
       </button>
+      {statusMenu !== null ? (
+        <AvatarStatusMenu position={statusMenu} onClose={() => setStatusMenu(null)} />
+      ) : null}
     </div>
   );
 }
 
-/** The connection-quality dot + ms (RTT of the STOMP socket, Discord-style).
- *  "unsupported" = this server build predates the /app/ping echo — the REST
- *  request latency keeps the number alive; "probing" = the first ping flies. */
+/** The avatar-click menu (user request 2026-11-17): Account settings on top,
+ *  the STATUS row below the separator — the row's label names the CHOSEN mode
+ *  ("Auto", a pinned status or "Invisible", user follow-up), while its dot shows
+ *  the EFFECTIVE status (grey while masked); the submenu marks the chosen entry
+ *  with a check. A pick pins the status ("auto" re-arms the detector) and
+ *  reaches the server at once. */
+function AvatarStatusMenu({ position, onClose }: {
+  position: { x: number; y: number };
+  onClose(): void;
+}): React.JSX.Element {
+  const t = useT();
+  const effective = useStore(appStore, (state) => state.ownRosterStatus);
+  const invisible = useStore(appStore, (state) => state.ownInvisible);
+  const override = useStore(settingsStore, (state) => state.statusOverride);
+  const statusLabels: Record<RosterStatus, string> = {
+    online: t("status.online"),
+    away: t("status.away"),
+    dnd: t("status.dnd"),
+  };
+  const chosenLabel = override === "auto"
+    ? t("status.auto")
+    : override === "invisible"
+      ? t("status.invisible")
+      : statusLabels[override];
+  const items: ContextMenuItem[] = [
+    { label: t("userBar.accountSettings"), action: openAccountSettings },
+    { separator: true },
+    {
+      label: `${t("status.statusLabel")}: ${chosenLabel}`,
+      dot: invisible ? "var(--sp-text-dim)" : STATUS_DOT_COLORS[effective],
+      action: () => undefined,
+      children: [
+        { label: t("status.auto"), checked: override === "auto", action: () => setRosterStatusOverride("auto") },
+        { separator: true },
+        { label: t("status.dnd"), dot: STATUS_DOT_COLORS.dnd, checked: override === "dnd", action: () => setRosterStatusOverride("dnd") },
+        { label: t("status.online"), dot: STATUS_DOT_COLORS.online, checked: override === "online", action: () => setRosterStatusOverride("online") },
+        { label: t("status.away"), dot: STATUS_DOT_COLORS.away, checked: override === "away", action: () => setRosterStatusOverride("away") },
+        { label: t("status.invisible"), dot: "var(--sp-text-dim)", checked: override === "invisible", action: () => setRosterStatusOverride("invisible") },
+      ],
+    },
+  ];
+  return <ContextMenu x={position.x} y={position.y} items={items} onClose={onClose} />;
+}
+
+/** The connection-quality GLYPH + ms (RTT of the STOMP socket). The bars glyph
+ *  (mdi signal-cellular, user request 2026-11-17) separates the indicator from
+ *  the roster's round status DOTS: 3 bars green / 2 yellow / 1 red, the OUTLINE
+ *  grey while the first measurement is still in flight or the server predates
+ *  the /app/ping echo (the REST request latency keeps the number alive). */
+const PING_GLYPHS: Record<ConnectionQualitySnapshot["state"], string> = {
+  good: "mdi-signal-cellular-3",
+  weak: "mdi-signal-cellular-2",
+  bad: "mdi-signal-cellular-1",
+  probing: "mdi-signal-cellular-outline",
+  unsupported: "mdi-signal-cellular-outline",
+};
+
 function PingBadge({ quality }: { quality: ConnectionQualitySnapshot }): React.JSX.Element {
   const t = useT();
   const millis = quality.state === "unsupported" ? quality.lastRestMillis : quality.lastRttMillis;
@@ -216,7 +297,7 @@ function PingBadge({ quality }: { quality: ConnectionQualitySnapshot }): React.J
     : t("ping.msValue", { ms: millis });
   return (
     <span className={"ping-badge " + quality.state} title={pingBadgeTitle(t, quality)}>
-      <span className="ping-dot" />
+      <span className={"icon ping-glyph " + (PING_GLYPHS[quality.state] ?? PING_GLYPHS.probing)} />
       <span className="ping-text">{text}</span>
     </span>
   );

@@ -888,6 +888,22 @@ body.rail-dragging * { cursor: grabbing !important; }
   color: var(--sp-text-popup);
 }
 .context-menu-item:hover { background: var(--sp-hover); }
+/* A colored dot BEFORE a menu row's label (the status menu, 2026-11-17).
+   INLINE-BLOCK: the plain (non-flex) submenu rows would ignore width/height
+   on a bare inline span — the dot collapsed to nothing there (live report). */
+.context-menu-item .context-menu-dot {
+  display: inline-block;
+  vertical-align: middle;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-right: 8px;
+}
+/* The chosen entry's trailing check (the status submenu, 2026-11-17): the
+   submenu rows lay out as flex so the mark pins to the row's right edge. */
+.context-submenu .context-menu-item { display: flex; align-items: center; }
+.context-menu-item .context-menu-check { margin-left: auto; padding-left: 12px; font-size: 13px; color: var(--sp-text-dim); }
 .context-menu-item.danger:hover { background: var(--sp-red); color: #fff; }
 .context-menu-item:disabled { opacity: 0.45; }
 .context-menu-item:disabled:hover { background: transparent; }
@@ -904,10 +920,14 @@ body.rail-dragging * { cursor: grabbing !important; }
 .context-menu-submenu-wrap .context-menu-item.has-submenu {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  /* NO gap: the dot's own 8px margin is the spacing (a flex gap would stack
+     on top of it — the 20px hole before the label, live report 2026-11-17). */
 }
-.context-menu-item .submenu-arrow { padding: 0; }
+/* The arrow pins to the right edge itself (NOT space-between: a leading DOT
+   row would fling the label to the center — the status menu's "huge gap",
+   live report 2026-11-17); the padding guarantees the word↔chevron gap even
+   when this row IS the menu's widest line (no spare auto space left). */
+.context-menu-item .submenu-arrow { padding: 0 0 0 12px; margin-left: auto; }
 .context-menu-item .submenu-arrow::after {
   content: "\203A"; /* single right-pointing angle quote — the submenu glyph */
   font-size: 14px;
@@ -2440,10 +2460,11 @@ button.wide-add { width: 100%; }
 /* A column-flex child stretches to the container's full width by default — the
    click zone would cover the whole row right of the avatar. Shrink to the
    text itself (user follow-up). */
-.user-bar-id .user-bar-name { cursor: pointer; align-self: flex-start; max-width: 100%; }
-.user-bar-id .user-bar-name:hover { color: var(--sp-accent); }
-.user-bar-id.offline .user-bar-avatar,
-.user-bar-id.offline .user-bar-name { cursor: default; }
+/* The nick is PLAIN TEXT (user request 2026-11-17): no pointer, no hover tint —
+   a hovered-but-dead row reads as a broken button. */
+.user-bar-id .user-bar-name { cursor: default; align-self: flex-start; max-width: 100%; }
+
+.user-bar-id.offline .user-bar-avatar { cursor: default; }
 /* Staged membership rows (Roles → Members): a pending add glows green (it
    appears only after Save), a pending removal dims and strikes through while
    its ✕ becomes an undo. */
@@ -3366,6 +3387,9 @@ button.wide-add { width: 100%; }
 }
 .friend-action:hover { background: var(--sp-hover); }
 .friend-action:disabled { opacity: 0.5; }
+/* The icon CALL button (user request 2026-11-17): the phone glyph squares with
+   the text buttons' height — padding only, the icon centers itself. */
+.friend-action .icon { font-size: 14px; }
 
 .add-friend-form { padding: 24px 16px; max-width: 560px; }
 .add-friend-title { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--sp-text-muted); }
@@ -4319,6 +4343,8 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 }
 .avatar-presence.online { background: var(--sp-green); }
 .avatar-presence.online.away { background: var(--sp-yellow); }
+/* The do-not-disturb pick (the status menu, 2026-11-17) — wins over away. */
+.avatar-presence.online.dnd { background: var(--sp-red); }
 
 /* The roster is its OWN column beside the chat (oak's members-pane). The WIDTH
    now lives on the .right-pane shell (search header + body) — the roster fills
@@ -4574,10 +4600,12 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 /* The ping indicator (connection-quality dot + ms) — rides the status row while
    connected; probing/unsupported stay muted gray (no verdict to color yet). */
 .ping-badge { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; font-size: 11px; line-height: 14px; color: var(--sp-text-dim); }
-.ping-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--sp-text-dim); flex-shrink: 0; }
-.ping-badge.good .ping-dot { background: var(--sp-green); }
-.ping-badge.weak .ping-dot { background: var(--sp-yellow); }
-.ping-badge.bad .ping-dot { background: var(--sp-red); }
+/* The bars glyph (user request 2026-11-17): deliberately NOT a round dot — the
+   roster's status dots own that shape. Color via the font glyph's own color. */
+.ping-glyph { font-size: 14px; color: var(--sp-text-dim); flex-shrink: 0; }
+.ping-badge.good .ping-glyph { color: var(--sp-green); }
+.ping-badge.weak .ping-glyph { color: var(--sp-yellow); }
+.ping-badge.bad .ping-glyph { color: var(--sp-red); }
 .user-bar-button { padding: 4px 8px; flex-shrink: 0; }
 .user-bar-button:hover { background: var(--sp-card-hover); }
 

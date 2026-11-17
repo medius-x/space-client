@@ -159,6 +159,9 @@ export interface ToastCardPayload {
    *  Absent on system toasts (Voice/Call/jump) — they render `body` as is. */
   segments?: { text: string; mention: boolean }[];
   mention: boolean;
+  /** Auto-dismiss delay in seconds; 0 = STICKY (no timer — the away-mode toasts
+   *  wait for a hand close or the "message-unstick" nudge, user request
+   *  2026-11-17). */
   dismissSeconds: number;
   maxToasts: number;
 }
@@ -200,6 +203,7 @@ export interface ToastVoiceInviteCardPayload {
  *  refuses new ones (user decision — a ringing call is the louder event). */
 export type ToastShowPayload =
   | { kind: "message"; card: ToastCardPayload }
+  | { kind: "message-unstick"; dismissSeconds: number }
   | { kind: "call"; card: ToastCallCardPayload }
   | { kind: "call-status"; status: ToastCallCardPayload["status"] }
   | { kind: "call-end" }

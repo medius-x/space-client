@@ -1,5 +1,5 @@
 import { Emitter } from "../lib/store";
-import type { PresenceActivity, PresenceActivityEvent, PresenceEvent, PresenceStatus, UserSummary, VoiceAfkStatusEvent, VoiceMemberEvent } from "../../types";
+import type { PresenceActivity, PresenceActivityEvent, PresenceEvent, PresenceStatus, PresenceStatusEvent, RosterStatus, UserSummary, VoiceAfkStatusEvent, VoiceMemberEvent } from "../../types";
 
 /**
  * Per-connection roster: users, presence set, voice-channel membership. Fed by the
@@ -12,6 +12,11 @@ export interface RosterState {
   /** Online voice members whose activity heartbeat is older than the AFK timeout
    *  (2026-11-04) — the roster dot tints yellow; a fresh heartbeat returns green. */
   afk: ReadonlySet<string>;
+  /** The STATUS dimension (the status menu, 2026-11-17): username → their non-online
+   *  status ("away" | "dnd"); absent = online. Seeded by GET /api/presence/status,
+   *  flipped by /topic/roster.status; presence OFFLINE drops the entry locally. The
+   *  legacy afk set above keeps rendering on servers without the roster-status flag. */
+  statuses: ReadonlyMap<string, Exclude<RosterStatus, "online">>;
   /** The roster ACTIVITY lines (2026-11-10, "playing CS2") — username → their line;
    *  absent = no line. Seeded by GET /api/presence/activities, flipped by
    *  /topic/presence.activity; presence OFFLINE drops the line locally. */
@@ -24,6 +29,7 @@ export class RosterStore extends Emitter {
     users: [],
     presence: new Set<string>(),
     afk: new Set<string>(),
+    statuses: new Map<string, Exclude<RosterStatus, "online">>(),
     activities: new Map<string, PresenceActivity>(),
     voiceMembers: new Map<number, ReadonlySet<string>>(),
   };
@@ -40,6 +46,10 @@ export class RosterStore extends Emitter {
    *  flip to self-correct (up to one AFK timeout later). */
   private afkSnapshotInFlight = false;
   private readonly pendingAfkDeltas = new Map<string, boolean>();
+  /** The same guard for the STATUS dimension (seeded by GET /api/presence/status,
+   *  flipped by /topic/roster.status). */
+  private statusSnapshotInFlight = false;
+  private readonly pendingStatusDeltas = new Map<string, PresenceStatusEvent["status"]>();
   /** The same guard for the ACTIVITY dimension (seeded by GET /api/presence/activities,
    *  changed by /topic/presence.activity) — a change racing the fetch waits otherwise. */
   private activitySnapshotInFlight = false;
@@ -107,14 +117,16 @@ export class RosterStore extends Emitter {
     // Going fully offline wins over any AFK tint (the dot turns grey anyway) —
     // keeps the set from holding stale entries for users not even connected.
     const afk = new Set(this.state.afk);
+    const statuses = new Map(this.state.statuses);
     const activities = new Map(this.state.activities);
     if (event.status !== "ONLINE") {
       afk.delete(event.username);
+      statuses.delete(event.username);
       // Offline drops the activity line too (the server drops it silently —
       // its last-session disconnect clear never broadcasts).
       activities.delete(event.username);
     }
-    this.state = { ...this.state, presence, afk, activities };
+    this.state = { ...this.state, presence, afk, statuses, activities };
     this.emit();
   }
 
@@ -163,6 +175,65 @@ export class RosterStore extends Emitter {
       afk.delete(event.username);
     }
     this.state = { ...this.state, afk };
+    this.emit();
+  }
+
+  /** Marks the STATUS snapshot window open — flips from now on are buffered. */
+  beginStatusSnapshot(): void {
+    this.statusSnapshotInFlight = true;
+  }
+
+  /** Applies the status snapshot (the non-online sets), then replays the flips that
+   *  raced it (last write wins). */
+  setStatuses(snapshot: { away: readonly string[]; dnd: readonly string[] }): void {
+    const statuses = new Map<string, Exclude<RosterStatus, "online">>();
+    for (const username of snapshot.away) {
+      statuses.set(username, "away");
+    }
+    for (const username of snapshot.dnd) {
+      statuses.set(username, "dnd");
+    }
+    for (const [username, status] of this.pendingStatusDeltas) {
+      if (status === "online") {
+        statuses.delete(username);
+      } else {
+        statuses.set(username, status);
+      }
+    }
+    this.pendingStatusDeltas.clear();
+    this.statusSnapshotInFlight = false;
+    this.state = { ...this.state, statuses };
+    this.emit();
+  }
+
+  /** A failed snapshot must not leave the buffer open forever — replay onto the current state. */
+  abortStatusSnapshot(): void {
+    if (!this.statusSnapshotInFlight) {
+      return;
+    }
+    this.setStatuses({
+      away: [...this.state.statuses].filter(([, status]) => status === "away").map(([username]) => username),
+      dnd: [...this.state.statuses].filter(([, status]) => status === "dnd").map(([username]) => username),
+    });
+  }
+
+  /** /topic/roster.status — one flip per transition; a no-op flip does not emit. */
+  applyStatusEvent(event: PresenceStatusEvent): void {
+    if (this.statusSnapshotInFlight) {
+      this.pendingStatusDeltas.set(event.username, event.status);
+      return;
+    }
+    const current = this.state.statuses.get(event.username) ?? "online";
+    if (current === event.status) {
+      return;
+    }
+    const statuses = new Map(this.state.statuses);
+    if (event.status === "online") {
+      statuses.delete(event.username);
+    } else {
+      statuses.set(event.username, event.status);
+    }
+    this.state = { ...this.state, statuses };
     this.emit();
   }
 

@@ -84,13 +84,18 @@ export function ToastStackScreen(): React.JSX.Element {
     });
   };
 
-  /** (Re)arm a card's dismiss timer with the given delay (0 = dismiss now). */
+  /** (Re)arm a card's dismiss timer with the given delay (0 = dismiss now);
+   *  a NON-FINITE delay (the sticky lane's Infinity) arms nothing — the card
+   *  waits for a hand close or the "message-unstick" nudge. */
   const armCardTimer = (cardId: number, delayMs: number): void => {
     const timerId = timersRef.current.get(cardId);
     if (timerId !== undefined) {
       window.clearTimeout(timerId);
+      timersRef.current.delete(cardId);
     }
-    timersRef.current.set(cardId, window.setTimeout(() => dismissCard(cardId), Math.max(0, delayMs)));
+    if (Number.isFinite(delayMs)) {
+      timersRef.current.set(cardId, window.setTimeout(() => dismissCard(cardId), Math.max(0, delayMs)));
+    }
   };
 
   const pauseCard = (cardId: number): void => {
@@ -177,7 +182,10 @@ export function ToastStackScreen(): React.JSX.Element {
           return;
         }
         const card: ToastCardPayload = payload.card;
-        log.info("toast", `show id=${card.id} mention=${card.mention}`);
+        // dismissSeconds 0 = STICKY (the auto-away lane, user request 2026-11-17):
+        // no expiry, no timer — the card leaves by hand or by "message-unstick".
+        const sticky = card.dismissSeconds <= 0;
+        log.info("toast", `show id=${card.id} mention=${card.mention}${sticky ? " sticky" : ""}`);
         setCards((current) => {
           const next = [...current, {
             id: card.id,
@@ -186,12 +194,32 @@ export function ToastStackScreen(): React.JSX.Element {
             body: card.body,
             segments: card.segments ?? null,
             mention: card.mention,
-            expiresAt: Date.now() + Math.max(1, card.dismissSeconds) * 1000,
+            expiresAt: sticky ? Number.POSITIVE_INFINITY : Date.now() + Math.max(1, card.dismissSeconds) * 1000,
           }];
           // Newest on top (Discord): the trim drops the OLDEST cards.
           return next.slice(Math.max(0, next.length - card.maxToasts));
         });
-        armCardTimer(card.id, Math.max(1, card.dismissSeconds) * 1000);
+        armCardTimer(card.id, sticky ? Number.POSITIVE_INFINITY : Math.max(1, card.dismissSeconds) * 1000);
+        return;
+      }
+      if (payload.kind === "message-unstick") {
+        // Back online (user decision 2026-11-17 б): standing sticky cards take
+        // the usual auto-dismiss. Finite cards are untouched (a paused one keeps
+        // its remaining time; resume handles it). A card the cursor currently
+        // RESTS ON must not start ticking — hold the freshly-finite ones in the
+        // paused state instead (no timer); the mouseleave/resume path releases
+        // them with their remaining time, exactly like a pre-unstuck card.
+        const delayMs = Math.max(1, payload.dismissSeconds) * 1000;
+        const now = Date.now();
+        setCards((current) => current.map((card) =>
+          Number.isFinite(card.expiresAt) ? card : { ...card, expiresAt: now + delayMs }));
+        if (!interactiveRef.current) {
+          for (const card of cardsRef.current) {
+            if (!Number.isFinite(card.expiresAt)) {
+              armCardTimer(card.id, delayMs);
+            }
+          }
+        }
         return;
       }
       if (payload.kind === "call") {

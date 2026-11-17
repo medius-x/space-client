@@ -30,3 +30,17 @@ does not: CI, docs, refactoring, internal rework.
   latest archive selected in Explorer.
 - The screen-share button in voice panels now uses the monitor-with-arrow
   glyph, matching the common screen-sharing symbol.
+- Clicking your own avatar opens the STATUS menu: Account settings rides the
+  top row, below it sit your presence status and a submenu with Auto, Do not
+  disturb, Online, Away and Invisible. The auto mode flips between Online and
+  Away (idle) on its own; any manual pick pins the status until Auto is
+  chosen again. Invisible shows you as offline to everyone while everything
+  keeps working — you can chat, join voice rooms and take calls; voice-room
+  membership stays visible (the Discord way). Your own avatar carries the
+  status dot, and everyone's roster dot turns red for Do not disturb.
+- Notifications now follow your status: Away (auto) keeps message toasts on
+  screen until you return (no sound), a manual Away hides message toasts,
+  and Do not disturb / Invisible silence message and call sounds while the
+  incoming-call card still appears.
+- Calling offline friends is allowed: the call button in the friends list
+  and the roster's call action work regardless of the green/grey dot.

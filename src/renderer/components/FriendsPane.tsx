@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useStore } from "../hooks/useStore";
 import {
   appStore,
+  callUser,
   connectionDirectory,
   openDmWithUser,
   requestServerSwitch,
@@ -209,6 +210,18 @@ function FriendRow({ session, row }: { session: ConnectionSession; row: FriendRo
         <>
           {relationship.type === "FRIEND" ? (
             <>
+              {/* The CALL button (user request 2026-11-17, unlocked by user
+                  feedback the same day): calling OFFLINE friends is allowed —
+                  a truly offline friend rings out to the timeout, an INVISIBLE
+                  one's live sessions still receive the call. */}
+              <button
+                className="friend-action friend-call"
+                disabled={busy}
+                title={t("friends.call")}
+                onClick={() => callUser(relationship.username)}
+              >
+                <span className="icon mdi-phone" />
+              </button>
               <button
                 className="friend-action"
                 disabled={busy || messageBlockedTitle !== undefined}

@@ -26,6 +26,8 @@ import type {
   UserSummary,
   PresenceActivity,
   PresenceActivityEvent,
+  PresenceStatusEvent,
+  RosterStatus,
   VoiceAfkStatusEvent,
   VoiceControlCommand,
   VoiceControlEvent,
@@ -247,11 +249,12 @@ export class ConnectionSession {
    *  this; runtime uses it to decide whether a switch may DEMOTE the session to
    *  the background (keeping its in-memory chats) instead of disposing it. */
   private started = false;
-  /** The last roster-AFK verdict the runtime handed us about OUR OWN user
-   *  (client-side decision, user request 2026-11-04). Kept as the session's
-   *  DESIRED state and (re)delivered on every (re)connect — a flip landing in a
-   *  reconnect window is never lost. Null until the runtime's first decision. */
-  private rosterAfkSent: boolean | null = null;
+  /** The last roster STATUS the runtime handed us about OUR OWN user (the status
+   *  menu, 2026-11-17: the manual pick or the auto-mode's verdict — client-side
+   *  decision; plus the INVISIBLE mask request). Kept as the session's DESIRED
+   *  state and (re)delivered on every (re)connect — a flip landing in a reconnect
+   *  window is never lost. Null until the runtime's first decision. */
+  private rosterStatusSent: { status: RosterStatus; invisible: boolean } | null = null;
 
   /** The session's LAST delivered activity line (null = "no line reported yet";
    *  an explicit clear is reported as the null INSIDE the stored object — see
@@ -366,9 +369,9 @@ export class ConnectionSession {
     await this.stomp.connect();
     this.subscribeGlobalTopics();
     this.syncChannelSubscriptions();
-    // Our own roster AFK verdict, if the runtime already has one (the app ticked
+    // Our own roster STATUS, if the runtime already has one (the app ticked
     // before this session existed) — the server forgets it with the socket.
-    this.deliverRosterAfk();
+    this.deliverRosterStatus();
     // Same for the activity line: a session born after the user set a line
     // reports it immediately (the other sessions already do).
     this.deliverPresenceActivity();
@@ -411,6 +414,21 @@ export class ConnectionSession {
         .catch((error: unknown) => {
           log.warn("session", `afk snapshot failed: ${error instanceof Error ? error.message : String(error)}`);
           this.rosterStore.abortAfkSnapshot();
+        });
+    }
+    // The STATUS dimension seeds the same way (the status menu, 2026-11-17), on
+    // its own flag — an afk-roster-only server has neither wire.
+    if (hasServerCapability(this.serverProfile, "roster-status")) {
+      this.rosterStore.beginStatusSnapshot();
+      void this.rest.getPresenceStatus()
+        .then((snapshot) => {
+          if (!this.disposed) {
+            this.rosterStore.setStatuses(snapshot);
+          }
+        })
+        .catch((error: unknown) => {
+          log.warn("session", `status snapshot failed: ${error instanceof Error ? error.message : String(error)}`);
+          this.rosterStore.abortStatusSnapshot();
         });
     }
     // The activity lines seed the same way (their own race guard), gated on the
@@ -1531,6 +1549,11 @@ export class ConnectionSession {
         this.rosterStore.applyAfkEvent(JSON.parse(raw) as VoiceAfkStatusEvent);
       });
     }
+    if (hasServerCapability(this.serverProfile, "roster-status")) {
+      this.stomp.subscribe("/topic/roster.status", (raw) => {
+        this.rosterStore.applyStatusEvent(JSON.parse(raw) as PresenceStatusEvent);
+      });
+    }
     if (hasServerCapability(this.serverProfile, "presence-activity")) {
       this.stomp.subscribe("/topic/presence.activity", (raw) => {
         this.rosterStore.applyActivityEvent(JSON.parse(raw) as PresenceActivityEvent);
@@ -1787,23 +1810,33 @@ export class ConnectionSession {
     }
   }
 
-  /** The roster AFK verdict about OUR OWN user (the runtime's global, machine-wide
-   *  decision — user request 2026-11-04): stored as this session's desired state
-   *  and delivered now; a send that lands in a reconnect window is skipped by the
-   *  client, but resyncAfterReconnect/start() re-deliver the stored value, so the
-   *  flip is never lost. Sends on an older server (no /app/roster.afk handler)
-   *  are dropped silently server-side — harmless. */
-  reportRosterAfk(afk: boolean): void {
-    this.rosterAfkSent = afk;
+  /** The roster STATUS about OUR OWN user (the status menu, 2026-11-17 — the
+   *  runtime's global, machine-wide decision: a manual pick or the auto-mode's
+   *  verdict, plus the INVISIBLE mask): stored as this session's desired state
+   *  and delivered now; a send that lands in a reconnect window is skipped by
+   *  the client, but resyncAfterReconnect/start() re-deliver the stored value,
+   *  so the flip is never lost. On a server with the roster-status flag it
+   *  rides /app/roster.status; an older server gets the legacy boolean AFK
+   *  wire (dnd and the mask degrade away there — accepted until it updates). */
+  reportRosterStatus(status: RosterStatus, invisible: boolean): void {
+    this.rosterStatusSent = { status, invisible };
     if (!this.disposed) {
-      this.stomp.send("/app/roster.afk", { afk });
+      this.sendRosterStatus(status, invisible);
+    }
+  }
+
+  private sendRosterStatus(status: RosterStatus, invisible: boolean): void {
+    if (hasServerCapability(this.serverProfile, "roster-status")) {
+      this.stomp.send("/app/roster.status", { status, invisible });
+    } else {
+      this.stomp.send("/app/roster.afk", { afk: status === "away" });
     }
   }
 
   /** (Re)deliver the stored verdict — called on connect and on reconnect. */
-  private deliverRosterAfk(): void {
-    if (this.rosterAfkSent !== null && !this.disposed) {
-      this.stomp.send("/app/roster.afk", { afk: this.rosterAfkSent });
+  private deliverRosterStatus(): void {
+    if (this.rosterStatusSent !== null && !this.disposed) {
+      this.sendRosterStatus(this.rosterStatusSent.status, this.rosterStatusSent.invisible);
     }
   }
 
@@ -1868,8 +1901,8 @@ export class ConnectionSession {
       return;
     }
     log.info("session", "STOMP reconnected — resyncing what the gap missed");
-    // Our own AFK verdict first — the server dropped it with the socket.
-    this.deliverRosterAfk();
+    // Our own AFK/status verdict first — the server dropped it with the socket.
+    this.deliverRosterStatus();
     this.deliverPresenceActivity(); // the activity line died with the socket too
     this.deliverShareSourceState(); // the source-state flip died with it
     // Presence keeps its snapshot+delta-buffer discipline (see start()).
@@ -1905,6 +1938,20 @@ export class ConnectionSession {
         .catch((error: unknown) => {
           log.warn("session", `afk resync failed: ${error instanceof Error ? error.message : String(error)}`);
           this.rosterStore.abortAfkSnapshot();
+        });
+    }
+    // The STATUS dimension re-seeds the same way (see start()).
+    if (hasServerCapability(this.serverProfile, "roster-status")) {
+      this.rosterStore.beginStatusSnapshot();
+      void this.rest.getPresenceStatus()
+        .then((snapshot) => {
+          if (!this.disposed) {
+            this.rosterStore.setStatuses(snapshot);
+          }
+        })
+        .catch((error: unknown) => {
+          log.warn("session", `status resync failed: ${error instanceof Error ? error.message : String(error)}`);
+          this.rosterStore.abortStatusSnapshot();
         });
     }
     // The activity lines re-seed the same way (see start()).

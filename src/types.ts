@@ -539,6 +539,25 @@ export interface VoiceAfkStatusEvent {
   afk: boolean;
 }
 
+/** The roster STATUS dimension (the status menu, 2026-11-17): what a member's own
+ *  client says about them — a manual pick or the auto-mode's verdict. "offline" is
+ *  deliberately NOT here: it is the online-set dimension's own story (every session
+ *  gone) and can never be set by hand. */
+export type RosterStatus = "online" | "away" | "dnd";
+
+/** /topic/roster.status — one flip per transition; the seed is GET /api/presence/status. */
+export interface PresenceStatusEvent {
+  username: string;
+  status: RosterStatus;
+}
+
+/** GET /api/presence/status — the non-online sets (everyone absent from both is
+ *  online, the wire default). */
+export interface RosterStatusSnapshot {
+  away: string[];
+  dnd: string[];
+}
+
 /** The roster ACTIVITY line's verb key (2026-11-10) — the server stores the key,
  *  the client localizes the prefix ("playing", "listening", …). */
 export type ActivityKind = "playing" | "listening" | "watching" | "streaming" | "competing" | "custom";

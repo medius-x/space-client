@@ -42,6 +42,7 @@ import type { ProcessNameEntry } from "./bridges";
 import { dmDisplayName } from "../domain/logic/dm-display";
 import { lastServerMessageId } from "../domain/stores/MessageStore";
 import type { MentionIdentity } from "../domain/logic/notification-decider";
+import { notificationPolicy, notificationPolicyMode, type NotificationPolicy } from "../domain/logic/notification-policy";
 import type { ConnectionRecord } from "../domain/session/connection-record";
 import { messageHasEveryoneHere, messageMentionsRole, messageMentionsUser } from "../domain/logic/notification-decider";
 import { dmToastHeader, toastBodyFallback, toastServerHeader } from "../domain/logic/toast-preview";
@@ -85,6 +86,7 @@ import type {
   Message,
   RemoteTrackKind,
   RoomInfo,
+  RosterStatus,
   VoiceControlState,
   VoiceRoomState,
 } from "../types";
@@ -134,6 +136,13 @@ export interface AppState {
   callPeer: string | null;
   callHealthy: boolean;
   callSeconds: number;
+  /** OUR OWN effective roster status (the status menu, 2026-11-17) — the
+   *  reactive mirror of the last broadcast verdict; the user bar's avatar dot
+   *  and the menu's current-status row read it. */
+  ownRosterStatus: RosterStatus;
+  /** OUR OWN invisible pin (the presence mask, 2026-11-17): the user LOOKS
+   *  offline to everyone; the own avatar dot greys to tell the user that. */
+  ownInvisible: boolean;
   callCameraOn: boolean;
   callSharing: boolean;
   /** OWN call-local mic/deafen state (reactive mirror of the PeerCallSession,
@@ -272,6 +281,8 @@ class AppStore extends Emitter {
     callPeer: null,
     callHealthy: true,
     callSeconds: 0,
+    ownRosterStatus: "online",
+    ownInvisible: false,
     callCameraOn: false,
     callSharing: false,
     callMicOn: true,
@@ -481,6 +492,12 @@ function pingDiscussionEvent(
   if (!settings.notificationsEnabled) {
     return;
   }
+  // The STATUS gate rides the same matrix as handleMessage (this is a message
+  // ping — a thread mention), user request 2026-11-17.
+  const policy = notifications.currentStatusPolicy();
+  if (policy.messageToast === "hidden") {
+    return;
+  }
   const parentChannel = session.channelStore.get(event.parentChannelId);
   notifications.showToast({
     title: displayNameOf(session.rosterStore.getSnapshot().users, event.actorUsername),
@@ -488,6 +505,7 @@ function pingDiscussionEvent(
       `#${parentChannel?.name ?? event.parentChannelId} · ${tr("toast.discussionSuffix")}`),
     body,
     mention: true,
+    sticky: policy.messageToast === "sticky",
     onClick: () => {
       const target = activeSession === session
         ? session.discussionsStore.byId(event.discussionId)
@@ -499,7 +517,7 @@ function pingDiscussionEvent(
       }
     },
   });
-  if (settings.soundEnabled) {
+  if (settings.soundEnabled && policy.messageSound) {
     notifications.playBell();
   }
 }
@@ -1352,18 +1370,22 @@ function makeSessionHooks(recordId: string): SessionHooks {
           backgroundSession.discussionsStore.setTracked(event.discussionId, true); // server auto-joined me
           const parentChannel = backgroundSession.channelStore.get(event.discussion.parentChannelId);
           const settings = settingsStore.getSnapshot();
-          if (settings.notificationsEnabled) {
+          // The same STATUS matrix as handleMessage (a thread mention from a
+          // background server is still a message ping, user request 2026-11-17).
+          const policy = notifications.currentStatusPolicy();
+          if (settings.notificationsEnabled && policy.messageToast !== "hidden") {
             notifications.showToast({
               title: displayNameOf(backgroundSession.rosterStore.getSnapshot().users, event.message.authorUsername),
               channelName: toastServerHeader(serverDisplayName(recordId),
                 `#${parentChannel?.name ?? event.discussion.parentChannelId} · ${tr("toast.discussionSuffix")}`),
               body: toastBodyFallback(event.message, currentLang()),
               mention: true,
+              sticky: policy.messageToast === "sticky",
               onClick: () => {
                 void openDiscussionOnInstance(recordId, event.discussionId);
               },
             });
-            if (settings.soundEnabled) {
+            if (settings.soundEnabled && policy.messageSound) {
               notifications.playBell();
             }
           }
@@ -1693,6 +1715,7 @@ export async function bootstrapApp(): Promise<void> {
   startBackupScheduleTicking(); // the client-side periodic server backup (one-minute tick)
   startActivityDetection(); // the roster activity auto-detect (5 s process-name poll)
   startAfkReporting(); // the AFK ticker runs for the WHOLE app life: the voice heartbeat + the roster dot (2026-11-04)
+  armStatusPolicy(); // the status machine's notification gate + the boot mirror of the persisted pin (2026-11-17)
   applyUiLanguage(); // i18n boot: resolve, repaint, mirror into main + the aux windows
   settingsStore.subscribe(applyUiLanguage); // a language flip repoints tray/titles and repaints live
   applySpellCheckEnabled(); // the spell-check toggle mirrors into main (session languages)
@@ -3099,6 +3122,96 @@ let afkTickerArmed = false;
  *  the first threshold-crossing tick flips it. */
 let currentRosterAway = false;
 
+// ---------------------------------------------------------------------------
+// The roster STATUS (the status menu, user request 2026-11-17): the auto-mode's
+// verdict — away (idle at the computer) / dnd (sitting in ANY voice room or a
+// 1:1 call) / online — or the user's MANUAL pin (settings.statusOverride, which
+// switches the auto-detect off until "auto" is picked again). "offline" is not
+// a status at all: the presence dimension tells it when the client is gone.
+// ---------------------------------------------------------------------------
+
+/** The last status handed to the sessions — the flip gate (one report per change). */
+let lastBroadcastStatus: { status: RosterStatus; invisible: boolean } | null = null;
+
+/** The effective STATUS: the manual pin wins; otherwise auto — away past the
+ *  roster threshold, else online. dnd and invisible are HAND-ONLY (user decision
+ *  2026-11-17, user feedback: voice rooms and 1:1 calls no longer flip anything);
+ *  the INVISIBLE pin is not a status but the presence mask ({@link rosterInvisible})
+ *  and rides the same report alongside whatever status is in effect under it. */
+export function effectiveRosterStatus(): RosterStatus {
+  const override = settingsStore.getSnapshot().statusOverride;
+  if (override !== "auto" && override !== "invisible") {
+    return override;
+  }
+  return currentRosterAway ? "away" : "online";
+}
+
+/** The INVISIBLE mask: the user LOOKS offline to everyone while their sessions
+ *  stay alive (user decision 2026-11-17 — nobody sees through, Discord parity;
+ *  rooms, calls and messages keep working). */
+export function rosterInvisible(): boolean {
+  return settingsStore.getSnapshot().statusOverride === "invisible";
+}
+
+/** The notification hub's live status policy (see domain/logic/notification-policy):
+ *  the mode derives from the override pin plus the auto-mode's idle flip. */
+function currentNotificationPolicy(): NotificationPolicy {
+  const override = settingsStore.getSnapshot().statusOverride;
+  const mode = notificationPolicyMode(
+    override,
+    override === "auto" && appStore.getSnapshot().ownRosterStatus === "away",
+  );
+  return notificationPolicy(mode);
+}
+
+/** Push the effective status (and the mask) through every live session when
+ *  either CHANGED (the broadcastRosterAfk pattern; the sessions re-deliver on
+ *  their own reconnects). The reactive mirrors land in appStore (ownRosterStatus
+ *  + ownInvisible) — the user bar's avatar dot and the menu read THOSE. Leaving
+ *  the sticky (auto-away) toast lane re-arms the usual auto-dismiss on whatever
+ *  toasts are standing (user decision 2026-11-17 б). */
+function broadcastRosterStatus(): void {
+  const previousToastLane = currentNotificationPolicy().messageToast;
+  const status = effectiveRosterStatus();
+  const invisible = rosterInvisible();
+  if (lastBroadcastStatus !== null && lastBroadcastStatus.status === status && lastBroadcastStatus.invisible === invisible) {
+    return;
+  }
+  lastBroadcastStatus = { status, invisible };
+  appStore.patch({ ownRosterStatus: status, ownInvisible: invisible });
+  if (previousToastLane === "sticky" && currentNotificationPolicy().messageToast !== "sticky") {
+    notifications.unstickMessageToasts();
+  }
+  log.info("presence", `roster status → ${status}${invisible ? " (invisible)" : ""}`);
+  if (activeSession !== null) {
+    activeSession.reportRosterStatus(status, invisible);
+  }
+  for (const session of sessionMap.values()) {
+    session.reportRosterStatus(status, invisible);
+  }
+}
+
+/** The status menu's pick: pin ("online"/"away"/"dnd"/"invisible") or back to
+ *  "auto" — the flip reaches the sessions immediately, not on the next idle tick.
+ *  Leaving the sticky (auto-away) toast lane re-arms the standing toasts' usual
+ *  auto-dismiss (user decision 2026-11-17 б). */
+export function setRosterStatusOverride(override: ClientSettings["statusOverride"]): void {
+  const previousToastLane = currentNotificationPolicy().messageToast; // BEFORE the pin applies
+  settingsStore.apply({ statusOverride: override });
+  broadcastRosterStatus();
+  if (previousToastLane === "sticky" && currentNotificationPolicy().messageToast !== "sticky") {
+    notifications.unstickMessageToasts();
+  }
+}
+
+/** Called once at boot (bootstrapApp): mirror the (possibly persisted) pin into
+ *  the app store so the avatar dot paints before any session exists, and hand
+ *  the notification hub its live status-policy accessor. */
+export function armStatusPolicy(): void {
+  appStore.patch({ ownRosterStatus: effectiveRosterStatus(), ownInvisible: rosterInvisible() });
+  notifications.setStatusPolicy(currentNotificationPolicy);
+}
+
 function startAfkReporting(): void {
   if (afkTickerArmed || afkReportTimer !== null) {
     return; // already running for the app's lifetime
@@ -3117,18 +3230,6 @@ function startAfkReporting(): void {
   }, 30_000);
 }
 
-/** Push the verdict through every live session — the active one and each
- *  background server (each roster shows this user; a session that is mid-reconnect
- *  stores the value and re-delivers it on its socket). */
-function broadcastRosterAfk(away: boolean): void {
-  if (activeSession !== null) {
-    activeSession.reportRosterAfk(away);
-  }
-  for (const session of sessionMap.values()) {
-    session.reportRosterAfk(away);
-  }
-}
-
 /** A FRESH session REPORTS, not just flips (the zombie-away incident,
  *  2026-11-11): a dev process killed without a WS close frame leaves its last
  *  report aggregated on the server, and the "away ⇔ all reports away" verdict
@@ -3137,7 +3238,7 @@ function broadcastRosterAfk(away: boolean): void {
  *  CURRENT verdict heals this on connect (a fresh back report breaks the
  *  all-away aggregate) and re-establishes the activity line after a restart. */
 function seedPresenceReports(session: ConnectionSession): void {
-  session.reportRosterAfk(currentRosterAway);
+  session.reportRosterStatus(effectiveRosterStatus(), rosterInvisible());
   session.reportPresenceActivity(lastBroadcastActivityLine);
 }
 
@@ -3250,12 +3351,13 @@ async function reportAfkActivity(mainMeasuredIdleSeconds?: number): Promise<void
     }
   }
 
-  // (b) The ROSTER verdict — always: away from the computer, voice or not.
+  // (b) The ROSTER verdict — always: away from the computer, voice or not. The
+  //  flip feeds the STATUS machine (a pin keeps the ticker's verdict inert).
   const away = isRosterAway(idleSeconds, speaking, streaming);
   if (away !== currentRosterAway) {
     currentRosterAway = away;
     log.info("presence", `roster afk: ${away ? "away" : "back"} (idle ${idleSeconds}s, speaking=${speaking}, streaming=${streaming})`);
-    broadcastRosterAfk(away);
+    broadcastRosterStatus();
   }
 }
 
