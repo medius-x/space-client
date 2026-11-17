@@ -4,11 +4,9 @@ import {
   isAudioFile,
   isImageFile,
   isVideoFile,
-  MAX_IMAGE_TILE_SIDE,
   mosaicHeight,
   reservedVideoThumbBox,
   singleTileBox,
-  VIDEO_CARD_CHROME,
 } from "./attachment-layout";
 import { jumboEmojiEstimateExtra } from "./emoji-picker";
 import { stickerEstimateExtra } from "./sticker-picker";
@@ -123,12 +121,13 @@ export function estimateRowHeight(message: Message, inputs: RowHeightInputs): nu
         singleImage = known;
       }
     } else if (isVideoFile(attachment.fileName)) {
-      // The tile-side cap on BOTH axes (width minus the card chrome — the
-      // renderer's own contract), NOT the row width: the preview does not
-      // shrink on narrow rows.
-      attachmentEstimate += known !== null
-        ? reservedVideoThumbBox(known.width, known.height, MAX_IMAGE_TILE_SIDE - VIDEO_CARD_CHROME, 320).height + 24
-        : 340; // unknown aspect — the historical flat card
+      // The renderer's own reserved box at the SAME live width (the cap logic,
+      // the chrome subtraction and the 16:9 unknown fallback all live inside
+      // reservedVideoThumbBox — one source); +24 is the card's name row and
+      // padding. The unknown-dims case flows through the same 16:9 plate.
+      attachmentEstimate += (known !== null
+        ? reservedVideoThumbBox(inputs.usableWidth, known.width, known.height)
+        : reservedVideoThumbBox(inputs.usableWidth, 0, 0)).height + 24;
     } else if (isAudioFile(attachment.fileName)) {
       attachmentEstimate += 56;
     } else {

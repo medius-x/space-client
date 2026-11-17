@@ -8,11 +8,9 @@ import {
   isAudioFile,
   isImageFile,
   isVideoFile,
-  MAX_IMAGE_TILE_SIDE,
   reservedVideoThumbBox,
   singleTileBox,
   splitFileNameExt,
-  VIDEO_CARD_CHROME,
 } from "../../domain/logic/attachment-layout";
 import { learnedDims, rememberDims } from "../media-dims";
 import { humanByteSize } from "../../domain/logic/file-size";
@@ -57,9 +55,11 @@ export function attachmentUsableWidth(): number {
  * Everything a message carries besides text: the image mosaic, video cards
  * (client-generated preview + play overlay + duration badge), audio cards
  * (one shared player) and plain file chips (system browser fallback).
- * oak's mosaic math: 1 image = a square bounded by the row width AND its own
- * smaller natural side (no upscale); 2–3 = one row of square crops; 4+ = a
- * 2-column grid of square crops; the gap is oak's 4.
+ * oak's mosaic math: 1 image = an aspect-hugging no-upscale box under the
+ * LIVE single-media cap (peaks 1.5× a tile, rides window resizes); 2–3 = one
+ * row of square crops; 4+ = a 2-column grid of square crops; the gap is
+ * oak's 4. Singles and video cards resize with the window in lockstep
+ * (user decision 2026-11-17).
  */
 export function AttachmentView({ session, message, onForwardBegin, removal }: {
   session: ConnectionSession;
@@ -141,7 +141,13 @@ export function AttachmentView({ session, message, onForwardBegin, removal }: {
         </div>
       ) : null}
       {videos.map((attachment) => (
-        <VideoCardView key={attachment.key} session={session} attachment={attachment} onOpen={() => setVideo(attachment)} />
+        <VideoCardView
+          key={attachment.key}
+          session={session}
+          attachment={attachment}
+          usableWidth={usable}
+          onOpen={() => setVideo(attachment)}
+        />
       ))}
       {audios.map((attachment) => (
         <AudioCardView key={attachment.key} session={session} attachment={attachment} />
@@ -190,14 +196,15 @@ function TileRemoveButton({ attachment, removal }: {
   );
 }
 
-/** The SINGLE image: bounded by the row width and its OWN smaller natural side
- *  — never upscaled (64×64 stays 64×64) — and the box HUGS the image's aspect
- *  ratio: no letterbox bars (user decision; oak keeps the square bounding box,
- *  and the black padding read as broken rendering). The FIRST box comes from
- *  the wire's intrinsic dimensions (or the learned cache on legacy rows) —
- *  only pre-field rows with no cache left fall back to the full usable-width
- *  square until the decode lands. The decode itself remembers the measured
- *  size for the next render. */
+/** The SINGLE image: an aspect-hugging, never-upscaled box (64×64 stays
+ *  64×64) under the LIVE single-media cap — it peaks at 1.5× a mosaic tile
+ *  and RESIZES WITH THE WINDOW down to the shared floor (user decision
+ *  2026-11-17; before it the box froze at its mount-time width and the cap
+ *  was the plain 320 tile side). The natural dimensions live in state (wire
+ *  intrinsic dims first, the learned cache on legacy rows, the decode once
+ *  it lands — it also remembers them for the next render); the BOX itself is
+ *  derived in render from those plus the live width, so a window resize
+ *  re-sizes mounted tiles with no effect needed. */
 /** Paced log for tile-box transitions ("images appearing out of nowhere",
  * live report 2026-10-19): every reserved-box change on a single tile is a
  * layout shift the scrollbar felt — this names them. */
@@ -211,12 +218,28 @@ function SingleTileView({ session, attachment, usableWidth, removal, onClick }: 
   onClick(): void;
 }): React.JSX.Element {
   const url = useAttachmentImage(session, attachment.key !== null && attachment.url !== null ? { key: attachment.key, url: attachment.url } : null);
-  const [box, setBox] = useState(() => {
+  const [natural, setNatural] = useState<{ width: number; height: number } | null>(() => {
     const known = attachment.width !== null && attachment.height !== null
       ? { width: attachment.width, height: attachment.height }
       : learnedDims(attachment.key);
-    return singleTileBox(usableWidth, known?.width ?? 0, known?.height ?? 0);
+    return known ?? null;
   });
+  const box = singleTileBox(usableWidth, natural?.width ?? 0, natural?.height ?? 0);
+  // Name every box transition (decode-time corrections AND resize-driven
+  // ones) — paced, see the module note above.
+  const loggedBoxRef = useRef<{ width: number; height: number } | null>(null);
+  useEffect(() => {
+    const previous = loggedBoxRef.current;
+    loggedBoxRef.current = box;
+    if (previous === null || (previous.width === box.width && previous.height === box.height)) {
+      return;
+    }
+    const now = performance.now();
+    if (now - lastTileBoxLogAt > 2000) {
+      lastTileBoxLogAt = now;
+      log.info("media", `image tile box ${previous.width}x${previous.height} → ${box.width}x${box.height} (${attachment.fileName})`);
+    }
+  }, [box, attachment.fileName]);
   const marked = removal?.markedKeys.has(attachment.key) ?? false;
   return (
     <div
@@ -234,13 +257,10 @@ function SingleTileView({ session, attachment, usableWidth, removal, onClick }: 
             const naturalWidth = event.currentTarget.naturalWidth;
             const naturalHeight = event.currentTarget.naturalHeight;
             rememberDims(attachment.key, naturalWidth, naturalHeight);
-            const nextBox = singleTileBox(usableWidth, naturalWidth, naturalHeight);
-            const now = performance.now();
-            if ((nextBox.width !== box.width || nextBox.height !== box.height) && now - lastTileBoxLogAt > 2000) {
-              lastTileBoxLogAt = now;
-              log.info("media", `image tile box ${box.width}x${box.height} → ${nextBox.width}x${nextBox.height} (${attachment.fileName})`);
-            }
-            setBox(nextBox);
+            setNatural((current) =>
+              current !== null && current.width === naturalWidth && current.height === naturalHeight
+                ? current
+                : { width: naturalWidth, height: naturalHeight });
           }}
         />
       ) : (
@@ -273,9 +293,10 @@ function MosaicTileView({ session, attachment, tile, removal, onClick }: {
   );
 }
 
-function VideoCardView({ session, attachment, onOpen }: {
+function VideoCardView({ session, attachment, usableWidth, onOpen }: {
   session: ConnectionSession;
   attachment: Attachment;
+  usableWidth: number;
   onOpen(): void;
 }): React.JSX.Element {
   const thumbUrl = useAttachmentImage(
@@ -287,15 +308,16 @@ function VideoCardView({ session, attachment, onOpen }: {
   const durationSeconds = attachment.durationMillis !== null ? attachment.durationMillis / 1000 : null;
   // The reserved box: the wire's intrinsic frame dimensions when present, else
   // the learned cache (the preview shares the frame's aspect), else the
-  // historical 16:9 plate — capped at the image-tile side on BOTH axes and
-  // INDEPENDENT of the row width (user decision 2026-11-17): narrowing the
-  // window never shrinks the preview or its card — a too-narrow row lets the
-  // card overflow the block instead. The WIDTH cap subtracts the card chrome,
-  // so the card's outer edge aligns with the 320px image tiles next door.
+  // historical 16:9 plate — capped by the LIVE single-media ceiling on BOTH
+  // axes (user decision 2026-11-17, same evening: the card and the single
+  // picture resize with the window in lockstep; the day's earlier
+  // "never shrink" rule is superseded). The width cap subtracts the card
+  // chrome, so the card's outer edge sits flush with the single picture's box
+  // at the same row width.
   const known = attachment.width !== null && attachment.height !== null
     ? { width: attachment.width, height: attachment.height }
     : learnedDims(attachment.key);
-  const reserved = reservedVideoThumbBox(known?.width ?? 0, known?.height ?? 0, MAX_IMAGE_TILE_SIDE - VIDEO_CARD_CHROME, 320);
+  const reserved = reservedVideoThumbBox(usableWidth, known?.width ?? 0, known?.height ?? 0);
   // The name row is capped at the PREVIEW's width (inline maxWidth) so it can
   // never widen the card past its frame — inside, the base ellipsizes while
   // the extension stays pinned at the end ("long_na….mp4").

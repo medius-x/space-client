@@ -1,12 +1,12 @@
 /**
  * oak's image mosaic (AttachmentLayout.java), pure math, unit-tested:
- * 1 image renders as an aspect-hugging box, no-upscale-fitted into the
- * MAX_IMAGE_TILE_SIDE ceiling on each axis and the row width — NEVER
- * upscaled past its natural size (64×64 stays 64×64); 2–3 images render in
- * ONE row of square, center-cropped tiles; 4–10
- * render in a 2-column grid of square, center-cropped tiles (a crop — not a
- * fit — is what keeps the grid compact; the Discord way). The caller caps the
- * count at MAX_ATTACHMENTS (the server's limit).
+ * 1 image renders as an aspect-hugging box, no-upscale-fitted into the LIVE
+ * single-media cap (peaks at SINGLE_MEDIA_MAX_SIDE, follows the row width
+ * down to MIN_TILE_SIDE); 2–3 images render in ONE row of square,
+ * center-cropped tiles; 4–10 render in a 2-column grid of square,
+ * center-cropped tiles (a crop — not a fit — is what keeps the grid compact;
+ * the Discord way). The caller caps the count at MAX_ATTACHMENTS (the
+ * server's limit).
  */
 
 export interface MosaicTile {
@@ -23,6 +23,27 @@ export const TILE_GAP = 4;
  *  grew the picture without bound (live report 2026-10-19). The lightbox
  *  remains the full-size view. */
 export const MAX_IMAGE_TILE_SIDE = 320;
+
+/** The floor for EVERY media tile side — single pictures, video previews and
+ *  mosaic tiles alike (user decision 2026-11-17: one shared "smallest
+ *  sensible element" instead of per-kind bottoms). Below it a media block
+ *  OVERFLOWS its row rather than shrinking further: the video's fixed 48px
+ *  play circle and duration badge stop making sense inside a smaller frame. */
+export const MIN_TILE_SIDE = 120;
+
+/** The single picture/video's PEAK: 1.5× the mosaic tile cap (user decision
+ *  2026-11-17) — a lone image deserves more room than a mosaic tile, and the
+ *  video card's outer edge matches this at its peak so singles and videos
+ *  sit flush in neighbouring messages. Mosaic tiles stay at the 320 cap. */
+export const SINGLE_MEDIA_MAX_SIDE = MAX_IMAGE_TILE_SIDE * 3 / 2;
+
+/** The single media's LIVE size ceiling: the row width clamped into
+ *  [MIN_TILE_SIDE, SINGLE_MEDIA_MAX_SIDE]. A wide row → the peak; a narrowing
+ *  row → the ceiling follows it down (the media resizes with the window);
+ *  a row past the floor → the floor (overflow beats a broken frame). */
+export function singleMediaCapSide(usableWidth: number): number {
+  return Math.max(MIN_TILE_SIDE, Math.min(SINGLE_MEDIA_MAX_SIDE, usableWidth));
+}
 
 /** The video card's horizontal chrome (.video-card: 6+6 padding, 1+1 border).
  *  The preview's WIDTH cap subtracts it, so the card's outer width
@@ -42,29 +63,35 @@ export function mosaicColumns(count: number): number {
   return 2;
 }
 
-/** The square side of a grid/row tile: the gap is only BETWEEN columns. */
+/** The square side of a grid/row tile: the gap is only BETWEEN columns. The
+ *  floor is the shared MIN_TILE_SIDE — below it the row overflows instead of
+ *  crumbling into unreadable squares (user decision 2026-11-17). */
 export function gridTileSide(usableWidth: number, columns: number): number {
-  return Math.min(MAX_IMAGE_TILE_SIDE, Math.floor((usableWidth - TILE_GAP * (columns - 1)) / columns));
+  const side = Math.min(MAX_IMAGE_TILE_SIDE, Math.floor((usableWidth - TILE_GAP * (columns - 1)) / columns));
+  return Math.max(MIN_TILE_SIDE, side);
 }
 
 /** The single image's actual BOX (user decision, 2026-09-15: the box HUGS the
  *  image's aspect ratio — oak keeps the square bounding box, and the black
- *  padding read as broken rendering): a true no-upscale fit into the tile-side
- *  ceiling on EACH axis and the row width — each side of the box never exceeds
- *  the image's own side (64×64 stays 64×64). The old oak-ported rule bounded
- *  the box by the image's SMALLER side, which crushed elongated pictures (an
- *  800×150 strip rendered 150×28 — "tiny in chat, large in the lightbox",
- *  live report 2026-11-17); with an aspect-hugging box the bound belongs on
- *  each side separately. */
+ *  padding read as broken rendering): a true no-upscale fit into the LIVE
+ *  single-media ceiling (singleMediaCapSide of the row width) on EACH axis —
+ *  each side of the box never exceeds the image's own side (64×64 stays
+ *  64×64). The old oak-ported rule bounded the box by the image's SMALLER
+ *  side, which crushed elongated pictures (an 800×150 strip rendered 150×28
+ *  — "tiny in chat, large in the lightbox", live report 2026-11-17); with an
+ *  aspect-hugging box the bound belongs on each side separately. Since
+ *  2026-11-17 the ceiling RIDES THE WINDOW: the picture peaks at
+ *  SINGLE_MEDIA_MAX_SIDE and shrinks as the row narrows, down to the shared
+ *  MIN_TILE_SIDE floor (narrower rows overflow instead of shrinking further). */
 export function singleTileBox(usableWidth: number, naturalWidth: number, naturalHeight: number): { width: number; height: number } {
   if (naturalWidth <= 0 || naturalHeight <= 0) {
-    const side = Math.min(usableWidth, MAX_IMAGE_TILE_SIDE); // unknown yet — the square placeholder
+    const side = singleMediaCapSide(usableWidth); // unknown yet — the square placeholder
     return { width: side, height: side };
   }
+  const capSide = singleMediaCapSide(usableWidth);
   const scale = Math.min(
-    MAX_IMAGE_TILE_SIDE / naturalWidth,
-    MAX_IMAGE_TILE_SIDE / naturalHeight,
-    usableWidth / naturalWidth,
+    capSide / naturalWidth,
+    capSide / naturalHeight,
     1, // never upscale
   );
   return {
@@ -73,10 +100,11 @@ export function singleTileBox(usableWidth: number, naturalWidth: number, natural
   };
 }
 
-/** The 2+ tiles — all square, all the same side. The single image is NOT here:
- *  it is sized by singleTileBox against its own natural dimensions. */
+/** The 2+ tiles — all square, all the same side (floored at MIN_TILE_SIDE).
+ *  The single image is NOT here: it is sized by singleTileBox against its own
+ *  natural dimensions. */
 export function computeMosaicTiles(count: number, containerWidth: number): MosaicTile[] {
-  const usable = Math.max(120, Math.floor(containerWidth));
+  const usable = Math.max(MIN_TILE_SIDE, Math.floor(containerWidth));
   if (count <= 1) {
     return [];
   }
@@ -132,21 +160,25 @@ export function splitFileNameExt(fileName: string): { base: string; ext: string 
 }
 
 /** The video card's thumb box (2026-09-25, the exact-reservation round): the
- *  preview at its own aspect, capped by the IMAGE-TILE side ceiling on BOTH
- *  axes — for the WIDTH the caller passes MAX_IMAGE_TILE_SIDE minus
- *  VIDEO_CARD_CHROME (the card then aligns with the image tiles), for the
- *  height the ceiling itself; NOT the row width (user decision 2026-11-17:
- *  the preview and its card stay put when the window narrows; a too-narrow
- *  row lets the card overflow rather than shrink the frame). This is the
+ *  preview at its own aspect, capped by the LIVE single-media ceiling
+ *  (user decision 2026-11-17, same evening: the earlier same-day "never
+ *  shrink with the window" rule was replaced — singles and videos now resize
+ *  WITH the window together): the width cap is singleMediaCapSide(row width)
+ *  minus VIDEO_CARD_CHROME (so the card's OUTER edge sits flush with the
+ *  single picture at the same row width), the height cap the ceiling itself;
+ *  neither drops below the shared MIN_TILE_SIDE (past it the card overflows
+ *  rather than cramp its fixed 48px play circle and name row). This is the
  *  same fit computed BEFORE the bytes arrive, from the wire's intrinsic
  *  dimensions (or a learned-cache aspect) — the row then reserves the exact
  *  height and the decode never shifts the layout. Zero/absent dimensions
  *  fall back to the historical 16:9 plate. */
-export function reservedVideoThumbBox(naturalWidth: number, naturalHeight: number, maxWidth: number, maxHeight: number):
+export function reservedVideoThumbBox(usableWidth: number, naturalWidth: number, naturalHeight: number):
   { width: number; height: number } {
+  const capSide = singleMediaCapSide(usableWidth);
+  const maxWidth = Math.max(MIN_TILE_SIDE, capSide - VIDEO_CARD_CHROME);
+  const maxHeight = capSide;
   if (naturalWidth <= 0 || naturalHeight <= 0) {
-    const side = Math.min(320, Math.max(120, maxWidth));
-    return { width: side, height: Math.round(side * 9 / 16) };
+    return { width: maxWidth, height: Math.round(maxWidth * 9 / 16) };
   }
   const scale = Math.min(maxWidth / naturalWidth, maxHeight / naturalHeight, 1);
   return {

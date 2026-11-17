@@ -16,21 +16,22 @@ function stubLocalStorage(): { store: Map<string, string> } {
 
 describe("reservedVideoThumbBox (the exact aspect reservation)", () => {
   it("a landscape video fits the width cap first", () => {
-    // 1920×1080 into (480 wide, 320 high): the width is the binding side.
-    expect(reservedVideoThumbBox(1920, 1080, 480, 320)).toEqual({ width: 480, height: 270 });
+    // 1920×1080 at a 700-wide row: the cap peaks at 480 → preview width 466
+    // (480 minus the card chrome) is the binding side.
+    expect(reservedVideoThumbBox(700, 1920, 1080)).toEqual({ width: 466, height: 262 });
   });
 
   it("a vertical phone video reserves the tall narrow box", () => {
-    expect(reservedVideoThumbBox(720, 1280, 480, 320)).toEqual({ width: 180, height: 320 });
+    expect(reservedVideoThumbBox(700, 720, 1280)).toEqual({ width: 270, height: 480 });
   });
 
   it("a small video never upscales", () => {
-    expect(reservedVideoThumbBox(320, 180, 480, 320)).toEqual({ width: 320, height: 180 });
+    expect(reservedVideoThumbBox(700, 320, 180)).toEqual({ width: 320, height: 180 });
   });
 
   it("unknown dimensions fall back to the historical 16:9 plate", () => {
-    expect(reservedVideoThumbBox(0, 0, 480, 320)).toEqual({ width: 320, height: 180 });
-    expect(reservedVideoThumbBox(0, 0, 200, 320)).toEqual({ width: 200, height: 113 });
+    expect(reservedVideoThumbBox(700, 0, 0)).toEqual({ width: 466, height: 262 });
+    expect(reservedVideoThumbBox(214, 0, 0)).toEqual({ width: 200, height: 113 });
   });
 });
 

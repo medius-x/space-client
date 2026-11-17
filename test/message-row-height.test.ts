@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   computeMosaicTiles,
-  MAX_IMAGE_TILE_SIDE,
   mosaicHeight,
   reservedVideoThumbBox,
   singleTileBox,
-  VIDEO_CARD_CHROME,
 } from "../src/domain/logic/attachment-layout";
 import { estimateRowHeight, QUOTE_DEPTH_MAX } from "../src/domain/logic/message-row-height";
 import type { Attachment, ForwardInfo, Message, ReplyInfo } from "../src/types";
@@ -114,10 +112,10 @@ describe("estimateRowHeight — the estimate IS the first paint (render-math mir
       messageOf({ attachments: [imageAttachment({ key: "vid/a.mp4", fileName: "a.mp4", width: 1920, height: 1080 })] }),
       inputs({ usableWidth: 700 }),
     );
-    // MAX_IMAGE_TILE_SIDE − VIDEO_CARD_CHROME — the SAME width ceiling the
-    // render uses (the card then aligns with the image tiles), not the raw
-    // row width: the video preview never shrinks on narrow rows.
-    expect(height - textOnlyHeight(null)).toBe(reservedVideoThumbBox(1920, 1080, MAX_IMAGE_TILE_SIDE - VIDEO_CARD_CHROME, 320).height + 24);
+    // The SAME reserved box the render uses at the SAME live row width — the
+    // cap/chrome/16:9 logic lives inside reservedVideoThumbBox (one source);
+    // +24 is the card's name row and padding.
+    expect(height - textOnlyHeight(null)).toBe(reservedVideoThumbBox(700, 1920, 1080).height + 24);
   });
 
   it("audio and plain files estimate the card height", () => {

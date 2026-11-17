@@ -44,3 +44,9 @@ does not: CI, docs, refactoring, internal rework.
   incoming-call card still appears.
 - Calling offline friends is allowed: the call button in the friends list
   and the roster's call action work regardless of the green/grey dot.
+- A lone picture (and a video's preview card) now takes more room: it grows
+  up to 1.5× the mosaic tile size in a wide window, then scales down with the
+  window instead of staying frozen — singles and videos stay level with each
+  other at every width. Every kind of media (single pictures, video cards,
+  mosaic tiles) now stops shrinking at the same small floor and overflows
+  instead of crumbling into unreadable squares.
