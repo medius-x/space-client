@@ -19,6 +19,11 @@ export interface VirtualListHandle {
   scrollTop(): number;
   viewportHeight(): number;
   scrollToBottom(): void;
+  /** The live bottom-proximity of the CONTAINER (the gate's own threshold) —
+   *  for callers that must know it WITHOUT a scroll event (a server switch
+   *  swaps items on a living container: the reader's mid-list position
+   *  survives, yet no proximity callback ever fires, 2026-11-18). */
+  isNearBottom(): boolean;
 }
 
 // PREFETCH: history loads while the top is still ~3-4 screens away — the page
@@ -53,6 +58,11 @@ interface VirtualListProps<Item> {
   onNearTop?: () => void;
   /** Bottom-proximity signal for the caller's stick-to-bottom logic. */
   onBottomProximity?: (nearBottom: boolean) => void;
+  /** Reports the FIRST VIEWPORT-VISIBLE row's key whenever it changes (the
+   *  caller's scroll-anchor memory — restoring a chat to "the message it was
+   *  open on" after a server switch, 2026-11-18). Fired from the rAF geometry
+   *  pass: real viewport rows only, no overscan. */
+  onAnchorChange?: (key: string) => void;
   /** Synchronous USER intent: wheel/keys, before any scroll event lands. The
    *  caller's stick-to-bottom must un-pin on the FIRST notch upward — the
    *  proximity gate only reports one rAF later (paced 250 ms), and a batch
@@ -64,7 +74,7 @@ interface VirtualListProps<Item> {
 }
 
 export function VirtualList<Item>(props: VirtualListProps<Item>): React.JSX.Element {
-  const { items, itemKey, estimateHeight, renderItem, onNearTop, onBottomProximity, onUserScrollIntent, className, ref } = props;
+  const { items, itemKey, estimateHeight, renderItem, onNearTop, onBottomProximity, onUserScrollIntent, onAnchorChange, className, ref } = props;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const scrollIdleTimerRef = useRef<number | null>(null);
@@ -77,6 +87,10 @@ export function VirtualList<Item>(props: VirtualListProps<Item>): React.JSX.Elem
   onBottomProximityRef.current = onBottomProximity;
   const onUserScrollIntentRef = useRef(onUserScrollIntent);
   onUserScrollIntentRef.current = onUserScrollIntent;
+  const onAnchorChangeRef = useRef(onAnchorChange);
+  onAnchorChangeRef.current = onAnchorChange;
+  /** The last reported anchor key — the callback fires on CHANGE only. */
+  const lastAnchorKeyRef = useRef<string | null>(null);
   const gate = useMemo(
     () => new ScrollSignalGate({
       nearTopThreshold: NEAR_TOP_THRESHOLD,
@@ -204,6 +218,13 @@ export function VirtualList<Item>(props: VirtualListProps<Item>): React.JSX.Elem
         virtualizer.scrollToIndex(items.length - 1, { align: "end" });
       }
     },
+    isNearBottom(): boolean {
+      const container = containerRef.current;
+      if (container === null) {
+        return true;
+      }
+      return container.scrollHeight - container.scrollTop - container.clientHeight < NEAR_BOTTOM_THRESHOLD;
+    },
   }), [items, itemKey, virtualizer]);
 
   // Rows ignore the pointer while the list is actively scrolling; lifts after
@@ -284,6 +305,15 @@ export function VirtualList<Item>(props: VirtualListProps<Item>): React.JSX.Elem
       }
       if (decisions.fireNearTop) {
         onNearTopRef.current?.();
+      }
+      // The scroll-anchor memory: the first REAL viewport row (the range
+      // excludes overscan), reported on change only.
+      const range = virtualizer.range;
+      const anchorItem = range !== null ? itemsRef.current[range.startIndex] : undefined;
+      const anchorKey = anchorItem !== undefined ? itemKey(anchorItem) : null;
+      if (anchorKey !== null && anchorKey !== lastAnchorKeyRef.current) {
+        lastAnchorKeyRef.current = anchorKey;
+        onAnchorChangeRef.current?.(anchorKey);
       }
       maybeArmScrolling();
     });

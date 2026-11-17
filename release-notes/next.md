@@ -61,3 +61,7 @@ does not: CI, docs, refactoring, internal rework.
   server header pinned while the channel list scrolls, and the server rail
   keeps the home button on top and the add-server button at the bottom while
   only the server icons scroll.
+- Switching servers and back no longer scrambles the chat position: a chat you
+  left at the bottom reopens at the (possibly grown) bottom, and a chat you
+  were reading mid-history reopens on the very message you were looking at,
+  with the jump-to-bottom chevron back.

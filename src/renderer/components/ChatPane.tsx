@@ -1116,7 +1116,25 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
   }, [dividerReadId]);
 
   // Snapshot the unread divider at open (before the ack moves the pointer).
+  // prevSessionRef lives OUTSIDE: a SESSION change (server switch) is the case
+  // where the list container SURVIVES with the reader's old scrollTop but the
+  // first-layout pass never runs (both servers' lists are non-empty, so the
+  // messages.length>0 transition never flips). The restore is ANCHOR-BASED,
+  // not pixel-based (user decision 2026-11-18, after a run of pixel-drift
+  // regressions): remember THE MESSAGE the chat was open on (the first
+  // viewport row) and scroll back to it — stable across list-height changes,
+  // gap growth, whatever.
+  const prevSessionRef = useRef(session);
+  const anchorByChannelRef = useRef(new Map<string, string>());
+  /** The per-record "left while PINNED to the bottom" verdict — the anchor
+   *  alone cannot express it: new messages arriving on a live server while the
+   *  reader is away grow the tail BELOW the anchored area, and a bottom-reader
+   *  would return "slightly above the bottom" (live report, the friend's
+   *  server, 2026-11-18). */
+  const pinnedByRecordRef = useRef(new Map<string, boolean>());
   useEffect(() => {
+    const sessionSwitched = prevSessionRef.current !== session;
+    prevSessionRef.current = session;
     const lastRead = session.readStateStore.get(channel.id).lastReadMessageId;
     setDividerReadId(lastRead);
     firstLayoutRef.current = true;
@@ -1130,6 +1148,41 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
     // switch the same numeric id denotes a DIFFERENT message (the same
     // id-collision class the scoped row keys close).
     pendingJumpRef.current = null;
+    // A SESSION switch swaps the list on a LIVING container: the swapped-in
+    // rows are NOT "new messages" — baseline the growth trackers here (this
+    // effect runs BEFORE the stick-to-bottom effect on the same render) or
+    // stick-to-bottom reads the swap as growth and THROWS the reader to the
+    // bottom (live report 2026-11-18). firstLayoutRef stays FALSE — the
+    // first-layout pass never runs here (both lists non-empty, no
+    // empty→loaded transition). The restore scrolls to the ANCHOR row — the
+    // message this chat was open on when the reader left; no anchor (never
+    // scrolled here this run) falls back to the bottom, the fresh-open rule.
+    if (sessionSwitched) {
+      firstLayoutRef.current = false;
+      messageCountRef.current = messages.length;
+      previousTailRef.current = lastServerMessageId(messages);
+      // Left PINNED → the (possibly grown) bottom; left scrolled → the anchor
+      // row. No verdict yet (never scrolled here this run) → the fresh-open
+      // bottom rule.
+      const wasPinned = pinnedByRecordRef.current.get(session.recordId) ?? true;
+      const anchor = anchorByChannelRef.current.get(`${session.recordId}:${channel.id}`);
+      window.setTimeout(() => {
+        if (wasPinned || anchor === undefined || listRef.current?.scrollToKey(anchor, "start") !== true) {
+          listRef.current?.scrollToBottom();
+          nearBottomRef.current = true;
+          setScrolledUp(false);
+          return;
+        }
+        // The anchor scroll MOVES scrollTop, so a proximity event will follow
+        // on its own; measure anyway — the scroll may land as a no-op when the
+        // anchor already sits at the viewport top.
+        window.setTimeout(() => {
+          const nearBottom = listRef.current?.isNearBottom() ?? true;
+          nearBottomRef.current = nearBottom;
+          setScrolledUp(!nearBottom);
+        }, 60);
+      }, 30); // let the swapped rows settle their heights first
+    }
   }, [channel.id, session]);
 
   // The auto catch-up may heal the window while the user is looking at it (the
@@ -1541,6 +1594,12 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
       itemKey={(message) => rowKeyOf(message.id)}
       estimateHeight={groupedEstimateHeight}
       onNearTop={loadOlder}
+      onAnchorChange={(key) => {
+        // The scroll-anchor memory: WHICH MESSAGE this chat is open on (the
+        // first viewport row). Written on every change so the session-switch
+        // restore lands on the reader's actual spot, not on drifted pixels.
+        anchorByChannelRef.current.set(`${session.recordId}:${channel.id}`, key);
+      }}
       onUserScrollIntent={(direction) => {
         // The gate below reports one rAF later (paced 250 ms); a batch landing
         // inside that window must not yank the departing reader back to the
@@ -1549,10 +1608,18 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
         // back"; mid-list reading was always smooth).
         if (direction === "up") {
           nearBottomRef.current = false;
+          // The pinned verdict must drop SYNCHRONOUSLY with the un-pin — a
+          // server switch inside the gate's 250ms report window must not carry
+          // a stale "left pinned" into the restore.
+          pinnedByRecordRef.current.set(session.recordId, false);
         }
       }}
       onBottomProximity={(nearBottom) => {
         nearBottomRef.current = nearBottom;
+        // The per-record verdict the session-switch restore reads: the LAST
+        // proximity state of this record IS "was the reader pinned when they
+        // left".
+        pinnedByRecordRef.current.set(session.recordId, nearBottom);
         setScrolledUp(!nearBottom);
         if (nearBottom) {
           scheduleDividerDismiss(); // back at the bottom → restart the countdown
