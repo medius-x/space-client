@@ -1363,8 +1363,11 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
               </div>
             ) : null}
             <div className="settings-hint">{t("serverSettings.rolesHint")}</div>
-            {/* oak lists the OWNER row explicitly — the OWNER role is not among
-                the roles, so the owner would otherwise read as "No roles". */}
+            {/* oak lists the OWNER row explicitly: the built-in OWNER role (kind=OWNER,
+                present in the store and in the owner's roleIds) is HIDDEN from the list
+                below — the localized row already represents it (its raw "OWNER" chip used
+                to render a duplicate beside it, live report 2026-11-18), and the built-in
+                is not assignable or removable here anyway. */}
             {active.owner ? (
               <div className="list-row">
                 <span className="role-color-chip" style={{ background: "var(--sp-role-chip-default)" }} />
@@ -1376,7 +1379,7 @@ function MembersSection({ session }: { session: ConnectionSession }): React.JSX.
             ) : (
               active.roleIds
                 .map((roleId) => roles.find((entry) => entry.id === roleId))
-                .filter((entry): entry is Role => entry !== undefined)
+                .filter((entry): entry is Role => entry !== undefined && entry.kind !== "OWNER")
                 .sort((left, right) => right.position - left.position)
                 .map((entry) => (
                   <div key={entry.id} className="list-row">
