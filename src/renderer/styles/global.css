@@ -2044,6 +2044,16 @@ button.wide-add { width: 100%; }
   display: flex;
   align-items: center;
   justify-content: center;
+  transition: background 120ms ease, transform 120ms ease;
+}
+/* Hover affordance (user request 2026-11-18): the WHOLE preview is the click
+   target (the card opens the player), so hovering the video — not just the
+   48px disc — brightens the circle and grows it a touch. The hover transform
+   must restate the centering translate. Covers both render paths (the decoded
+   preview and the no-preview fallback plate). */
+.video-thumb:hover .video-play-overlay {
+  background: color-mix(in srgb, var(--sp-accent) 95%, transparent);
+  transform: translate(-50%, -50%) scale(1.08);
 }
 /* The MDI triangle (the Unicode "▶" glyph sat low-left on its baseline, live
    report 2026-11-17) — with the same optical nudge the audio button uses:
@@ -2388,7 +2398,10 @@ button.wide-add { width: 100%; }
   display: flex;
   align-items: center;
   justify-content: center;
-  cursor: grab;
+  /* The BACKDROP is plain chrome (the photo is the interactive thing) — an arrow
+     here, the hand on the image itself (user report 2026-11-18: the two used to
+     be inverted — arrow on the photo, hand on the empty black around it). */
+  cursor: default;
 }
 /* The image is positioned/sized by the viewer transform math (image-viewer-transform):
    absolute offsets + explicit drawn width/height — no CSS max-rules fighting it. */

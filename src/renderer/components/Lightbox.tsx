@@ -197,7 +197,6 @@ export function Lightbox({ session, images, startIndex, onForwardBegin, onClose 
     }
   };
 
-  const zoomed = transform.scale > 1;
   const fileExtension = attachment !== null && attachment.fileName.includes(".")
     ? attachment.fileName.slice(attachment.fileName.lastIndexOf(".") + 1).toUpperCase()
     : "";
@@ -280,7 +279,10 @@ export function Lightbox({ session, images, startIndex, onForwardBegin, onClose 
               width: imageSize.width * transform.baseScale * transform.scale,
               height: imageSize.height * transform.baseScale * transform.scale,
               maxWidth: "none",
-              cursor: zoomed ? "grab" : "default",
+              // The hand sits ON the photo (the interactive surface: wheel/drag/
+              // double-click all act here) in BOTH zoom states — the backdrop stays
+              // an arrow (user report 2026-11-18: the cursors used to be inverted).
+              cursor: "grab",
             }
             : undefined}
         />
