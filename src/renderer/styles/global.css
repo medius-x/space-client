@@ -241,6 +241,15 @@ body.channel-dragging * { cursor: grabbing !important; }
   flex-direction: column;
   min-width: 0;
 }
+/* The name row: the nickname (ellipsized) with the owner crown right after it —
+   a flex row so a long name shrinks with an ellipsis instead of pushing the
+   crown out (2026-11-19). */
+.member-name-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
 .member-activity {
   font-size: 11px;
   line-height: 1.25;
@@ -253,6 +262,57 @@ body.channel-dragging * { cursor: grabbing !important; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* The "which game is this?" ask (GamePickModal, 2026-11-19): rows of cover +
+   name; the year disambiguates same-named matches. */
+.game-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.game-pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.game-pick-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  background: var(--sp-bg-elevated, #2b2d31);
+  border: 1px solid var(--sp-border, #3f4147);
+  border-radius: 6px;
+  color: var(--sp-text);
+  cursor: pointer;
+  text-align: left;
+}
+.game-pick-row:hover {
+  border-color: var(--sp-accent, #5865f2);
+}
+.game-pick-row img {
+  width: 30px;
+  height: 42px; /* the cover_small aspect (90×128) at a thumbnail scale */
+  border-radius: 3px;
+  object-fit: cover;
+}
+.game-pick-blank {
+  width: 30px;
+  height: 42px;
+  border-radius: 3px;
+  background: var(--sp-bg-hover, #3a3c42);
+  flex: none;
+}
+.game-pick-name {
+  font-size: 13px;
+}
+.game-pick-year {
+  color: var(--sp-text-dim);
+}
+.game-pick-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 /* The activity section (2026-11-11 auto-detect rework): one RULE row per

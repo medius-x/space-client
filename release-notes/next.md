@@ -7,3 +7,13 @@ edited into `v<version>.md` and emptied.
 
 What belongs here: features and fixes a user can see or feel. What
 does not: CI, docs, refactoring, internal rework.
+
+- Steam games now show up in your activity line on their own: the client reads
+  the game's Steam app id and resolves it against the IGDB game database (the
+  server admin connects it in Server Settings → IGDB), the line carries the
+  game's cover thumbnail, and a Steam install IGDB does not know asks ONCE
+  which game it is — your pick then resolves the same game for everyone on the
+  server. Non-Steam applications are never auto-detected (bind them with the
+  manual rules as before); manually registered rules always win over detection,
+  and "Detect games automatically (IGDB)" in Settings turns the whole thing off.
+

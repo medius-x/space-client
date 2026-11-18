@@ -27,6 +27,7 @@ import type { ProcessNameEntry } from "../bridges";
 import { advertisedAddress, DISK_CACHE_CHOICES, diskCacheLabel } from "../../domain/logic/settings-format";
 import { JUMBO_EMOJI_DEFAULT_PX, JUMBO_EMOJI_MAX_PX, JUMBO_EMOJI_MIN_PX } from "../../domain/logic/emoji-picker";
 import { deviceLabelFor, matchDeviceId } from "../../domain/logic/device-match";
+import { hasServerCapability } from "../../domain/logic/server-capabilities";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import { DEFAULT_NOTIFICATION_PREFS } from "../../domain/session/connection-record";
 import { CHANGE_NICKNAME_PERMISSION, type NotificationPrefs } from "../../types";
@@ -172,7 +173,7 @@ export function UserSettingsModal({ session }: { session: ConnectionSession | nu
             : <GeneralClientSection session={session} />)
           : null}
         {activeSection === "account" && session !== null ? <AccountSection session={session} /> : null}
-        {activeSection === "activity" ? <ActivitySection /> : null}
+        {activeSection === "activity" ? <ActivitySection session={session} /> : null}
         {activeSection === "audio" ? <AudioSection staged={staged} /> : null}
         {activeSection === "video" ? <VideoSection staged={staged} /> : null}
         {activeSection === "keybinds" ? <KeybindsSection /> : null}
@@ -958,11 +959,12 @@ function DownloadsFolderRow(): React.JSX.Element {
  *  cannot host an icon): the Task-Manager presentation — applications with
  *  their window titles and icons first, background processes by exe name
  *  below; the live ● marks the rules the detector currently sees running. */
-function ActivitySection(): React.JSX.Element {
+function ActivitySection({ session }: { session: ConnectionSession | null }): React.JSX.Element {
   const t = useT();
   const registered = useStore(settingsStore, (settings) => settings.registeredActivities);
   const runningIds = useStore(settingsStore, (settings) => settings.runningActivityIds);
   const activitiesEnabled = useStore(settingsStore, (settings) => settings.activitiesEnabled);
+  const gameAutoDetectEnabled = useStore(settingsStore, (settings) => settings.gameAutoDetectEnabled);
   const [entries, setEntries] = useState<ProcessNameEntry[] | null>(null);
   const [picked, setPicked] = useState<ProcessNameEntry | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -1137,6 +1139,16 @@ function ActivitySection(): React.JSX.Element {
           onChange={(event) => settingsStore.apply({ activitiesEnabled: event.target.checked })} />
         <span>{t("settings.activityPublishToggle")}</span>
       </label>
+      {/* The IGDB leg (2026-11-19): unmatched apps resolve against the server's
+          game database (needs its igdb-games capability — hidden otherwise);
+          a manual rule always outranks the automatic line. */}
+      {session !== null && hasServerCapability(session.serverProfile, "igdb-games") ? (
+        <label className="settings-check">
+          <input type="checkbox" checked={gameAutoDetectEnabled}
+            onChange={(event) => settingsStore.apply({ gameAutoDetectEnabled: event.target.checked })} />
+          <span>{t("settings.gameDetectToggle")}</span>
+        </label>
+      ) : null}
       <div className="activity-picker" ref={pickerRef}>
         <button className="activity-picker-button" onClick={() => setPickerOpen((open) => !open)}>
           {picked === null

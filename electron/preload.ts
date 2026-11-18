@@ -219,6 +219,12 @@ contextBridge.exposeInMainWorld("spaceProcesses", {
   describeApps(): Promise<unknown> {
     return ipcRenderer.invoke("space-processes:describeApps");
   },
+  /** The IGDB dossier (2026-11-19): one running exe's Steam identity — the
+   *  appid from appmanifest_*.acf and the game folder name. Null when the app
+   *  already closed (retried next tick) or the native layer is unavailable. */
+  gameIdentity(exeName: string): Promise<unknown> {
+    return ipcRenderer.invoke("space-processes:gameIdentity", exeName);
+  },
 });
 
 /** Capture-picker bridge (M4): desktop sources with previews + the grant hint. */

@@ -38,6 +38,8 @@ import type {
   BackupStatus,
   MigrationTransfer,
   PresenceActivityEvent,
+  GameCard,
+  GameLookupResponse,
   RosterStatusSnapshot,
   UserRenamedResponse,
   UserResponse,
@@ -227,6 +229,45 @@ export class RestClient {
       }
       throw error;
     }
+  }
+
+  /** The IGDB match ladder (2026-11-19): every input optional server-side, but
+   *  the caller sends at least one. Throws ApiError (503 = the integration is
+   *  not configured on the server, 502 = IGDB itself failed, 429 = the per-user
+   *  lookup budget) — the detector treats any failure as "not now" and retries
+   *  on the next process tick. */
+  async lookupGame(input: { appId?: string | null; exeName?: string | null; folderName?: string | null }): Promise<GameLookupResponse> {
+    const params = new URLSearchParams();
+    if (input.appId != null) {
+      params.set("appId", input.appId);
+    }
+    if (input.exeName != null) {
+      params.set("exeName", input.exeName);
+    }
+    if (input.folderName != null) {
+      params.set("folderName", input.folderName);
+    }
+    return this.request<GameLookupResponse>(`/api/games/lookup?${params.toString()}`, { method: "GET" });
+  }
+
+  /** One cached game card by IGDB id (the roster-view dogleg for other members'
+   *  game lines). 404 = unknown id — the caller renders the bare text line. */
+  async fetchGameCard(igdbId: number): Promise<GameCard> {
+    return this.request<GameCard>(`/api/games/${igdbId}`, { method: "GET" });
+  }
+
+  /** Pins the user's pick from an ambiguous lookup into the server's shared
+   *  match cache — the same exe resolves for everyone from now on. */
+  async confirmGame(input: { appId?: string | null; exeName?: string | null; folderName?: string | null; igdbId: number }): Promise<void> {
+    await this.request<void>("/api/games/confirm", {
+      method: "POST",
+      body: JSON.stringify({
+        appId: input.appId ?? null,
+        exeName: input.exeName ?? null,
+        folderName: input.folderName ?? null,
+        igdbId: input.igdbId,
+      }),
+    });
   }
 
   /** STATUS-dimension snapshot (the status menu's seed, 2026-11-17): the away/dnd

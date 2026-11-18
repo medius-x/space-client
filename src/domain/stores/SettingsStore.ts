@@ -158,6 +158,11 @@ export interface ClientSettings {
    *  reports nothing and clears the live line at once — pausing the feature
    *  without wiping the registered rules. */
   activitiesEnabled: boolean;
+  /** The IGDB GAME auto-detect (round 2, 2026-11-19): unmatched running apps
+   *  resolve against the server's IGDB match ladder and show as a "playing
+   *  <game>" line with the game's cover. False = only the manual rules report
+   *  (the Discord opt-out). Inert without the server's igdb-games capability. */
+  gameAutoDetectEnabled: boolean;
   /** The CURRENTLY detected running rules' ids (the auto-detect's last tick) —
    *  transit UI state persisted only so the section paints instantly on open;
    *  the detector re-derives it within one poll of a restart. */
@@ -247,6 +252,7 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   recentExpressions: [],
   registeredActivities: [],
   activitiesEnabled: true,
+  gameAutoDetectEnabled: true,
   runningActivityIds: [],
   downloadsFolder: null,
   updateCheckOnStartup: true,
@@ -344,6 +350,7 @@ export class SettingsStore extends Emitter {
         ...this.settings,
         registeredActivities: sanitizeRegisteredActivities(rest.registeredActivities ?? []),
         activitiesEnabled: rest.activitiesEnabled !== false, // only an explicit false disables
+        gameAutoDetectEnabled: rest.gameAutoDetectEnabled !== false,
         runningActivityIds: Array.isArray(rest.runningActivityIds)
           ? rest.runningActivityIds.filter((id): id is string => typeof id === "string")
           : [],

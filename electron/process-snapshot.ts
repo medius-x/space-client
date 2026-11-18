@@ -89,7 +89,7 @@ const presentationCache = new Map<string, AppPresentation>();
 /** In-flight describe pass — concurrent callers share one PowerShell round. */
 let describeInFlight: Promise<Map<string, AppPresentation>> | null = null;
 
-function ensureBindings(): SnapshotBindings | null {
+export function ensureBindings(): SnapshotBindings | null {
   if (bindings !== null) {
     return bindings;
   }
@@ -159,8 +159,8 @@ function snapshotProcessNames(toolkits: SnapshotBindings): Map<number, string> |
   }
 }
 
-/** The exe PATH of a process (for the icon), null when unreadable. */
-function processImagePath(toolkits: SnapshotBindings, pid: number): string | null {
+/** The exe PATH of a process (for the icon and the Steam dossier), null when unreadable. */
+export function processImagePath(toolkits: SnapshotBindings, pid: number): string | null {
   const koffiLoaded = koffi!;
   const handle = toolkits.openProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
   if (handle === INVALID_HANDLE || handle === 0n) {
@@ -199,8 +199,11 @@ export function installProcessSnapshotIpc(): void {
     // remnants instead. Null = no window list — everyone reads as background.
     const pidToTitle = visibleWindowTitlesByPid() ?? new Map<number, string>();
     // pid per uncached app exe (for the describe pass), EXCLUDING cached ones:
-    // a warm tick builds no paths at all.
+    // a warm tick builds no paths at all. The Steam dossier (steam-games.ts) in
+    // contrast may be asked about ANY app exe, so THIS tick's full app mapping
+    // rides along in appPidsByName.
     const nameToPid = new Map<string, number>();
+    const everyAppPid = new Map<string, number>();
     const apps: ProcessNameEntry[] = [];
     const background: ProcessNameEntry[] = [];
     const seen = new Set<string>();
@@ -211,6 +214,7 @@ export function installProcessSnapshotIpc(): void {
       seen.add(name);
       const title = pidToTitle.get(pid) ?? null;
       if (title !== null) {
+        everyAppPid.set(name, pid);
         const cached = presentationCache.get(name);
         if (cached === undefined) {
           nameToPid.set(name, pid);
@@ -223,6 +227,7 @@ export function installProcessSnapshotIpc(): void {
       }
     }
     lastAppPids = nameToPid; // the describe pass reuses THIS tick's pid mapping
+    appPidsByExeName = everyAppPid;
     return [...apps.sort(byLabelTitleOrName), ...background.sort(byName)];
   });
 
@@ -281,6 +286,15 @@ export function installProcessSnapshotIpc(): void {
 
 /** The last tick's app-exe → pid map, handed to the describe pass. */
 let lastAppPids = new Map<string, number>();
+
+/** The last tick's mapping of EVERY app exe to a pid (not just the uncached
+ *  ones) — the steam-games dossier's entry door. Replaced wholesale each tick. */
+let appPidsByExeName = new Map<string, number>();
+
+/** The live app-exe → pid mapping of the most recent snapshot tick. */
+export function appPidsByName(): Map<string, number> {
+  return appPidsByExeName;
+}
 
 /**
  * FileDescription for many exe paths in ONE PowerShell child (the shell

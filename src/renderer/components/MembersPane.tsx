@@ -224,16 +224,26 @@ function MemberRow({ session, member, online, away, dnd, isSelf, nameColor, acti
           do-not-disturb pick (the status menu, 2026-11-17). */}
       <Avatar session={session} username={member.username} size={36} showPresence online={online} away={away} dnd={dnd} />
       <span className="member-line">
-        <span className="member-name" style={{ color: nameColor ?? (online ? "var(--sp-text)" : "var(--sp-text-muted)") }}>
-          {member.nickname}{isSelf ? ` ${t("members.you")}` : ""}
+        {/* The crown rides INSIDE the name row (2026-11-19): a long game
+            activity line stretches the text column, and a badge placed after
+            the whole COLUMN tore off the name toward the row's right edge —
+            the 2026-11-11 lesson ("the crown sits right after the name")
+            restated for two-line rows. */}
+        <span className="member-name-row">
+          <span className="member-name" style={{ color: nameColor ?? (online ? "var(--sp-text)" : "var(--sp-text-muted)") }}>
+            {member.nickname}{isSelf ? ` ${t("members.you")}` : ""}
+          </span>
+          {member.owner ? <span className="owner-badge" title={t("members.serverOwner")}>👑</span> : null}
         </span>
         {/* The user-set activity line ("playing CS2", 2026-11-10) — Discord renders
-            it as a muted second line under the nickname. */}
+            it as a muted second line under the nickname. An IGDB game line
+            (2026-11-19) shows the gamepad glyph instead of the verb (user
+            request: shorter than "playing" — long game names fit the row); the
+            cover card stays in gameStore for its future bigger home. */}
         {activity !== null && online ? (
           <span className="member-activity">{formatActivityLine(t, activity)}</span>
         ) : null}
       </span>
-      {member.owner ? <span className="owner-badge" title={t("members.serverOwner")}>👑</span> : null}
     </div>
   );
 }

@@ -34,10 +34,14 @@ import {
   RecordTokenStorage,
 } from "../domain/session/connection-record";
 import { ConnectionSession, type SessionHooks } from "../domain/session/connection-session";
+import { hasServerCapability } from "../domain/logic/server-capabilities";
 import { MAX_VOICE_REJOIN_ATTEMPTS, rejoinDelayMs, rejoinExhausted } from "../domain/logic/rejoin-ladder";
 import { UplinkEscalation } from "../domain/logic/uplink-watchdog";
 import { matchRunningActivity, trackProcessDetection } from "../domain/logic/activity";
+import { pickAutoGameLine, isGameDetectCandidate, type GameResolution } from "../domain/logic/game-detect";
+import { GameStore } from "../domain/stores/GameStore";
 import type { PresenceActivity } from "../types";
+import type { GameCard, GameLookupResponse } from "../types";
 import type { ProcessNameEntry } from "./bridges";
 import { dmDisplayName } from "../domain/logic/dm-display";
 import { lastServerMessageId } from "../domain/stores/MessageStore";
@@ -357,6 +361,9 @@ roomAudio.setOwnMicSilenceHandler((silent) => {
 export const connectionDirectory = new ConnectionDirectory();
 /** App-wide client settings (instant-apply, KV-persisted) — M7. */
 export const settingsStore = new SettingsStore();
+/** The IGDB game cards this renderer has seen + the pending pick dialog
+ *  (the game auto-detect round 2, 2026-11-19). */
+export const gameStore = new GameStore();
 /** Which attachments this machine already holds (attachment key → saved
  *  path) — flips save buttons to "Show in folder" across restarts. */
 export const downloadsStore = new DownloadsStore();
@@ -3268,12 +3275,15 @@ function seedPresenceReports(session: ConnectionSession): void {
 }
 
 /**
- * The ACTIVITY AUTO-DETECT (2026-11-11 rework of the manual toggle): while a
- * process an activity rule names is RUNNING, the rule's line shows in every
- * roster; when it closes, the line goes. The Discord game-detection model
- * minus the game database — the user registers the apps themselves.
- * A 5 s poll (only while rules exist) snapshots the process names from main
- * (koffi toolhelp32), derives the FIRST matching rule (registration order),
+ * The ACTIVITY AUTO-DETECT (2026-11-11 rework of the manual toggle; the IGDB
+ * leg 2026-11-19): while a process an activity rule names is RUNNING, the
+ * rule's line shows in every roster; when it closes, the line goes. Apps NO
+ * rule covers additionally resolve against the server's IGDB match ladder
+ * (the Discord game-detection model WITH the database): a resolved game adds
+ * a "playing <game>" line with its cover card, an ambiguous answer opens the
+ * pick dialog once. A 5 s poll (while rules or the IGDB leg are live)
+ * snapshots the process names from main (koffi toolhelp32), derives the LIFO
+ * verdict among the rules and — when none matches — among the resolved games,
  * and on a CHANGE broadcasts the machine-wide line to every live session
  * (the broadcastRosterAfk pattern — the server aggregates per session).
  */
@@ -3294,9 +3304,163 @@ function broadcastActivityLine(line: PresenceActivity | null): void {
   }
 }
 
+// --- The IGDB game auto-detect (round 2, 2026-11-19) -------------------------
+//
+// The manual rules keep their LIFO verdict; this leg resolves the apps NO rule
+// covers against the server's match ladder (Steam appid first, then the
+// normalized-name search) and adds a "playing <game>" line with the game's
+// cover card. A manual rule always outranks the automatic line; an ambiguous
+// ladder answer opens the ONE pick dialog (GamePickModal) — the pick is pinned
+// through POST /api/games/confirm and resolves that exe for the whole server.
+
+/** Per-exe ladder outcomes of this client session (see GameResolution). */
+const gameResolutions = new Map<string, GameResolution>();
+/** One ladder round at a time — a burst of freshly launched apps walks in one
+ *  by one (the server budgets lookups per user; the cache makes warm ticks free). */
+let gameResolveInFlight = false;
+/** Until when a FAILED ladder round pauses resolving (upstream hiccup, the
+ *  admin rotating keys) — a retry storm would only burn the per-user budget. */
+let gameResolvePausedUntil = 0;
+/** Card ids whose fetch already failed this session (a bogus id in someone's
+ *  line must not re-404 every tick); success removes the id for a re-fill. */
+const deadGameCardIds = new Set<number>();
+
+/** A live session whose server runs the IGDB integration (the active one first). */
+function sessionWithIgdb(): ConnectionSession | null {
+  if (activeSession !== null && hasServerCapability(activeSession.serverProfile, "igdb-games")) {
+    return activeSession;
+  }
+  for (const session of sessionMap.values()) {
+    if (hasServerCapability(session.serverProfile, "igdb-games")) {
+      return session;
+    }
+  }
+  return null;
+}
+
+/** One ladder round for one exe. STEAM-ONLY by design (the 2026-11-19 smoke
+ *  report: asking the ladder about EVERY unmatched app turned the client into
+ *  a question machine — Chrome, Telegram, anything with a look-alike on IGDB
+ *  opened the pick dialog; Discord's own model detects known games only). The
+ *  Steam appid IS the "this is a game" signal: with it the ladder answers
+ *  confidently (and candidates — a Steam install whose appid IGDB does not
+ *  know — may ask ONCE); without it the exe is not a game to us and resolves
+ *  to a silent "none" — no server round, no dialog, the manual rules stay the
+ *  way to bind non-Steam apps. The resolution map is written on every answer:
+ *  candidates mark the exe "dismissed" right away (the pick dialog is the one
+ *  chance this session), and a confirm overwrites that with the pinned card. */
+async function resolveOneGame(session: ConnectionSession, exeName: string): Promise<void> {
+  const bridge = window.spaceProcesses;
+  if (bridge === undefined) {
+    return;
+  }
+  let identity: { appId: string | null; folderName: string | null } | null = null;
+  try {
+    identity = await bridge.gameIdentity(exeName);
+  } catch {
+    identity = null;
+  }
+  if (identity === null) {
+    return; // the app closed / the native layer is down — the next tick retries
+  }
+  if (identity.appId === null) {
+    gameResolutions.set(exeName, { status: "none" }); // not Steam — not a game to us
+    return;
+  }
+  try {
+    const answer = await session.lookupGame({
+      appId: identity.appId,
+      exeName,
+      folderName: identity.folderName,
+    });
+    if (answer.game !== null) {
+      gameStore.applyCards([answer.game]);
+      gameResolutions.set(exeName, { status: "resolved", card: answer.game });
+      log.info("presence", `game detect: "${exeName}" -> "${answer.game.name}" (IGDB #${answer.game.igdbId})`);
+      return;
+    }
+    if (answer.candidates.length > 0) {
+      gameStore.applyCards(answer.candidates);
+      gameResolutions.set(exeName, { status: "dismissed" });
+      gameStore.openPick({ exeName, appId: identity.appId, folderName: identity.folderName,
+        candidates: answer.candidates });
+      log.info("presence", `game detect: "${exeName}" -> ${answer.candidates.length} candidates, asking`);
+      return;
+    }
+    gameResolutions.set(exeName, { status: "none" });
+    log.info("presence", `game detect: "${exeName}" -> nothing on IGDB`);
+  } catch {
+    gameResolvePausedUntil = Date.now() + 60_000;
+    log.info("presence", `game detect: lookup failed for "${exeName}" — pausing the ladder for a minute`);
+  }
+}
+
+/** The pick dialog's CONFIRM (GamePickModal's click): pins the choice in the
+ *  server's SHARED match cache — the same exe then resolves for everyone — and
+ *  locally overrides the "dismissed" mark the dialog's opening wrote. */
+export async function confirmGamePick(card: GameCard): Promise<void> {
+  const pick = gameStore.getSnapshot().pendingPick;
+  if (pick === null) {
+    return;
+  }
+  gameStore.closePick();
+  const session = sessionWithIgdb();
+  if (session !== null) {
+    try {
+      await session.confirmGame({ appId: pick.appId, exeName: pick.exeName,
+        folderName: pick.folderName, igdbId: card.igdbId });
+    } catch {
+      // best-effort pin — the local resolution below still works this session
+    }
+  }
+  gameStore.applyCards([card]);
+  gameResolutions.set(pick.exeName, { status: "resolved", card });
+  log.info("presence", `game detect: "${pick.exeName}" pinned to "${card.name}"`);
+}
+
+/** The pick dialog's SKIP: nothing more — the "dismissed" mark landed when the
+ *  dialog opened (skip just closes it). */
+export function dismissGamePick(): void {
+  gameStore.closePick();
+}
+
+/** Doglegs the cards behind OTHER members' game lines (their ids ride the
+ *  presence wire; the cover art is fetched once per id per session). */
+function ensureRosterGameCards(): void {
+  const known = gameStore.getSnapshot().cards;
+  for (const session of sessionMap.values()) {
+    if (!hasServerCapability(session.serverProfile, "igdb-games")) {
+      continue;
+    }
+    for (const activity of session.rosterStore.getSnapshot().activities.values()) {
+      const igdbId = activity.igdbGameId;
+      if (igdbId == null || known.has(igdbId) || deadGameCardIds.has(igdbId)) {
+        continue;
+      }
+      deadGameCardIds.add(igdbId); // asked once; only a SUCCESS clears the mark
+      session.fetchGameCard(igdbId)
+        .then((card) => {
+          deadGameCardIds.delete(igdbId);
+          gameStore.applyCards([card]);
+        })
+        .catch(() => {
+          // 404/upstream — this id stays silent for the session (bare text line)
+        });
+    }
+  }
+}
+
 async function pollActivityDetection(): Promise<void> {
   const settings = settingsStore.getSnapshot();
-  if (settings.registeredActivities.length === 0 || window.spaceProcesses === undefined) {
+  const bridge = window.spaceProcesses;
+  if (bridge === undefined) {
+    return;
+  }
+  // The IGDB leg needs a server that runs the integration AND the two opt-ins;
+  // the rules leg needs rules. Neither — the poll sleeps.
+  const gameDetectOn = settings.activitiesEnabled && settings.gameAutoDetectEnabled;
+  const igdbSession = gameDetectOn ? sessionWithIgdb() : null;
+  if (settings.registeredActivities.length === 0 && igdbSession === null) {
     return;
   }
   if (!settings.activitiesEnabled) {
@@ -3314,7 +3478,7 @@ async function pollActivityDetection(): Promise<void> {
   const rules = settings.registeredActivities;
   let entries: ProcessNameEntry[] | null = null;
   try {
-    entries = await window.spaceProcesses.names();
+    entries = await bridge.names();
   } catch {
     return; // a failed poll keeps the last line — never clears on a hiccup
   }
@@ -3329,15 +3493,41 @@ async function pollActivityDetection(): Promise<void> {
   // exe wins; the stamps live across ticks (an exe seen in one poll and gone
   // the next drops its stamp — a restart re-stamps).
   const detectedAt = trackProcessDetection(processDetectedAt, runningNames, Date.now());
-  const line = matchRunningActivity(rules, runningNames, detectedAt);
+  const manualLine = matchRunningActivity(rules, runningNames, detectedAt);
+
+  // The IGDB leg: resolve at most ONE unseen app per tick, retire a pick whose
+  // game closed, then derive the game line (same LIFO shape as the rules).
+  if (igdbSession !== null) {
+    const pick = gameStore.getSnapshot().pendingPick;
+    if (pick !== null && !running.has(pick.exeName)) {
+      gameStore.closePick(); // the ask outlived its game
+    }
+    if (!gameResolveInFlight && Date.now() >= gameResolvePausedUntil) {
+      const manualNames = new Set(rules.map((rule) => rule.processName));
+      const candidate = entries.find((entry) => isGameDetectCandidate(entry.name, entry.app, manualNames)
+          && !gameResolutions.has(entry.name));
+      if (candidate !== undefined) {
+        gameResolveInFlight = true;
+        void resolveOneGame(igdbSession, candidate.name).finally(() => {
+          gameResolveInFlight = false;
+        });
+      }
+    }
+  }
+  const gameLine = igdbSession !== null
+    ? pickAutoGameLine(runningNames, gameResolutions, detectedAt)
+    : null;
+  const line = manualLine ?? gameLine; // an explicit rule always outranks detection
   const same = line === null
     ? lastBroadcastActivityLine === null
     : lastBroadcastActivityLine !== null
       && lastBroadcastActivityLine.type === line.type
-      && lastBroadcastActivityLine.name === line.name;
+      && lastBroadcastActivityLine.name === line.name
+      && (lastBroadcastActivityLine.igdbGameId ?? null) === (line.igdbGameId ?? null);
   if (!same) {
     broadcastActivityLine(line);
   }
+  ensureRosterGameCards();
 }
 
 /** Armed once at boot (bootstrapApp): the poll self-gates on rules existing. */

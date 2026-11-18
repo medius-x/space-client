@@ -11,6 +11,7 @@ import { ChatPane } from "./ChatPane";
 import { FriendsPane } from "./FriendsPane";
 import { RightPane } from "./SearchPane";
 import { VoiceBar, RoomView, CallConflictModal } from "./VoiceRoom";
+import { GamePickModal } from "./GamePickModal";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { useDisplayName } from "../hooks/useDisplayName";
 import { useT } from "../hooks/useT";
@@ -98,6 +99,9 @@ export function MainScreen({ session }: { session: ConnectionSession }): React.J
       </div>
       {/* The settings overlays live in App (direct children of #app) — see App.tsx. */}
       <CallConflictModal />
+      {/* The IGDB "which game is this?" ask (2026-11-19) — a top-level sibling
+          of the conflict dialog: it must outlive pane swaps. */}
+      <GamePickModal />
       {diagOpen ? <Diagnostics /> : null}
     </>
   );

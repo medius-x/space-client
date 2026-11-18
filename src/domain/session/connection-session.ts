@@ -27,6 +27,8 @@ import type {
   PresenceActivity,
   PresenceActivityEvent,
   PresenceStatusEvent,
+  GameCard,
+  GameLookupResponse,
   RosterStatus,
   VoiceAfkStatusEvent,
   VoiceControlCommand,
@@ -1854,11 +1856,19 @@ export class ConnectionSession {
   /** The user's roster ACTIVITY line (2026-11-10): the same explicit-transition
    *  protocol as the AFK verdict — reportRosterAfk's contract word for word,
    *  with the line object in place of the boolean (null = clear). Re-delivered
-   *  on connect/reconnect; an older server drops the send silently. */
+   *  on connect/reconnect; an older server drops the send silently.
+   *  The IGDB card reference ({@code igdbGameId}, 2026-11-19) is stripped
+   *  unless THIS server reports the igdb-games capability — an older server's
+   *  PresenceActivity record has no third field and the whole report would die
+   *  on an unknown-property mismatch; the line itself keeps working. */
   reportPresenceActivity(activity: PresenceActivity | null): void {
-    this.presenceActivitySent = { line: activity }; // a clear is a REPORTED state, not "never reported"
+    const line = activity !== null && activity.igdbGameId != null
+        && !hasServerCapability(this.serverProfile, "igdb-games")
+      ? { type: activity.type, name: activity.name }
+      : activity;
+    this.presenceActivitySent = { line }; // a clear is a REPORTED state, not "never reported"
     if (!this.disposed) {
-      this.stomp.send("/app/presence.activity", { activity });
+      this.stomp.send("/app/presence.activity", { activity: line });
     }
   }
 
@@ -1867,6 +1877,23 @@ export class ConnectionSession {
     if (this.presenceActivitySent !== null && !this.disposed) {
       this.stomp.send("/app/presence.activity", { activity: this.presenceActivitySent.line });
     }
+  }
+
+  /** The IGDB match ladder's REST pass-throughs (2026-11-19) for the game
+   *  auto-detect: lookup (appid → exact, else normalized-name search), the
+   *  card fetch for OTHER members' game lines, and the pick confirmation that
+   *  pins the shared match cache. ApiError surfaces to the detector, which
+   *  treats any failure as "not this tick". */
+  lookupGame(input: { appId?: string | null; exeName?: string | null; folderName?: string | null }): Promise<GameLookupResponse> {
+    return this.rest.lookupGame(input);
+  }
+
+  fetchGameCard(igdbId: number): Promise<GameCard> {
+    return this.rest.fetchGameCard(igdbId);
+  }
+
+  confirmGame(input: { appId?: string | null; exeName?: string | null; folderName?: string | null; igdbId: number }): Promise<void> {
+    return this.rest.confirmGame(input);
   }
 
   /** A viewer-side congestion report about ANOTHER user's share (the pop-out's

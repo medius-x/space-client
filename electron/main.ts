@@ -4,6 +4,7 @@ import { cancelProvisioningRun, hashLocalFile, probeMigrationDirectTransfer, sta
 import { installUpdateIpc } from "./updates";
 import { installBackupIpc } from "./backups";
 import { installProcessSnapshotIpc } from "./process-snapshot";
+import { installSteamGamesIpc } from "./steam-games";
 import { installSpellIpc, spellAddWord } from "./spell";
 import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeTheme, net, powerMonitor, protocol, safeStorage, screen, session, shell, Tray } from "electron";
 import * as fs from "node:fs";
@@ -2072,6 +2073,7 @@ app.whenReady().then(() => {
   seedSpellCheckFromKv(); // underlines and custom words are correct from the first paint
   installSpellIpc(STATIC_ASSETS_ROOT, appendLog); // the embedded nspell checker (checkWords/menuData)
   installProcessSnapshotIpc(); // the activity auto-detect: running-process names + the .exe picker
+  installSteamGamesIpc(); // the IGDB dossier: exe → Steam appid + game folder (paths stay in main)
   void createWindow();
   app.on("activate", () => {
     // macOS habit — harmless on Windows, kept for free.

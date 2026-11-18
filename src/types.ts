@@ -592,10 +592,14 @@ export interface RosterStatusSnapshot {
  *  the client localizes the prefix ("playing", "listening", …). */
 export type ActivityKind = "playing" | "listening" | "watching" | "streaming" | "competing" | "custom";
 
-/** A user-set roster activity ("playing CS2") — transit presence state. */
+/** A user-set roster activity ("playing CS2") — transit presence state. The
+ *  optional {@code igdbGameId} (the IGDB round, 2026-11-19) references the card
+ *  (cover/genres) of an auto-detected GAME line — the rendering clients fetch it
+ *  from the server's game cache; absent for every manual line. */
 export interface PresenceActivity {
   type: ActivityKind;
   name: string;
+  igdbGameId?: number | null;
 }
 
 /** /topic/presence.activity — a set/replace/clear (activity null = cleared); the
@@ -603,6 +607,33 @@ export interface PresenceActivity {
 export interface PresenceActivityEvent {
   username: string;
   activity: PresenceActivity | null;
+}
+
+/** One IGDB game card (the /api/games cache projection): everything the roster
+ *  line needs — the name for the text, coverImageId for the CDN thumbnail and
+ *  the genre list as the future achievements tier's aggregation key. */
+export interface GameCard {
+  igdbId: number;
+  name: string;
+  coverImageId: string | null;
+  genres: { id: number; name: string }[];
+  firstReleaseDate: number | null;
+}
+
+/** GET /api/games/lookup: a confident answer, or the top candidates for the user
+ *  to pin via POST /api/games/confirm; both empty = nothing on IGDB matches. */
+export interface GameLookupResponse {
+  game: GameCard | null;
+  candidates: GameCard[];
+}
+
+/** The main process's Steam dossier for one running exe (the
+ *  space-processes:gameIdentity bridge): the exact appid read from
+ *  steamapps/appmanifest_*.acf (null for non-Steam games) and the game folder
+ *  name ("ELDEN RING" — usually the better search candidate than the exe name). */
+export interface GameIdentity {
+  appId: string | null;
+  folderName: string | null;
 }
 
 /**

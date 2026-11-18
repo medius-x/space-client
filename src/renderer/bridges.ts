@@ -4,6 +4,8 @@
  * renderer without the preload.
  */
 
+import type { GameIdentity } from "../types";
+
 export interface CaptureSourceInfo {
   /** desktopCapturer source id ("screen:0:0" / "window:123:0"). */
   id: string;
@@ -534,6 +536,9 @@ export interface ProcessesBridge {
   /** FileDescription + icon for every described app so far (exe name → the
    *  presentation), null when there was nothing new to describe. */
   describeApps(): Promise<Record<string, AppPresentation> | null>;
+  /** The IGDB dossier (2026-11-19): one running exe's Steam identity (appid +
+   *  game folder); null when the app closed or the native layer is down. */
+  gameIdentity(exeName: string): Promise<GameIdentity | null>;
 }
 
 declare global {

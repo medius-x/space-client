@@ -20,9 +20,18 @@ export const ACTIVITY_MESSAGE_KEYS: Record<ActivityKind, MessageKey> = {
 /** The empty-prefix kind's own PICKER label (the option must not read blank). */
 export const CUSTOM_KIND_LABEL_KEY: MessageKey = "activity.customLabel";
 
+/** The GAME-line glyph (user request 2026-11-19): an IGDB-detected game carries
+ *  a gamepad instead of the localized "playing" prefix — shorter than the verb
+ *  (long game names fit the roster row) and instantly readable as a game. */
+export const GAMEPAD_GLYPH = "🎮";
+
 /** The roster/settings line for an activity: the localized prefix and the
- *  name, glued with one space — or the bare name when the kind has no prefix. */
-export function formatActivityLine(t: Translator, activity: Pick<PresenceActivity, "type" | "name">): string {
+ *  name, glued with one space — or the bare name when the kind has no prefix.
+ *  An IGDB game line (igdbGameId set) prefixes the gamepad glyph instead. */
+export function formatActivityLine(t: Translator, activity: Pick<PresenceActivity, "type" | "name" | "igdbGameId">): string {
+  if (activity.igdbGameId != null) {
+    return `${GAMEPAD_GLYPH} ${activity.name}`;
+  }
   const prefix = t(ACTIVITY_MESSAGE_KEYS[activity.type]);
   return prefix.length > 0 ? `${prefix} ${activity.name}` : activity.name;
 }
