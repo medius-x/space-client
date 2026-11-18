@@ -534,6 +534,7 @@ export const RU: Dict = {
   // search
   "search.placeholder": "Поиск",
   "search.tooltip": "Поиск по сообщениям (Ctrl+F)",
+  "search.openTooltip": "Поиск в переписке (Ctrl+F)",
   "search.goTooltip": "Поиск",
   "search.clearTooltip": "Очистить и вернуться к списку (Esc)",
   "search.dmOnlyScope": "Поиск в личном чате идёт только по этому диалогу",

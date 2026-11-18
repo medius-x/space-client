@@ -534,6 +534,7 @@ export const EN = {
   // search — the right column's search box and results panel.
   "search.placeholder": "Search",
   "search.tooltip": "Search messages (Ctrl+F)",
+  "search.openTooltip": "Search this conversation (Ctrl+F)",
   "search.goTooltip": "Search",
   "search.clearTooltip": "Clear and back to the roster (Esc)",
   "search.dmOnlyScope": "A DM search covers this conversation only",

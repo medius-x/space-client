@@ -82,3 +82,8 @@ does not: CI, docs, refactoring, internal rework.
   limit never kicks anyone out. The limit is set when creating a voice
   channel or later in Server Settings → Channels → Voice, and the new
   "Join Full Rooms" permission lets chosen roles walk into full rooms.
+- Direct conversations now show a magnifier button in the header: it opens
+  the conversation search (Ctrl+F still works too), which was previously
+  reachable only through the keyboard shortcut. The header's divider also
+  lines up with the search panel's divider again — it used to sit a pixel
+  or two lower in DMs.

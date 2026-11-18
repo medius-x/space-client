@@ -6,7 +6,7 @@ import { useT } from "../hooks/useT";
 import { currentLang, type Translator } from "../../domain/i18n/i18n";
 import { warmLegacyAttachmentDims } from "../media-dims-warmup";
 import { bodyGlyphWidthPx, truncateTextToWidth } from "../glyph-metrics";
-import { ackActiveChannel, appStore, forwardCrossInstance, forwardRequestUpload, forwardUploadBytes } from "../runtime";
+import { ackActiveChannel, appStore, forwardCrossInstance, forwardRequestUpload, forwardUploadBytes, toggleSearch } from "../runtime";
 import { closeDiscussionForEveryone, closeDiscussionView, openDiscussion, openDraftDiscussion } from "../runtime";
 import { connectionDirectory, settingsStore } from "../runtime";
 import { RecordTokenStorage } from "../../domain/session/connection-record";
@@ -572,6 +572,20 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
           ? <span className="icon mdi-pound" />
           : <span className="channel-hash">@</span>}
         {" "}{viewChannel.name}
+        {/* The DM header loupe: the ONLY discoverable entry into the DM search —
+            Ctrl+F opens it too, but nothing in the UI ever said so (server chats
+            show the right column's search box permanently; a DM keeps its full
+            width until this opens the column). Toggling lets the loupe close it
+            back without hunting the pane's ×. */}
+        {dm !== null ? (
+          <button
+            className="dm-search-button"
+            title={t("search.openTooltip")}
+            onClick={toggleSearch}
+          >
+            <span className="icon mdi-magnify" />
+          </button>
+        ) : null}
         {selectionMode ? (
           <div className="selection-bar">
             <span>{t("chat.selectedCount", { count: selection.size })}</span>

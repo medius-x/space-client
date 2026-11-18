@@ -1068,7 +1068,14 @@ button.wide-add { width: 100%; }
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 37px;
+  /* FIXED height, like its twins (.sidebar-server-header / .right-pane-header):
+     the divider under the header must sit on the SAME line as the search
+     column's divider. min-height let the DM branch stretch it — the "@" peer
+     glyph is live TEXT (16px with the font's own line metrics), unlike the
+     MDI hash icon of server channels, and its taller line box pushed the DM
+     header's divider a hair below the search pane's (live report 2026-11-18). */
+  height: 37px;
+  box-sizing: border-box;
   padding: 8px 12px;
   border-bottom: 1px solid var(--sp-control);
   font-weight: 700;
@@ -1076,6 +1083,24 @@ button.wide-add { width: 100%; }
   font-size: 13px;
   flex-shrink: 0;
 }
+/* The DM header's search loupe — the discoverable twin of Ctrl+F (server chats
+   carry the permanent search box in the right column; a DM keeps full width
+   until this opens the column). Same 24px ghost-icon idiom as the sidebar's
+   row buttons. */
+.dm-search-button {
+  margin-left: auto;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--sp-text-dim);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.dm-search-button:hover { background: var(--sp-hover); color: var(--sp-text); }
 .chat-error { color: var(--sp-red); font-size: 12px; padding: 4px 16px 0; }
 /* The read-only plate where the composer would be in a DM restricted by
    RESTRICT_PRIVATE_MESSAGES (existing conversations stay readable). */
