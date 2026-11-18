@@ -76,3 +76,9 @@ does not: CI, docs, refactoring, internal rework.
   the readable threads too, and a channel-scoped search also searches the
   threads started in that channel. A thread hit is labelled "#channel →
   origin snippet" and clicking it opens the thread right on the message.
+- Voice channels can now carry a member limit: a "2/5" counter beside the
+  channel name shows how full the room is (tinting red at the cap), a full
+  room refuses new joiners with a "room is full" toast, and lowering the
+  limit never kicks anyone out. The limit is set when creating a voice
+  channel or later in Server Settings → Channels → Voice, and the new
+  "Join Full Rooms" permission lets chosen roles walk into full rooms.

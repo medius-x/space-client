@@ -4,6 +4,7 @@ import { joinVoiceGuarded, setActiveChannel } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { Channel } from "../../types";
 import type { Translator } from "../../domain/i18n/i18n";
+import { hasServerCapability } from "../../domain/logic/server-capabilities";
 import { useT } from "../hooks/useT";
 import { Modal } from "./Modal";
 
@@ -46,6 +47,10 @@ export function CreateChannelModal({ session, request, categories, onClose }: {
   // The AFK toggle (VOICE only): born as the idle-sweep room with its timeout.
   const [afk, setAfk] = useState(false);
   const [afkTimeoutMinutes, setAfkTimeoutMinutes] = useState(30);
+  // The VOICE room's participant limit (V18) — behind the capability flag, an older
+  // server ignores the field and the picker must not offer a silent no-op.
+  const limitSupported = hasServerCapability(session.serverProfile, "voice-user-limit");
+  const [userLimit, setUserLimit] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -60,7 +65,9 @@ export function CreateChannelModal({ session, request, categories, onClose }: {
       const channel = await session.createChannel(
         kind === "CATEGORY"
           ? { name: trimmed, type: "CATEGORY" }
-          : { name: trimmed, type: kind, parentId });
+          : kind === "VOICE"
+            ? { name: trimmed, type: kind, parentId, ...(limitSupported ? { userLimit } : {}) }
+            : { name: trimmed, type: kind, parentId });
       if (afk && kind === "VOICE") {
         // Designate the fresh room as THE AFK channel (the server replaces any previous
         // one). A failure here leaves the channel alive, just not AFK — surfaced inline.
@@ -100,6 +107,18 @@ export function CreateChannelModal({ session, request, categories, onClose }: {
             <option value="">{t("channel.noCategory")}</option>
             {categories.map((category) => (
               <option key={category.id} value={category.id}>{category.name}</option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      {kind === "VOICE" && limitSupported ? (
+        <label className="settings-field">
+          <span>{t("channel.userLimit")}</span>
+          <select value={userLimit ?? ""} onChange={(event) =>
+            setUserLimit(event.target.value === "" ? null : Number(event.target.value))}>
+            <option value="">{t("channel.userLimitUnlimited")}</option>
+            {Array.from({ length: 99 }, (_, seatCount) => seatCount + 1).map((count) => (
+              <option key={count} value={count}>{count}</option>
             ))}
           </select>
         </label>

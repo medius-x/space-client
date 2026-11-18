@@ -836,8 +836,10 @@ export class RestClient {
   }
 
   /** type may be "CATEGORY" (the sidebar section); parentId then must be null —
-   *  for TEXT/VOICE it optionally names the grouping category. */
-  async createChannel(request: { name: string; type?: ChannelType | null; parentId?: number | null }): Promise<Channel> {
+   *  for TEXT/VOICE it optionally names the grouping category. userLimit (VOICE only,
+   *  V18) is the room's participant limit, null/absent = unlimited. */
+  async createChannel(request: { name: string; type?: ChannelType | null; parentId?: number | null;
+      userLimit?: number | null }): Promise<Channel> {
     return this.request<Channel>("/api/channels", {
       method: "POST",
       body: JSON.stringify(request),
@@ -860,6 +862,16 @@ export class RestClient {
     return this.request<Channel>(`/api/channels/${channelId}/name`, {
       method: "PATCH",
       body: JSON.stringify({ name }),
+    });
+  }
+
+  /** Sets (1..99) or CLEARS (null) a VOICE room's participant limit (V18). The
+   *  channels-changed ping makes every viewer refetch — the answer's userLimit is
+   *  mostly for the caller's optimistic update. */
+  async updateUserLimit(channelId: number, userLimit: number | null): Promise<Channel> {
+    return this.request<Channel>(`/api/channels/${channelId}/user-limit`, {
+      method: "PATCH",
+      body: JSON.stringify({ userLimit }),
     });
   }
 

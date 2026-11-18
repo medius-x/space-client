@@ -3428,6 +3428,17 @@ export async function joinVoice(channel: Channel): Promise<void> {
   } catch (error) {
     // The bar's detail gets overwritten by the leaving-state — the cause lives here.
     log.error("voice", `room join failed: ${errorMessage(error)}`);
+    if (error instanceof ApiError && error.status === 409) {
+      // The V18 full-room refusal — a DISTINCT status from a permission 403 on
+      // purpose, so the toast can say what actually happened. It is a definitive
+      // "you are not getting in", not a connect failure: toast the reason and
+      // exit voice COMPLETELY (user report 2026-11-18: a lingering "connection
+      // failed" panel waiting for a manual leave made a refused join look like
+      // a broken one). leaveVoice covers the teardown + voice.leave + idle state.
+      notifications.showToast({ title: tr("voice.voiceLabel"), channelName: channel.name, body: tr("toast.roomFull") });
+      await leaveVoice();
+      return;
+    }
     appStore.patch({ voiceState: "failed", stateDetail: errorMessage(error) });
     await teardownVoice();
     activeSession?.stomp.send("/app/voice.leave", { channelId: channel.id });

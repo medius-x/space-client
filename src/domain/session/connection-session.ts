@@ -1097,8 +1097,10 @@ export class ConnectionSession {
 
   /** Creates a TEXT/VOICE channel (optionally grouped under a category) or a
    *  CATEGORY itself. Categories land in the store like any channel (the sidebar
-   *  renders them) but never subscribe to channel topics. */
-  async createChannel(request: { name: string; type: "TEXT" | "VOICE" | "CATEGORY"; parentId?: number | null }): Promise<Channel> {
+   *  renders them) but never subscribe to channel topics. userLimit (VOICE only,
+   *  V18) may born the room with a participant limit. */
+  async createChannel(request: { name: string; type: "TEXT" | "VOICE" | "CATEGORY"; parentId?: number | null;
+      userLimit?: number | null }): Promise<Channel> {
     const channel = await this.rest.createChannel(request);
     if (this.channelStore.applyCreated(channel) && channel.type !== "CATEGORY") {
       this.syncChannelSubscriptions(); // subscribe the new channel's topics now
@@ -1114,6 +1116,15 @@ export class ConnectionSession {
 
   async renameChannel(channelId: number, name: string): Promise<Channel> {
     const channel = await this.rest.renameChannel(channelId, name);
+    this.channelStore.applyUpdated(channel);
+    return channel;
+  }
+
+  /** Sets/clears a VOICE room's participant limit (V18). The optimistic applyUpdated
+   *  lands the counter instantly; the server's channels.changed ping refetches the
+   *  list for every other viewer. */
+  async updateUserLimit(channelId: number, userLimit: number | null): Promise<Channel> {
+    const channel = await this.rest.updateUserLimit(channelId, userLimit);
     this.channelStore.applyUpdated(channel);
     return channel;
   }

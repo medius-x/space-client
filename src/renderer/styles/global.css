@@ -3221,6 +3221,22 @@ button.wide-add { width: 100%; }
 .voice-channel:hover .voice-invite-button,
 .voice-invite-button:focus-visible { opacity: 1; }
 .voice-invite-button:hover { background: var(--sp-hover); color: var(--sp-text); }
+/* The limited room's N/L fraction (V18) — Discord's glyph for a capped room: always
+   visible (not hover-only), tabular digits. The owner-crown badge language (a 1px
+   framed chip, see .owner-badge/.afk-badge): grey while there is room, the frame and
+   digits both go red the moment the cap is hit (user request 2026-11-18). */
+.voice-user-limit {
+  flex-shrink: 0;
+  margin-left: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--sp-text-dim);
+  border: 1px solid var(--sp-text-dim);
+  border-radius: 4px;
+  padding: 0 4px;
+  font-variant-numeric: tabular-nums;
+}
+.voice-user-limit.full { color: var(--sp-red); border-color: var(--sp-red); }
 /* The invite picker's member search (above the list). */
 .invite-picker-search { margin-bottom: 8px; }
 

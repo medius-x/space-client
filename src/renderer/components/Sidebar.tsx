@@ -434,6 +434,16 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
         >
           <ChannelGlyph voice locked={channel.locked} />
           <span className="channel-name">{channel.name}</span>
+          {/* The Discord-style N/L fraction IS the limited-room glyph (user decision
+              2026-11-18 — no separate lock); it tints when the room is at its limit. */}
+          {channel.userLimit != null ? (
+            <span className={
+              "voice-user-limit"
+              + ((roster.voiceMembers.get(channel.id)?.size ?? 0) >= channel.userLimit ? " full" : "")
+            }>
+              {roster.voiceMembers.get(channel.id)?.size ?? 0}/{channel.userLimit}
+            </span>
+          ) : null}
           {!channel.locked ? (
             <button
               className="voice-invite-button"

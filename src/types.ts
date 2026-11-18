@@ -24,6 +24,10 @@ export interface Channel {
   /** THE server's AFK channel (the idle-sweep target; one per server, a server-wide
    *  flag — not per-viewer). Absent = false (rows from before the field). */
   afk?: boolean;
+  /** The VOICE room's participant limit (V18): null/absent = no limit, else 1..99 —
+   *  the sidebar renders the "N/L" counter off it, and a full room answers GET /room
+   *  with 409. Non-VOICE rows always answer null; older servers never send the field. */
+  userLimit?: number | null;
 }
 
 export interface UserSummary {

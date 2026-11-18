@@ -1707,7 +1707,7 @@ function ChannelsSection({ session }: { session: ConnectionSession }): React.JSX
 
 function ChannelEditor({ session, channel }: { session: ConnectionSession; channel: Channel }): React.JSX.Element {
   const t = useT();
-  const [tab, setTab] = useState<"permissions" | "access" | "afk">("permissions");
+  const [tab, setTab] = useState<"permissions" | "access" | "voice">("permissions");
   // The channel name edits INLINE via the hover pencil, like the role name.
   // There is no Appearance tab here, so Enter commits straight away (the tab
   // Save buttons own the overrides, not the name) — Escape rolls back.
@@ -1780,9 +1780,10 @@ function ChannelEditor({ session, channel }: { session: ConnectionSession; chann
       <div className="settings-tabs">
         <button className={"settings-tab" + (tab === "permissions" ? " active" : "")} onClick={() => setTab("permissions")}>{t("serverSettings.tab.permissions")}</button>
         <button className={"settings-tab" + (tab === "access" ? " active" : "")} onClick={() => setTab("access")}>{t("serverSettings.tab.access")}</button>
-        {/* The AFK designation is a VOICE-channel concern (the idle-sweep target). */}
+        {/* The voice tab carries every VOICE-channel concern: the participant limit
+            (V18) and the AFK designation (the idle-sweep target). */}
         {channel.type === "VOICE" ? (
-          <button className={"settings-tab" + (tab === "afk" ? " active" : "")} onClick={() => setTab("afk")}>{t("serverSettings.tab.afk")}</button>
+          <button className={"settings-tab" + (tab === "voice" ? " active" : "")} onClick={() => setTab("voice")}>{t("serverSettings.tab.voice")}</button>
         ) : null}
       </div>
       {/* key=channel.id — same remount contract as the role editor: local edit
@@ -1801,20 +1802,28 @@ function ChannelEditor({ session, channel }: { session: ConnectionSession; chann
   );
 }
 
-/** The VOICE channel's AFK tab: designate THIS room as the server's AFK channel (at
- *  most one exists — another channel's designation is shown read-only here) and edit
- *  the idle timeout. Staged draft (the ServerStorageSection idiom). */
+/** The VOICE channel's VOICE tab (the AFK concern grew a sibling, V18 2026-11-18): the
+ *  room's participant limit, plus the AFK designation (at most one exists — another
+ *  channel's designation is shown read-only here) and the idle timeout. Staged draft
+ *  (the ServerStorageSection idiom); one Save applies whatever parts are dirty. */
 function ChannelAfkTab({ session, channel }: {
   session: ConnectionSession;
   channel: Channel;
 }): React.JSX.Element {
   const t = useT();
   const channels = useStore(session.channelStore, (allChannels) => allChannels);
+  // The V18 limit editor lives behind the capability flag — an older server has no
+  // PATCH /user-limit and the field would silently no-op.
+  const limitSupported = hasServerCapability(session.serverProfile, "voice-user-limit");
   const [loaded, setLoaded] = useState(false);
   const [isAfkDraft, setIsAfkDraft] = useState(false);
   const [timeoutDraft, setTimeoutDraft] = useState(30);
   const [initialIsAfk, setInitialIsAfk] = useState(false);
   const [initialTimeout, setInitialTimeout] = useState(30);
+  // The limit needs no fetch — the store's channel row carries it (V18 wire), and the
+  // key=channel.id remount re-seeds the draft on every channel switch.
+  const [limitDraft, setLimitDraft] = useState<number | null>(channel.userLimit ?? null);
+  const [initialLimit, setInitialLimit] = useState<number | null>(channel.userLimit ?? null);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1844,11 +1853,15 @@ function ChannelAfkTab({ session, channel }: {
     };
   }, [session.rest, channel.id]);
 
-  // Another channel already holds the designation — this tab is read-only for it
-  // (user decision: an AFK channel may only be set where none exists yet).
+  // Another channel already holds the designation — the AFK half is read-only then
+  // (user decision: an AFK channel may only be set where none exists yet). The LIMIT
+  // half stays editable — it is this channel's own knob.
   const afkHolder = channels.find((entry) => entry.afk === true && entry.id !== channel.id) ?? null;
+  const afkReadOnly = afkHolder !== null && !initialIsAfk;
+  const holderNote = afkReadOnly ? t("serverSettings.afkHolderNote", { name: afkHolder.name }) : null;
 
-  const dirty = loaded && (isAfkDraft !== initialIsAfk || timeoutDraft !== initialTimeout);
+  const dirty = loaded && (isAfkDraft !== initialIsAfk || timeoutDraft !== initialTimeout
+    || (limitSupported && limitDraft !== initialLimit));
   const save = async (): Promise<void> => {
     if (busy || !dirty) {
       return;
@@ -1856,12 +1869,20 @@ function ChannelAfkTab({ session, channel }: {
     setBusy(true);
     setError(null);
     try {
-      const stored = await session.rest.updateAfkSettings(isAfkDraft ? channel.id : null, timeoutDraft);
-      const timeout = stored.afkTimeoutMinutes ?? timeoutDraft;
-      setInitialIsAfk(stored.afkChannelId === channel.id);
-      setInitialTimeout(timeout);
-      setIsAfkDraft(stored.afkChannelId === channel.id);
-      setTimeoutDraft(timeout);
+      if (limitSupported && limitDraft !== initialLimit) {
+        const updated = await session.updateUserLimit(channel.id, limitDraft);
+        const storedLimit = updated.userLimit ?? null;
+        setInitialLimit(storedLimit);
+        setLimitDraft(storedLimit);
+      }
+      if (isAfkDraft !== initialIsAfk || timeoutDraft !== initialTimeout) {
+        const stored = await session.rest.updateAfkSettings(isAfkDraft ? channel.id : null, timeoutDraft);
+        const timeout = stored.afkTimeoutMinutes ?? timeoutDraft;
+        setInitialIsAfk(stored.afkChannelId === channel.id);
+        setInitialTimeout(timeout);
+        setIsAfkDraft(stored.afkChannelId === channel.id);
+        setTimeoutDraft(timeout);
+      }
       setSaved(true);
       window.setTimeout(() => setSaved(false), 1500);
     } catch (saveError) {
@@ -1871,40 +1892,51 @@ function ChannelAfkTab({ session, channel }: {
     }
   };
 
-  if (afkHolder !== null && !initialIsAfk) {
-    return (
-      <div>
-        <div className="overview-heading">{t("serverSettings.afkChannel")}</div>
-        <div className="settings-hint">
-          {t("serverSettings.afkHolderNote", { name: afkHolder.name })}
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="afk-settings fill-tab">
-      <div className="overview-heading">{t("serverSettings.afkChannel")}</div>
-      <div className="settings-hint">{t("serverSettings.afkHint")}</div>
-      <div className="settings-check">
-        <input
-          type="checkbox"
-          id="afk-designation"
-          checked={isAfkDraft}
-          onChange={(event) => setIsAfkDraft(event.target.checked)}
-        />
-        <label htmlFor="afk-designation">{t("serverSettings.afkDesignation")}</label>
-      </div>
-      {isAfkDraft ? (
-        <label className="settings-field">
-          <span>{t("serverSettings.afkTimeout")}</span>
-          <select value={timeoutDraft} onChange={(event) => setTimeoutDraft(Number(event.target.value))}>
-            {AFK_TIMEOUT_PRESETS.map((presetMinutes) => (
-              <option key={presetMinutes} value={presetMinutes}>{afkTimeoutLabel(t, presetMinutes)}</option>
-            ))}
-          </select>
-        </label>
+      {limitSupported ? (
+        <>
+          <div className="overview-heading">{t("serverSettings.userLimit")}</div>
+          <div className="settings-hint">{t("serverSettings.userLimitHint")}</div>
+          <label className="settings-field">
+            <span>{t("serverSettings.userLimitLabel")}</span>
+            <select value={limitDraft ?? ""} onChange={(event) =>
+              setLimitDraft(event.target.value === "" ? null : Number(event.target.value))}>
+              <option value="">{t("serverSettings.userLimitUnlimited")}</option>
+              {Array.from({ length: 99 }, (_, seatCount) => seatCount + 1).map((count) => (
+                <option key={count} value={count}>{count}</option>
+              ))}
+            </select>
+          </label>
+        </>
       ) : null}
+      {holderNote !== null ? (
+        <div className="settings-hint">{holderNote}</div>
+      ) : (
+        <>
+          <div className="overview-heading">{t("serverSettings.afkChannel")}</div>
+          <div className="settings-hint">{t("serverSettings.afkHint")}</div>
+          <div className="settings-check">
+            <input
+              type="checkbox"
+              id="afk-designation"
+              checked={isAfkDraft}
+              onChange={(event) => setIsAfkDraft(event.target.checked)}
+            />
+            <label htmlFor="afk-designation">{t("serverSettings.afkDesignation")}</label>
+          </div>
+          {isAfkDraft ? (
+            <label className="settings-field">
+              <span>{t("serverSettings.afkTimeout")}</span>
+              <select value={timeoutDraft} onChange={(event) => setTimeoutDraft(Number(event.target.value))}>
+                {AFK_TIMEOUT_PRESETS.map((presetMinutes) => (
+                  <option key={presetMinutes} value={presetMinutes}>{afkTimeoutLabel(t, presetMinutes)}</option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+        </>
+      )}
       {/* The shared footer idiom (user decision 2026-10-06): the same divider +
           Save row pinned to the panel bottom as in Roles — the status rides INSIDE
           the row like every other tab's, not on a separate error line below. */}
