@@ -19,6 +19,8 @@ import { matchDeviceId } from "../domain/logic/device-match";
 import { cameraVideoConstraints, describeQuality, displayVideoConstraints, type ShareQuality } from "../domain/logic/share-quality";
 import {
   initialCpuDownscaleState,
+  encoderCostOverloaded,
+  encoderCostRelieved,
   initialLadderState,
   ladderConfigForPreset,
   nextCpuDownscale,
@@ -6355,8 +6357,15 @@ async function pollShareLadder(): Promise<void> {
     }
   }
   // The CPU axis, same window: the encoder-cannot-keep-up verdict from the
-  // frame deltas (the channel ladder cannot cure a local CPU bottleneck).
-  const cpuVerdict = nextCpuDownscale(cpuDownscale, encoderOverloaded(counters, cpuWindowCounters), encoderRelieved(counters, cpuWindowCounters));
+  // per-frame ENCODE COST (the channel ladder cannot cure a local CPU
+  // bottleneck). A window with no encoded frames — a still screen — is
+  // borderline: the stepper never fires on static content (2026-11-19).
+  const encodeCostMs = windowEncodeCostMs(counters, cpuWindowCounters);
+  const cpuVerdict = nextCpuDownscale(
+    cpuDownscale,
+    encoderCostOverloaded(encodeCostMs, counters.framesPerSecond),
+    encoderCostRelieved(encodeCostMs, counters.framesPerSecond),
+  );
   cpuDownscale = cpuVerdict.state;
   cpuWindowCounters = counters;
   if (cpuVerdict.change !== null) {
@@ -6369,26 +6378,20 @@ async function pollShareLadder(): Promise<void> {
   }
 }
 
-/** The CPU window's overload verdict: the encoder fell meaningfully behind
- *  its own capture input (< 75% of the input fps over the window). */
-function encoderOverloaded(current: VideoRtpCounters, previous: VideoRtpCounters | null): boolean {
-  if (previous === null || current.framesPerSecond === null || current.framesPerSecond <= 0) {
-    return false;
+/** The window's per-frame encode cost (totalEncodeTime delta / frames delta);
+ *  null when the window encoded no frames or the encode-time counters are
+ *  missing — a still screen, which must read as borderline, never as overload
+ *  (2026-11-19: the old fps-ratio detector stepped down on exactly that). */
+function windowEncodeCostMs(current: VideoRtpCounters, previous: VideoRtpCounters | null): number | null {
+  if (previous === null || current.encodeSeconds === null || previous.encodeSeconds === null) {
+    return null;
   }
-  const seconds = Math.max(0.001, (current.timestamp - previous.timestamp) / 1000);
-  const encodedFps = (current.frames - previous.frames) / seconds;
-  return encodedFps > 0 && encodedFps < current.framesPerSecond * 0.75;
-}
-
-/** The CPU window's relief verdict: the encoder keeps up with margin (≥ 90% of
- *  the input fps) — the recovery condition for stepping the scale back. */
-function encoderRelieved(current: VideoRtpCounters, previous: VideoRtpCounters | null): boolean {
-  if (previous === null || current.framesPerSecond === null || current.framesPerSecond <= 0) {
-    return false;
+  const frameDelta = current.frames - previous.frames;
+  if (frameDelta <= 0) {
+    return null;
   }
-  const seconds = Math.max(0.001, (current.timestamp - previous.timestamp) / 1000);
-  const encodedFps = (current.frames - previous.frames) / seconds;
-  return encodedFps >= current.framesPerSecond * 0.9;
+  const costMs = ((current.encodeSeconds - previous.encodeSeconds) / frameDelta) * 1000;
+  return costMs >= 0 ? costMs : null;
 }
 
 /** The publisher-side share line (input fps vs ENCODED fps — enc ≪ in = the

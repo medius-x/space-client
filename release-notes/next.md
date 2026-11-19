@@ -28,4 +28,10 @@ does not: CI, docs, refactoring, internal rework.
   away dot no longer turns yellow while you are in voice, even with your mic
   quiet and your hands off the keyboard — talking to people means you are at
   the computer. The away status you set by hand is not affected.
+- Fixed the screen share picture constantly changing size at the viewer's end:
+  the video encoder no longer silently switches resolution as the connection
+  adapts (the trade the 0.6.0 freeze fix made). The stream now keeps the
+  picked resolution at all times — under a tight connection the framerate
+  gives in first, and the resolution only steps down deliberately when the
+  sharer's CPU genuinely cannot keep up.
 

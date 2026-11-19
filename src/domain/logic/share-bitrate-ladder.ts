@@ -184,6 +184,37 @@ export function initialCpuDownscaleState(): CpuDownscaleState {
   return { stepIndex: 0, overloadedWindows: 0, relievedWindows: 0 };
 }
 
+// ---------------------------------------------------------------------------
+// The overload verdict's INPUT (2026-11-19 rework): the original fps-ratio
+// detector (window encoded fps < 75% of the capture input fps) misread STILL
+// screens as overload — a static capture legitimately encodes far fewer frames
+// than the input rate, whatever the CPU (the 2026-11-18 logs: the stepper
+// fired "encoder behind" at a healthy 7-8 ms/f and reverted 20 s later, three
+// times in ten minutes). The load signal still content cannot fake is the
+// per-frame ENCODE COST against the frame budget (1000/inputFps): a saturated
+// encoder spends most of the budget on every frame; a static screen encodes
+// few, CHEAP frames. A window with no encoded frames (or an unknown input
+// rate) is borderline — no counter moves.
+// ---------------------------------------------------------------------------
+
+/** Overloaded: the per-frame encode cost eats ≥ 80% of the frame budget — the
+ *  encoder is saturating toward below-realtime encode rates. */
+export function encoderCostOverloaded(perFrameMs: number | null, inputFps: number | null): boolean {
+  if (perFrameMs === null || inputFps === null || inputFps <= 0) {
+    return false;
+  }
+  return perFrameMs >= (1000 / inputFps) * 0.8;
+}
+
+/** Relieved: the per-frame encode cost sits at ≤ 50% of the frame budget —
+ *  comfortable margin, the recovery condition for stepping the scale back. */
+export function encoderCostRelieved(perFrameMs: number | null, inputFps: number | null): boolean {
+  if (perFrameMs === null || inputFps === null || inputFps <= 0) {
+    return false;
+  }
+  return perFrameMs <= (1000 / inputFps) * 0.5;
+}
+
 /** One window's verdict: `overloaded` = the encoder fell meaningfully behind
  *  its input (the "encoder cannot keep up" condition), `relieved` = it keeps
  *  up with margin. A window may be neither (borderline) — no counter moves. */

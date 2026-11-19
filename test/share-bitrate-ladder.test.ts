@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   CPU_DOWNSCALE_STEPS,
+  encoderCostOverloaded,
+  encoderCostRelieved,
   initialCpuDownscaleState,
   initialLadderState,
   ladderConfigForPreset,
@@ -123,5 +125,32 @@ describe("cpu downscale stepper (the encoder-cannot-keep-up axis)", () => {
       state = nextCpuDownscale(state, true, false).state;
     }
     expect(state.stepIndex).toBe(CPU_DOWNSCALE_STEPS.length - 1);
+  });
+});
+
+describe("encoder cost verdicts (the 2026-11-19 static-content rework)", () => {
+  // 30 fps input → a 33.3 ms frame budget: overloaded ≥ 26.7, relieved ≤ 16.7.
+  it("a saturated encoder (cost eating the frame budget) reads as overloaded", () => {
+    expect(encoderCostOverloaded(27, 30)).toBe(true);
+    expect(encoderCostOverloaded(90, 30)).toBe(true); // the 11-11 "enc 11 fps" shape
+  });
+
+  it("a still screen encodes few CHEAP frames — relief, never overload (the regression)", () => {
+    // The 2026-11-18 logs: the old fps-ratio detector fired "encoder behind"
+    // on static content at a healthy 7-8 ms/f and reverted 20 s later.
+    expect(encoderCostOverloaded(8, 30)).toBe(false);
+    expect(encoderCostRelieved(8, 30)).toBe(true);
+  });
+
+  it("a borderline cost window is neither overloaded nor relieved", () => {
+    expect(encoderCostOverloaded(20, 30)).toBe(false);
+    expect(encoderCostRelieved(20, 30)).toBe(false);
+  });
+
+  it("a window with no encoded frames, or an unknown input rate, is borderline", () => {
+    expect(encoderCostOverloaded(null, 30)).toBe(false);
+    expect(encoderCostRelieved(null, 30)).toBe(false);
+    expect(encoderCostOverloaded(90, null)).toBe(false);
+    expect(encoderCostRelieved(90, null)).toBe(false);
   });
 });
