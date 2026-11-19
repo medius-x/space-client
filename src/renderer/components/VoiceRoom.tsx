@@ -7,6 +7,7 @@ import {
   callShareTarget,
   callView,
   connectionDirectory,
+  gameStore,
   getCallLocalVideoTrack,
   getCallPeerVideoTrack,
   getCameraTrack,
@@ -251,6 +252,23 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
   const peerMicOn = useStore(appStore, (state) => state.peerMicOn);
   const peerCameraOn = useStore(appStore, (state) => state.peerCameraOn);
   const peerScreenOn = useStore(appStore, (state) => state.peerScreenOn);
+  // The corner game cover (user request 2026-11-19): the OWN live line's IGDB
+  // card pins to the panel's top-right; the status text shifts left to make
+  // room (manual kinds carry no igdbGameId — no cover, no shift).
+  const ownActivity = useStore(appStore, (state) => state.ownActivity);
+  const ownGameCover = useStore(gameStore, (snapshot) => {
+    const igdbId = ownActivity?.igdbGameId ?? null;
+    return igdbId !== null ? (snapshot.cards.get(igdbId)?.coverImageId ?? null) : null;
+  });
+  const gameIcon = ownGameCover !== null ? (
+    <img
+      className="voice-game-icon"
+      src={`https://images.igdb.com/igdb/image/upload/t_thumb/${ownGameCover}.jpg`}
+      alt={ownActivity?.name ?? ""}
+      title={ownActivity?.name ?? undefined}
+    />
+  ) : null;
+  const withGameIcon = ownGameCover !== null ? " with-game-icon" : "";
   const [pickerOpen, setPickerOpen] = useState(false);
   const [nsMenu, setNsMenu] = useState<{ x: number; y: number } | null>(null);
   // The NS toggle button (call or room branch — one is mounted at a time): its
@@ -314,7 +332,8 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
     const peerScreens = (peerScreenOn || peerCameraOn) ? 1 : 0;
     return (
       <div className="voice-bar">
-        <div className="voice-bar-info" onClick={toggleRoomView} title={t("voice.toggleCallView")}>
+        {gameIcon}
+        <div className={"voice-bar-info" + withGameIcon} onClick={toggleRoomView} title={t("voice.toggleCallView")}>
           <div className="voice-bar-text">
             <span className={"voice-bar-status " + statusClass}>{statusText}</span>
             <span className="voice-bar-details">{callPeer !== null ? `${displayNameOf(rosterUsers, callPeer)} / ${serverName}` : ""}</span>
@@ -437,7 +456,8 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
 
   return (
     <div className="voice-bar">
-      <div className="voice-bar-info" onClick={toggleRoomView} title={t("voice.toggleRoomView")}>
+      {gameIcon}
+      <div className={"voice-bar-info" + withGameIcon} onClick={toggleRoomView} title={t("voice.toggleRoomView")}>
         {/* oak stacks TWO lines: the colored status over the channel/server
             detail (voiceInfoRow VBox). NO chevron — the only chevron in the
             subsystem is the room header's back button (main.fxml has none here). */}

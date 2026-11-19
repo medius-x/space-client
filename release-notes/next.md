@@ -43,4 +43,6 @@ does not: CI, docs, refactoring, internal rework.
   empty gap on the left.
 - The join/leave room knock is louder and rings brighter, so it stays audible
   over a game.
+- The voice panel now pins the cover of the game you are playing to its
+  top-right corner (detected games); the status text slides left to make room.
 

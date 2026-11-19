@@ -4848,7 +4848,27 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
   display: flex;
   flex-direction: column;
   gap: 8px;
+  position: relative; /* the corner game cover anchors to the panel's top-right */
 }
+/* The corner game cover (user request 2026-11-19): the IGDB thumbnail of the
+   OWN detected game pins to the panel's top-right while the line is live; the
+   info row shifts left to make room (voice-bar-info.with-game-icon). It sits
+   ABOVE the gap between the info row and the buttons — never over a button. */
+.voice-game-icon {
+  position: absolute;
+  /* The INFO ROW bleeds 2/4px into the card's 8/10px padding (its hover
+     area), so its top-right corner sits 6px/6px from the card's edges — the
+     icon's corner aligns EXACTLY there (live report 2026-11-19: "a touch too
+     high and too far right"). */
+  top: 6px;
+  right: 6px;
+  height: 38px;
+  border-radius: 4px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  pointer-events: auto; /* the game-name tooltip needs hover */
+}
+.voice-bar-info { transition: padding-right 0.15s ease; }
+.voice-bar-info.with-game-icon { padding-right: 48px; }
 .voice-bar + .user-bar { border-radius: 0 0 8px 8px; }
 .voice-bar-info {
   display: flex;

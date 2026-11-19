@@ -149,6 +149,10 @@ export interface AppState {
   /** OUR OWN invisible pin (the presence mask, 2026-11-17): the user LOOKS
    *  offline to everyone; the own avatar dot greys to tell the user that. */
   ownInvisible: boolean;
+  /** OUR OWN live activity line (2026-11-19): the reactive mirror of the last
+   *  broadcast verdict — the voice panel's corner game cover reads its
+   *  igdbGameId (manual kinds carry none and show no cover). */
+  ownActivity: PresenceActivity | null;
   callCameraOn: boolean;
   callSharing: boolean;
   /** OWN call-local mic/deafen state (reactive mirror of the PeerCallSession,
@@ -289,6 +293,7 @@ class AppStore extends Emitter {
     callSeconds: 0,
     ownRosterStatus: "online",
     ownInvisible: false,
+    ownActivity: null,
     callCameraOn: false,
     callSharing: false,
     callMicOn: true,
@@ -3298,6 +3303,7 @@ const processDetectedAt = new Map<string, number>();
 
 function broadcastActivityLine(line: PresenceActivity | null): void {
   lastBroadcastActivityLine = line;
+  appStore.patch({ ownActivity: line }); // the voice panel's corner cover reacts live
   log.info("presence", `activity line: ${line === null ? "cleared" : `${line.type} "${line.name}"`}`);
   if (activeSession !== null) {
     activeSession.reportPresenceActivity(line);
@@ -3450,6 +3456,23 @@ function ensureRosterGameCards(): void {
           // 404/upstream — this id stays silent for the session (bare text line)
         });
     }
+  }
+  // The OWN line's card feeds the voice panel's corner cover (2026-11-19) —
+  // the own id normally rides the roster echo, but the timing is not
+  // guaranteed, so it is ensured explicitly.
+  const ownIgdbId = lastBroadcastActivityLine?.igdbGameId;
+  const owner = activeSession;
+  if (ownIgdbId != null && owner !== null && !known.has(ownIgdbId) && !deadGameCardIds.has(ownIgdbId)
+      && hasServerCapability(owner.serverProfile, "igdb-games")) {
+    deadGameCardIds.add(ownIgdbId); // asked once; only a SUCCESS clears the mark
+    owner.fetchGameCard(ownIgdbId)
+      .then((card) => {
+        deadGameCardIds.delete(ownIgdbId);
+        gameStore.applyCards([card]);
+      })
+      .catch(() => {
+        // stays silent for the session — the panel shows no cover
+      });
   }
 }
 
