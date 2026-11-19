@@ -41,4 +41,6 @@ does not: CI, docs, refactoring, internal rework.
   and the tooltip says the word it replaced.
 - The voice panel's buttons now stretch evenly across the panel — no more
   empty gap on the left.
+- The join/leave room knock is louder and rings brighter, so it stays audible
+  over a game.
 

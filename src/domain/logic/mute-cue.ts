@@ -5,9 +5,11 @@
  * has no focus and no toast is shown). Mute and deafen are the SAME shape in
  * DIFFERENT registers (deafen lower — user request), and both are deliberately
  * unlike the voice-room join/leave knock: the knock is two dry discrete thumps
- * at 150/210 Hz; the cues are gliding tones (mute 500–900 Hz, deafen 280–480 Hz
- * — three pairwise non-overlapping registers, tested). Pure data so the
- * parameters are testable without WebAudio.
+ * — a 150/210 low body with a 200/270 bright layer and octave ring on top
+ * (mute 500–900 Hz, deafen 280–480 Hz — the base registers stay pairwise
+ * non-overlapping, tested; the knock's layers ride inside its 35 ms decay,
+ * and the double-thump rhythm is what tells it from any glide). Pure data so
+ * the parameters are testable without WebAudio.
  */
 
 export interface VoiceCue {
