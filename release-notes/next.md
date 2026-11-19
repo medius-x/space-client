@@ -16,8 +16,10 @@ does not: CI, docs, refactoring, internal rework.
   server. Non-Steam applications are never auto-detected (bind them with the
   manual rules as before); manually registered rules always win over detection,
   and "Detect games automatically (IGDB)" in Settings turns the whole thing off.
-  Detected games row up in Settings → Activity with a publish checkbox each —
-  uncheck one and its line never shows again. The server admin now sets the
+  Detected games row up in Settings → Activity with a publish checkbox and the
+  summed playtime next to each — uncheck one and its line never shows and its
+  clock stops; the play history lives on the server, so it follows you across
+  devices. The server admin now sets the
   IGDB connection up right in Server Settings → Integrations: the Twitch
   application's Client ID and Client Secret (the secret is write-only), a
   built-in ⓘ guide to registering the application, and a pause toggle that

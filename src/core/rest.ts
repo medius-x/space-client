@@ -40,6 +40,7 @@ import type {
   PresenceActivityEvent,
   GameCard,
   GameLookupResponse,
+  MyGameInfo,
   RosterStatusSnapshot,
   UserRenamedResponse,
   UserResponse,
@@ -254,6 +255,13 @@ export class RestClient {
    *  game lines). 404 = unknown id — the caller renders the bare text line. */
   async fetchGameCard(igdbId: number): Promise<GameCard> {
     return this.request<GameCard>(`/api/games/${igdbId}`, { method: "GET" });
+  }
+
+  /** The caller's SERVER-side play history (2026-11-19): every game with a
+   *  session, card + summed playtime + last played, newest first. Own-DB read —
+   *  an unconfigured integration just answers empty. */
+  async getMyGames(): Promise<MyGameInfo[]> {
+    return this.request<MyGameInfo[]>("/api/games/my", { method: "GET" });
   }
 
   /** Pins the user's pick from an ambiguous lookup into the server's shared

@@ -627,6 +627,18 @@ export interface GameLookupResponse {
   candidates: GameCard[];
 }
 
+/** One row of GET /api/games/my — the user's SERVER-side play history (the
+ *  achievements foundation): the card projection plus summed playtime (an open
+ *  session counts up to now) and when the game was last played. */
+export interface MyGameInfo {
+  igdbId: number;
+  name: string;
+  coverImageId: string | null;
+  genres: { id: number; name: string }[];
+  totalSeconds: number;
+  lastPlayedAt: string;
+}
+
 /** The main process's Steam dossier for one running exe (the
  *  space-processes:gameIdentity bridge): the exact appid read from
  *  steamapps/appmanifest_*.acf (null for non-Steam games) and the game folder

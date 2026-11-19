@@ -165,12 +165,14 @@ export interface ClientSettings {
   gameAutoDetectEnabled: boolean;
   /** Per-GAME publication opt-out (2026-11-19): IGDB ids the detector resolves
    *  but must NOT report — the row's checkbox in the "detected games" list.
-   * Detection itself keeps running (the game stays in knownGames); only the
-   * roster line is silenced. */
+   * Detection itself keeps running (the game keeps sessioning on the server);
+   * only the roster line is silenced. The LIST itself is server-side
+   * (GET /api/games/my) since the phase-3 round. */
   hiddenGameIds: number[];
-  /** The MRU of games this machine has detected (2026-11-19): name cards for
-   *  the settings list above (the cover art lives in gameStore, transient). */
-  knownGames: { igdbId: number; name: string }[];
+  /** The MANUAL games' publication opt-out, by NAME (lowercase — the virtual
+   *  server card's matching): every rule writing a hidden name stops reporting
+   *  (and sessioning) while the rule itself stays registered. */
+  hiddenManualNames: string[];
   /** The CURRENTLY detected running rules' ids (the auto-detect's last tick) —
    *  transit UI state persisted only so the section paints instantly on open;
    *  the detector re-derives it within one poll of a restart. */
@@ -262,7 +264,7 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   activitiesEnabled: true,
   gameAutoDetectEnabled: true,
   hiddenGameIds: [],
-  knownGames: [],
+  hiddenManualNames: [],
   runningActivityIds: [],
   downloadsFolder: null,
   updateCheckOnStartup: true,
@@ -361,17 +363,14 @@ export class SettingsStore extends Emitter {
         registeredActivities: sanitizeRegisteredActivities(rest.registeredActivities ?? []),
         activitiesEnabled: rest.activitiesEnabled !== false, // only an explicit false disables
         gameAutoDetectEnabled: rest.gameAutoDetectEnabled !== false,
-        // the per-game opt-out and the detected-games MRU: hand-edited KV must
-        // not smuggle junk in (positive ids only, deduped; rows are objects)
+        // the per-game opt-out: hand-edited KV must not smuggle junk in
+        // (positive integer ids only, deduped; names lowercase, capped)
         hiddenGameIds: [...new Set((Array.isArray(rest.hiddenGameIds) ? rest.hiddenGameIds : [])
           .filter((id): id is number => typeof id === "number" && Number.isInteger(id) && id > 0))],
-        knownGames: (Array.isArray(rest.knownGames) ? rest.knownGames : [])
-          .filter((game): game is { igdbId: number; name: string } =>
-            typeof game === "object" && game !== null
-            && typeof (game as { igdbId?: unknown }).igdbId === "number" && (game as { igdbId: number }).igdbId > 0
-            && typeof (game as { name?: unknown }).name === "string" && (game as { name: string }).name.length > 0
-            && (game as { name: string }).name.length <= 128)
-          .slice(0, 30),
+        hiddenManualNames: [...new Set((Array.isArray(rest.hiddenManualNames) ? rest.hiddenManualNames : [])
+          .filter((name): name is string => typeof name === "string")
+          .map((name) => name.trim().toLowerCase())
+          .filter((name) => name.length > 0 && name.length <= 64))],
         runningActivityIds: Array.isArray(rest.runningActivityIds)
           ? rest.runningActivityIds.filter((id): id is string => typeof id === "string")
           : [],

@@ -21,7 +21,8 @@ import { ApiError } from "../../core/rest";
 import type { ClientSettings } from "../../domain/stores/SettingsStore";
 import type { LanguageSetting } from "../../domain/i18n/i18n";
 import { ACTIVITY_KINDS, ACTIVITY_NAME_MAX_LENGTH, MAX_REGISTERED_ACTIVITIES, normalizeProcessName } from "../../domain/logic/activity";
-import { ACTIVITY_MESSAGE_KEYS, CUSTOM_KIND_LABEL_KEY, formatActivityLine } from "../activity-display";
+import { ACTIVITY_MESSAGE_KEYS, CUSTOM_KIND_LABEL_KEY, formatActivityLine, formatPlaytime } from "../activity-display";
+import type { MyGameInfo } from "../../types";
 import type { ActivityKind } from "../../types";
 import type { ProcessNameEntry } from "../bridges";
 import { advertisedAddress, DISK_CACHE_CHOICES, diskCacheLabel } from "../../domain/logic/settings-format";
@@ -965,8 +966,29 @@ function ActivitySection({ session }: { session: ConnectionSession | null }): Re
   const runningIds = useStore(settingsStore, (settings) => settings.runningActivityIds);
   const activitiesEnabled = useStore(settingsStore, (settings) => settings.activitiesEnabled);
   const gameAutoDetectEnabled = useStore(settingsStore, (settings) => settings.gameAutoDetectEnabled);
-  const knownGames = useStore(settingsStore, (settings) => settings.knownGames);
   const hiddenGameIds = useStore(settingsStore, (settings) => settings.hiddenGameIds);
+  const hiddenManualNames = useStore(settingsStore, (settings) => settings.hiddenManualNames);
+  // The detected-games list is the SERVER's play history (phase 3, 2026-11-19):
+  // sessions accumulate per game while the line is PUBLISHED, so the checkbox
+  // below both hides the line and stops the clock for that game.
+  const [myGames, setMyGames] = useState<MyGameInfo[]>([]);
+  useEffect(() => {
+    if (session === null || !hasServerCapability(session.serverProfile, "igdb-games")) {
+      setMyGames([]);
+      return;
+    }
+    let cancelled = false;
+    void session.rest.getMyGames()
+      .then((games) => {
+        if (!cancelled) {
+          setMyGames(games);
+        }
+      })
+      .catch(() => undefined); // a failed fetch keeps the previous list
+    return () => {
+      cancelled = true;
+    };
+  }, [session]);
   const [entries, setEntries] = useState<ProcessNameEntry[] | null>(null);
   const [picked, setPicked] = useState<ProcessNameEntry | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -1151,25 +1173,42 @@ function ActivitySection({ session }: { session: ConnectionSession | null }): Re
           <span>{t("settings.gameDetectToggle")}</span>
         </label>
       ) : null}
-      {/* The per-GAME opt-out (2026-11-19): every game this machine has detected
-          rows here; unchecking silences its roster line (detection continues —
-          the game reappears in this list, only the reporting stops). */}
-      {knownGames.length > 0 ? (
+      {/* The play history (2026-11-19) — in its ORIGINAL place between the
+          toggles and the rules: the SERVER's rows, detected games and manual
+          playing activities side by side, each with its summed playtime. The
+          checkbox silences the line AND stops the clock: detected games hide
+          by id, manual rows by NAME (every rule writing that name). */}
+      {myGames.length > 0 ? (
         <div className="game-list">
+          <h3>{t("settings.gamesHeader")}</h3>
           <div className="settings-hint">{t("settings.knownGamesHint")}</div>
-          {knownGames.map((game) => (
-            <label key={game.igdbId} className="settings-check game-list-row">
-              <input type="checkbox" checked={!hiddenGameIds.includes(game.igdbId)}
-                onChange={(event) => settingsStore.apply({
-                  hiddenGameIds: event.target.checked
-                    ? hiddenGameIds.filter((id) => id !== game.igdbId)
-                    : [...hiddenGameIds, game.igdbId],
-                })} />
-              <span>🎮 {game.name}</span>
-            </label>
-          ))}
+          {myGames.map((game) => {
+            const manual = game.igdbId < 0;
+            const manualName = game.name.trim().toLowerCase();
+            const published = manual
+              ? !hiddenManualNames.includes(manualName)
+              : !hiddenGameIds.includes(game.igdbId);
+            return (
+              <label key={game.igdbId} className="settings-check game-list-row">
+                <input type="checkbox" checked={published}
+                  onChange={(event) => settingsStore.apply(manual
+                    ? { hiddenManualNames: event.target.checked
+                        ? hiddenManualNames.filter((name) => name !== manualName)
+                        : [...hiddenManualNames, manualName] }
+                    : { hiddenGameIds: event.target.checked
+                        ? hiddenGameIds.filter((id) => id !== game.igdbId)
+                        : [...hiddenGameIds, game.igdbId] })} />
+                <span>🎮 {game.name}</span>
+                {manual ? <span className="game-list-manual-badge">{t("settings.manualBadge")}</span> : null}
+                <span className="game-list-playtime">
+                  {formatPlaytime(t, "settings.playtimeHours", "settings.playtimeMinutes", game.totalSeconds)}
+                </span>
+              </label>
+            );
+          })}
         </div>
       ) : null}
+      <h3>{t("settings.manualRulesHeader")}</h3>
       <div className="activity-picker" ref={pickerRef}>
         <button className="activity-picker-button" onClick={() => setPickerOpen((open) => !open)}>
           {picked === null

@@ -6,6 +6,7 @@ import {
   activityKindKey,
   isActivityKind,
   matchRunningActivity,
+  reportableRules,
   normalizeProcessName,
   sanitizeActivity,
   sanitizeActivityIcon,
@@ -170,5 +171,22 @@ describe("RosterStore activity dimension (the snapshot/delta discipline)", () =>
     store.applyPresenceEvent({ username: "alice", status: "OFFLINE" });
     expect(store.getSnapshot().activities.has("alice")).toBe(false);
     expect(store.getSnapshot().activities.get("bob")).toBeDefined(); // others untouched
+  });
+});
+
+describe("reportableRules (the hidden manual-activity filter)", () => {
+  const rules = [
+    { id: "1", processName: "cs2.exe", type: "playing" as const, name: "CS2" },
+    { id: "2", processName: "radio.exe", type: "listening" as const, name: "Radio" },
+    { id: "3", processName: "b.exe", type: "playing" as const, name: "  cs2 " },
+  ];
+
+  it("drops every rule writing a hidden name (case/space-insensitive), keeps the rest", () => {
+    const kept = reportableRules(rules, new Set(["cs2"]));
+    expect(kept.map((rule) => rule.id)).toEqual(["2"]); // both CS2 spellings gone
+  });
+
+  it("an empty hidden set keeps everything", () => {
+    expect(reportableRules(rules, new Set())).toHaveLength(3);
   });
 });

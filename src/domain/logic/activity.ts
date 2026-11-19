@@ -101,6 +101,20 @@ export function matchRunningActivity(
 }
 
 /**
+ * Rules still ALLOWED to report (2026-11-19): a manual activity hidden from
+ * the games list (its NAME silenced — same lowercase matching as the virtual
+ * server card) drops out of the verdict AND the running indicators, without
+ * deleting the rule; unhidden names report again. Detected games hide by id
+ * (hiddenGameIds) — this is the manual-line twin of that switch.
+ */
+export function reportableRules(
+  rules: readonly { id: string; processName: string; type: ActivityKind; name: string }[],
+  hiddenManualNames: ReadonlySet<string>,
+): { id: string; processName: string; type: ActivityKind; name: string }[] {
+  return rules.filter((rule) => !hiddenManualNames.has(rule.name.trim().toLowerCase()));
+}
+
+/**
  * The detection-order tracker feeding matchRunningActivity's LIFO verdict:
  * names newly seen in the snapshot stamp NOW, names that left drop their stamp
  * (so a restarted exe re-stamps and outranks what stayed running). Mutates

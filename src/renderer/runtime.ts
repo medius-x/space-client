@@ -37,7 +37,7 @@ import { ConnectionSession, type SessionHooks } from "../domain/session/connecti
 import { hasServerCapability } from "../domain/logic/server-capabilities";
 import { MAX_VOICE_REJOIN_ATTEMPTS, rejoinDelayMs, rejoinExhausted } from "../domain/logic/rejoin-ladder";
 import { UplinkEscalation } from "../domain/logic/uplink-watchdog";
-import { matchRunningActivity, trackProcessDetection } from "../domain/logic/activity";
+import { matchRunningActivity, reportableRules, trackProcessDetection } from "../domain/logic/activity";
 import { pickAutoGameLine, isGameDetectCandidate, type GameResolution } from "../domain/logic/game-detect";
 import { GameStore } from "../domain/stores/GameStore";
 import type { PresenceActivity } from "../types";
@@ -3376,7 +3376,6 @@ async function resolveOneGame(session: ConnectionSession, exeName: string): Prom
     if (answer.game !== null) {
       gameStore.applyCards([answer.game]);
       gameResolutions.set(exeName, { status: "resolved", card: answer.game });
-      rememberDetectedGame(answer.game.igdbId, answer.game.name);
       log.info("presence", `game detect: "${exeName}" -> "${answer.game.name}" (IGDB #${answer.game.igdbId})`);
       return;
     }
@@ -3423,14 +3422,6 @@ export async function confirmGamePick(card: GameCard): Promise<void> {
  *  dialog opened (skip just closes it). */
 export function dismissGamePick(): void {
   gameStore.closePick();
-}
-
-/** Feeds the settings screen's "detected games" MRU: newest first, deduped by
- *  id, capped (a quiet write-through — the list outlives restarts). */
-function rememberDetectedGame(igdbId: number, name: string): void {
-  const current = settingsStore.getSnapshot().knownGames;
-  const next = [{ igdbId, name }, ...current.filter((game) => game.igdbId !== igdbId)].slice(0, 30);
-  settingsStore.apply({ knownGames: next });
 }
 
 /** Doglegs the cards behind OTHER members' game lines (their ids ride the
@@ -3487,7 +3478,10 @@ async function pollActivityDetection(): Promise<void> {
   if (settings.registeredActivities.length === 0 && igdbSession === null) {
     return;
   }
-  const rules = settings.registeredActivities;
+  // A hidden MANUAL activity's rules do not report (their names are silenced —
+  // no line, no session, the rule itself stays registered for a later re-enable).
+  const rules = reportableRules(settings.registeredActivities,
+      new Set(settings.hiddenManualNames));
   let entries: ProcessNameEntry[] | null = null;
   try {
     entries = await bridge.names();

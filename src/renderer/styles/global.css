@@ -326,6 +326,23 @@ body.channel-dragging * { cursor: grabbing !important; }
 .game-list-row {
   font-size: 12px;
   color: var(--sp-text-muted);
+  justify-content: flex-start;
+}
+.game-list-playtime {
+  margin-left: auto;
+  color: var(--sp-text-dim);
+  flex: none;
+}
+/* The "вручную"/"manual" chip on a hand-written activity's row (2026-11-19):
+   the voice-user-limit badge idiom — a dim framed chip. */
+.game-list-manual-badge {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--sp-text-dim);
+  border: 1px solid var(--sp-text-dim);
+  border-radius: 4px;
+  padding: 0 4px;
+  flex: none;
 }
 
 /* ===== Integrations tab: the IGDB card (2026-11-19 layout rework) ===== */

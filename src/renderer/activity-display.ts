@@ -1,4 +1,5 @@
 import type { MessageKey, Translator } from "../domain/i18n/i18n";
+import type { TranslateParams } from "../domain/i18n/i18n";
 import type { ActivityKind, PresenceActivity } from "../types";
 
 /**
@@ -24,6 +25,21 @@ export const CUSTOM_KIND_LABEL_KEY: MessageKey = "activity.customLabel";
  *  a gamepad instead of the localized "playing" prefix — shorter than the verb
  *  (long game names fit the roster row) and instantly readable as a game. */
 export const GAMEPAD_GLYPH = "🎮";
+
+/** Compact playtime for the detected-games list: whole hours once there is at
+ *  least one ("12 h" — the achievements are hour-shaped), minutes below that. */
+export function formatPlaytime(
+    t: Translator,
+    unitHours: MessageKey,
+    unitMinutes: MessageKey,
+    totalSeconds: number,
+): string {
+  const hours = Math.floor(totalSeconds / 3600);
+  if (hours > 0) {
+    return t(unitHours, { count: hours });
+  }
+  return t(unitMinutes, { count: Math.floor(totalSeconds / 60) });
+}
 
 /** The roster/settings line for an activity: the localized prefix and the
  *  name, glued with one space — or the bare name when the kind has no prefix.
