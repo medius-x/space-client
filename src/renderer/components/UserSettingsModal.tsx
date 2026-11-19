@@ -21,7 +21,9 @@ import { ApiError } from "../../core/rest";
 import type { ClientSettings } from "../../domain/stores/SettingsStore";
 import type { LanguageSetting } from "../../domain/i18n/i18n";
 import { ACTIVITY_KINDS, ACTIVITY_NAME_MAX_LENGTH, MAX_REGISTERED_ACTIVITIES, normalizeProcessName } from "../../domain/logic/activity";
-import { ACTIVITY_MESSAGE_KEYS, CUSTOM_KIND_LABEL_KEY, formatActivityLine, formatPlaytime } from "../activity-display";
+import { ACTIVITY_KIND_GLYPHS, ACTIVITY_MESSAGE_KEYS, CUSTOM_KIND_LABEL_KEY, formatPlaytime } from "../activity-display";
+import { ActivityLine } from "./ActivityLine";
+import { MaterialGlyph } from "./MaterialGlyph";
 import type { MyGameInfo } from "../../types";
 import type { ActivityKind } from "../../types";
 import type { ProcessNameEntry } from "../bridges";
@@ -1198,7 +1200,7 @@ function ActivitySection({ session }: { session: ConnectionSession | null }): Re
                     : { hiddenGameIds: event.target.checked
                         ? hiddenGameIds.filter((id) => id !== game.igdbId)
                         : [...hiddenGameIds, game.igdbId] })} />
-                <span>🎮 {game.name}</span>
+                <span><MaterialGlyph name="sports_esports" className="lead-glyph" />{game.name}</span>
                 {manual ? <span className="game-list-manual-badge">{t("settings.manualBadge")}</span> : null}
                 <span className="game-list-playtime">
                   {formatPlaytime(t, "settings.playtimeHours", "settings.playtimeMinutes", game.totalSeconds)}
@@ -1230,11 +1232,31 @@ function ActivitySection({ session }: { session: ConnectionSession | null }): Re
         ) : null}
       </div>
       <div className="activity-add">
-        <select value={newKind} onChange={(event) => setNewKind(event.target.value as ActivityKind)}>
-          {ACTIVITY_KINDS.map((kind) => (
-            <option key={kind} value={kind}>{kind === "custom" ? t(CUSTOM_KIND_LABEL_KEY) : t(ACTIVITY_MESSAGE_KEYS[kind])}</option>
-          ))}
-        </select>
+        {/* The kind picker is a GLYPH row (user picks 2026-11-19): Material
+            Symbols carry the five verb kinds — the native <select> could not
+            hold SVG artwork — and each button's tooltip keeps the localized
+            verb the select used to show. "custom" keeps a text chip (no glyph:
+            its line never carries a prefix). */}
+        <div className="activity-kinds">
+          {ACTIVITY_KINDS.map((kind) => {
+            const glyph = ACTIVITY_KIND_GLYPHS[kind];
+            const label = kind === "custom" ? t(CUSTOM_KIND_LABEL_KEY) : t(ACTIVITY_MESSAGE_KEYS[kind]);
+            return (
+              <button
+                key={kind}
+                type="button"
+                className={"activity-kind" + (kind === "custom" ? " custom" : "") + (newKind === kind ? " chosen" : "")}
+                title={label}
+                aria-pressed={newKind === kind}
+                onClick={() => setNewKind(kind)}
+              >
+                {glyph === undefined
+                  ? label
+                  : <MaterialGlyph name={glyph} />}
+              </button>
+            );
+          })}
+        </div>
         <input
           type="text"
           value={newName}
@@ -1270,7 +1292,7 @@ function ActivitySection({ session }: { session: ConnectionSession | null }): Re
             {activity.icon !== null
               ? <img src={activity.icon} alt="" width={16} height={16} />
               : <span className="activity-rule-blank" />}
-            <span className="activity-rule-line">{formatActivityLine(t, activity)}</span>
+            <span className="activity-rule-line"><ActivityLine t={t} activity={activity} /></span>
             <code className="activity-rule-exe">{activity.processName}</code>
             <button
               className="ghost tiny"

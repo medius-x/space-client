@@ -1,6 +1,7 @@
 import type { MessageKey, Translator } from "../domain/i18n/i18n";
 import type { TranslateParams } from "../domain/i18n/i18n";
 import type { ActivityKind, PresenceActivity } from "../types";
+import type { MaterialGlyphName } from "./components/MaterialGlyph";
 
 /**
  * The renderer-side bridge from an activity's verb to its localized prefix:
@@ -21,10 +22,19 @@ export const ACTIVITY_MESSAGE_KEYS: Record<ActivityKind, MessageKey> = {
 /** The empty-prefix kind's own PICKER label (the option must not read blank). */
 export const CUSTOM_KIND_LABEL_KEY: MessageKey = "activity.customLabel";
 
-/** The GAME-line glyph (user request 2026-11-19): an IGDB-detected game carries
- *  a gamepad instead of the localized "playing" prefix — shorter than the verb
- *  (long game names fit the roster row) and instantly readable as a game. */
-export const GAMEPAD_GLYPH = "🎮";
+/** The activity KIND's Material Symbols glyph (user picks, 2026-11-19; the
+ *  2026-11-19 smoke swapped competing to a trophy — scoreboard read as a
+ *  scoreboard, not a contest): the manual-picker rows show these instead of
+ *  the verb words; the tooltip still carries the localized verb. "custom" has
+ *  NO glyph — its button keeps the text label (its line never carries a
+ *  prefix at all). */
+export const ACTIVITY_KIND_GLYPHS: Partial<Record<ActivityKind, MaterialGlyphName>> = {
+  playing: "sports_esports",
+  listening: "headphones",
+  watching: "desktop_windows",
+  streaming: "live_tv",
+  competing: "trophy",
+};
 
 /** Compact playtime for the detected-games list: whole hours once there is at
  *  least one ("12 h" — the achievements are hour-shaped), minutes below that. */
@@ -41,12 +51,14 @@ export function formatPlaytime(
   return t(unitMinutes, { count: Math.floor(totalSeconds / 60) });
 }
 
-/** The roster/settings line for an activity: the localized prefix and the
- *  name, glued with one space — or the bare name when the kind has no prefix.
- *  An IGDB game line (igdbGameId set) prefixes the gamepad glyph instead. */
+/** The roster/settings line for an activity as PLAIN TEXT: the localized
+ *  prefix and the name, glued with one space — or the bare name when the kind
+ *  has no prefix. An IGDB game line (igdbGameId set) is the bare name: its
+ *  gamepad glyph (sports_esports, 2026-11-19 — was the 🎮 emoji) is ARTWORK,
+ *  rendered by the ActivityLine component, not text. */
 export function formatActivityLine(t: Translator, activity: Pick<PresenceActivity, "type" | "name" | "igdbGameId">): string {
   if (activity.igdbGameId != null) {
-    return `${GAMEPAD_GLYPH} ${activity.name}`;
+    return activity.name;
   }
   const prefix = t(ACTIVITY_MESSAGE_KEYS[activity.type]);
   return prefix.length > 0 ? `${prefix} ${activity.name}` : activity.name;

@@ -34,4 +34,11 @@ does not: CI, docs, refactoring, internal rework.
   picked resolution at all times — under a tight connection the framerate
   gives in first, and the resolution only steps down deliberately when the
   sharer's CPU genuinely cannot keep up.
+- New hand-picked icons (Google Material Symbols): the game line's gamepad
+  (goodbye, emoji) in the roster and in Settings → Activity's detected-games
+  list, and the activity-kind picker in Settings — the
+  "playing / listening / watching…" dropdown is now a row of glyphs; hover one
+  and the tooltip says the word it replaced.
+- The voice panel's buttons now stretch evenly across the panel — no more
+  empty gap on the left.
 

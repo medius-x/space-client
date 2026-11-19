@@ -3,7 +3,7 @@ import { useStore } from "../hooks/useStore";
 import { appStore, callUser, openDmWithUser } from "../runtime";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { PresenceActivity } from "../../types";
-import { formatActivityLine } from "../activity-display";
+import { ActivityLine } from "./ActivityLine";
 import type { Relationship, Role, ServerMember } from "../../types";
 import { BAN_MEMBERS_PERMISSION, KICK_MEMBERS_PERMISSION } from "../../types";
 import { buildRosterGroups, canActOn, topPosition, type HierarchyView } from "../../domain/logic/roster-grouping";
@@ -241,7 +241,7 @@ function MemberRow({ session, member, online, away, dnd, isSelf, nameColor, acti
             request: shorter than "playing" — long game names fit the row); the
             cover card stays in gameStore for its future bigger home. */}
         {activity !== null && online ? (
-          <span className="member-activity">{formatActivityLine(t, activity)}</span>
+          <span className="member-activity"><ActivityLine t={t} activity={activity} /></span>
         ) : null}
       </span>
     </div>

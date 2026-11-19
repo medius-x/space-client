@@ -1,10 +1,11 @@
 /**
- * The activity-line renderer helpers: the IGDB game line's gamepad glyph and
- * the compact playtime formatter (whole hours once there is at least one,
+ * The activity-line renderer helpers: the IGDB game line's TEXT (its gamepad
+ * is artwork — the ActivityLine component's MaterialGlyph, not a text prefix)
+ * and the compact playtime formatter (whole hours once there is at least one,
  * minutes below that — the achievements are hour-shaped).
  */
 import { describe, expect, it } from "vitest";
-import { formatActivityLine, formatPlaytime, GAMEPAD_GLYPH } from "../src/renderer/activity-display";
+import { ACTIVITY_KIND_GLYPHS, formatActivityLine, formatPlaytime } from "../src/renderer/activity-display";
 import type { MessageKey, Translator } from "../src/domain/i18n/i18n";
 
 /** A fake translator that just interpolates {count} — the format is under test,
@@ -18,9 +19,20 @@ describe("formatActivityLine", () => {
       { type: "playing", name: "CS2" })).toBe("Играет в CS2");
   });
 
-  it("an IGDB game line carries the gamepad glyph instead of the verb", () => {
+  it("an IGDB game line is the bare name — the gamepad is rendered artwork, not text", () => {
     expect(formatActivityLine(t, { type: "playing", name: "ELDEN RING", igdbGameId: 1030 }))
-      .toBe(`${GAMEPAD_GLYPH} ELDEN RING`);
+      .toBe("ELDEN RING");
+  });
+});
+
+describe("ACTIVITY_KIND_GLYPHS", () => {
+  it("the five verb kinds carry the user's Material Symbols picks; custom has none", () => {
+    expect(ACTIVITY_KIND_GLYPHS.playing).toBe("sports_esports");
+    expect(ACTIVITY_KIND_GLYPHS.listening).toBe("headphones");
+    expect(ACTIVITY_KIND_GLYPHS.watching).toBe("desktop_windows");
+    expect(ACTIVITY_KIND_GLYPHS.streaming).toBe("live_tv");
+    expect(ACTIVITY_KIND_GLYPHS.competing).toBe("trophy");
+    expect(ACTIVITY_KIND_GLYPHS.custom).toBeUndefined();
   });
 });
 

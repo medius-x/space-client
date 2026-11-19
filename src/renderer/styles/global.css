@@ -250,9 +250,34 @@ body.channel-dragging * { cursor: grabbing !important; }
   gap: 4px;
   min-width: 0;
 }
+/* Material Symbols inline glyphs (components/MaterialGlyph — the user's
+   fonts.google.com picks, 2026-11-19): em-sized, currentColor ink. The MDI
+   `icon` class may ride along where a font glyph was replaced — its
+   font-size sizing then drives the svg through the em box. */
+.material-glyph {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  flex: none;
+  fill: currentColor;
+  vertical-align: -0.125em;
+}
+/* A glyph LEADING a text line (the game line's gamepad): its spacing is CSS,
+   not a glued space, so the text itself stays copyable. */
+.lead-glyph { margin-right: 4px; }
+/* The ROSTER status line's glyph: bigger AND dropped toward the text's
+   optical middle — the gamepad's mass sits in its box's upper half, so at
+   the base −0.125em it rode high above the lowercase italic (live smoke
+   2026-11-19: "unchanged and shifted up"; +25% alone was also invisible at
+   this size). The line-height below grows with it — overflow:hidden (the
+   ellipsis) must never clip the taller box. */
+.member-activity .material-glyph {
+  font-size: 1.4em;
+  vertical-align: -0.3em;
+}
 .member-activity {
   font-size: 11px;
-  line-height: 1.25;
+  line-height: 1.6;
   color: var(--sp-text-dim);
   font-style: italic; /* the Discord-style activity italic (user request 2026-11-11) */
   /* Italic glyphs overhang their advance width, so a line filling the box
@@ -484,21 +509,46 @@ body.channel-dragging * { cursor: grabbing !important; }
 .activity-add {
   display: flex;
   flex-direction: row;
-  align-items: stretch; /* the NATIVE select's own height drives the row — the
-                             button and the name field stretch to match it, never
-                             the other way around (the wrong-baseline lesson,
-                             twice, 2026-11-11) */
+  align-items: stretch; /* the KIND ROW's fixed height drives the row (was the
+                             native select's, 2026-11-11) — the button and the
+                             name field stretch to match it, never the other way
+                             around (the wrong-baseline lesson, twice) */
   gap: 6px;
   margin-top: 6px;
   width: 100%;
 }
 .activity-add select, .activity-add button { flex: 0 0 auto; }
-/* No lingering focus ring on the kind picker (user request 2026-11-11): after
-   a choice Chromium keeps the native select focused and draws its active
-   frame — the voice-toggle precedent of dropping the ring entirely. The value
-   in the box already says what was chosen. */
-.activity-add select:focus,
-.activity-add select:focus-visible { outline: none; }
+/* The KIND picker is a glyph row (user picks 2026-11-19, Material Symbols —
+   a native <select> cannot carry SVG artwork): system-color buttons in the
+   row's own control family, the chosen kind takes the accent, tooltips keep
+   the localized verbs the select used to show. "custom" has no glyph — an
+   auto-width text chip. The row's fixed height REPLACES the old native
+   select's as the .activity-add stretch driver. The .activity-add prefix on
+   the button rules is specificity armor: the later `.activity-add button`
+   skin (padding 0 14px, font 13) would otherwise win. */
+.activity-kinds { display: flex; gap: 4px; flex: 0 0 auto; height: 24px; }
+.activity-add .activity-kind {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 100%;
+  padding: 0;
+  font-size: 11px; /* the custom chip's text */
+  background: Field;
+  border: 1px solid color-mix(in srgb, ButtonBorder 40%, Field);
+  border-radius: 2px;
+  color: FieldText;
+  cursor: pointer;
+}
+.activity-add .activity-kind .material-glyph { width: 16px; height: 16px; }
+.activity-add .activity-kind.custom { width: auto; padding: 0 8px; }
+.activity-add .activity-kind.chosen {
+  border-color: ButtonBorder;
+  color: HighlightText;
+  background: color-mix(in srgb, Highlight 70%, Field);
+}
+.activity-add .activity-kind:focus, .activity-add .activity-kind:focus-visible { outline: none; }
 /* No heights anywhere: the kind picker keeps its native select look AND size,
    and the button/input simply stretch to it. The input selectors carry
    [type="text"] ON PURPOSE: the global input[type=text] skin (padding 10px,
@@ -4860,7 +4910,13 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
    right edge (Java-checked), mirroring the gear in the user bar below.
    Active states: mute/deafen RED (cut off), NS/share GREEN (engine live /
    sharing) — applySelfVoiceState / applyNoiseEngineState / applyShareState. */
-.voice-bar-buttons { display: flex; justify-content: flex-end; gap: 8px; }
+/* The buttons FILL the row (user request 2026-11-19: right-aligned 30×30
+   squares left a hole on the panel's left): equal flex shares stretch the
+   width, so the left inset equals the right one (the card's padding), the
+   8px inter-button gap and the 30px height stay put. */
+.voice-bar-buttons { display: flex; gap: 8px; }
+.voice-bar-buttons .voice-toggle,
+.voice-bar-buttons .leave { flex: 1 1 0; }
 /* NO focus ring on the voice toggles, at all (user decision after two rounds:
    Chromium's :focus-visible heuristic still lights up after a mouse click that
    follows keyboard input — typing in chat, then clicking Mute — and the ring
