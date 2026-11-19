@@ -40,13 +40,12 @@ describe("isRosterAway", () => {
     expect(isRosterAway(ROSTER_AFK_AFTER_SECONDS, false)).toBe(true);
   });
 
-  it("speaking in voice keeps the member present however old the input idle is", () => {
+  it("a live voice room or 1:1 call keeps the member present however old the input idle is", () => {
+    // Live report 2026-11-19: a member LISTENING to a screen share with a
+    // quiet mic at the tick moment went yellow — an instantaneous speaking
+    // sample cannot gate the dot; any live call means the member is there.
     expect(isRosterAway(Number.POSITIVE_INFINITY, true)).toBe(false);
     expect(isRosterAway(999_999, true)).toBe(false);
-  });
-
-  it("an outgoing screen share or camera keeps the member present", () => {
-    expect(isRosterAway(Number.POSITIVE_INFINITY, false, true)).toBe(false);
   });
 
   it("a member in the voice-idle grace window is NOT yet roster-away (60 s ≪ 300 s)", () => {

@@ -3141,8 +3141,9 @@ function cancelVoiceRejoin(): void {
  *  every 30 s it feeds TWO decisions, (a) the VOICE heartbeat while the active
  *  session sits in a voice room (the AFK-room sweep's input) and (b) the ROSTER
  *  away verdict, which is ALWAYS evaluated — the yellow dot means "away from
- *  the computer" and voice membership is just one activity source, never a
- *  precondition. The TICK CLOCK is main-owned (armAfkTicker) — a renderer
+ *  the computer" with no live voice connection: a voice room or 1:1 call is
+ *  presence by definition and blocks the dot (user decision 2026-11-19). The
+ *  TICK CLOCK is main-owned (armAfkTicker) — a renderer
  *  interval starves on a hidden window and silently stopped heartbeats for
  *  PRESENT members (live reports 2026-10); when the bridge is older, a local
  *  interval is the degraded fallback. */
@@ -3573,12 +3574,17 @@ async function reportAfkActivity(mainMeasuredIdleSeconds?: number): Promise<void
     }
   }
 
-  // (b) The ROSTER verdict — always: away from the computer, voice or not. The
-  //  flip feeds the STATUS machine (a pin keeps the ticker's verdict inert).
-  const away = isRosterAway(idleSeconds, speaking, streaming);
+  // (b) The ROSTER verdict — always evaluated: away from the computer. A LIVE
+  //  VOICE ROOM or 1:1 call is presence by definition (user decision
+  //  2026-11-19, live report: a member listening to a share with a quiet mic
+  //  went yellow) — an instantaneous speaking sample cannot gate the dot, so
+  //  the only inputs are the system-wide idle and voice membership. The flip
+  //  feeds the STATUS machine (a manual pin keeps the ticker's verdict inert).
+  const inVoice = inVoiceOrCall();
+  const away = isRosterAway(idleSeconds, inVoice);
   if (away !== currentRosterAway) {
     currentRosterAway = away;
-    log.info("presence", `roster afk: ${away ? "away" : "back"} (idle ${idleSeconds}s, speaking=${speaking}, streaming=${streaming})`);
+    log.info("presence", `roster afk: ${away ? "away" : "back"} (idle ${idleSeconds}s, voice=${inVoice ? "live" : "none"})`);
     broadcastRosterStatus();
   }
 }

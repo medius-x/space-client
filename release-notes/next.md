@@ -24,4 +24,8 @@ does not: CI, docs, refactoring, internal rework.
   application's Client ID and Client Secret (the secret is write-only), a
   built-in ⓘ guide to registering the application, and a pause toggle that
   switches game detection off for the whole server without deleting the keys.
+- Sitting in a voice room or a call now keeps your status green: the automatic
+  away dot no longer turns yellow while you are in voice, even with your mic
+  quiet and your hands off the keyboard — talking to people means you are at
+  the computer. The away status you set by hand is not affected.
 
