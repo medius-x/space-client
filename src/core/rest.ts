@@ -270,6 +270,29 @@ export class RestClient {
     });
   }
 
+  /** The IGDB settings view (Server Settings → Integrations; MANAGE_SERVER —
+   *  the server enforces, a 403 just hides the section's data). The SECRET is
+   *  write-only; {@code paused} is the pause switch POSITION, stored
+   *  independently of the credentials (a disconnect keeps it). */
+  async getIgdbSettings(): Promise<{ clientId: string | null; configured: boolean; paused: boolean }> {
+    return this.request<{ clientId: string | null; configured: boolean; paused: boolean }>("/api/server/igdb", { method: "GET" });
+  }
+
+  /** Writes the Twitch credentials and/or the pause switch. Null credential
+   *  fields keep the stored value; EMPTY strings CLEAR both (Disconnect — the
+   *  credentials are gone, the switch position stays). The response mirrors
+   *  {@link getIgdbSettings}. */
+  async updateIgdbSettings(input: { clientId?: string | null; clientSecret?: string | null; paused?: boolean }): Promise<{ clientId: string | null; configured: boolean; paused: boolean }> {
+    return this.request<{ clientId: string | null; configured: boolean; paused: boolean }>("/api/server/igdb", {
+      method: "PATCH",
+      body: JSON.stringify({
+        clientId: input.clientId ?? null,
+        clientSecret: input.clientSecret ?? null,
+        paused: input.paused ?? null,
+      }),
+    });
+  }
+
   /** STATUS-dimension snapshot (the status menu's seed, 2026-11-17): the away/dnd
    *  sets; 404 on an older server degrades to "everyone online" — the client also
    *  gates on the roster-status capability. */

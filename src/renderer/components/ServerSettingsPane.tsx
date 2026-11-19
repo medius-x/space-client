@@ -165,6 +165,7 @@ export function ServerSettingsPane({ session }: { session: ConnectionSession }):
     { key: "channels" as const, label: t("serverSettings.section.channels"), enabled: can(MANAGE_CHANNELS_PERMISSION) },
     { key: "emojis" as const, label: t("serverSettings.section.emoji"), enabled: can(MANAGE_EMOJIS_PERMISSION) },
     { key: "stickers" as const, label: t("serverSettings.section.stickers"), enabled: can(MANAGE_EMOJIS_PERMISSION) },
+    { key: "integrations" as const, label: t("serverSettings.section.integrations"), enabled: can(MANAGE_SERVER_PERMISSION) && hasServerCapability(session.serverProfile, "igdb-settings") },
     { key: "server" as const, label: t("serverSettings.section.server"), enabled: can(MANAGE_STORAGE_PERMISSION) },
   ].filter((entry) => entry.enabled);
   const active = sections.find((entry) => entry.key === section) ?? sections[0];
@@ -200,6 +201,8 @@ export function ServerSettingsPane({ session }: { session: ConnectionSession }):
           <ServerStickerSection session={session} />
         ) : active.key === "server" ? (
           <ServerStorageSection session={session} />
+        ) : active.key === "integrations" ? (
+          <IgdbSection session={session} />
         ) : (
           <ChannelsSection session={session} />
         )}
@@ -3343,6 +3346,187 @@ function describeHealthEntry(t: Translator, entry: ServerHealthEntry): string {
     }
   }
   return parts.join(" · ");
+}
+
+/**
+ * Server Settings → Integrations → the IGDB game database (2026-11-19, layout
+ * rework same day): the Twitch application credentials pasted by the admin,
+ * stored server-side, the SECRET write-only (the loaded state shows the Client
+ * ID and flags only; the secret field STAYS BLANK — filling it changes the
+ * stored one). The TOGGLE by the header is the PAUSE switch: it parks the
+ * ladder (503, no capability) while the credentials stay stored — one click
+ * restores detection with its whole match cache; a paused card mutes the
+ * fields so the state reads at a glance. "Disconnect" (only while unpaused)
+ * clears BOTH credentials for good. The ⓘ button opens the registration
+ * guide — always clickable, paused or not. Any change republishes the profile,
+ * so every member's client sees the capability flip live.
+ */
+function IgdbSection({ session }: { session: ConnectionSession }): React.JSX.Element {
+  const t = useT();
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [configured, setConfigured] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  /** The Disconnect confirmation (the server-deletion dialog's shape): the
+   * secret is shown ONCE at Twitch, so an accidental wipe could be
+   * unrecoverable — the button only OPENS the dialog. */
+  const [confirmDisconnectOpen, setConfirmDisconnectOpen] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void session.rest.getIgdbSettings()
+      .then((settings) => {
+        if (cancelled) {
+          return;
+        }
+        setClientId(settings.clientId ?? "");
+        setConfigured(settings.configured);
+        setPaused(settings.paused);
+        setLoaded(true);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLoaded(true); // 403/404 — the fields stay editable; saving will surface the error
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session]);
+
+  const applyAnswer = (answer: { clientId: string | null; configured: boolean; paused: boolean }): void => {
+    setConfigured(answer.configured);
+    setPaused(answer.paused === true); // guard: an older server may omit the field
+    setClientId(answer.clientId ?? "");
+    setClientSecret("");
+  };
+
+  const save = async (): Promise<void> => {
+    setBusy(true);
+    setStatus(null);
+    try {
+      const answer = await session.rest.updateIgdbSettings({
+        clientId: clientId.trim(),
+        clientSecret: clientSecret.trim(),
+      });
+      applyAnswer(answer);
+      setStatus(answer.configured ? t("serverSettings.igdbSaved") : t("serverSettings.igdbCleared"));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disconnect = async (): Promise<void> => {
+    setConfirmDisconnectOpen(false);
+    setBusy(true);
+    setStatus(null);
+    try {
+      applyAnswer(await session.rest.updateIgdbSettings({ clientId: "", clientSecret: "" }));
+      setStatus(t("serverSettings.igdbCleared"));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const togglePause = async (): Promise<void> => {
+    if (busy) {
+      return; // no visual disable — the switch must never blink (user report 2026-11-19)
+    }
+    setBusy(true);
+    setStatus(null);
+    try {
+      applyAnswer(await session.rest.updateIgdbSettings({ paused: !paused }));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // The DIMMING follows the toggle ALWAYS (its visual echo); the actual FIELD
+  // LOCK happens only on a meaningful pause (parked WITH credentials kept) —
+  // with no keys the fields stay editable even dimmed, so fresh keys are
+  // enterable from the very same screen (user reports 2026-11-19).
+  const muted = paused;
+  const fieldsLocked = paused && configured;
+  return (
+    <div className="settings-section">
+      <div className="roles-list-header overview-heading"><span>{t("serverSettings.section.integrations")}</span></div>
+      <div className="igdb-card">
+        <div className="igdb-title-row">
+          <button type="button" role="switch" aria-checked={!paused}
+            className={"igdb-switch" + (paused ? "" : " on")}
+            onClick={() => void togglePause()} />
+          <h3 className={muted ? "igdb-muted" : ""}>{t("serverSettings.igdbHeader")}</h3>
+          <button type="button" className={"igdb-info" + (guideOpen ? " on" : "")}
+            title={t("serverSettings.igdbGuideTitle")}
+            onClick={() => setGuideOpen((open) => !open)}>i</button>
+        </div>
+        {guideOpen ? (
+          <div className="igdb-guide">
+            <div>{t("serverSettings.igdbGuideTitle")}</div>
+            <ol>
+              <li>{t("serverSettings.igdbGuideStep1")}</li>
+              <li>{t("serverSettings.igdbGuideStep2")}</li>
+              <li>{t("serverSettings.igdbGuideStep3")}</li>
+              <li>{t("serverSettings.igdbGuideStep4")}</li>
+            </ol>
+            <div className="igdb-guide-note">{t("serverSettings.igdbGuideNote")}</div>
+          </div>
+        ) : null}
+        <div className={"igdb-body" + (muted ? " igdb-muted" : "")}>
+          <div className="settings-hint">{t("serverSettings.igdbSubline")}</div>
+          <div className="settings-hint">
+            {configured
+              ? (paused ? t("serverSettings.igdbPaused") : t("serverSettings.igdbConfigured"))
+              : t("serverSettings.igdbNotConfigured")}
+          </div>
+          <label className="settings-field">
+            <span>{t("serverSettings.igdbClientId")}</span>
+            <input type="text" value={clientId} spellCheck={false} disabled={fieldsLocked}
+              placeholder={loaded ? "" : "…"}
+              onChange={(event) => setClientId(event.target.value)} />
+          </label>
+          <label className="settings-field">
+            <span>{t("serverSettings.igdbClientSecret")}</span>
+            <input type="password" value={clientSecret} spellCheck={false} disabled={fieldsLocked}
+              placeholder={configured ? t("serverSettings.igdbSecretKept") : ""}
+              onChange={(event) => setClientSecret(event.target.value)} />
+          </label>
+          <div className="profile-actions">
+            <button className="button primary" disabled={busy || fieldsLocked || clientId.trim().length === 0 || clientSecret.trim().length === 0} onClick={() => void save()}>
+              {t("serverSettings.igdbSave")}
+            </button>
+            {configured && !paused ? (
+              <button className="button" disabled={busy} onClick={() => setConfirmDisconnectOpen(true)}>
+                {t("serverSettings.igdbDisconnect")}
+              </button>
+            ) : null}
+          </div>
+          {status !== null ? <div className="settings-hint">{status}</div> : null}
+        </div>
+      </div>
+      {confirmDisconnectOpen ? (
+        <Modal title={t("serverSettings.igdbDisconnectTitle")} onClose={() => setConfirmDisconnectOpen(false)}>
+          <div className="modal-note">{t("serverSettings.igdbDisconnectConfirmNote")}</div>
+          <div className="modal-actions left">
+            <button className="ghost" onClick={() => setConfirmDisconnectOpen(false)}>{t("common.cancel")}</button>
+            <button className="danger" disabled={busy} onClick={() => void disconnect()}>
+              {t("serverSettings.igdbDisconnect")}
+            </button>
+          </div>
+        </Modal>
+      ) : null}
+    </div>
+  );
 }
 
 function ServerStorageSection({ session }: { session: ConnectionSession }): React.JSX.Element {

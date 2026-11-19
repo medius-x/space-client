@@ -965,6 +965,8 @@ function ActivitySection({ session }: { session: ConnectionSession | null }): Re
   const runningIds = useStore(settingsStore, (settings) => settings.runningActivityIds);
   const activitiesEnabled = useStore(settingsStore, (settings) => settings.activitiesEnabled);
   const gameAutoDetectEnabled = useStore(settingsStore, (settings) => settings.gameAutoDetectEnabled);
+  const knownGames = useStore(settingsStore, (settings) => settings.knownGames);
+  const hiddenGameIds = useStore(settingsStore, (settings) => settings.hiddenGameIds);
   const [entries, setEntries] = useState<ProcessNameEntry[] | null>(null);
   const [picked, setPicked] = useState<ProcessNameEntry | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -1148,6 +1150,25 @@ function ActivitySection({ session }: { session: ConnectionSession | null }): Re
             onChange={(event) => settingsStore.apply({ gameAutoDetectEnabled: event.target.checked })} />
           <span>{t("settings.gameDetectToggle")}</span>
         </label>
+      ) : null}
+      {/* The per-GAME opt-out (2026-11-19): every game this machine has detected
+          rows here; unchecking silences its roster line (detection continues —
+          the game reappears in this list, only the reporting stops). */}
+      {knownGames.length > 0 ? (
+        <div className="game-list">
+          <div className="settings-hint">{t("settings.knownGamesHint")}</div>
+          {knownGames.map((game) => (
+            <label key={game.igdbId} className="settings-check game-list-row">
+              <input type="checkbox" checked={!hiddenGameIds.includes(game.igdbId)}
+                onChange={(event) => settingsStore.apply({
+                  hiddenGameIds: event.target.checked
+                    ? hiddenGameIds.filter((id) => id !== game.igdbId)
+                    : [...hiddenGameIds, game.igdbId],
+                })} />
+              <span>🎮 {game.name}</span>
+            </label>
+          ))}
+        </div>
       ) : null}
       <div className="activity-picker" ref={pickerRef}>
         <button className="activity-picker-button" onClick={() => setPickerOpen((open) => !open)}>

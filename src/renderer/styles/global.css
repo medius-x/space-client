@@ -315,6 +315,116 @@ body.channel-dragging * { cursor: grabbing !important; }
   justify-content: flex-end;
 }
 
+/* The "detected games" per-game opt-out list (Settings → Activity, 2026-11-19):
+   one muted row per remembered game, checkbox = publish its line. */
+.game-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+.game-list-row {
+  font-size: 12px;
+  color: var(--sp-text-muted);
+}
+
+/* ===== Integrations tab: the IGDB card (2026-11-19 layout rework) ===== */
+.igdb-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* [toggle] Header ⓘ — the switch parks the ladder (credentials kept), the ⓘ
+   opens the registration guide; both stay live while the card is muted. The
+   row pins ONE line height so the three controls share a baseline. */
+.igdb-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 24px;
+}
+/* Two classes deep ON PURPOSE: the global ".settings-body h3 {margin: 24px 0 6px}"
+   comes LATER in the file at the same specificity and would win — the header sat
+   off the switch's line (user report 2026-11-19, round 2). */
+.igdb-card .igdb-title-row h3 {
+  margin: 0;
+  line-height: 24px;
+}
+.igdb-switch {
+  position: relative;
+  width: 34px;
+  height: 18px;
+  border-radius: 9px;
+  border: none;
+  padding: 0;
+  background: var(--sp-control-grey, #4e5058);
+  cursor: pointer;
+  flex: none;
+  transition: background 0.15s;
+}
+.igdb-switch.on {
+  background: var(--sp-accent, #5865f2);
+}
+.igdb-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: left 0.15s;
+}
+.igdb-switch.on::after {
+  left: 18px;
+}
+.igdb-info {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--sp-text-dim);
+  background: transparent;
+  color: var(--sp-text-dim);
+  font-size: 12px;
+  font-style: italic;
+  font-family: Georgia, serif;
+  line-height: 1;
+  cursor: pointer;
+  flex: none;
+  padding: 0;
+}
+.igdb-info.on,
+.igdb-info:hover {
+  border-color: var(--sp-text);
+  color: var(--sp-text);
+}
+/* The paused state: everything but the switch and the ⓘ reads dimmed. */
+.igdb-muted {
+  opacity: 0.55;
+}
+.igdb-guide {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  background: var(--sp-bg-elevated, #2b2d31);
+  border: 1px solid var(--sp-border, #3f4147);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.igdb-guide ol {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.igdb-guide-note {
+  color: var(--sp-text-dim);
+  font-style: italic;
+}
+
 /* The activity section (2026-11-11 auto-detect rework): one RULE row per
    registered app — a live running dot, the line, the exe name, delete —
    plus the two-row add form (app picker, then verb + line text). */

@@ -49,6 +49,19 @@ describe("pickAutoGameLine", () => {
     const line = pickAutoGameLine(["a.exe", "b.exe"], resolutions, new Map());
     expect(line?.name).toBe("A");
   });
+
+  it("skips hidden games entirely — detected, never reported", () => {
+    const resolutions = new Map<string, GameResolution>([
+      ["a.exe", { status: "resolved", card: card(1, "A") }],
+      ["b.exe", { status: "resolved", card: card(2, "B") }],
+    ]);
+    const stamps = new Map([["a.exe", 100], ["b.exe", 200]]);
+    // the newer game is hidden — the still-visible older one reports instead
+    const line = pickAutoGameLine(["a.exe", "b.exe"], resolutions, stamps, new Set([2]));
+    expect(line?.igdbGameId).toBe(1);
+    // every game hidden — no line at all
+    expect(pickAutoGameLine(["a.exe", "b.exe"], resolutions, stamps, new Set([1, 2]))).toBeNull();
+  });
 });
 
 describe("isGameDetectCandidate", () => {

@@ -178,7 +178,7 @@ export interface AppState {
   connectionQuality: ConnectionQualitySnapshot;
   /** Server settings screen (in-app, replaces the content area) — M7. */
   serverSettingsOpen: boolean;
-  serverSettingsSection: "overview" | "roles" | "members" | "invites" | "channels" | "emojis" | "stickers" | "server";
+  serverSettingsSection: "overview" | "roles" | "members" | "invites" | "channels" | "emojis" | "stickers" | "server" | "integrations";
   /** User settings modal — M7. The SCOPE splits the sections (user decision
    *  2026-09-21): "account" = General + Account (opened from the server
    *  header's dropdown — server-scoped identity), "client" = everything else
@@ -3376,6 +3376,7 @@ async function resolveOneGame(session: ConnectionSession, exeName: string): Prom
     if (answer.game !== null) {
       gameStore.applyCards([answer.game]);
       gameResolutions.set(exeName, { status: "resolved", card: answer.game });
+      rememberDetectedGame(answer.game.igdbId, answer.game.name);
       log.info("presence", `game detect: "${exeName}" -> "${answer.game.name}" (IGDB #${answer.game.igdbId})`);
       return;
     }
@@ -3424,6 +3425,14 @@ export function dismissGamePick(): void {
   gameStore.closePick();
 }
 
+/** Feeds the settings screen's "detected games" MRU: newest first, deduped by
+ *  id, capped (a quiet write-through — the list outlives restarts). */
+function rememberDetectedGame(igdbId: number, name: string): void {
+  const current = settingsStore.getSnapshot().knownGames;
+  const next = [{ igdbId, name }, ...current.filter((game) => game.igdbId !== igdbId)].slice(0, 30);
+  settingsStore.apply({ knownGames: next });
+}
+
 /** Doglegs the cards behind OTHER members' game lines (their ids ride the
  *  presence wire; the cover art is fetched once per id per session). */
 function ensureRosterGameCards(): void {
@@ -3452,27 +3461,30 @@ function ensureRosterGameCards(): void {
 
 async function pollActivityDetection(): Promise<void> {
   const settings = settingsStore.getSnapshot();
-  const bridge = window.spaceProcesses;
-  if (bridge === undefined) {
-    return;
-  }
-  // The IGDB leg needs a server that runs the integration AND the two opt-ins;
-  // the rules leg needs rules. Neither — the poll sleeps.
-  const gameDetectOn = settings.activitiesEnabled && settings.gameAutoDetectEnabled;
-  const igdbSession = gameDetectOn ? sessionWithIgdb() : null;
-  if (settings.registeredActivities.length === 0 && igdbSession === null) {
-    return;
-  }
   if (!settings.activitiesEnabled) {
     // The kill switch (user request 2026-11-11): no matching, no reporting —
     // and the live line and dots die at once (the toggle must beat the 5 s
     // tick, not wait for it). The rules stay registered for a later re-enable.
+    // FIRST in the poll on purpose (game-line report 2026-11-19): with no
+    // manual rules the old ordering hit the "nothing to detect" early-return
+    // BEFORE this branch, leaving a game line published with the toggle off.
     if (lastBroadcastActivityLine !== null) {
       broadcastActivityLine(null);
     }
     if (settings.runningActivityIds.length > 0) {
       settingsStore.apply({ runningActivityIds: [] });
     }
+    return;
+  }
+  const bridge = window.spaceProcesses;
+  if (bridge === undefined) {
+    return;
+  }
+  // The IGDB leg needs a server that runs the integration AND the opt-in; the
+  // rules leg needs rules. Neither — the poll sleeps.
+  const gameDetectOn = settings.gameAutoDetectEnabled;
+  const igdbSession = gameDetectOn ? sessionWithIgdb() : null;
+  if (settings.registeredActivities.length === 0 && igdbSession === null) {
     return;
   }
   const rules = settings.registeredActivities;
@@ -3515,7 +3527,8 @@ async function pollActivityDetection(): Promise<void> {
     }
   }
   const gameLine = igdbSession !== null
-    ? pickAutoGameLine(runningNames, gameResolutions, detectedAt)
+    ? pickAutoGameLine(runningNames, gameResolutions, detectedAt,
+        new Set(settings.hiddenGameIds))
     : null;
   const line = manualLine ?? gameLine; // an explicit rule always outranks detection
   const same = line === null

@@ -19,13 +19,15 @@ export type GameResolution =
  * The auto-detected game line: among the running processes whose resolution is
  * a RESOLVED card, the one DETECTED LATEST wins — the exact LIFO semantics of
  * matchRunningActivity (stamps from trackProcessDetection; a restart
- * re-stamps). Ties keep the first-seen resolved exe (deterministic). Null when
- * no running app has a resolved game.
+ * re-stamps). Ties keep the first-seen resolved exe (deterministic). Games in
+ * the per-game opt-out (hiddenGameIds) are skipped — detected, never reported.
+ * Null when no running app has a reportable game.
  */
 export function pickAutoGameLine(
     runningProcessNames: Iterable<string>,
     resolvedByExe: ReadonlyMap<string, GameResolution>,
     detectedAtByName?: ReadonlyMap<string, number>,
+    hiddenGameIds?: ReadonlySet<number>,
 ): PresenceActivity | null {
   let bestCard: GameCard | null = null;
   let bestAt = Number.NEGATIVE_INFINITY;
@@ -33,6 +35,9 @@ export function pickAutoGameLine(
     const resolution = resolvedByExe.get(processName);
     if (resolution === undefined || resolution.status !== "resolved") {
       continue;
+    }
+    if (hiddenGameIds?.has(resolution.card.igdbId)) {
+      continue; // the user silenced this game — detection continues, reporting does not
     }
     const detectedAt = detectedAtByName?.get(processName) ?? Number.NEGATIVE_INFINITY;
     if (bestCard === null || detectedAt > bestAt) { // strict >: ties keep the earlier exe
