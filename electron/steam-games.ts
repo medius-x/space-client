@@ -52,8 +52,14 @@ export function splitSteamPath(exePath: string): { steamRoot: string; gameFolder
   if (commonSegment.toLowerCase() !== "common") {
     return null; // workshop/downloads/compatdata — never a game install
   }
+  // Rejoin with the INPUT's separator, not path.sep (2026-11-23): the exe path
+  // belongs to the OS the client runs on, and the reassembled root feeds
+  // fs.readdirSync there — but the pure unit tests feed Windows paths on any
+  // runner, and a Linux path.sep rejoin broke the CI (the local Windows gate
+  // never saw it). A backslash anywhere in the input reads as Windows.
+  const separator = exePath.includes("\\") ? "\\" : "/";
   return {
-    steamRoot: segments.slice(0, steamappsAt + 1).join(path.sep),
+    steamRoot: segments.slice(0, steamappsAt + 1).join(separator),
     gameFolder,
   };
 }
