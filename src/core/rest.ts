@@ -323,6 +323,25 @@ export class RestClient {
     });
   }
 
+  /** GET /api/server/video — the room video codec setting (MANAGE_SERVER,
+   *  V24): what Janus offers when a voice room is CREATED. The answer carries
+   *  the EFFECTIVE value (a null column predating V24 reads as "vp8"). 404 on
+   *  a server predating V24: the caller gates on the video-codec-setting
+   *  capability and never reaches here. */
+  async getVideoSettings(): Promise<{ codec: string }> {
+    return this.request<{ codec: string }>("/api/server/video", { method: "GET" });
+  }
+
+  /** PATCH /api/server/video — stores the codec (vp8 / vp9 / h264, the
+   *  server's whitelist rejects anything else with a 400). Lands on NEWLY
+   *  created rooms: a live room keeps its birth codec until it empties. */
+  async updateVideoCodec(codec: string): Promise<{ codec: string }> {
+    return this.request<{ codec: string }>("/api/server/video", {
+      method: "PATCH",
+      body: JSON.stringify({ codec }),
+    });
+  }
+
   /** GET /api/games/{id}/cover — the game's IGDB cover THUMBNAIL bytes (V23):
    *  the same unreachable-CDN reasoning as the icon endpoint; the server
    *  fetches-on-miss and caches forever. 404 = no cover / the game stack is

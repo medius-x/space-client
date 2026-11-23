@@ -84,6 +84,22 @@ describe("share bitrate ladder (the 8-Mbps freeze post-mortem, 2026-11-11)", () 
     expect(stable.change).not.toContain("rtt");
   });
 
+  it("one incident never cuts twice — the copycat cut waits out the cooldown (2026-11-23)", () => {
+    let state = nextLadderCeiling(config, start, quiet(10_000)).state; // 5.6M
+    const first = nextLadderCeiling(config, state, { ...quiet(15_000), pliDelta: 3 });
+    expect(first.ceilingBps).toBe(3_919_999); // the first cut fires
+    // 5 s later the SAME incident is still reporting (every signal at once) —
+    // the self-reinforcing second cut of the live log is BLOCKED here.
+    const blocked = nextLadderCeiling(config, first.state, {
+      ...quiet(20_000), pliDelta: 3, congestionReports: 1, reportedLostPct: 6.0,
+    });
+    expect(blocked.ceilingBps).toBe(3_919_999);
+    expect(blocked.change).toBeNull();
+    // a problem that is STILL real after the 10 s cooldown cuts again
+    const later = nextLadderCeiling(config, first.state, { ...quiet(26_000), pliDelta: 3 });
+    expect(later.ceilingBps).toBeLessThan(3_919_999);
+  });
+
   it("repeated cuts bottom out at the floor", () => {
     let state: ShareBitrateLadderState = start;
     for (let round = 0; round < 10; round += 1) {

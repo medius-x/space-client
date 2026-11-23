@@ -35,6 +35,13 @@ export interface ShareBitrateLadderConfig {
   upStepBps: number;
   /** How long a freshly-lowered ceiling must hold before climbing resumes. */
   holdAfterDownMs: number;
+  /** The minimum spacing between CUTS (2026-11-23, the self-reinforcement
+   *  cure): one viewer incident kept reporting for seconds after the first
+   *  cut, and a second cut 5 s later halved the ceiling again — the freeze the
+   *  first cut was already curing read as fresh evidence. A blocked signal
+   *  dies with its window; a still-real problem cuts on the next one after
+   *  the cooldown. */
+  downCooldownMs: number;
   /** The minimum spacing between climb moves — one quiet window is not enough
    *  (2026-11-23: 5 s-spaced up-steps sawtoothed the ceiling 2.4↔6.0 Mbps in
    *  minutes; the user reads every move as the picture visibly changing). */
@@ -92,6 +99,7 @@ export function ladderConfigForPreset(presetBps: number): ShareBitrateLadderConf
     startBps: Math.floor(presetBps * 0.6),
     upStepBps: Math.max(300_000, Math.floor(presetBps * 0.1)),
     holdAfterDownMs: 45_000,
+    downCooldownMs: 10_000,
     upIntervalMs: 15_000,
     downFactor: 0.7,
     rttGrowMs: 150,
@@ -125,11 +133,17 @@ export function nextLadderCeiling(
     baseRttMs = signals.rttMs!;
   }
 
-  // Congestion: any of the three signals fires a cut.
+  // Congestion: any of the three signals fires a cut — but never two cuts in
+  // quick succession: one incident keeps reporting while the FIRST cut is
+  // already doing its job, and stacking a second halved the ceiling again
+  // (the 2026-11-23 live log: 6.0 → 4.2 → 2.9 in 5 s, both on "viewers lost
+  // 6.0%" from ONE freeze). A blocked signal dies with its window; a problem
+  // that is still real cuts on the next window after the cooldown.
   const rttCongested = rttKnown && baseRttMs !== null && signals.rttMs! > baseRttMs + config.rttGrowMs;
   const pliCongested = signals.pliDelta >= config.pliThreshold;
   const reportedCongested = signals.congestionReports > 0 && signals.reportedLostPct >= config.reportedLostPctThreshold;
-  if (pliCongested || reportedCongested || rttCongested) {
+  const cutCooled = signals.nowMs - state.lastDownAtMs >= config.downCooldownMs;
+  if ((pliCongested || reportedCongested || rttCongested) && cutCooled) {
     const lowered = Math.max(config.floorBps, Math.floor(state.ceilingBps * config.downFactor));
     if (lowered < state.ceilingBps) {
       const reason = pliCongested

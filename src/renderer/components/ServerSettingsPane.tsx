@@ -300,6 +300,80 @@ function OverviewSection({ session }: { session: ConnectionSession }): React.JSX
         />
         {status !== null ? <span className="settings-status">{status}</span> : null}
       </div>
+      <VideoCodecCard session={session} />
+    </div>
+  );
+}
+
+/** The room video codec card (V24, 2026-11-23): the admin picks what Janus
+ *  offers when a voice room is CREATED (VP8 / VP9 / H.264). Applies to NEW
+ *  rooms only — a live room keeps its birth codec until it empties (the hint
+ *  says so honestly). Hidden entirely on an older server: the
+ *  video-codec-setting capability is the gate, /api/server/video would 404. */
+function VideoCodecCard({ session }: { session: ConnectionSession }): React.JSX.Element | null {
+  const t = useT();
+  const supported = hasServerCapability(session.serverProfile, "video-codec-setting");
+  /** null until the fetch lands — the select stays disabled through the load. */
+  const [codec, setCodec] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!supported) {
+      return;
+    }
+    let cancelled = false;
+    session.rest.getVideoSettings()
+      .then((settings) => {
+        if (!cancelled) {
+          setCodec(settings.codec);
+        }
+      })
+      .catch((loadError: unknown) => {
+        if (!cancelled) {
+          setError(loadError instanceof Error ? loadError.message : String(loadError));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session.rest, supported]);
+
+  if (!supported) {
+    return null;
+  }
+  const change = async (next: string): Promise<void> => {
+    if (busy || next === codec) {
+      return;
+    }
+    setBusy(true);
+    setSaved(false);
+    setError(null);
+    try {
+      const answer = await session.rest.updateVideoCodec(next);
+      setCodec(answer.codec);
+      setSaved(true);
+    } catch (saveError: unknown) {
+      setError(saveError instanceof Error ? saveError.message : String(saveError));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="settings-section">
+      <div className="roles-list-header overview-heading"><span>{t("serverSettings.videoCodec")}</span></div>
+      <div className="settings-hint">{t("serverSettings.videoCodecHint")}</div>
+      <label className="settings-field">
+        <span>{t("serverSettings.videoCodecLabel")}</span>
+        <select value={codec ?? ""} disabled={codec === null || busy} onChange={(event) => void change(event.target.value)}>
+          <option value="vp8">VP8</option>
+          <option value="vp9">VP9</option>
+          <option value="h264">H.264</option>
+        </select>
+      </label>
+      {saved ? <div className="settings-hint">{t("serverSettings.videoCodecSaved")}</div> : null}
+      {error !== null ? <div className="settings-status">{error}</div> : null}
     </div>
   );
 }

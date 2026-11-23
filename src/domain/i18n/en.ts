@@ -1011,6 +1011,10 @@ export const EN = {
   "serverSettings.userLimitHint": "The maximum number of members in the room at once. Lowering it kicks nobody — only new entries are blocked.",
   "serverSettings.userLimitLabel": "Limit",
   "serverSettings.userLimitUnlimited": "No limit",
+  "serverSettings.videoCodec": "Room video codec",
+  "serverSettings.videoCodecHint": "The codec the server offers to voice rooms at creation. VP9 is markedly more efficient for screen sharing; H.264 is cheaper on CPU for machines with a hardware encoder. The change applies to NEW rooms — a created room lives with its own codec while anyone is in it.",
+  "serverSettings.videoCodecLabel": "Codec",
+  "serverSettings.videoCodecSaved": "Saved. Applies to rooms created from this point on.",
   "serverSettings.membershipChangesFailed": {
     one: "{count} membership change failed — {first}",
     other: "{count} membership changes failed — {first}",

@@ -1005,6 +1005,10 @@ export const RU: Dict = {
   "serverSettings.userLimitHint": "Максимальное число участников комнаты. Снижение лимита никого не выкидывает — блокируются только новые входы.",
   "serverSettings.userLimitLabel": "Лимит",
   "serverSettings.userLimitUnlimited": "Без лимита",
+  "serverSettings.videoCodec": "Видеокодек комнат",
+  "serverSettings.videoCodecHint": "Кодек, который сервер предлагает голосовым комнатам при создании. VP9 заметно эффективнее для шаринга экрана; H.264 дешевле для процессора на машинах с аппаратным энкодером. Изменение применяется к новым комнатам — созданная комната живёт со своим кодеком, пока в ней кто-то есть.",
+  "serverSettings.videoCodecLabel": "Кодек",
+  "serverSettings.videoCodecSaved": "Сохранено. Подействует на комнаты, созданные после этого момента.",
   "serverSettings.membershipChangesFailed": {
     one: "{count} изменение состава не сохранилось — {first}",
     few: "{count} изменения состава не сохранились — {first}",
