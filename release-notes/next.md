@@ -7,11 +7,3 @@ edited into `v<version>.md` and emptied.
 
 What belongs here: features and fixes a user can see or feel. What
 does not: CI, docs, refactoring, internal rework.
-
-- Server Settings gained a room video codec picker (VP8 / VP9 / H.264): the
-  admin can switch the whole instance to VP9 for much better screen sharing at
-  the same bandwidth. The choice applies to newly created voice rooms — a room
-  in use keeps its codec until everyone leaves it.
-- Screen-share quality recovers from a rough patch more gracefully: a single
-  viewer hiccup no longer cuts the bitrate twice in a row (which used to bury
-  it and turn the stream into a slideshow for minutes).
