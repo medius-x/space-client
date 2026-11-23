@@ -8,6 +8,8 @@ edited into `v<version>.md` and emptied.
 What belongs here: features and fixes a user can see or feel. What
 does not: CI, docs, refactoring, internal rework.
 
+- The voice-room join/leave knock is back to its original low double "tuk …
+  tuk" and now plays at full volume — it was too quiet to notice over a game.
 - The voice panel's corner game picture can now be the game's real square APP
   ICON: the server admin connects SteamGridDB in Server Settings → Integrations
   (a free key from steamgriddb.com, a built-in ⓘ guide to getting it), and

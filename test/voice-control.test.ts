@@ -102,20 +102,11 @@ describe("rejoin ladder", () => {
 });
 
 describe("knockSchedule", () => {
-  it("the OLD low body stays the spine (150 then 210 on join) — under the deafen cue's 280", () => {
-    // Round 3 of the 2026-11-19 retune: the pure-bright retune read TOO HIGH;
-    // the user asked to OVERLAY — the old thump anchors the pitch, the bright
-    // layers ride on top for the game-audible ring.
+  it("join knocks go UP (150 then 210), leave goes DOWN — under the deafen cue's 280", () => {
+    // 2026-11-23: the bright-layer overlay is rolled back — the original
+    // bare-sine timbre, loudness handled by the master gain alone.
     expect(knockSchedule("join").map((note) => note.frequencyHz)).toEqual([150, 210]);
     expect(knockSchedule("leave").map((note) => note.frequencyHz)).toEqual([210, 150]);
-  });
-
-  it("each note overlays the brighter layer (200/270) with its octave ring at exactly 2×", () => {
-    expect(knockSchedule("join").map((note) => note.brightHz)).toEqual([200, 270]);
-    expect(knockSchedule("leave").map((note) => note.brightHz)).toEqual([270, 200]);
-    for (const note of knockSchedule("join")) {
-      expect(note.overtoneHz).toBe(note.brightHz * 2);
-    }
   });
 
   it("the second knock starts after the full note+gap of the first", () => {

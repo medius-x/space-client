@@ -2,7 +2,7 @@ import { log } from "../logging";
 import { decideNotification, messageHasEveryoneHere, messageMentionsRole, messageMentionsUser, type MentionIdentity } from "../domain/logic/notification-decider";
 import { notificationPolicy, type NotificationPolicy } from "../domain/logic/notification-policy";
 import { toastBodyFallback, toastPreviewSegments } from "../domain/logic/toast-preview";
-import { KNOCK_BRIGHT_GAIN, KNOCK_OVERTONE_GAIN, knockSchedule } from "../domain/logic/knock-sound";
+import { knockSchedule } from "../domain/logic/knock-sound";
 import { deafenCue, muteCue } from "../domain/logic/mute-cue";
 import {
   CHIME_DECAY_TAU_S,
@@ -346,39 +346,30 @@ class NotificationHub {
     this.voiceInviteActionHandler = handler;
   }
 
-  /** The voice-room knock (oak's tuned "tuk … tuk"): each note is the OLD low
-   *  body plus a brighter layer and its octave ring on top (the 2026-11-19
-   *  overlay — a pure retune read too high, the bare sine got masked by game
-   *  audio), 3 ms attack, τ=20 ms decay — dry thumps, not beeps. Join goes up,
-   *  leave goes down. Master 0.8 (was 0.5, same reports: inaudible in games). */
+  /** The voice-room knock (oak's tuned "tuk … tuk"): bare sines, 3 ms attack,
+   *  τ=20 ms decay — dry thumps, not beeps. Join goes up, leave goes down.
+   *  Master 1.0 (2026-11-23: the bright overlay is rolled back — the original
+   *  timbre at the clean ceiling; going louder still would need saturation or
+   *  a longer note, and both change the sound). */
   playKnock(direction: "join" | "leave"): void {
     try {
       const context = this.ensureAudioContext();
       const now = context.currentTime;
       const master = context.createGain();
-      master.gain.value = 0.8;
+      master.gain.value = 1;
       master.connect(this.ensureMixBus(context));
       for (const note of knockSchedule(direction)) {
         const startAt = now + note.startSeconds;
-        // One shared envelope per note — both layers ride the body's shape.
         const envelope = context.createGain();
         envelope.gain.setValueAtTime(0, startAt);
         envelope.gain.linearRampToValueAtTime(1, startAt + 0.003); // 3 ms attack
         envelope.gain.exponentialRampToValueAtTime(0.001, startAt + note.durationSeconds); // τ ≈ 20 ms decay
-        const layer = (frequencyHz: number, gain: number) => {
-          const layerGain = context.createGain();
-          layerGain.gain.value = gain;
-          layerGain.connect(envelope);
-          const oscillator = context.createOscillator();
-          oscillator.frequency.value = frequencyHz;
-          oscillator.connect(layerGain);
-          oscillator.start(startAt);
-          oscillator.stop(startAt + note.durationSeconds);
-        };
-        layer(note.frequencyHz, 1);
-        layer(note.brightHz, KNOCK_BRIGHT_GAIN);
-        layer(note.overtoneHz, KNOCK_OVERTONE_GAIN);
+        const oscillator = context.createOscillator();
+        oscillator.frequency.value = note.frequencyHz;
+        oscillator.connect(envelope);
         envelope.connect(master);
+        oscillator.start(startAt);
+        oscillator.stop(startAt + note.durationSeconds);
       }
     } catch {
       // audio must never take the app down
