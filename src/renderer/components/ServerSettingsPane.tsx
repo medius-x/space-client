@@ -300,7 +300,6 @@ function OverviewSection({ session }: { session: ConnectionSession }): React.JSX
         />
         {status !== null ? <span className="settings-status">{status}</span> : null}
       </div>
-      <VideoCodecCard session={session} />
     </div>
   );
 }
@@ -3761,6 +3760,8 @@ function SgdbCard({ session, gameStackPaused }: {
 
 function ServerStorageSection({ session }: { session: ConnectionSession }): React.JSX.Element {
   const t = useT();
+  // The codec card below needs MANAGE_SERVER, not this tab's MANAGE_STORAGE.
+  const canManageServer = useStore(session.permissionStore, (state) => state.my?.permissions.includes(MANAGE_SERVER_PERMISSION) ?? false);
   const [status, setStatus] = useState<StorageStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -4094,6 +4095,10 @@ function ServerStorageSection({ session }: { session: ConnectionSession }): Reac
 
       <BackupSection session={session} />
       <SshKeySection session={session} />
+      {/* The codec card lives on the Server tab (user request 2026-11-24) but
+          needs MANAGE_SERVER, not this tab's MANAGE_STORAGE — hidden from an
+          admin who could see the section but not the endpoint. */}
+      {canManageServer ? <VideoCodecCard session={session} /> : null}
     </div>
   );
 }

@@ -7,3 +7,10 @@ edited into `v<version>.md` and emptied.
 
 What belongs here: features and fixes a user can see or feel. What
 does not: CI, docs, refactoring, internal rework.
+
+- Voice rooms now default to the VP9 codec (the admin can still pick VP8 or
+  H.264 in Server Settings → Server): screen sharing holds up far better at
+  the same bandwidth. Existing servers upgrade on their own as rooms recreate.
+- Game icons now also arrive on servers hosted on networks with a broken
+  IPv6 stack or a slow IPv4 transit (the download used to time out there —
+  the picture kept falling back to the cover).
