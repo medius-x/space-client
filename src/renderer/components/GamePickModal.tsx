@@ -10,6 +10,7 @@
 import { useStore } from "../hooks/useStore";
 import { confirmGamePick, dismissGamePick, gameStore } from "../runtime";
 import { Modal } from "./Modal";
+import { GameCoverThumb } from "./GameCoverThumb";
 import { useT } from "../hooks/useT";
 import type { GameCard } from "../../types";
 
@@ -28,7 +29,7 @@ export function GamePickModal(): React.JSX.Element | null {
             <button key={card.igdbId} className="game-pick-row"
               onClick={() => void confirmGamePick(card)}>
               {card.coverImageId !== null ? (
-                <img alt="" src={`https://images.igdb.com/igdb/image/upload/t_cover_small/${card.coverImageId}.jpg`} />
+                <GameCoverThumb igdbId={card.igdbId} />
               ) : <span className="game-pick-blank" />}
               <span className="game-pick-name">
                 {card.name}

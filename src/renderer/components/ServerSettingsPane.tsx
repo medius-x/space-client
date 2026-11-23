@@ -3463,7 +3463,7 @@ function IgdbSection({ session }: { session: ConnectionSession }): React.JSX.Ele
       <div className="igdb-card">
         <div className="igdb-title-row">
           <button type="button" role="switch" aria-checked={!paused}
-            className={"igdb-switch" + (paused ? "" : " on")}
+            className={"igdb-switch" + (paused ? "" : " on") + (loaded ? "" : " settle")}
             onClick={() => void togglePause()} />
           <h3 className={muted ? "igdb-muted" : ""}>{t("serverSettings.igdbHeader")}</h3>
           <button type="button" className={"igdb-info" + (guideOpen ? " on" : "")}
@@ -3525,6 +3525,162 @@ function IgdbSection({ session }: { session: ConnectionSession }): React.JSX.Ele
           </div>
         </Modal>
       ) : null}
+      {hasServerCapability(session.serverProfile, "sgdb-settings")
+        ? <SgdbCard session={session} gameStackPaused={paused} />
+        : null}
+    </div>
+  );
+}
+
+/** The SteamGridDB icon layer's card (V23): the IGDB card's shape — one
+ *  write-only key, a PAUSE toggle, and an ⓘ guide. Pausing IGDB disables this
+ *  toggle too (the both-toggles rule, user request 2026-11-23): pictures are
+ *  meaningless without game detection, so the whole card goes quiet. The key
+ *  is RE-READABLE at any time on the SGDB profile's API page (unlike the
+ *  Twitch secret), so Disconnect needs no confirmation. */
+function SgdbCard({ session, gameStackPaused }: {
+  session: ConnectionSession;
+  gameStackPaused: boolean;
+}): React.JSX.Element {
+  const t = useT();
+  const [apiKey, setApiKey] = useState("");
+  const [configured, setConfigured] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void session.rest.getSgdbSettings()
+      .then((settings) => {
+        if (!cancelled) {
+          setConfigured(settings.configured);
+          setPaused(settings.paused === true); // guard: an older server may omit the field
+          setLoaded(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLoaded(true); // 403/404 — the field stays editable; saving surfaces the error
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session]);
+
+  const applyAnswer = (answer: { configured: boolean; paused: boolean }): void => {
+    setConfigured(answer.configured);
+    setPaused(answer.paused === true);
+    setApiKey("");
+  };
+
+  const save = async (): Promise<void> => {
+    setBusy(true);
+    setStatus(null);
+    try {
+      applyAnswer(await session.rest.updateSgdbKey({ apiKey: apiKey.trim() }));
+      setStatus(configured ? t("serverSettings.sgdbSaved") : t("serverSettings.sgdbCleared"));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disconnect = async (): Promise<void> => {
+    setBusy(true);
+    setStatus(null);
+    try {
+      applyAnswer(await session.rest.updateSgdbKey({ apiKey: "" }));
+      setStatus(t("serverSettings.sgdbCleared"));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const togglePause = async (): Promise<void> => {
+    if (busy) {
+      return; // no visual disable — the switch must never blink
+    }
+    setBusy(true);
+    setStatus(null);
+    try {
+      applyAnswer(await session.rest.updateSgdbKey({ paused: !paused }));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // The BOTH-TOGGLES rule (user request 2026-11-23): a paused game stack
+  // mutes this layer implicitly — the toggle is inert and the card dimmed.
+  // The dimming/locking mirrors the IGDB card EXACTLY: the whole body mutes,
+  // and the FIELD LOCK happens only on a meaningful pause (parked WITH the
+  // key kept) — with no key the field stays editable even dimmed (user
+  // report 2026-11-23: the visuals must not diverge between the two cards).
+  const muted = paused || gameStackPaused;
+  const fieldsLocked = muted && configured;
+  const toggleInert = gameStackPaused;
+  return (
+    <div className="igdb-card">
+      <div className="igdb-title-row">
+        <button type="button" role="switch" aria-checked={!paused && !gameStackPaused}
+          className={"igdb-switch" + (paused || gameStackPaused ? "" : " on")
+            + (toggleInert ? " inert" : "") + (loaded ? "" : " settle")}
+          onClick={() => {
+            if (!toggleInert) {
+              void togglePause();
+            }
+          }} />
+        <h3 className={muted ? "igdb-muted" : ""}>{t("serverSettings.sgdbHeader")}</h3>
+        <button type="button" className={"igdb-info" + (guideOpen ? " on" : "")}
+          title={t("serverSettings.sgdbGuideTitle")}
+          onClick={() => setGuideOpen((open) => !open)}>i</button>
+      </div>
+      {guideOpen ? (
+        <div className="igdb-guide">
+          <div>{t("serverSettings.sgdbGuideTitle")}</div>
+          <ol>
+            <li>{t("serverSettings.sgdbGuideStep1")}</li>
+            <li>{t("serverSettings.sgdbGuideStep2")}</li>
+            <li>{t("serverSettings.sgdbGuideStep3")}</li>
+            <li>{t("serverSettings.sgdbGuideNote")}</li>
+          </ol>
+        </div>
+      ) : null}
+      <div className={"igdb-body" + (muted ? " igdb-muted" : "")}>
+        <div className="settings-hint">{t("serverSettings.sgdbSubline")}</div>
+        <div className="settings-hint">
+          {configured
+            ? (paused || gameStackPaused
+                ? t("serverSettings.sgdbPaused")
+                : t("serverSettings.sgdbConfigured"))
+            : t("serverSettings.sgdbNotConfigured")}
+        </div>
+        <label className="settings-field">
+          <span>{t("serverSettings.sgdbKey")}</span>
+          <input type="password" value={apiKey} spellCheck={false} disabled={fieldsLocked}
+            placeholder={configured ? t("serverSettings.sgdbKeyKept") : (loaded ? "" : "…")}
+            onChange={(event) => setApiKey(event.target.value)} />
+        </label>
+        <div className="profile-actions">
+          <button className="button primary" disabled={busy || apiKey.trim().length === 0} onClick={() => void save()}>
+            {t("serverSettings.igdbSave")}
+          </button>
+          {configured && !paused ? (
+            <button className="button" disabled={busy} onClick={() => void disconnect()}>
+              {t("serverSettings.igdbDisconnect")}
+            </button>
+          ) : null}
+        </div>
+        {status !== null ? <div className="settings-hint">{status}</div> : null}
+      </div>
     </div>
   );
 }

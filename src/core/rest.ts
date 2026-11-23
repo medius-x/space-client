@@ -301,6 +301,36 @@ export class RestClient {
     });
   }
 
+  /** The SteamGridDB icon layer's settings view (Server Settings → Integrations;
+   *  MANAGE_SERVER). The KEY is write-only — only the configured flag and the
+   *  pause switch come back. 404 on a server predating V23: the caller gates on
+   *  the sgdb-settings capability and never reaches here. */
+  async getSgdbSettings(): Promise<{ configured: boolean; paused: boolean }> {
+    return this.request<{ configured: boolean; paused: boolean }>("/api/server/sgdb", { method: "GET" });
+  }
+
+  /** Writes the SGDB key and/or the pause switch. Null {@code apiKey} keeps
+   *  it; an EMPTY string clears it (Disconnect). The pause and the key are
+   *  independent — pausing keeps both the key and the cached bytes (they just
+   *  stop being served). */
+  async updateSgdbKey(input: { apiKey?: string | null; paused?: boolean | null }): Promise<{ configured: boolean; paused: boolean }> {
+    return this.request<{ configured: boolean; paused: boolean }>("/api/server/sgdb", {
+      method: "PATCH",
+      body: JSON.stringify({
+        apiKey: input.apiKey ?? null,
+        paused: input.paused ?? null,
+      }),
+    });
+  }
+
+  /** GET /api/games/{id}/cover — the game's IGDB cover THUMBNAIL bytes (V23):
+   *  the same unreachable-CDN reasoning as the icon endpoint; the server
+   *  fetches-on-miss and caches forever. 404 = no cover / the game stack is
+   *  paused — the caller renders no picture. */
+  async fetchGameCover(igdbId: number): Promise<Uint8Array> {
+    return await this.authedBytes(`/api/games/${igdbId}/cover`);
+  }
+
   /** STATUS-dimension snapshot (the status menu's seed, 2026-11-17): the away/dnd
    *  sets; 404 on an older server degrades to "everyone online" — the client also
    *  gates on the roster-status capability. */
@@ -661,6 +691,15 @@ export class RestClient {
    *  but returns the raw bytes (logging round, 2026-10-06). */
   async downloadServerLogs(): Promise<Uint8Array> {
     return await this.authedBytes("/api/server/logs");
+  }
+
+  /** GET /api/games/{id}/icon — the game's cached SteamGridDB icon BYTES (V23).
+   *  Clients render THIS, not the CDN: the CDN host is unreachable from some
+   *  client machines (DPI/local proxy — the broken-picture smoke, 2026-11-23),
+   *  while the server's own reach proved itself by caching the icon. A 404
+   *  means "no icon" — the caller falls back to the IGDB cover square. */
+  async fetchGameIcon(igdbId: number): Promise<Uint8Array> {
+    return await this.authedBytes(`/api/games/${igdbId}/icon`);
   }
 
   /** Authenticated binary GET with the request() auth contract (no JSON parse). */

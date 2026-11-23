@@ -4862,7 +4862,9 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
      high and too far right"). */
   top: 6px;
   right: 6px;
+  width: 38px;
   height: 38px;
+  object-fit: cover; /* SGDB squares and IGDB thumbs both, one fixed box */
   border-radius: 4px;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
   pointer-events: auto; /* the game-name tooltip needs hover */
@@ -5349,3 +5351,12 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 .activity-picker-blank { display: inline-block; }
 .activity-picker-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .activity-picker-row code { font-size: 11px; color: var(--sp-text-dim); }
+/* The BOTH-TOGGLES rule (user request 2026-11-23): pausing the GAME STACK
+   (IGDB) implicitly parks the icon layer — its switch is inert and dimmed,
+   yet never looks disabled-then-enabled again (no blinking). */
+.igdb-switch.inert { opacity: 0.45; cursor: default; }
+/* The settle class suppresses the knob transition until the settings answer
+   lands: opening the pane with a paused integration must show the switch
+   ALREADY off, not play the off-flip (user report 2026-11-23). */
+.igdb-switch.settle { transition: none; }
+.igdb-switch.settle::after { transition: none; }

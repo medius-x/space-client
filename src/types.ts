@@ -618,6 +618,10 @@ export interface GameCard {
   coverImageId: string | null;
   genres: { id: number; name: string }[];
   firstReleaseDate: number | null;
+  /** The SteamGridDB square icon's CDN URL (V23): preferred over the cover
+   *  square wherever an icon-shaped rendering is wanted; null/absent until
+   *  the server's icon lane resolves it — older servers never send it. */
+  iconUrl?: string | null;
 }
 
 /** GET /api/games/lookup: a confident answer, or the top candidates for the user

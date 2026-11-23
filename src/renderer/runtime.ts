@@ -3433,8 +3433,123 @@ export function dismissGamePick(): void {
   gameStore.closePick();
 }
 
+/** The ICON catch-up (V23): a cached card without an icon is re-fetched a few
+ *  times — the server resolves icons in its background lane, so each fetch
+ *  both asks for it and receives it once landed. Manual cards (negative ids)
+ *  and servers without the sgdb-icons capability never re-ask. */
+const ICON_ASK_LIMIT = 3;
+const iconAskCounts = new Map<number, number>();
+
+function wantsIconCatchUp(session: ConnectionSession, igdbId: number): boolean {
+  if (igdbId <= 0 || !hasServerCapability(session.serverProfile, "sgdb-icons")) {
+    return false;
+  }
+  const card = gameStore.getSnapshot().cards.get(igdbId);
+  return card !== undefined && card.iconUrl == null && (iconAskCounts.get(igdbId) ?? 0) < ICON_ASK_LIMIT;
+}
+
+/** Fetches one card through the session, tracking the dead-mark and the icon
+ *  catch-up counters (shared by the roster loop and the own-line leg). When the
+ *  card finally carries an icon MARKER, the bytes leg fires: the icon renders
+ *  from OUR server (an object URL), never from the SGDB CDN — client machines
+ *  may not reach it at all (the broken-picture smoke, 2026-11-23). Without an
+ *  icon marker the COVER leg fires instead — the fallback picture is proxied
+ *  by the server for the very same reason. */
+const deadIconIds = new Set<number>();
+const iconObjectUrls = new Map<number, string>();
+const coverObjectUrls = new Map<number, string>();
+const deadCoverIds = new Set<number>();
+
+function doglegGameCard(session: ConnectionSession, igdbId: number): void {
+  deadGameCardIds.add(igdbId); // asked once; only a SUCCESS clears the mark
+  session.fetchGameCard(igdbId)
+    .then((card) => {
+      deadGameCardIds.delete(igdbId);
+      gameStore.applyCards([card]);
+      if (card.iconUrl != null) {
+        iconAskCounts.delete(igdbId); // settled — the panel re-renders via the store
+        fetchGameIconBytes(session, igdbId);
+      } else {
+        iconAskCounts.set(igdbId, (iconAskCounts.get(igdbId) ?? 0) + 1);
+        if (card.coverImageId != null) {
+          fetchGameCoverBytes(session, igdbId); // the fallback picture, still server-proxied
+        }
+      }
+    })
+    .catch(() => {
+      // 404/upstream — this id stays silent for the session (bare text line)
+    });
+}
+
+/** The bytes leg of the icon catch-up: one attempt per card per session (a
+ *  failure marks it dead and falls through to the cover square). */
+function fetchGameIconBytes(session: ConnectionSession, igdbId: number): void {
+  if (igdbId <= 0 || iconObjectUrls.has(igdbId) || deadIconIds.has(igdbId)) {
+    return;
+  }
+  deadIconIds.add(igdbId);
+  session.fetchGameIcon(igdbId)
+    .then((bytes) => {
+      const objectUrl = bytesToObjectUrl(bytes);
+      iconObjectUrls.set(igdbId, objectUrl);
+      gameStore.applyIcon(igdbId, objectUrl);
+    })
+    .catch(() => {
+      // 404 = no icon, or the icon layer is PAUSED (a cached value is not
+      // served) — the cover square takes the corner.
+      fetchGameCoverBytes(session, igdbId);
+    });
+}
+
+/** The cover-thumbnail bytes leg: one attempt per card per session; a miss
+ *  (no cover on IGDB, the game stack paused) leaves the corner picture-less. */
+function fetchGameCoverBytes(session: ConnectionSession, igdbId: number): void {
+  if (igdbId <= 0 || coverObjectUrls.has(igdbId) || deadCoverIds.has(igdbId)
+      || iconObjectUrls.has(igdbId)) {
+    return;
+  }
+  deadCoverIds.add(igdbId);
+  session.fetchGameCover(igdbId)
+    .then((bytes) => {
+      const objectUrl = bytesToObjectUrl(bytes);
+      coverObjectUrls.set(igdbId, objectUrl);
+      gameStore.applyCover(igdbId, objectUrl);
+    })
+    .catch(() => {
+      // no cover / paused — the panel shows no picture at all
+    });
+}
+
+/** TS 5.9 types fetched bytes as ArrayBufferLike; Blob wants the plain
+ *  ArrayBuffer view — authedBytes builds exactly that from arrayBuffer(). */
+function bytesToObjectUrl(bytes: Uint8Array): string {
+  return URL.createObjectURL(new Blob([bytes.buffer as ArrayBuffer], { type: "image/png" }));
+}
+
+/** Awaiting cover object URL for arbitrary UI (the pick dialog's rows): the
+ *  shared cache first, then one fetch through the active session. */
+export function gameCoverUrl(igdbId: number): Promise<string | null> {
+  const cached = coverObjectUrls.get(igdbId) ?? iconObjectUrls.get(igdbId);
+  if (cached !== undefined) {
+    return Promise.resolve(cached);
+  }
+  const session = activeSession;
+  if (session === null || igdbId <= 0) {
+    return Promise.resolve(null);
+  }
+  return session.fetchGameCover(igdbId)
+    .then((bytes) => {
+      const objectUrl = bytesToObjectUrl(bytes);
+      coverObjectUrls.set(igdbId, objectUrl);
+      gameStore.applyCover(igdbId, objectUrl);
+      return objectUrl;
+    })
+    .catch(() => null);
+}
+
 /** Doglegs the cards behind OTHER members' game lines (their ids ride the
- *  presence wire; the cover art is fetched once per id per session). */
+ *  presence wire; the cover art is fetched once per id per session — plus the
+ *  bounded icon catch-up re-fetches above). */
 function ensureRosterGameCards(): void {
   const known = gameStore.getSnapshot().cards;
   for (const session of sessionMap.values()) {
@@ -3443,18 +3558,17 @@ function ensureRosterGameCards(): void {
     }
     for (const activity of session.rosterStore.getSnapshot().activities.values()) {
       const igdbId = activity.igdbGameId;
-      if (igdbId == null || known.has(igdbId) || deadGameCardIds.has(igdbId)) {
+      if (igdbId == null) {
         continue;
       }
-      deadGameCardIds.add(igdbId); // asked once; only a SUCCESS clears the mark
-      session.fetchGameCard(igdbId)
-        .then((card) => {
-          deadGameCardIds.delete(igdbId);
-          gameStore.applyCards([card]);
-        })
-        .catch(() => {
-          // 404/upstream — this id stays silent for the session (bare text line)
-        });
+      ensureGameImages(session, igdbId);
+      if (deadGameCardIds.has(igdbId)) {
+        continue;
+      }
+      if (known.has(igdbId) && !wantsIconCatchUp(session, igdbId)) {
+        continue;
+      }
+      doglegGameCard(session, igdbId);
     }
   }
   // The OWN line's card feeds the voice panel's corner cover (2026-11-19) —
@@ -3462,17 +3576,32 @@ function ensureRosterGameCards(): void {
   // guaranteed, so it is ensured explicitly.
   const ownIgdbId = lastBroadcastActivityLine?.igdbGameId;
   const owner = activeSession;
-  if (ownIgdbId != null && owner !== null && !known.has(ownIgdbId) && !deadGameCardIds.has(ownIgdbId)
+  if (ownIgdbId != null && owner !== null
       && hasServerCapability(owner.serverProfile, "igdb-games")) {
-    deadGameCardIds.add(ownIgdbId); // asked once; only a SUCCESS clears the mark
-    owner.fetchGameCard(ownIgdbId)
-      .then((card) => {
-        deadGameCardIds.delete(ownIgdbId);
-        gameStore.applyCards([card]);
-      })
-      .catch(() => {
-        // stays silent for the session — the panel shows no cover
-      });
+    ensureGameImages(owner, ownIgdbId);
+    if (!deadGameCardIds.has(ownIgdbId)
+        && (!known.has(ownIgdbId) || wantsIconCatchUp(owner, ownIgdbId))) {
+      doglegGameCard(owner, ownIgdbId);
+    }
+  }
+}
+
+/** The image legs for a card ALREADY in the store. The dogleg path alone was
+ *  not enough (the "no fallback after restart" smoke, 2026-11-23): a lookup
+ *  ANSWER carries the whole card, so the store may know the game while no
+ *  dogleg ever ran — the bytes legs must key off the STORE, every tick; their
+ *  own guards dedupe the requests. */
+function ensureGameImages(session: ConnectionSession, igdbId: number): void {
+  const card = gameStore.getSnapshot().cards.get(igdbId);
+  if (card === undefined) {
+    return; // not known yet — the dogleg will land it and chain the legs
+  }
+  if (card.iconUrl != null) {
+    fetchGameIconBytes(session, igdbId); // 404 (paused/no icon) falls back to the cover inside
+    return;
+  }
+  if (card.coverImageId != null) {
+    fetchGameCoverBytes(session, igdbId);
   }
 }
 

@@ -1892,6 +1892,17 @@ export class ConnectionSession {
     return this.rest.fetchGameCard(igdbId);
   }
 
+  /** The game's cached icon bytes — the renderer turns them into an object URL
+   *  (the CDN itself may be unreachable from this machine, V23). */
+  fetchGameIcon(igdbId: number): Promise<Uint8Array> {
+    return this.rest.fetchGameIcon(igdbId);
+  }
+
+  /** The game's cover-thumbnail bytes — same server-proxy reasoning (V23). */
+  fetchGameCover(igdbId: number): Promise<Uint8Array> {
+    return this.rest.fetchGameCover(igdbId);
+  }
+
   confirmGame(input: { appId?: string | null; exeName?: string | null; folderName?: string | null; igdbId: number }): Promise<void> {
     return this.rest.confirmGame(input);
   }
