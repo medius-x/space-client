@@ -3263,9 +3263,13 @@ button.wide-add { width: 100%; }
   overflow: hidden;
 }
 /* The pop-out renders its OWN WebRTC subscription (a live <video>, not the
-   old JPEG <img> relay). Without a stream the element collapses to 0×0 and
-   the waiting line centers alone. */
-.popout-root video { max-width: 100%; max-height: 100%; object-fit: contain; }
+   old JPEG <img> relay). Width/height 100% PIN THE BOX (2026-11-23): a
+   max-*-sized video renders at the STREAM's intrinsic size, so every encoder
+   downscale visibly shrank the picture to "the size of a phone screen"
+   (1920→640 = a 640 CSS px element on the black stage). With the box pinned,
+   contain letterboxes any incoming resolution — fps/bitrate may degrade,
+   the picture's SIZE never moves. */
+.popout-root video { width: 100%; height: 100%; object-fit: contain; }
 .popout-waiting { color: var(--sp-text-dim); font-size: 14px; }
 /* The minimized hint (2026-11-11): a translucent pill centered over the
    frozen frame — the still picture gets an honest caption, not silence. */

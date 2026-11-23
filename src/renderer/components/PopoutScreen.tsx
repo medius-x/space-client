@@ -303,28 +303,43 @@ export function PopoutScreen(): React.JSX.Element {
           return;
         }
         const dimensions = current.width !== null && current.height !== null ? `${current.width}×${current.height}` : "?";
+        // The encoder-side resolution flip (2026-11-23 diagnostics): the viewer
+        // must never SEE this (the box is pinned, only sharpness moves), but a
+        // post-mortem must — this is the publisher's encoder degrading, the one
+        // signal the publisher's own logs cannot prove.
+        if (current.width !== null && current.height !== null && last.width !== null && last.height !== null
+            && (current.width !== last.width || current.height !== last.height)) {
+          log.warn("share-stats", `incoming resolution changed: ${last.width}×${last.height} → ${current.width}×${current.height} (publisher encoder rescaled — the pinned box only loses sharpness)`);
+        }
         const lost = current.packetsLost !== null && last.packetsLost !== null ? current.packetsLost - last.packetsLost : null;
         const freezeDelta = current.freezeCount !== null && last.freezeCount !== null ? current.freezeCount - last.freezeCount : null;
         const freezeSeconds = current.totalFreezesSeconds !== null && last.totalFreezesSeconds !== null
           ? current.totalFreezesSeconds - last.totalFreezesSeconds
           : null;
-        const freezeNow = (freezeDelta ?? 0) > 0 || (freezeSeconds ?? 0) >= 0.5;
-        if (freezeNow) {
+        // Two sensitivities, deliberately different (2026-11-23): the LOG
+        // fires on any freeze delta (a post-mortem wants every blip), but a
+        // REPORT needs an honest ≥0.5 s freeze — the old freezeDelta>0 rule
+        // shipped a 6%-equivalent for a 0.3 s micro-freeze (the 2026-11-19
+        // logs: "viewers lost 6.0%" at lost +0), and the publisher's ladder
+        // catastrophically cut on it.
+        const freezeLogged = (freezeDelta ?? 0) > 0 || (freezeSeconds ?? 0) >= 0.5;
+        const freezeReported = (freezeSeconds ?? 0) >= 0.5;
+        if (freezeLogged) {
           log.warn("share-stats", `viewer freeze: +${freezeDelta ?? "?"} freezes (+${(freezeSeconds ?? 0).toFixed(2)} s) — ${dimensions}, dec ${current.decodedFps ?? "?"} fps, lost +${lost ?? "?"}, jitter ${current.jitterBufferMs !== null ? current.jitterBufferMs.toFixed(1) : "?"} ms`);
         }
         lostSinceReport += Math.max(0, lost ?? 0);
         framesSinceReport += Math.max(0, current.framesDecoded - last.framesDecoded);
-        if (((lost ?? 0) > 0 || freezeNow) && Date.now() - lastReportAt >= 3_000 && shareUsernameRef.current !== null) {
+        if (((lost ?? 0) > 0 || freezeReported) && Date.now() - lastReportAt >= 3_000 && shareUsernameRef.current !== null) {
           const measured = lostSinceReport + framesSinceReport > 0
             ? (100 * lostSinceReport) / (lostSinceReport + framesSinceReport)
             : 0;
-          const lostPct = Math.min(100, Math.max(measured, freezeNow ? 6 : 0));
+          const lostPct = Math.min(100, Math.max(measured, freezeReported ? 6 : 0));
           window.spaceWindow?.shareCongestion(shareUsernameRef.current, lostPct);
           lastReportAt = Date.now();
           lostSinceReport = 0;
           framesSinceReport = 0;
         }
-        if (!freezeNow && ticks % 10 === 0) {
+        if (!freezeLogged && ticks % 10 === 0) {
           log.info("share-stats", `in: ${dimensions}, dec ${current.decodedFps ?? "?"} fps, lost +${lost ?? "?"}, jitter ${current.jitterBufferMs !== null ? current.jitterBufferMs.toFixed(1) : "?"} ms, freezes ${current.freezeCount ?? "?"}`);
         }
       });

@@ -16,6 +16,11 @@
  *    Janus, works everywhere);
  *  - RTT growth over the session's baseline (the uplink queue filling — the
  *    EARLIEST signal, it precedes loss).
+ * 2026-11-23 desensitise pass (the "quality seesaws every few minutes" live
+ * report): a cut needs a REAL problem (loss threshold 5%, not Wi-Fi noise;
+ * the viewer-side freeze reports were tightened to match), the post-cut hold
+ * is 45 s, and the climb moves at most one step per 15 s — the ceiling must
+ * read as stable, not breathe.
  * Pure logic, clock injected: the runtime owns the timers and the stats poll.
  */
 
@@ -30,13 +35,20 @@ export interface ShareBitrateLadderConfig {
   upStepBps: number;
   /** How long a freshly-lowered ceiling must hold before climbing resumes. */
   holdAfterDownMs: number;
+  /** The minimum spacing between climb moves — one quiet window is not enough
+   *  (2026-11-23: 5 s-spaced up-steps sawtoothed the ceiling 2.4↔6.0 Mbps in
+   *  minutes; the user reads every move as the picture visibly changing). */
+  upIntervalMs: number;
   /** The multiplicative cut on a congestion signal. */
   downFactor: number;
   /** RTT growth over the session baseline that reads as a filling queue. */
   rttGrowMs: number;
   /** PLI arrivals in one window that read as congestion. */
   pliThreshold: number;
-  /** Viewer-reported loss percent in one window that reads as congestion. */
+  /** Viewer-reported loss percent in one window that reads as congestion
+   *  (2026-11-23: 0.5% cut on Wi-Fi packet noise; 5% after the user's call —
+   *  the viewer's freeze report (a ≥0.5 s freeze) reads as 6% equivalent and
+   *  must stay ABOVE the threshold, so real trouble still cuts). */
   reportedLostPctThreshold: number;
 }
 
@@ -57,6 +69,8 @@ export interface ShareBitrateLadderState {
   ceilingBps: number;
   /** The last DOWN move's timestamp (hold-window bookkeeping). */
   lastDownAtMs: number;
+  /** The last UP move's timestamp (up-interval bookkeeping). */
+  lastUpAtMs: number;
   /** The session's RTT baseline: the minimum seen while quiet (null until the
    *  first quiet reading — growth is only meaningful against it). */
   baseRttMs: number | null;
@@ -77,11 +91,12 @@ export function ladderConfigForPreset(presetBps: number): ShareBitrateLadderConf
     floorBps,
     startBps: Math.floor(presetBps * 0.6),
     upStepBps: Math.max(300_000, Math.floor(presetBps * 0.1)),
-    holdAfterDownMs: 15_000,
+    holdAfterDownMs: 45_000,
+    upIntervalMs: 15_000,
     downFactor: 0.7,
     rttGrowMs: 150,
     pliThreshold: 2,
-    reportedLostPctThreshold: 0.5,
+    reportedLostPctThreshold: 5,
   };
 }
 
@@ -124,7 +139,7 @@ export function nextLadderCeiling(
           : `rtt ${Math.round(signals.rttMs!)} ms > ${Math.round(baseRttMs ?? 0)}+${config.rttGrowMs}`;
       return {
         ceilingBps: lowered,
-        state: { ceilingBps: lowered, lastDownAtMs: signals.nowMs, baseRttMs },
+        state: { ceilingBps: lowered, lastDownAtMs: signals.nowMs, lastUpAtMs: state.lastUpAtMs, baseRttMs },
         change: `down → ${(lowered / 1_000_000).toFixed(1)} Mbps (${reason})`,
       };
     }
@@ -133,13 +148,15 @@ export function nextLadderCeiling(
   }
 
   // Quiet: climb, but never during the post-cut hold (let the queue drain and
-  // the viewers heal before pushing again).
+  // the viewers heal before pushing again) and never faster than one step per
+  // up-interval (a quiet window alone is not evidence the channel grew).
   if (quiet && signals.nowMs - state.lastDownAtMs >= config.holdAfterDownMs
+      && signals.nowMs - state.lastUpAtMs >= config.upIntervalMs
       && state.ceilingBps < config.presetBps) {
     const raised = Math.min(config.presetBps, state.ceilingBps + config.upStepBps);
     return {
       ceilingBps: raised,
-      state: { ceilingBps: raised, lastDownAtMs: state.lastDownAtMs, baseRttMs },
+      state: { ceilingBps: raised, lastDownAtMs: state.lastDownAtMs, lastUpAtMs: signals.nowMs, baseRttMs },
       change: `up → ${(raised / 1_000_000).toFixed(1)} Mbps (quiet)`,
     };
   }
@@ -147,7 +164,7 @@ export function nextLadderCeiling(
 }
 
 export function initialLadderState(config: ShareBitrateLadderConfig): ShareBitrateLadderState {
-  return { ceilingBps: config.startBps, lastDownAtMs: Number.NEGATIVE_INFINITY, baseRttMs: null };
+  return { ceilingBps: config.startBps, lastDownAtMs: Number.NEGATIVE_INFINITY, lastUpAtMs: Number.NEGATIVE_INFINITY, baseRttMs: null };
 }
 
 // ---------------------------------------------------------------------------

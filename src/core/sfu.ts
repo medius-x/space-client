@@ -523,25 +523,19 @@ export class SfuSession {
       throw new Error("camera is already publishing — stop it before sharing a screen");
     }
     this.screenVideoSender = this.publisherPc.addTrack(videoTrack, new MediaStream([videoTrack]));
-    // Screen video prefers MOTION over per-frame detail, and — 2026-11-19
-    // rework of the 2026-11-11 choice — MAINTAIN-RESOLUTION degradation.
-    // "balanced" let the encoder resize on every adaptive-ceiling move, and a
-    // whole evening of ladder sawing (freeze-report → cut → climb → cut…) made
-    // the VIEWER's picture change size dozens of times (1920×804 ↔ 1280×536 ↔
-    // 960×402 — unwatchable; the 2026-11-18 logs correlate every flip with a
-    // ceiling move). Resolution must NEVER move implicitly: under channel
-    // pressure the encoder drops fps/quality instead, and a CPU that cannot
-    // sustain the capture is the downscale stepper's job (deliberate,
-    // hysteresis-gated) — the "enc 11 fps" case the 11-11 round feared.
-    videoTrack.contentHint = "motion";
-    try {
-      // degradationPreference is a Chromium extension the TS DOM lib does not
-      // know — set it through the widened type (absent on older builds: no-op).
-      const sender = this.screenVideoSender as RTCRtpSender & { degradationPreference?: string };
-      sender.degradationPreference = "maintain-resolution";
-    } catch {
-      // older Chromium without sender degradationPreference: defaults stay
-    }
+    // Screen video is READ, not watched (2026-11-23 reversal of the "motion"
+    // choice): contentHint "motion" TOLD Chromium "framerate over detail —
+    // trade the picture's SIZE away under pressure", and the 2026-11-19 logs
+    // show it doing exactly that: the encoder auto-downscaled 1920×804 →
+    // 1280×536 → 640×268 at a STEADY 30 fps, a healthy 4–7 ms/f encode cost
+    // and ZERO moves of our ladder/stepper — implicit degradation no
+    // degradationPreference on top could override. "detail" flips the trade:
+    // under channel pressure the encoder drops FPS/bitrate and keeps the
+    // resolution (the viewer's box is pinned by CSS either way, but the
+    // stream should not weathervane either). A CPU that truly cannot sustain
+    // the capture is the downscale stepper's job (deliberate, hysteresis-gated).
+    videoTrack.contentHint = "detail";
+    this.assertShareMaintainResolution();
     if (videoBitrate !== null) {
       await this.raiseSenderBitrate(this.screenVideoSender, videoBitrate);
     }
@@ -627,10 +621,32 @@ export class SfuSession {
 
   /** The adaptive ladder's live ceiling move (2026-11-11): the same lever the
    *  preset pulled at start, now driven by congestion signals instead of a
-   *  fixed number. No-op without a live share sender. */
+   *  fixed number. Re-asserts the encoder policy after the parameter write.
+   *  No-op without a live share sender. */
   async setShareVideoCeiling(maxBitrate: number): Promise<void> {
     if (this.screenVideoSender) {
       await this.raiseSenderBitrate(this.screenVideoSender, maxBitrate);
+      this.assertShareMaintainResolution();
+    }
+  }
+
+  /** The share-video degradation POLICY (2026-11-23): maintain-resolution must
+   *  survive EVERY setParameters — the picture's size is the one thing this
+   *  app never trades away (the pop-out CSS pins the viewer's box; this pins
+   *  the encoder). Re-asserted after each parameter write with the effective
+   *  value logged, so a post-mortem can see whether the build honoured it
+   *  (degradationPreference is a Chromium extension the TS DOM lib does not
+   *  know — set through the widened type; absent on older builds: no-op). */
+  private assertShareMaintainResolution(): void {
+    const sender = this.screenVideoSender as (RTCRtpSender & { degradationPreference?: string }) | null;
+    if (sender === null) {
+      return;
+    }
+    try {
+      sender.degradationPreference = "maintain-resolution";
+      log.info("sfu", `share encoder policy: degradationPreference=${sender.degradationPreference ?? "unsupported"}, contentHint=${sender.track?.contentHint ?? "?"}`);
+    } catch {
+      // older Chromium without sender degradationPreference: defaults stay
     }
   }
 
@@ -651,6 +667,7 @@ export class SfuSession {
       parameters.encodings[0]!.scaleResolutionDownBy = factor;
       await sender.setParameters(parameters);
       log.info("sfu", `share video downscale → ÷${factor}`);
+      this.assertShareMaintainResolution();
     } catch (error: unknown) {
       log.warn("sfu", `video downscale apply failed: ${error instanceof Error ? error.message : String(error)}`);
     }
