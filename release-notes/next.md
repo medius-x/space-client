@@ -7,19 +7,3 @@ edited into `v<version>.md` and emptied.
 
 What belongs here: features and fixes a user can see or feel. What
 does not: CI, docs, refactoring, internal rework.
-
-- Screen sharing is easier on the eyes: the watched picture's SIZE no longer
-  breathes with the connection (it used to visibly shrink when the encoder
-  eased off), the quality now changes only when there is a real problem
-  instead of seesawing every couple of minutes, and under real pressure the
-  framerate drops while the picture stays sharp and full-size.
-- The voice-room join/leave knock is back to its original low double "tuk …
-  tuk" and now plays at full volume — it was too quiet to notice over a game.
-- The voice panel's corner game picture can now be the game's real square APP
-  ICON: the server admin connects SteamGridDB in Server Settings → Integrations
-  (a free key from steamgriddb.com, a built-in ⓘ guide to getting it), and
-  icons appear for detected Steam games — the cover thumbnail stays as the
-  fallback. The icon layer has its own pause toggle (pausing the game
-  detection mutes both), and every game picture — icons and covers alike —
-  now travels through your own server, so client machines behind strict
-  networks see pictures too.
