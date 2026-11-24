@@ -721,6 +721,42 @@ export class RestClient {
     return await this.authedBytes(`/api/games/${igdbId}/icon`);
   }
 
+  /** POST /api/games/{id}/icon — the client-side icon OFFER (2026-11-24, the
+   *  burst-throttled transit round): this machine fetched the card's
+   *  pendingIconUrl from the CDN itself (its network is often healthy where
+   *  the hosting's route is strangled) and hands the bytes to the server.
+   *  First delivery wins atomically — the server's own lane, this offer, or
+   *  another client's; 201 = ours became the icon, 200 = one already stood
+   *  (idempotent no-op). The server re-sniffs the magic bytes; we render our
+   *  LOCAL copy either way, so nothing waits on this call. */
+  async offerGameIcon(igdbId: number, bytes: Uint8Array): Promise<void> {
+    const headers: Record<string, string> = { "Content-Type": "application/octet-stream" };
+    const tokens = this.tokenStorage.load();
+    if (tokens) {
+      headers.Authorization = `Bearer ${tokens.token}`;
+    }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), BYTES_TIMEOUT_MS);
+    let response: Response;
+    try {
+      // TS 5.9 types fetched bytes as ArrayBufferLike; BodyInit wants the
+      // plain ArrayBuffer view — the same cast bytesToObjectUrl makes.
+      response = await this.fetchImpl(`${this.baseUrl}/api/games/${igdbId}/icon`,
+          { method: "POST", headers, signal: controller.signal,
+            body: new Blob([bytes.buffer as ArrayBuffer]) });
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (response.status === 401 && tokens) {
+      await this.refreshOnce();
+      return await this.offerGameIcon(igdbId, bytes);
+    }
+    if (!response.ok) {
+      log.warn("rest", `POST /api/games/${igdbId}/icon → ${response.status}`);
+      throw new ApiError(response.status, `HTTP ${response.status}`);
+    }
+  }
+
   /** Authenticated binary GET with the request() auth contract (no JSON parse). */
   private async authedBytes(path: string, retried = false): Promise<Uint8Array> {
     const headers: Record<string, string> = {};

@@ -3471,6 +3471,7 @@ function doglegGameCard(session: ConnectionSession, igdbId: number): void {
         fetchGameIconBytes(session, igdbId);
       } else {
         iconAskCounts.set(igdbId, (iconAskCounts.get(igdbId) ?? 0) + 1);
+        maybeOfferPendingIcon(session, card); // our own network may beat the lane
         if (card.coverImageId != null) {
           fetchGameCoverBytes(session, igdbId); // the fallback picture, still server-proxied
         }
@@ -3479,6 +3480,59 @@ function doglegGameCard(session: ConnectionSession, igdbId: number): void {
     .catch(() => {
       // 404/upstream — this id stays silent for the session (bare text line)
     });
+}
+
+/** The client-side icon FETCH+OFFER leg (2026-11-24, the burst-throttled
+ *  transit round): a card whose icon is PENDING carries the CDN URL the
+ *  server's lane is still fighting for — when THIS machine's route to the
+ *  CDN is healthy, we fetch the bytes ourselves and offer them to the
+ *  server (first delivery wins atomically there). One attempt per game per
+ *  client session, a hard 30 s timeout: a dead CDN path costs half a minute
+ *  once and then the server's lane owns the game. Our local copy renders
+ *  immediately — nothing waits on the offer's round trip. */
+const offeredIconIds = new Set<number>();
+const PENDING_ICON_FETCH_TIMEOUT_MS = 30_000;
+const SGDB_ICON_MAX_BYTES = 1100 * 1024; // mirrors the server's cache cap
+
+function maybeOfferPendingIcon(session: ConnectionSession, card: GameCard): void {
+  if (card.igdbId <= 0 || card.iconUrl != null || !card.pendingIconUrl) {
+    return;
+  }
+  if (!hasServerCapability(session.serverProfile, "sgdb-icon-upload") || offeredIconIds.has(card.igdbId)) {
+    return;
+  }
+  offeredIconIds.add(card.igdbId);
+  fetchPendingIconBytes(card.pendingIconUrl)
+    .then((bytes) => {
+      const objectUrl = bytesToObjectUrl(bytes);
+      iconObjectUrls.set(card.igdbId, objectUrl); // render ours right away
+      gameStore.applyIcon(card.igdbId, objectUrl);
+      session.offerGameIcon(card.igdbId, bytes).catch(() => {
+        // the server refused or already has one — its icon stands for everyone
+        // else; our local copy stays correct either way (same URL, same bytes)
+      });
+    })
+    .catch(() => {
+      // the CDN is unreachable from this machine — the server lane owns it
+    });
+}
+
+async function fetchPendingIconBytes(url: string): Promise<Uint8Array> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PENDING_ICON_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const buffer = await response.arrayBuffer();
+    if (buffer.byteLength === 0 || buffer.byteLength > SGDB_ICON_MAX_BYTES) {
+      throw new Error(`unusable icon size ${buffer.byteLength}`);
+    }
+    return new Uint8Array(buffer);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 /** The bytes leg of the icon catch-up: one attempt per card per session (a
