@@ -3433,155 +3433,33 @@ export function dismissGamePick(): void {
   gameStore.closePick();
 }
 
-/** The ICON catch-up (V23; time-based since 2026-11-24, the dead-window
- *  post-mortem): a cached card without an icon is re-fetched every 20 s for
- *  up to 30 minutes per game per session — the hosting's route to the icon
- *  host dies WHOLE for minutes at a time, and the old count-based budget (3
- *  asks burned in ~15 s) always surrendered before the window reopened. The
- *  ask is a cached card read, and the roster loop only polls while the game
- *  is actually being played. Manual cards (negative ids) and servers without
- *  the sgdb-icons capability never re-ask. */
-const ICON_REASK_INTERVAL_MS = 20_000;
-const ICON_CATCHUP_WINDOW_MS = 30 * 60_000;
-const iconAskPacing = new Map<number, { firstAskAtMs: number; lastAskAtMs: number }>();
-
-function wantsIconCatchUp(session: ConnectionSession, igdbId: number): boolean {
-  if (igdbId <= 0 || !hasServerCapability(session.serverProfile, "sgdb-icons")) {
-    return false;
-  }
-  const card = gameStore.getSnapshot().cards.get(igdbId);
-  if (card === undefined || card.iconUrl != null) {
-    return false;
-  }
-  const pacing = iconAskPacing.get(igdbId);
-  if (pacing === undefined) {
-    return true; // never asked — go
-  }
-  const now = Date.now();
-  return now - pacing.firstAskAtMs <= ICON_CATCHUP_WINDOW_MS
-      && now - pacing.lastAskAtMs >= ICON_REASK_INTERVAL_MS;
-}
-
-/** Fetches one card through the session, tracking the dead-mark and the icon
- *  catch-up counters (shared by the roster loop and the own-line leg). When the
- *  card finally carries an icon MARKER, the bytes leg fires: the icon renders
- *  from OUR server (an object URL), never from the SGDB CDN — client machines
- *  may not reach it at all (the broken-picture smoke, 2026-11-23). Without an
- *  icon marker the COVER leg fires instead — the fallback picture is proxied
- *  by the server for the very same reason. */
-const deadIconIds = new Set<number>();
-const iconObjectUrls = new Map<number, string>();
+/** Fetches one card through the session (the roster loop and the own-line
+ *  leg): a cached card is fetched once — the store keeps it forever. The
+ *  COVER leg fires when the card has cover art — the picture is proxied by
+ *  our server (the CDN is unreachable from some client machines). */
 const coverObjectUrls = new Map<number, string>();
 const deadCoverIds = new Set<number>();
 
 function doglegGameCard(session: ConnectionSession, igdbId: number): void {
   deadGameCardIds.add(igdbId); // the in-flight guard; both outcomes clear it below
-  const now = Date.now();
-  const pacing = iconAskPacing.get(igdbId) ?? { firstAskAtMs: now, lastAskAtMs: 0 };
-  pacing.lastAskAtMs = now;
-  iconAskPacing.set(igdbId, pacing);
   session.fetchGameCard(igdbId)
     .then((card) => {
       deadGameCardIds.delete(igdbId);
       gameStore.applyCards([card]);
-      if (card.iconUrl != null) {
-        iconAskPacing.delete(igdbId); // settled — the panel re-renders via the store
-        fetchGameIconBytes(session, igdbId);
-      } else {
-        maybeOfferPendingIcon(session, card); // our own network may beat the lane
-        if (card.coverImageId != null) {
-          fetchGameCoverBytes(session, igdbId); // the fallback picture, still server-proxied
-        }
+      if (card.coverImageId != null) {
+        fetchGameCoverBytes(session, igdbId); // the picture, server-proxied
       }
     })
     .catch(() => {
-      // A failed ask no longer silences the game for the whole session (the
-      // 2026-11-24 lesson: one ask landing in the server's restart/dead window
-      // used to mute the game forever) — the time pacer above bounds retries.
+      // a failed ask stays silent for the session (bare text line)
       deadGameCardIds.delete(igdbId);
-    });
-}
-
-/** The client-side icon FETCH+OFFER leg (2026-11-24, the burst-throttled
- *  transit round): a card whose icon is PENDING carries the CDN URL the
- *  server's lane is still fighting for — when THIS machine's route to the
- *  CDN is healthy, we fetch the bytes ourselves and offer them to the
- *  server (first delivery wins atomically there). One attempt per game per
- *  client session, a hard 30 s timeout: a dead CDN path costs half a minute
- *  once and then the server's lane owns the game. Our local copy renders
- *  immediately — nothing waits on the offer's round trip. */
-const offerAttempts = new Map<number, number>();
-const MAX_OFFER_ATTEMPTS = 2; // one transient CDN hiccup must not forfeit the game
-const PENDING_ICON_FETCH_TIMEOUT_MS = 30_000;
-const SGDB_ICON_MAX_BYTES = 1100 * 1024; // mirrors the server's cache cap
-
-function maybeOfferPendingIcon(session: ConnectionSession, card: GameCard): void {
-  if (card.igdbId <= 0 || card.iconUrl != null || !card.pendingIconUrl) {
-    return;
-  }
-  const attempts = offerAttempts.get(card.igdbId) ?? 0;
-  if (!hasServerCapability(session.serverProfile, "sgdb-icon-upload") || attempts >= MAX_OFFER_ATTEMPTS) {
-    return;
-  }
-  offerAttempts.set(card.igdbId, attempts + 1);
-  fetchPendingIconBytes(card.pendingIconUrl)
-    .then((bytes) => {
-      const objectUrl = bytesToObjectUrl(bytes);
-      iconObjectUrls.set(card.igdbId, objectUrl); // render ours right away
-      gameStore.applyIcon(card.igdbId, objectUrl);
-      session.offerGameIcon(card.igdbId, bytes).catch(() => {
-        // the server refused or already has one — its icon stands for everyone
-        // else; our local copy stays correct either way (same URL, same bytes)
-      });
-    })
-    .catch(() => {
-      // the CDN is unreachable from this machine — the server lane owns it
-    });
-}
-
-async function fetchPendingIconBytes(url: string): Promise<Uint8Array> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), PENDING_ICON_FETCH_TIMEOUT_MS);
-  try {
-    const response = await fetch(url, { signal: controller.signal });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    const buffer = await response.arrayBuffer();
-    if (buffer.byteLength === 0 || buffer.byteLength > SGDB_ICON_MAX_BYTES) {
-      throw new Error(`unusable icon size ${buffer.byteLength}`);
-    }
-    return new Uint8Array(buffer);
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-/** The bytes leg of the icon catch-up: one attempt per card per session (a
- *  failure marks it dead and falls through to the cover square). */
-function fetchGameIconBytes(session: ConnectionSession, igdbId: number): void {
-  if (igdbId <= 0 || iconObjectUrls.has(igdbId) || deadIconIds.has(igdbId)) {
-    return;
-  }
-  deadIconIds.add(igdbId);
-  session.fetchGameIcon(igdbId)
-    .then((bytes) => {
-      const objectUrl = bytesToObjectUrl(bytes);
-      iconObjectUrls.set(igdbId, objectUrl);
-      gameStore.applyIcon(igdbId, objectUrl);
-    })
-    .catch(() => {
-      // 404 = no icon, or the icon layer is PAUSED (a cached value is not
-      // served) — the cover square takes the corner.
-      fetchGameCoverBytes(session, igdbId);
     });
 }
 
 /** The cover-thumbnail bytes leg: one attempt per card per session; a miss
  *  (no cover on IGDB, the game stack paused) leaves the corner picture-less. */
 function fetchGameCoverBytes(session: ConnectionSession, igdbId: number): void {
-  if (igdbId <= 0 || coverObjectUrls.has(igdbId) || deadCoverIds.has(igdbId)
-      || iconObjectUrls.has(igdbId)) {
+  if (igdbId <= 0 || coverObjectUrls.has(igdbId) || deadCoverIds.has(igdbId)) {
     return;
   }
   deadCoverIds.add(igdbId);
@@ -3605,7 +3483,7 @@ function bytesToObjectUrl(bytes: Uint8Array): string {
 /** Awaiting cover object URL for arbitrary UI (the pick dialog's rows): the
  *  shared cache first, then one fetch through the active session. */
 export function gameCoverUrl(igdbId: number): Promise<string | null> {
-  const cached = coverObjectUrls.get(igdbId) ?? iconObjectUrls.get(igdbId);
+  const cached = coverObjectUrls.get(igdbId);
   if (cached !== undefined) {
     return Promise.resolve(cached);
   }
@@ -3624,8 +3502,7 @@ export function gameCoverUrl(igdbId: number): Promise<string | null> {
 }
 
 /** Doglegs the cards behind OTHER members' game lines (their ids ride the
- *  presence wire; the cover art is fetched once per id per session — plus the
- *  bounded icon catch-up re-fetches above). */
+ *  presence wire; the cover art is fetched once per id per session). */
 function ensureRosterGameCards(): void {
   const known = gameStore.getSnapshot().cards;
   for (const session of sessionMap.values()) {
@@ -3641,7 +3518,7 @@ function ensureRosterGameCards(): void {
       if (deadGameCardIds.has(igdbId)) {
         continue;
       }
-      if (known.has(igdbId) && !wantsIconCatchUp(session, igdbId)) {
+      if (known.has(igdbId)) {
         continue;
       }
       doglegGameCard(session, igdbId);
@@ -3655,8 +3532,7 @@ function ensureRosterGameCards(): void {
   if (ownIgdbId != null && owner !== null
       && hasServerCapability(owner.serverProfile, "igdb-games")) {
     ensureGameImages(owner, ownIgdbId);
-    if (!deadGameCardIds.has(ownIgdbId)
-        && (!known.has(ownIgdbId) || wantsIconCatchUp(owner, ownIgdbId))) {
+    if (!deadGameCardIds.has(ownIgdbId) && !known.has(ownIgdbId)) {
       doglegGameCard(owner, ownIgdbId);
     }
   }
@@ -3671,10 +3547,6 @@ function ensureGameImages(session: ConnectionSession, igdbId: number): void {
   const card = gameStore.getSnapshot().cards.get(igdbId);
   if (card === undefined) {
     return; // not known yet — the dogleg will land it and chain the legs
-  }
-  if (card.iconUrl != null) {
-    fetchGameIconBytes(session, igdbId); // 404 (paused/no icon) falls back to the cover inside
-    return;
   }
   if (card.coverImageId != null) {
     fetchGameCoverBytes(session, igdbId);

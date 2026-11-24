@@ -1894,15 +1894,6 @@ export class ConnectionSession {
 
   /** The game's cached icon bytes — the renderer turns them into an object URL
    *  (the CDN itself may be unreachable from this machine, V23). */
-  fetchGameIcon(igdbId: number): Promise<Uint8Array> {
-    return this.rest.fetchGameIcon(igdbId);
-  }
-
-  /** The icon OFFER leg (2026-11-24): pushes this machine's CDN-fetched bytes
-   *  to the server — see Rest.offerGameIcon. */
-  offerGameIcon(igdbId: number, bytes: Uint8Array): Promise<void> {
-    return this.rest.offerGameIcon(igdbId, bytes);
-  }
 
   /** The game's cover-thumbnail bytes — same server-proxy reasoning (V23). */
   fetchGameCover(igdbId: number): Promise<Uint8Array> {

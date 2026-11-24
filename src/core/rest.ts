@@ -301,28 +301,6 @@ export class RestClient {
     });
   }
 
-  /** The SteamGridDB icon layer's settings view (Server Settings → Integrations;
-   *  MANAGE_SERVER). The KEY is write-only — only the configured flag and the
-   *  pause switch come back. 404 on a server predating V23: the caller gates on
-   *  the sgdb-settings capability and never reaches here. */
-  async getSgdbSettings(): Promise<{ configured: boolean; paused: boolean }> {
-    return this.request<{ configured: boolean; paused: boolean }>("/api/server/sgdb", { method: "GET" });
-  }
-
-  /** Writes the SGDB key and/or the pause switch. Null {@code apiKey} keeps
-   *  it; an EMPTY string clears it (Disconnect). The pause and the key are
-   *  independent — pausing keeps both the key and the cached bytes (they just
-   *  stop being served). */
-  async updateSgdbKey(input: { apiKey?: string | null; paused?: boolean | null }): Promise<{ configured: boolean; paused: boolean }> {
-    return this.request<{ configured: boolean; paused: boolean }>("/api/server/sgdb", {
-      method: "PATCH",
-      body: JSON.stringify({
-        apiKey: input.apiKey ?? null,
-        paused: input.paused ?? null,
-      }),
-    });
-  }
-
   /** GET /api/server/video — the room video codec setting (MANAGE_SERVER,
    *  V24): what Janus offers when a voice room is CREATED. The answer carries
    *  the EFFECTIVE value (a null column predating V24 reads as "vp8"). 404 on
@@ -710,51 +688,6 @@ export class RestClient {
    *  but returns the raw bytes (logging round, 2026-10-06). */
   async downloadServerLogs(): Promise<Uint8Array> {
     return await this.authedBytes("/api/server/logs");
-  }
-
-  /** GET /api/games/{id}/icon — the game's cached SteamGridDB icon BYTES (V23).
-   *  Clients render THIS, not the CDN: the CDN host is unreachable from some
-   *  client machines (DPI/local proxy — the broken-picture smoke, 2026-11-23),
-   *  while the server's own reach proved itself by caching the icon. A 404
-   *  means "no icon" — the caller falls back to the IGDB cover square. */
-  async fetchGameIcon(igdbId: number): Promise<Uint8Array> {
-    return await this.authedBytes(`/api/games/${igdbId}/icon`);
-  }
-
-  /** POST /api/games/{id}/icon — the client-side icon OFFER (2026-11-24, the
-   *  burst-throttled transit round): this machine fetched the card's
-   *  pendingIconUrl from the CDN itself (its network is often healthy where
-   *  the hosting's route is strangled) and hands the bytes to the server.
-   *  First delivery wins atomically — the server's own lane, this offer, or
-   *  another client's; 201 = ours became the icon, 200 = one already stood
-   *  (idempotent no-op). The server re-sniffs the magic bytes; we render our
-   *  LOCAL copy either way, so nothing waits on this call. */
-  async offerGameIcon(igdbId: number, bytes: Uint8Array): Promise<void> {
-    const headers: Record<string, string> = { "Content-Type": "application/octet-stream" };
-    const tokens = this.tokenStorage.load();
-    if (tokens) {
-      headers.Authorization = `Bearer ${tokens.token}`;
-    }
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), BYTES_TIMEOUT_MS);
-    let response: Response;
-    try {
-      // TS 5.9 types fetched bytes as ArrayBufferLike; BodyInit wants the
-      // plain ArrayBuffer view — the same cast bytesToObjectUrl makes.
-      response = await this.fetchImpl(`${this.baseUrl}/api/games/${igdbId}/icon`,
-          { method: "POST", headers, signal: controller.signal,
-            body: new Blob([bytes.buffer as ArrayBuffer]) });
-    } finally {
-      clearTimeout(timeout);
-    }
-    if (response.status === 401 && tokens) {
-      await this.refreshOnce();
-      return await this.offerGameIcon(igdbId, bytes);
-    }
-    if (!response.ok) {
-      log.warn("rest", `POST /api/games/${igdbId}/icon → ${response.status}`);
-      throw new ApiError(response.status, `HTTP ${response.status}`);
-    }
   }
 
   /** Authenticated binary GET with the request() auth contract (no JSON parse). */

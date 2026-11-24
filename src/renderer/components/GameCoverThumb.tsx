@@ -2,9 +2,8 @@ import { useEffect, useState } from "react";
 import { gameCoverUrl } from "../runtime";
 
 /**
- * A game's cover thumbnail rendered from the SERVER-PROXIED bytes (V23): both
- * picture CDNs — SGDB's and IGDB's — are unreachable from some client
- * machines, so every game picture the UI shows comes through our own server
+ * A game's cover thumbnail rendered from the SERVER-PROXIED bytes (V23): the picture
+ * CDN is unreachable from some client machines, so every game picture the UI shows comes through our own server
  * as bytes and an object URL. While the bytes are in flight (or the game has
  * no picture at all) NOTHING renders — no broken-image boxes, ever.
  */

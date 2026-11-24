@@ -255,17 +255,16 @@ export function VoiceBar({ session }: { session: ConnectionSession }): React.JSX
   // The corner game cover (user request 2026-11-19): the OWN live line's IGDB
   // card pins to the panel's top-right; the status text shifts left to make
   // room (manual kinds carry no igdbGameId — no cover, no shift). The picture
-  // prefers the SteamGridDB square ICON (V23) — fetched from OUR server as
-  // bytes, an object URL (the CDN is unreachable from some client machines) —
-  // and falls back to the IGDB cover thumbnail; both square, the box geometry
-  // never moves.
+  // is the IGDB cover thumbnail, fetched from OUR server as bytes and an
+  // object URL (the CDN is unreachable from some client machines); square,
+  // the box geometry never moves.
   const ownActivity = useStore(appStore, (state) => state.ownActivity);
   const ownGameImage = useStore(gameStore, (snapshot) => {
     const igdbId = ownActivity?.igdbGameId ?? null;
     if (igdbId === null) {
       return null;
     }
-    return snapshot.icons.get(igdbId) ?? snapshot.covers.get(igdbId) ?? null;
+    return snapshot.covers.get(igdbId) ?? null;
   });
   const gameIcon = ownGameImage !== null ? (
     <img

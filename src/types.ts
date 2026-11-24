@@ -618,16 +618,6 @@ export interface GameCard {
   coverImageId: string | null;
   genres: { id: number; name: string }[];
   firstReleaseDate: number | null;
-  /** The SteamGridDB square icon's CDN URL (V23): preferred over the cover
-   *  square wherever an icon-shaped rendering is wanted; null/absent until
-   *  the server's icon lane resolves it — older servers never send it. */
-  iconUrl?: string | null;
-  /** The PENDING icon target (2026-11-24): the server's lane has chosen this
-   *  CDN URL but the bytes have not landed yet (its route to the CDN may be
-   *  strangled). A client whose own network reaches the CDN may fetch this
-   *  URL and offer the bytes to the server — see Rest.offerGameIcon. Absent
-   *  on older servers and once the icon is delivered (iconUrl takes over). */
-  pendingIconUrl?: string | null;
 }
 
 /** GET /api/games/lookup: a confident answer, or the top candidates for the user

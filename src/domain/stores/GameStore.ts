@@ -24,11 +24,6 @@ export interface GamePickRequest {
 export interface GameStoreSnapshot {
   /** IGDB id → card, every card seen so far. */
   cards: ReadonlyMap<number, GameCard>;
-  /** IGDB id → the RENDERER-LOCAL object URL of the game's icon (the bytes
-   *  come from OUR server — the SGDB CDN is unreachable from some machines;
-   *  the runtime owns creating these, the store only mirrors them for
-   *  reactivity). */
-  icons: ReadonlyMap<number, string>;
   /** IGDB id → the object URL of the game's IGDB cover thumbnail (the panel's
    *  fallback picture, served by our server for the same CDN reason). */
   covers: ReadonlyMap<number, string>;
@@ -38,22 +33,11 @@ export interface GameStoreSnapshot {
 
 export class GameStore extends Emitter {
   private cards = new Map<number, GameCard>();
-  private icons = new Map<number, string>();
   private covers = new Map<number, string>();
   private pendingPick: GamePickRequest | null = null;
-  private view: GameStoreSnapshot = { cards: this.cards, icons: this.icons, covers: this.covers, pendingPick: null };
+  private view: GameStoreSnapshot = { cards: this.cards, covers: this.covers, pendingPick: null };
 
   getSnapshot = (): GameStoreSnapshot => this.view;
-
-  /** Lands a fetched icon's object URL (the bytes leg of the V23 catch-up). */
-  applyIcon(igdbId: number, objectUrl: string): void {
-    if (this.icons.get(igdbId) === objectUrl) {
-      return;
-    }
-    this.icons.set(igdbId, objectUrl);
-    this.view = { cards: this.cards, icons: this.icons, covers: this.covers, pendingPick: this.pendingPick };
-    this.emit();
-  }
 
   /** Lands a fetched cover thumbnail's object URL (the fallback picture). */
   applyCover(igdbId: number, objectUrl: string): void {
@@ -61,14 +45,11 @@ export class GameStore extends Emitter {
       return;
     }
     this.covers.set(igdbId, objectUrl);
-    this.view = { cards: this.cards, icons: this.icons, covers: this.covers, pendingPick: this.pendingPick };
+    this.view = { cards: this.cards, covers: this.covers, pendingPick: this.pendingPick };
     this.emit();
   }
 
-  /** Adds the cards not present yet; a no-op when everything is already cached.
-   *  A card already cached is REPLACED only by a RICHER answer — the icon may
-   *  land after the card was first seen (the server resolves it in the
-   *  background), and the panel re-fetches exactly for that upgrade. */
+  /** Adds the cards not present yet; a no-op when everything is already cached. */
   applyCards(cards: readonly GameCard[]): void {
     let changed = false;
     for (const card of cards) {
@@ -76,13 +57,10 @@ export class GameStore extends Emitter {
       if (known === undefined) {
         this.cards.set(card.igdbId, card);
         changed = true;
-      } else if (known.iconUrl == null && card.iconUrl != null) {
-        this.cards.set(card.igdbId, card);
-        changed = true;
       }
     }
     if (changed) {
-      this.view = { cards: this.cards, icons: this.icons, covers: this.covers, pendingPick: this.pendingPick };
+      this.view = { cards: this.cards, covers: this.covers, pendingPick: this.pendingPick };
       this.emit();
     }
   }
@@ -90,7 +68,7 @@ export class GameStore extends Emitter {
   /** Opens (or replaces) the pick dialog. */
   openPick(request: GamePickRequest): void {
     this.pendingPick = request;
-    this.view = { cards: this.cards, icons: this.icons, covers: this.covers, pendingPick: request };
+    this.view = { cards: this.cards, covers: this.covers, pendingPick: request };
     this.emit();
   }
 
@@ -98,7 +76,7 @@ export class GameStore extends Emitter {
   closePick(): void {
     if (this.pendingPick !== null) {
       this.pendingPick = null;
-      this.view = { cards: this.cards, icons: this.icons, covers: this.covers, pendingPick: null };
+      this.view = { cards: this.cards, covers: this.covers, pendingPick: null };
       this.emit();
     }
   }

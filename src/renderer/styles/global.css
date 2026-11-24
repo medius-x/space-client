@@ -4868,7 +4868,7 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
   right: 6px;
   width: 38px;
   height: 38px;
-  object-fit: cover; /* SGDB squares and IGDB thumbs both, one fixed box */
+  object-fit: cover; /* IGDB thumbs, one fixed box */
   border-radius: 4px;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
   pointer-events: auto; /* the game-name tooltip needs hover */
