@@ -40,12 +40,15 @@ export type ContextMenuItem =
  * sidebar's server header) counts as INSIDE the surface so its click can
  * toggle the menu closed instead of racing outside-dismiss into a reopen.
  */
-export function ContextMenu({ x, y, items, onClose, anchor }: {
+export function ContextMenu({ x, y, items, onClose, anchor, elevated }: {
   x: number;
   y: number;
   items: ContextMenuItem[];
   onClose: () => void;
   anchor?: HTMLElement | null;
+  /** Render ABOVE the full-screen overlays (z-index 150 > the settings
+   *  overlay's 100) — the input-field menu opened over Server Settings. */
+  elevated?: boolean;
 }): React.JSX.Element {
   const menuRef = useRef<HTMLDivElement | null>(null);
   // Latest-ref pattern: the ref object stays stable across renders (the dismiss
@@ -89,7 +92,7 @@ export function ContextMenu({ x, y, items, onClose, anchor }: {
   return (
     <div
       ref={menuRef}
-      className="context-menu"
+      className={"context-menu" + (elevated ? " elevated" : "")}
       style={{ left, top }}
       onClick={(event) => event.stopPropagation()}
       onPointerMove={(event) => {

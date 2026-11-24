@@ -429,6 +429,25 @@ contextBridge.exposeInMainWorld("spaceSpell", {
   },
 });
 
+/** Edit-menu bridge (2026-11-24): programmatic paste goes through main's
+ *  webContents.paste() (Chromium blocks execCommand("paste") in the renderer),
+ *  and the "is there anything paste-able" probe sees OS-clipboard FILES — the
+ *  DOM clipboard APIs cannot. */
+contextBridge.exposeInMainWorld("spaceEdit", {
+  paste(): void {
+    ipcRenderer.invoke("space-edit:paste");
+  },
+  canPaste(): Promise<boolean> {
+    return ipcRenderer.invoke("space-edit:canPaste").then((result) => result === true);
+  },
+  /** The clipboard's FILES (a copied image, Explorer-copied files), empty
+   *  when the clipboard holds none — the synthetic paste event cannot carry
+   *  files, so the composer's menu path stages these directly. */
+  readClipboardFiles(): Promise<{ name: string; mime: string; bytes: ArrayBuffer }[]> {
+    return ipcRenderer.invoke("space-clipboard:readFiles");
+  },
+});
+
 /** Untrusted-certificate bridge (TLS entry point, round B): main surfaces the
  *  fingerprints it rejected; the renderer asks for the user's trust decision. */
 contextBridge.exposeInMainWorld("spaceTls", {

@@ -29,6 +29,7 @@ import { groupMineByChannel, sortMineByActivity } from "../../domain/logic/discu
 import {
   flattenGroupsForPersist,
   groupChannelsByCategory,
+  type CategoryGroup,
   type ChannelGroups,
 } from "../../domain/logic/channel-groups";
 import { applyChannelDrop, type DragSubject, type DropList } from "../../domain/logic/channel-drag";
@@ -258,7 +259,9 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
   };
 
   // Hit-testing rows by pointer geometry (the roles discipline: the CONTAINER is
-  // stable while the preview reorders the rows under the cursor).
+  // stable while the preview reorders the rows under the cursor). The top-level
+  // LADDER rows ("top": free channels + category headers) interleave with the
+  // category children rows ("cat-text"/"cat-voice").
   const dropTargetUnderPointer = (container: Element, clientY: number): {
     list: DropList; categoryId?: number; beforeId: number | null;
   } | null => {
@@ -275,24 +278,36 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
         if (rowId === null || row.dataset.dragGap === "true") {
           return null; // over the gap itself — keep the current preview
         }
+        // A CHANNEL dropped on a COLLAPSED category header goes INTO that
+        // category (Discord — the body is hidden, the header is the whole
+        // block); an EXPANDED header positions on the LADDER like any top
+        // node: above it = a free spot before the category, below = after it
+        // (dropping INTO an expanded category happens over its child rows).
+        // The header row still positions a CATEGORY drag on the ladder either
+        // way, and the "below the row" path may name the next HEADER as a
+        // beforeId — a free-channel position between categories.
+        if (list === "top" && row.dataset.dragCategoryId !== undefined
+            && row.dataset.collapsed === "true" && dragged?.kind === "channel") {
+          return {
+            list: dragged.channel.type === "VOICE" ? "cat-voice" : "cat-text",
+            categoryId,
+            beforeId: null,
+          };
+        }
         const belowTarget = clientY > rect.top + rect.height / 2;
         if (!belowTarget) {
           return { list, categoryId, beforeId: rowId };
         }
-        // Below the row: before the NEXT row of the SAME list (any category),
-        // else append. A category header "below" means before the next HEADER.
-        const wantsCategoryRow = list === "categories";
+        // Below the row: before the NEXT row of the SAME list (same category
+        // for cat-* rows; the next ladder node — a free channel OR a header —
+        // for "top"), else append. The cat-* children of an intervening
+        // category are skipped: they are not ladder rows.
         for (let nextIndex = rowIndex + 1; nextIndex < rows.length; nextIndex++) {
           const nextRow = rows[nextIndex]!;
           if (nextRow.dataset.dragList === list && nextRow.dataset.categoryId === row.dataset.categoryId) {
             const nextId = nextRow.dataset.dragChannelId !== undefined
               ? Number(nextRow.dataset.dragChannelId)
               : nextRow.dataset.dragCategoryId !== undefined ? Number(nextRow.dataset.dragCategoryId) : null;
-            return { list, categoryId, beforeId: nextId };
-          }
-          if (wantsCategoryRow && nextRow.dataset.dragList === "categories") {
-            const nextId = nextRow.dataset.dragCategoryId !== undefined
-              ? Number(nextRow.dataset.dragCategoryId) : null;
             return { list, categoryId, beforeId: nextId };
           }
         }
@@ -306,9 +321,9 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
         const list = last.dataset.dragList as DropList;
         const categoryId = last.dataset.categoryId !== undefined ? Number(last.dataset.categoryId) : undefined;
         if (dragged?.kind === "category") {
-          return { list: "categories", beforeId: null };
+          return { list: "top", beforeId: null };
         }
-        if (list === "categories") {
+        if (list !== "top") {
           // Past the end over the last category's children — append into that category.
           return { list, categoryId, beforeId: null };
         }
@@ -358,8 +373,8 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
     });
   };
 
-  // One TEXT row — shared by the uncategorized list and the category blocks.
-  const textChannelRow = (channel: Channel, list: "uncat-text" | "cat-text", categoryId?: number) => {
+  // One TEXT row — shared by the top-level ladder and the category blocks.
+  const textChannelRow = (channel: Channel, list: "top" | "cat-text", categoryId?: number) => {
     const unread = readStates.get(channel.id);
     const trackedCount = trackedCountsByChannel.get(channel.id) ?? 0;
     const isDragged = dragged?.kind === "channel" && dragged.channel.id === channel.id;
@@ -411,7 +426,7 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
   // list below it share the hover/active background and form a SINGLE click
   // target. The DRAG handle is the name row only (the member rows own their
   // right-click card).
-  const voiceChannelBlock = (channel: Channel, list: "uncat-voice" | "cat-voice", categoryId?: number) => {
+  const voiceChannelBlock = (channel: Channel, list: "top" | "cat-voice", categoryId?: number) => {
     const isDragged = dragged?.kind === "channel" && dragged.channel.id === channel.id;
     return (
       <div
@@ -514,10 +529,10 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
     );
   };
 
-  // One collapsible category block. An EMPTY block renders only for managers —
-  // a plain member would see a header with nothing under it (and could never
-  // fill or delete it anyway).
-  const categoryBlock = (group: { category: Channel; textChannels: Channel[]; voiceChannels: Channel[] }) => {
+  // One collapsible category block — a node of the top-level ladder. An EMPTY
+  // block renders only for managers — a plain member would see a header with
+  // nothing under it (and could never fill or delete it anyway).
+  const categoryBlock = (group: CategoryGroup) => {
     const collapsed = collapsedIds.has(group.category.id);
     const isDraggedCategory = dragged?.kind === "category" && dragged.category.id === group.category.id;
     const empty = group.textChannels.length === 0 && group.voiceChannels.length === 0;
@@ -528,10 +543,11 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
       <div key={group.category.id} className="category-block">
         <div
           className={"category-header" + (isDraggedCategory ? " drop-gap" : "")}
-          data-drag-list="categories"
+          data-drag-list="top"
           data-category-id={group.category.id}
           data-drag-category-id={group.category.id}
           data-drag-gap={isDraggedCategory ? "true" : undefined}
+          data-collapsed={collapsed ? "true" : "false"}
           onClick={() => toggleCollapsed(group.category.id)}
           onContextMenu={openMenu(group.category)}
           onPointerDown={onDragRowPointerDown({ kind: "category", category: group.category })}
@@ -638,9 +654,14 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
                     <button className="section-add" title={t("sidebar.createChannel")} onClick={() => setCreateRequest({ kind: "TEXT", parentId: null, inCategory: false })}>+</button>
                   ) : null}
                 </div>
-                {viewGroups.uncategorizedText.map((channel) => textChannelRow(channel, "uncat-text"))}
-                {viewGroups.uncategorizedVoice.map((channel) => voiceChannelBlock(channel, "uncat-voice"))}
-                {viewGroups.categories.map(categoryBlock)}
+                {/* The ONE top-level ladder: free channels and category blocks
+                    interleaved (2026-11-24) — a channel can stand between
+                    categories; inside a block text still sits above voice. */}
+                {viewGroups.topLevel.map((node) => node.kind === "free"
+                  ? (node.channel.type === "VOICE"
+                    ? voiceChannelBlock(node.channel, "top")
+                    : textChannelRow(node.channel, "top"))
+                  : categoryBlock(node))}
               </>
             )}
           </div>
@@ -676,7 +697,7 @@ export function Sidebar({ session }: { session: ConnectionSession }): React.JSX.
         <CreateChannelModal
           session={session}
           request={createRequest}
-          categories={groups.categories.map((group) => group.category)}
+          categories={groups.topLevel.flatMap((node) => node.kind === "category" ? [node.category] : [])}
           onClose={() => setCreateRequest(null)}
         />
       ) : null}

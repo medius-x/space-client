@@ -6,7 +6,7 @@ import { installBackupIpc } from "./backups";
 import { installProcessSnapshotIpc } from "./process-snapshot";
 import { installSteamGamesIpc } from "./steam-games";
 import { installSpellIpc, spellAddWord } from "./spell";
-import { app, BrowserWindow, contentTracing, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeTheme, net, powerMonitor, protocol, safeStorage, screen, session, shell, Tray } from "electron";
+import { app, BrowserWindow, clipboard, contentTracing, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeTheme, net, powerMonitor, protocol, safeStorage, screen, session, shell, Tray } from "electron";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -474,6 +474,109 @@ ipcMain.handle("space-shell:openExternal", (_event, url: unknown) => {
   }
   void shell.openExternal(url);
   return true;
+});
+
+// Programmatic paste for context menus (2026-11-24): the ONLY reliable way to
+// paste into the focused element is main-side webContents.paste() — Chromium
+// blocks execCommand("paste") in the renderer. Going through a REAL paste
+// event also carries OS-clipboard FILES (the Explorer copy, CF_HDROP) into
+// the composer's existing paste pipeline, exactly like Ctrl+V. The probe
+// powers the menu item's enabled state: the DOM clipboard APIs cannot see a
+// file-only clipboard, so the renderer asks main what the OS really holds.
+ipcMain.handle("space-edit:paste", (event) => {
+  event.sender.paste();
+});
+
+// The clipboard probe/files use Electron 44's ASYNC W3C-shaped API
+// (clipboard.read() → ClipboardItem[]; has()/readBuffer() are gone). Raw
+// Windows formats ride the `electron application/osclipboard` custom MIME:
+// Explorer-copied files arrive as FileNameW, a UTF-16 null-terminated path
+// list. Reads ONLY what the clipboard holds — the renderer passes no paths,
+// so this is not a file-read primitive.
+const CLIPBOARD_HDROP_MIME = 'electron application/osclipboard;format="FileNameW"';
+const CLIPBOARD_EXTENSION_MIME: Record<string, string> = {
+  ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+  ".webp": "image/webp", ".bmp": "image/bmp", ".svg": "image/svg+xml",
+  ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime", ".mkv": "video/x-matroska",
+  ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".wav": "audio/wav", ".flac": "audio/flac",
+  ".pdf": "application/pdf", ".txt": "text/plain",
+};
+
+ipcMain.handle("space-edit:canPaste", async () => {
+  try {
+    const items = await clipboard.read();
+    return items.some((item) =>
+      item.types.some((type) =>
+        type.startsWith("text/") || type === "image/png" || type === CLIPBOARD_HDROP_MIME));
+  } catch {
+    return true; // a clipboard hiccup must never disable Paste outright
+  }
+});
+
+// Clipboard FILES for the composer's menu paste (2026-11-25): the synthetic
+// paste event carries TEXT but never files (Chromium's security model — a
+// programmatic paste cannot fabricate a file-bearing DataTransfer), so the
+// menu path reads the OS clipboard itself: a copied IMAGE (screenshot) and
+// Explorer-copied files.
+ipcMain.handle("space-clipboard:readFiles", async () => {
+  const files: { name: string; mime: string; bytes: ArrayBuffer }[] = [];
+  try {
+    const items = await clipboard.read();
+    for (const item of items) {
+      if (item.types.includes("image/png")) {
+        // The union return narrows only on the bookmark literal; every other
+        // MIME is a Blob by contract.
+        const bytes = await (await item.getType("image/png") as Blob).arrayBuffer();
+        if (bytes.byteLength > 0) {
+          files.push({ name: `pasted-${Date.now()}.png`, mime: "image/png", bytes });
+        }
+        continue;
+      }
+      if (item.types.includes(CLIPBOARD_HDROP_MIME)) {
+        const raw = await (await item.getType(CLIPBOARD_HDROP_MIME) as Blob).arrayBuffer();
+        const paths = Buffer.from(raw).toString("utf16le").split("\0");
+        for (const entry of paths) {
+          const trimmed = entry.trim();
+          if (trimmed.length === 0) {
+            continue;
+          }
+          try {
+            const bytes = fs.readFileSync(trimmed);
+            const name = trimmed.split(/[\\/]/).pop() ?? "file";
+            const dot = name.lastIndexOf(".");
+            const mime = dot > 0 ? CLIPBOARD_EXTENSION_MIME[name.slice(dot).toLowerCase()] : undefined;
+            // Copy into a standalone ArrayBuffer (a Buffer's backing store may
+            // be a pooled view) — structured clone over IPC stays clean.
+            files.push({
+              name,
+              mime: mime ?? "application/octet-stream",
+              bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+            });
+          } catch {
+            // Unreadable entry (locked, gone mid-read) — skip it, keep the rest.
+          }
+        }
+      }
+    }
+  } catch {
+    return []; // a clipboard hiccup must never break the paste path
+  }
+  if (files.length === 0) {
+    // Diagnostic: what the platform actually exposed (the Explorer file list's
+    // raw-format name differs per platform — one look at the log settles it).
+    try {
+      const carried = (await clipboard.read())
+        .map((item) => item.types.join("|"))
+        .filter((joined) => joined.length > 0)
+        .join(" ; ");
+      if (carried.length > 0) {
+        appendLog(`[clipboard] no files carried; types: ${carried}`);
+      }
+    } catch {
+      // reading for the diagnostic failed — the empty answer stands
+    }
+  }
+  return files;
 });
 
 // Global hotkeys (2026-09-18): the OS-level chord that mutes the mic while the

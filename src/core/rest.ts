@@ -38,6 +38,7 @@ import type {
   BackupStatus,
   MigrationTransfer,
   PresenceActivityEvent,
+  VoiceControlState,
   GameCard,
   GameLookupResponse,
   MyGameInfo,
@@ -201,9 +202,13 @@ export class RestClient {
     return this.request<string[]>("/api/presence", { method: "GET" });
   }
 
-  /** Voice-membership snapshot: channelId → usernames. */
-  async getVoiceMembers(): Promise<{ channelId: number; usernames: string[] }[]> {
-    return this.request<{ channelId: number; usernames: string[] }[]>("/api/voice/members", { method: "GET" });
+  /** Voice-membership snapshot: channelId → usernames + each member's control
+   *  state (marks) — the SEED for the mute/deafen icons a viewer who never
+   *  entered the room paints from the pull alone (voice.state is push-only).
+   *  Older servers send no marks: the field is optional and the icons then
+   *  appear on the first live flip, as before. */
+  async getVoiceMembers(): Promise<{ channelId: number; usernames: string[]; marks?: Record<string, VoiceControlState> }[]> {
+    return this.request<{ channelId: number; usernames: string[]; marks?: Record<string, VoiceControlState> }[]>("/api/voice/members", { method: "GET" });
   }
 
   /** AFK roster snapshot (yellow-dot seed); an older server has no endpoint and

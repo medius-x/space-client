@@ -1144,6 +1144,9 @@ body.rail-dragging * { cursor: grabbing !important; }
   flex-direction: column;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
 }
+/* The input-field menu opens OVER the full-screen settings overlays (z 100)
+   and their in-place modals (z 110) — the plain menus never face those. */
+.context-menu.elevated { z-index: 150; }
 .context-menu-item {
   background: transparent;
   text-align: left;

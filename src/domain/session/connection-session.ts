@@ -396,6 +396,7 @@ export class ConnectionSession {
       .then((voiceMembers) => {
         if (!this.disposed) {
           this.rosterStore.setVoiceMembers(voiceMembers);
+          this.seedVoiceControlMarks(voiceMembers);
         }
       })
       .catch((error: unknown) => {
@@ -1967,6 +1968,7 @@ export class ConnectionSession {
       .then((voiceMembers) => {
         if (!this.disposed) {
           this.rosterStore.setVoiceMembers(voiceMembers);
+          this.seedVoiceControlMarks(voiceMembers);
         }
       })
       .catch((error: unknown) => {
@@ -2055,6 +2057,22 @@ export class ConnectionSession {
       this.ensureDiscussionTopicFamily(discussionId);
     }
     await this.resyncMessageTails();
+  }
+
+  /** The members snapshot's marks (2026-11-24): the SEED for the mute/deafen
+   *  icons of members sitting in rooms the viewer NEVER entered — voice.state
+   *  is push-only, so without this the icons only appeared after a live flip
+   *  or the viewer's own join. Same path as the live pushes (applyState by
+   *  username), hence idempotent; an older server sends no marks at all. */
+  private seedVoiceControlMarks(rooms: { channelId: number; usernames: string[]; marks?: Record<string, VoiceControlState> }[]): void {
+    for (const room of rooms) {
+      if (room.marks === undefined) {
+        continue;
+      }
+      for (const state of Object.values(room.marks)) {
+        this.voiceControlStore.applyState(state);
+      }
+    }
   }
 
   /** Sequential on purpose: a reconnect after a long gap can hold many loaded

@@ -308,6 +308,30 @@ export interface SpellBridge {
   onContextMenu(callback: (event: { misspelledWord: string; suggestions: string[] }) => void): void;
 }
 
+/** Edit-menu bridge (2026-11-24): the context menus' programmatic paste and
+ *  clipboard probe. Paste runs main-side (webContents.paste() — Chromium
+ *  blocks execCommand("paste") in the renderer) and delivers a REAL paste
+ *  event, so OS-clipboard files flow into the composer exactly like Ctrl+V;
+ *  the probe sees file-only clipboards the DOM APIs cannot. */
+export interface EditBridge {
+  /** Paste the OS clipboard into the focused element of THIS window. */
+  paste(): void;
+  /** True when the OS clipboard holds paste-able content (text, an image, or
+   *  copied files — the Explorer case). */
+  canPaste(): Promise<boolean>;
+  /** The clipboard's FILES (a copied image, Explorer-copied files), empty when
+   *  there are none — the synthetic paste event cannot carry files (Chromium's
+   *  security model), so the composer's menu stages these directly. */
+  readClipboardFiles(): Promise<ClipboardFileEntry[]>;
+}
+
+/** One clipboard file as handed to the renderer by main. */
+export interface ClipboardFileEntry {
+  name: string;
+  mime: string;
+  bytes: ArrayBuffer;
+}
+
 // ---------------------------------------------------------------------------
 // Provisioning (round C): the Create tab's SSH deployment of a fresh server
 // ---------------------------------------------------------------------------
@@ -555,6 +579,7 @@ declare global {
     spaceI18n?: I18nBridge;
     spaceBackup?: BackupsBridge;
     spaceSpell?: SpellBridge;
+    spaceEdit?: EditBridge;
     spaceProcesses?: ProcessesBridge;
   }
 }

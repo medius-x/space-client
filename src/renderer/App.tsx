@@ -13,6 +13,7 @@ import { ServerRail } from "./components/ServerRail";
 import { ServerSettingsPane } from "./components/ServerSettingsPane";
 import { UserSettingsModal } from "./components/UserSettingsModal";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { InputEditMenu } from "./components/InputEditMenu";
 
 export function App(): React.JSX.Element {
   const session = useStore(sessionBinding, (current) => current);
@@ -99,6 +100,11 @@ export function App(): React.JSX.Element {
             </div>
           </div>
         ) : null}
+        {/* The app-wide right-click menu for input fields (2026-11-24): every
+            real input/textarea (settings, login, search, dialogs) — the composer
+            keeps its own contentEditable menu. App level on purpose so the login
+            modal and the overlays are covered too. */}
+        <InputEditMenu />
       </div>
     </ErrorBoundary>
   );

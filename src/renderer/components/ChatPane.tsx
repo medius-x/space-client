@@ -21,7 +21,6 @@ import { wrapSelectionInMarker } from "../../domain/logic/composer-format";
 import {
   applyLiveFormatCommand,
   createComposerEditor,
-  insertPlainText,
   loadComposerText,
   serializeComposerRoot,
   $caretModelOffsets,
@@ -3110,11 +3109,20 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
       return;
     }
     if (verb === "paste") {
-      void navigator.clipboard.readText().then((inserted) => {
-        if (inserted.length > 0) {
-          insertPlainText(editor, inserted);
-        }
-      }).catch(() => undefined);
+      // FILES first: the synthetic paste event carries text but never files
+      // (Chromium's security model), so a copied image / Explorer-copied
+      // files are staged straight into the attachment pipeline — exactly what
+      // Ctrl+V's PASTE_COMMAND does with clipboardData.files. Text-only
+      // clipboards fall through to the real paste below.
+      void window.spaceEdit?.readClipboardFiles()
+        .then((files) => {
+          if (files.length > 0) {
+            onPaste(files.map((file) => new File([file.bytes], file.name, { type: file.mime })));
+          } else {
+            window.spaceEdit?.paste();
+          }
+        })
+        .catch(() => window.spaceEdit?.paste());
       return;
     }
     const { start, end } = modelSelection();
@@ -3265,10 +3273,12 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
             }))
         .catch(() => undefined);
     }
-    // Async clipboard probe: Paste enables itself when text is there.
-    void navigator.clipboard.readText()
-      .then((probe) => setEditorMenu((current) =>
-        current === null ? current : { ...current, canPaste: probe.length > 0 }))
+    // Async clipboard probe: Paste enables itself when the OS clipboard holds
+    // anything paste-able — text, an image, OR copied files (the Explorer
+    // case, invisible to the DOM clipboard APIs — hence the main-side probe).
+    void window.spaceEdit?.canPaste()
+      .then((canPaste) => setEditorMenu((current) =>
+        current === null ? current : { ...current, canPaste: canPaste === true }))
       .catch(() => setEditorMenu((current) =>
         current === null ? current : { ...current, canPaste: true }));
   };

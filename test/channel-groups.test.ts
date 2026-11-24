@@ -17,8 +17,12 @@ function channel(overrides: Partial<Channel> & { name: string; type: Channel["ty
     ...overrides,
   };
 }
-function category(name: string, position: number): Channel {
-  return channel({ name, type: "CATEGORY", position });
+
+/** The ladder rendered as readable lines: "free:name" / "cat:name [text…, voice…]". */
+function ladderOf(groups: ReturnType<typeof groupChannelsByCategory>): string[] {
+  return groups.topLevel.map((node) => node.kind === "free"
+    ? `free:${node.channel.name}`
+    : `cat:${node.category.name} [${node.textChannels.map((entry) => entry.name)},${node.voiceChannels.map((entry) => entry.name)}]`);
 }
 
 describe("compareChannelOrder", () => {
@@ -35,23 +39,35 @@ describe("compareChannelOrder", () => {
 });
 
 describe("groupChannelsByCategory", () => {
-  it("splits uncategorized text/voice and category children (text above voice)", () => {
+  it("interleaves free channels and category blocks on ONE ladder (text above voice inside a block)", () => {
     const games = channel({ id: 10, name: "Games", type: "CATEGORY", position: 1 });
     const groups = groupChannelsByCategory([
       channel({ id: 5, name: "lobby", type: "VOICE", parentId: 10 }),
       channel({ id: 3, name: "general", type: "TEXT", parentId: 10 }),
-      channel({ id: 1, name: "news", type: "TEXT" }),
-      channel({ id: 2, name: "random", type: "TEXT" }),
+      channel({ id: 1, name: "news", type: "TEXT", position: 0 }),
       games,
-      channel({ id: 4, name: "music", type: "VOICE" }),
+      channel({ id: 4, name: "music", type: "VOICE", position: 2 }),
     ]);
 
-    expect(groups.uncategorizedText.map((entry) => entry.name)).toEqual(["news", "random"]);
-    expect(groups.uncategorizedVoice.map((entry) => entry.name)).toEqual(["music"]);
-    expect(groups.categories).toHaveLength(1);
-    expect(groups.categories[0]!.category.name).toBe("Games");
-    expect(groups.categories[0]!.textChannels.map((entry) => entry.name)).toEqual(["general"]);
-    expect(groups.categories[0]!.voiceChannels.map((entry) => entry.name)).toEqual(["lobby"]);
+    expect(ladderOf(groups)).toEqual([
+      "free:news",
+      "cat:Games [general,lobby]",
+      "free:music",
+    ]);
+  });
+
+  it("a free channel can sit BETWEEN categories (the 2026-11-24 round)", () => {
+    const groups = groupChannelsByCategory([
+      channel({ id: 1, name: "catA", type: "CATEGORY", position: 0 }),
+      channel({ id: 2, name: "in-the-middle", type: "TEXT", position: 1 }),
+      channel({ id: 3, name: "catB", type: "CATEGORY", position: 2 }),
+      channel({ id: 4, name: "under-B", type: "TEXT", parentId: 3 }),
+    ]);
+    expect(ladderOf(groups)).toEqual([
+      "cat:catA [,]",
+      "free:in-the-middle",
+      "cat:catB [under-B,]",
+    ]);
   });
 
   it("sorts everything by (position, id), not by input order", () => {
@@ -61,61 +77,53 @@ describe("groupChannelsByCategory", () => {
       channel({ id: 5, name: "catB", type: "CATEGORY", position: 2 }),
       channel({ id: 4, name: "catA", type: "CATEGORY", position: 1 }),
     ]);
-    expect(groups.uncategorizedText.map((entry) => entry.name)).toEqual(["a-early", "z-late"]);
-    expect(groups.categories.map((group) => group.category.name)).toEqual(["catA", "catB"]);
+    expect(groups.topLevel.map((node) => node.kind === "free" ? node.channel.name : node.category.name))
+      .toEqual(["catA", "a-early", "catB", "z-late"]);
   });
 
-  it("falls back a child of an INVISIBLE category to uncategorized", () => {
+  it("falls back a child of an INVISIBLE category to a free node", () => {
     const groups = groupChannelsByCategory([
       channel({ id: 1, name: "hidden-child", type: "TEXT", parentId: 999 }),
     ]);
-    expect(groups.uncategorizedText.map((entry) => entry.name)).toEqual(["hidden-child"]);
-    expect(groups.categories).toHaveLength(0);
+    expect(ladderOf(groups)).toEqual(["free:hidden-child"]);
   });
 });
 
 describe("flattenGroupsForPersist", () => {
-  it("walks uncategorized first, then each category row followed by its children", () => {
+  it("walks the ladder in order: free channels where they stand, each category row followed by its children", () => {
     const groups = groupChannelsByCategory([
       channel({ id: 1, name: "news", type: "TEXT", position: 0 }),
-      channel({ id: 2, name: "lobby-uncat", type: "VOICE", position: 1 }),
-      channel({ id: 3, name: "Games", type: "CATEGORY", position: 2 }),
-      channel({ id: 4, name: "lounge", type: "VOICE", parentId: 3 }),
+      channel({ id: 3, name: "Games", type: "CATEGORY", position: 1 }),
       channel({ id: 5, name: "general", type: "TEXT", parentId: 3 }),
+      channel({ id: 4, name: "lounge", type: "VOICE", parentId: 3 }),
+      channel({ id: 2, name: "between", type: "VOICE", position: 2 }),
     ]);
     expect(flattenGroupsForPersist(groups)).toEqual([
       { id: 1, parentId: null },
-      { id: 2, parentId: null },
       { id: 3, parentId: null },
       { id: 5, parentId: 3 },
       { id: 4, parentId: 3 },
+      { id: 2, parentId: null },
     ]);
   });
 
-  it("round-trips: flatten → dense renumber → the same block structure", () => {
+  it("round-trips: flatten → dense renumber → the same ladder structure", () => {
     const original = groupChannelsByCategory([
       channel({ id: 1, name: "news", type: "TEXT", position: 0 }),
       channel({ id: 2, name: "Games", type: "CATEGORY", position: 1 }),
       channel({ id: 3, name: "general", type: "TEXT", parentId: 2 }),
       channel({ id: 4, name: "lobby", type: "VOICE", parentId: 2 }),
-      channel({ id: 5, name: "music", type: "VOICE", position: 4 }),
+      channel({ id: 5, name: "music", type: "VOICE", position: 2 }),
+      channel({ id: 6, name: "After", type: "CATEGORY", position: 3 }),
     ]);
     const flattened = flattenGroupsForPersist(original);
-    const byId = new Map([
-      ...original.uncategorizedText,
-      ...original.uncategorizedVoice,
-      ...original.categories.flatMap((group) => [group.category, ...group.textChannels, ...group.voiceChannels]),
-    ].map((channelEntry) => [channelEntry.id, channelEntry]));
+    const byId = new Map(original.topLevel.flatMap((node): Channel[] => node.kind === "free"
+      ? [node.channel]
+      : [node.category, ...node.textChannels, ...node.voiceChannels])
+      .map((channelEntry) => [channelEntry.id, channelEntry]));
     // The server renumbers positions by list index — simulate that and regroup.
     const renumbered = flattened.map((entry, index) =>
       ({ ...byId.get(entry.id)!, position: index, parentId: entry.parentId }));
-    const again = groupChannelsByCategory(renumbered);
-    expect(again.uncategorizedText.map((entry) => entry.id)).toEqual(original.uncategorizedText.map((entry) => entry.id));
-    expect(again.uncategorizedVoice.map((entry) => entry.id)).toEqual(original.uncategorizedVoice.map((entry) => entry.id));
-    expect(again.categories.map((group) => group.category.id)).toEqual(original.categories.map((group) => group.category.id));
-    expect(again.categories.flatMap((group) => group.textChannels.map((entry) => entry.id)))
-      .toEqual(original.categories.flatMap((group) => group.textChannels.map((entry) => entry.id)));
-    expect(again.categories.flatMap((group) => group.voiceChannels.map((entry) => entry.id)))
-      .toEqual(original.categories.flatMap((group) => group.voiceChannels.map((entry) => entry.id)));
+    expect(ladderOf(groupChannelsByCategory(renumbered))).toEqual(ladderOf(original));
   });
 });
