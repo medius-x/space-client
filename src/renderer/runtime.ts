@@ -3433,19 +3433,33 @@ export function dismissGamePick(): void {
   gameStore.closePick();
 }
 
-/** The ICON catch-up (V23): a cached card without an icon is re-fetched a few
- *  times — the server resolves icons in its background lane, so each fetch
- *  both asks for it and receives it once landed. Manual cards (negative ids)
- *  and servers without the sgdb-icons capability never re-ask. */
-const ICON_ASK_LIMIT = 3;
-const iconAskCounts = new Map<number, number>();
+/** The ICON catch-up (V23; time-based since 2026-11-24, the dead-window
+ *  post-mortem): a cached card without an icon is re-fetched every 20 s for
+ *  up to 30 minutes per game per session — the hosting's route to the icon
+ *  host dies WHOLE for minutes at a time, and the old count-based budget (3
+ *  asks burned in ~15 s) always surrendered before the window reopened. The
+ *  ask is a cached card read, and the roster loop only polls while the game
+ *  is actually being played. Manual cards (negative ids) and servers without
+ *  the sgdb-icons capability never re-ask. */
+const ICON_REASK_INTERVAL_MS = 20_000;
+const ICON_CATCHUP_WINDOW_MS = 30 * 60_000;
+const iconAskPacing = new Map<number, { firstAskAtMs: number; lastAskAtMs: number }>();
 
 function wantsIconCatchUp(session: ConnectionSession, igdbId: number): boolean {
   if (igdbId <= 0 || !hasServerCapability(session.serverProfile, "sgdb-icons")) {
     return false;
   }
   const card = gameStore.getSnapshot().cards.get(igdbId);
-  return card !== undefined && card.iconUrl == null && (iconAskCounts.get(igdbId) ?? 0) < ICON_ASK_LIMIT;
+  if (card === undefined || card.iconUrl != null) {
+    return false;
+  }
+  const pacing = iconAskPacing.get(igdbId);
+  if (pacing === undefined) {
+    return true; // never asked — go
+  }
+  const now = Date.now();
+  return now - pacing.firstAskAtMs <= ICON_CATCHUP_WINDOW_MS
+      && now - pacing.lastAskAtMs >= ICON_REASK_INTERVAL_MS;
 }
 
 /** Fetches one card through the session, tracking the dead-mark and the icon
@@ -3461,16 +3475,19 @@ const coverObjectUrls = new Map<number, string>();
 const deadCoverIds = new Set<number>();
 
 function doglegGameCard(session: ConnectionSession, igdbId: number): void {
-  deadGameCardIds.add(igdbId); // asked once; only a SUCCESS clears the mark
+  deadGameCardIds.add(igdbId); // the in-flight guard; both outcomes clear it below
+  const now = Date.now();
+  const pacing = iconAskPacing.get(igdbId) ?? { firstAskAtMs: now, lastAskAtMs: 0 };
+  pacing.lastAskAtMs = now;
+  iconAskPacing.set(igdbId, pacing);
   session.fetchGameCard(igdbId)
     .then((card) => {
       deadGameCardIds.delete(igdbId);
       gameStore.applyCards([card]);
       if (card.iconUrl != null) {
-        iconAskCounts.delete(igdbId); // settled — the panel re-renders via the store
+        iconAskPacing.delete(igdbId); // settled — the panel re-renders via the store
         fetchGameIconBytes(session, igdbId);
       } else {
-        iconAskCounts.set(igdbId, (iconAskCounts.get(igdbId) ?? 0) + 1);
         maybeOfferPendingIcon(session, card); // our own network may beat the lane
         if (card.coverImageId != null) {
           fetchGameCoverBytes(session, igdbId); // the fallback picture, still server-proxied
@@ -3478,7 +3495,10 @@ function doglegGameCard(session: ConnectionSession, igdbId: number): void {
       }
     })
     .catch(() => {
-      // 404/upstream — this id stays silent for the session (bare text line)
+      // A failed ask no longer silences the game for the whole session (the
+      // 2026-11-24 lesson: one ask landing in the server's restart/dead window
+      // used to mute the game forever) — the time pacer above bounds retries.
+      deadGameCardIds.delete(igdbId);
     });
 }
 
@@ -3490,7 +3510,8 @@ function doglegGameCard(session: ConnectionSession, igdbId: number): void {
  *  client session, a hard 30 s timeout: a dead CDN path costs half a minute
  *  once and then the server's lane owns the game. Our local copy renders
  *  immediately — nothing waits on the offer's round trip. */
-const offeredIconIds = new Set<number>();
+const offerAttempts = new Map<number, number>();
+const MAX_OFFER_ATTEMPTS = 2; // one transient CDN hiccup must not forfeit the game
 const PENDING_ICON_FETCH_TIMEOUT_MS = 30_000;
 const SGDB_ICON_MAX_BYTES = 1100 * 1024; // mirrors the server's cache cap
 
@@ -3498,10 +3519,11 @@ function maybeOfferPendingIcon(session: ConnectionSession, card: GameCard): void
   if (card.igdbId <= 0 || card.iconUrl != null || !card.pendingIconUrl) {
     return;
   }
-  if (!hasServerCapability(session.serverProfile, "sgdb-icon-upload") || offeredIconIds.has(card.igdbId)) {
+  const attempts = offerAttempts.get(card.igdbId) ?? 0;
+  if (!hasServerCapability(session.serverProfile, "sgdb-icon-upload") || attempts >= MAX_OFFER_ATTEMPTS) {
     return;
   }
-  offeredIconIds.add(card.igdbId);
+  offerAttempts.set(card.igdbId, attempts + 1);
   fetchPendingIconBytes(card.pendingIconUrl)
     .then((bytes) => {
       const objectUrl = bytesToObjectUrl(bytes);
