@@ -7,33 +7,3 @@ edited into `v<version>.md` and emptied.
 
 What belongs here: features and fixes a user can see or feel. What
 does not: CI, docs, refactoring, internal rework.
-
-- Right-click now works in every input field: the app's own Cut/Copy/Paste/
-  Select All menu (previously only Ctrl+V pasted — Electron shows no native
-  menu on its own).
-- The composer's right-click "Paste" now pastes for real: text AND files
-  copied in the Explorer, exactly like Ctrl+V (it used to insert text only).
-- Banning or removing a member now instantly burns every invite they issued.
-- Voice mute/deafen icons are now visible in the channel list right away,
-  even before you enter the room (previously they only appeared after a live
-  flip or your own join).
-- Channels can now stand between categories: drag any channel above, below or
-  between category blocks, Discord-style; inside a category text still sits
-  above voice.
-- Polls: create one from the composer's new poll button (left of the emoji
-  button) — vote, view results, and let the author or moderators end them
-  early. Anonymous or open voting, single or multiple choice, an optional
-  changeable vote, and a limited or unlimited duration. Two new permissions:
-  Create Polls (off for @everyone by default) and Vote in Polls (on).
-- New "Launch SPACE when Windows starts" checkbox in Settings → General. It
-  stays in two-way sync with the Task Manager's own Startup switch: turn it
-  off in either place and the other side follows — the app's row stays visible
-  in the Task Manager as "Disabled", never vanishing.
-- Manually registered "playing" activities can now bind to a real game: type
-  the name (or pick the exe) and matching IGDB games appear below — choosing
-  one gives the line its cover and merges your playtime with the same game's
-  auto-detected hours (one game, one counter; your old manual hours move over
-  when the names match).
-- Manual activity lines in the roster now lead with their kind's glyph
-  (gamepad, headphones, screen…) instead of the word prefix — matching the
-  bound games' look.
