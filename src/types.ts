@@ -497,7 +497,12 @@ export interface ChannelMyPermissions {
 // Polls (2026-11-25)
 // ---------------------------------------------------------------------------
 
-/** The poll riding on a message — the shape and lifecycle, never vote data. */
+/** The poll riding on a message — the shape, lifecycle, and the headline VOTER
+ *  COUNT (wire-appended 2026-11-25: the history snapshot carried no number, so
+ *  a spectator entering the channel saw "0 votes" until a live push or their
+ *  own action). Percentages and voter names still arrive only via PollResults
+ *  (an own action) — the count is the same number the live .poll push carries.
+ *  Undefined against a pre-fix server — always read through `?? 0`. */
 export interface PollInfo {
   id: number;
   question: string;
@@ -509,6 +514,8 @@ export interface PollInfo {
   /** ISO-8601 UTC string; null = open. Set by the deadline or an early close. */
   closedAt: string | null;
   options: PollOptionInfo[];
+  /** DISTINCT people, not raw votes (a multi-choice voter counts once). */
+  totalVoters: number;
 }
 
 export interface PollOptionInfo {

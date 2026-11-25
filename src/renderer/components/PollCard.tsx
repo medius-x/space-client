@@ -63,7 +63,11 @@ export function PollCard({ session, message, poll, canVote }: {
 
   const closed = message.poll?.closedAt !== null;
   const results = message.pollResults ?? null;
-  const totalVoters = results?.totalVoters ?? message.pollTotalVoters ?? 0;
+  // Live numbers outrank the history snapshot: the .poll push / an own action
+  // stamp pollTotalVoters; the snapshot's own count is the last resort (and
+  // the only source for a spectator who just entered — the 2026-11-25 fix).
+  const totalVoters = results?.totalVoters ?? message.pollTotalVoters
+    ?? (message.poll ?? poll).totalVoters ?? 0;
   const canClose = !closed
     && (message.authorUsername === session.username() || session.permissionStore.can("MANAGE_MESSAGES"));
 
