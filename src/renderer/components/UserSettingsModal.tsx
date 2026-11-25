@@ -23,8 +23,9 @@ import type { LanguageSetting } from "../../domain/i18n/i18n";
 import { ACTIVITY_KINDS, ACTIVITY_NAME_MAX_LENGTH, MAX_REGISTERED_ACTIVITIES, normalizeProcessName } from "../../domain/logic/activity";
 import { ACTIVITY_KIND_GLYPHS, ACTIVITY_MESSAGE_KEYS, CUSTOM_KIND_LABEL_KEY, formatPlaytime } from "../activity-display";
 import { ActivityLine } from "./ActivityLine";
+import { GameCoverThumb } from "./GameCoverThumb";
 import { MaterialGlyph } from "./MaterialGlyph";
-import type { MyGameInfo } from "../../types";
+import type { GameCard, MyGameInfo } from "../../types";
 import type { ActivityKind } from "../../types";
 import type { ProcessNameEntry } from "../bridges";
 import { advertisedAddress, DISK_CACHE_CHOICES, diskCacheLabel } from "../../domain/logic/settings-format";
@@ -999,6 +1000,59 @@ function ActivitySection({ session }: { session: ConnectionSession | null }): Re
   const [newName, setNewName] = useState("");
   const [nameTouched, setNameTouched] = useState(false);
 
+  // The IGDB binding dropdown (2026-11-25): a "playing" rule may bind to a real
+  // catalogue game — the reported line then carries the card, and the hours
+  // merge with the Steam auto-detect's (one game, one counter). Search: the
+  // TYPED name, or the picked exe's presentation while the field is empty;
+  // debounced a full second — no request spray while the user is typing
+  // (user decision 2026-11-25). Binding survives only while the name stays
+  // EXACTLY the card's — a hand edit silently drops it (the honest "what you
+  // see is what binds").
+  const igdbSearchSupported = session !== null
+    && hasServerCapability(session.serverProfile, "igdb-search")
+    && hasServerCapability(session.serverProfile, "igdb-games");
+  const [igdbResults, setIgdbResults] = useState<GameCard[] | null>(null);
+  const [igdbChosen, setIgdbChosen] = useState<GameCard | null>(null);
+  useEffect(() => {
+    // The binding drops ONLY on a real hand edit — the name no longer equals
+    // the chosen card's — or on leaving the "playing" kind (a listening rule
+    // with a game id would open GAME sessions server-side). It must SURVIVE
+    // the pick's own auto-fill: choosing a card writes its name into the
+    // field, which re-runs THIS effect — the first smoke (2026-11-25) caught
+    // the naive unconditional reset wiping the very pick it had just made, so
+    // the rule silently saved unbound and the server minted a cover-less
+    // virtual card.
+    if (igdbChosen !== null && (newKind !== "playing" || igdbChosen.name !== newName.trim())) {
+      setIgdbChosen(null);
+    }
+    setIgdbResults(null); // the menu collapses on every keystroke, returns with the answer
+    if (!igdbSearchSupported || newKind !== "playing" || session === null) {
+      return;
+    }
+    const typed = newName.trim();
+    const query = typed.length >= 2 ? typed
+      : picked !== null
+        ? picked.name.replace(/\.exe$/i, "").replace(/[-_.]+/g, " ").trim()
+        : "";
+    if (query.length < 2) {
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      session.searchGames(query)
+        .then((cards) => { if (!cancelled) { setIgdbResults(cards); } })
+        .catch(() => { if (!cancelled) { setIgdbResults(null); } }); // a hiccup just keeps the field
+    }, 1_000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+    // igdbChosen is read but deliberately NOT a dependency: its own setter
+    // paths (the pick click / the reset above) already re-render coherently.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [newName, newKind, picked, igdbSearchSupported, session]);
+  const igdbTyped = newName.trim().length >= 2;
+
   // The process list reloads EVERY TIME the dropdown opens (user request
   // 2026-11-11: an app started while the settings page was open must appear
   // without reopening the settings; the mount run covers the section itself).
@@ -1120,12 +1174,29 @@ function ActivitySection({ session }: { session: ConnectionSession | null }): Re
         || registered.length >= MAX_REGISTERED_ACTIVITIES) {
       return; // a duplicate app is not a second rule (user request 2026-11-11)
     }
+    // The binding rides along ONLY for an untouched pick — an edited name
+    // binds nothing (the dropdown's own rule, kept honest here).
+    const boundCard = igdbChosen !== null && igdbChosen.name === name ? igdbChosen : null;
     settingsStore.apply({
-      registeredActivities: [...registered, { id: crypto.randomUUID(), processName, type: newKind, name, icon: picked.icon }],
+      registeredActivities: [...registered, {
+        id: crypto.randomUUID(),
+        processName,
+        type: newKind,
+        name,
+        icon: picked.icon,
+        igdbGameId: boundCard?.igdbId ?? null,
+      }],
     });
+    if (boundCard !== null && session !== null) {
+      // The hours-merge is best-effort: an old server (404) or a hiccup just
+      // leaves the rows on the virtual card — the binding itself still works.
+      void session.mergeManualGames(boundCard.igdbId).catch(() => undefined);
+    }
     setPicked(null);
     setNewName("");
     setNameTouched(false);
+    setIgdbChosen(null);
+    setIgdbResults(null);
   };
 
   const running = new Set(runningIds);
@@ -1280,6 +1351,44 @@ function ActivitySection({ session }: { session: ConnectionSession | null }): Re
         >
           {t("settings.activityAdd")}
         </button>
+        {/* The IGDB binding dropdown (2026-11-25): only for a "playing" rule on
+            a server with the search — the game-pick row idiom (cover + name +
+            year), one click binds the rule to the game and overwrites the name
+            with the catalogue spelling. */}
+        {igdbSearchSupported && newKind === "playing" && igdbResults !== null ? (
+          igdbResults.length > 0 ? (
+            <div className="activity-igdb-menu">
+              <div className="activity-igdb-group">{t("settings.igdbMatchHeader")}</div>
+              {igdbResults.map((card) => (
+                <button
+                  key={card.igdbId}
+                  type="button"
+                  className={"activity-igdb-row" + (igdbChosen?.igdbId === card.igdbId ? " chosen" : "")}
+                  onClick={() => {
+                    setIgdbChosen(card);
+                    setNewName(card.name);
+                    setNameTouched(true);
+                  }}
+                >
+                  {card.coverImageId !== null
+                    ? <GameCoverThumb igdbId={card.igdbId} />
+                    : <span className="game-pick-blank" />}
+                  <span className="game-pick-name">
+                    {card.name}
+                    {card.firstReleaseDate !== null
+                      ? <span className="game-pick-year"> {new Date(card.firstReleaseDate * 1000).getFullYear()}</span>
+                      : null}
+                  </span>
+                  {igdbChosen?.igdbId === card.igdbId ? <span className="icon mdi-check activity-picker-check" /> : null}
+                </button>
+              ))}
+            </div>
+          ) : (igdbTyped ? (
+            <div className="activity-igdb-menu">
+              <div className="settings-hint activity-igdb-none">{t("settings.igdbMatchNone")}</div>
+            </div>
+          ) : null)
+        ) : null}
       </div>
       {/* The registered rules own the scroll (the Keybinds/Roles idiom, user
           request 2026-11-11): the app picker and the add row stay pinned

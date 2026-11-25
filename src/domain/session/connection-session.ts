@@ -1950,6 +1950,17 @@ export class ConnectionSession {
     return this.rest.confirmGame(input);
   }
 
+  /** The manual-rule IGDB binding (2026-11-25): the "add activity" form's
+   *  dropdown search, and the manual-hours merge that follows a binding — the
+   *  caller's hours on same-named virtual cards move onto the real game. */
+  searchGames(query: string): Promise<GameCard[]> {
+    return this.rest.searchGames(query);
+  }
+
+  mergeManualGames(igdbId: number): Promise<void> {
+    return this.rest.mergeManualGames(igdbId);
+  }
+
   /** A viewer-side congestion report about ANOTHER user's share (the pop-out's
    *  loss counters, relayed through main into the renderer): the publisher's
    *  own stats cannot see downstream loss, so the server forwards this to the

@@ -398,6 +398,9 @@ export const EN = {
   "settings.spellHint": "Underlines misspelled English and Russian words as you type; right-click a word for suggestions. The dictionaries are bundled with the app.",
   // The roster activity lines (2026-11-10): the verb prefixes + the settings block.
   "activity.playing": "Playing",
+  // The manual rule's IGDB binding (2026-11-25).
+  "settings.igdbMatchHeader": "Found on IGDB",
+  "settings.igdbMatchNone": "Nothing found — the rule can stay unbound.",
   "activity.listening": "Listening to",
   "activity.watching": "Watching",
   "activity.streaming": "Streaming",

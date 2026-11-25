@@ -59,8 +59,16 @@ describe("matchRunningActivity (the auto-detect verdict)", () => {
   ];
 
   it("the FIRST registered rule whose process runs wins", () => {
-    expect(matchRunningActivity(rules, ["csrss.exe", "cs2.exe"])).toEqual({ type: "playing", name: "CS2" });
+    expect(matchRunningActivity(rules, ["csrss.exe", "cs2.exe"])).toEqual({ type: "playing", name: "CS2", igdbGameId: null });
     expect(matchRunningActivity(rules, ["spotify.exe", "cs2.exe"])?.name).toBe("CS2"); // order, not alphabetical
+  });
+
+  it("a bound rule carries its IGDB id — the hours merge with the auto-detect's (2026-11-25)", () => {
+    const bound = [
+      { id: "eft", processName: "tarkov.exe", type: "playing" as const, name: "Escape from Tarkov", igdbGameId: 103020 },
+    ];
+    expect(matchRunningActivity(bound, ["tarkov.exe"]))
+      .toEqual({ type: "playing", name: "Escape from Tarkov", igdbGameId: 103020 });
   });
 
   it("nothing matching — no line at all", () => {
@@ -104,8 +112,21 @@ describe("sanitizeRegisteredActivities (client settings)", () => {
       "garbage",
     ]);
     expect(sanitized).toEqual([
-      { id: "a", processName: "cs2.exe", type: "playing", name: "CS2", icon: "data:image/png;base64,AAAA" },
-      { id: "c", processName: "spotify.exe", type: "listening", name: "radio", icon: null },
+      { id: "a", processName: "cs2.exe", type: "playing", name: "CS2", icon: "data:image/png;base64,AAAA", igdbGameId: null },
+      { id: "c", processName: "spotify.exe", type: "listening", name: "radio", icon: null, igdbGameId: null },
+    ]);
+  });
+
+  it("an IGDB binding must be a positive integer id; junk reads as unbound (2026-11-25)", () => {
+    const sanitized = sanitizeRegisteredActivities([
+      { id: "a", processName: "tarkov.exe", type: "playing", name: "Escape from Tarkov", igdbGameId: 103020 },
+      { id: "b", processName: "doom.exe", type: "playing", name: "Doom", igdbGameId: -5 },
+      { id: "c", processName: "x.exe", type: "playing", name: "frag", igdbGameId: "103020" },
+    ]);
+    expect(sanitized).toEqual([
+      { id: "a", processName: "tarkov.exe", type: "playing", name: "Escape from Tarkov", icon: null, igdbGameId: 103020 },
+      { id: "b", processName: "doom.exe", type: "playing", name: "Doom", icon: null, igdbGameId: null },
+      { id: "c", processName: "x.exe", type: "playing", name: "frag", icon: null, igdbGameId: null },
     ]);
   });
 
@@ -121,8 +142,8 @@ describe("sanitizeRegisteredActivities (client settings)", () => {
       { id: "c", processName: "spotify.exe", type: "listening", name: "kept" },
     ]);
     expect(sanitized).toEqual([
-      { id: "a", processName: "mpc-hc64.exe", type: "playing", name: "first", icon: null },
-      { id: "c", processName: "spotify.exe", type: "listening", name: "kept", icon: null },
+      { id: "a", processName: "mpc-hc64.exe", type: "playing", name: "first", icon: null, igdbGameId: null },
+      { id: "c", processName: "spotify.exe", type: "listening", name: "kept", icon: null, igdbGameId: null },
     ]);
   });
 

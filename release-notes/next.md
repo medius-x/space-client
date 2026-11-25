@@ -29,3 +29,11 @@ does not: CI, docs, refactoring, internal rework.
   stays in two-way sync with the Task Manager's own Startup switch: turn it
   off in either place and the other side follows — the app's row stays visible
   in the Task Manager as "Disabled", never vanishing.
+- Manually registered "playing" activities can now bind to a real game: type
+  the name (or pick the exe) and matching IGDB games appear below — choosing
+  one gives the line its cover and merges your playtime with the same game's
+  auto-detected hours (one game, one counter; your old manual hours move over
+  when the names match).
+- Manual activity lines in the roster now lead with their kind's glyph
+  (gamepad, headphones, screen…) instead of the word prefix — matching the
+  bound games' look.

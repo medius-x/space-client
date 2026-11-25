@@ -518,6 +518,45 @@ body.channel-dragging * { cursor: grabbing !important; }
   width: 100%;
 }
 .activity-add select, .activity-add button { flex: 0 0 auto; }
+/* The IGDB binding dropdown (2026-11-25) hangs off the add row: the row keeps
+   its layout (kinds + name + Add), the results float below it. */
+.activity-add { position: relative; }
+.activity-igdb-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 280px;
+  overflow-y: auto;
+  z-index: 40;
+  background: var(--sp-popout-bg, #232428);
+  border: 1px solid var(--sp-border, rgba(255, 255, 255, 0.08));
+  border-radius: 4px;
+  padding: 4px;
+}
+.activity-igdb-group {
+  padding: 4px 6px 2px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--sp-text-dim);
+}
+.activity-igdb-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 4px 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--sp-text);
+  cursor: pointer;
+  text-align: left;
+}
+.activity-igdb-row:hover { background: var(--sp-bg-hover, #3a3c42); }
+.activity-igdb-row.chosen { border-color: var(--sp-accent, #5865f2); }
+.activity-igdb-none { padding: 6px; }
 /* The KIND picker is a glyph row (user picks 2026-11-19, Material Symbols —
    a native <select> cannot carry SVG artwork): system-color buttons in the
    row's own control family, the chosen kind takes the accent, tooltips keep

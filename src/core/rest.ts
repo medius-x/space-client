@@ -285,6 +285,26 @@ export class RestClient {
     });
   }
 
+  /** GET /api/games/search (the manual-rule IGDB binding, 2026-11-25): a
+   *  FREE-TEXT catalogue search for the "add activity" form's dropdown — top
+   *  cards for the typed name or the picked exe's name. 503 while the
+   *  integration is unconfigured, 429 on the per-user budget. */
+  async searchGames(query: string): Promise<GameCard[]> {
+    const params = new URLSearchParams();
+    params.set("q", query);
+    return this.request<GameCard[]>(`/api/games/search?${params.toString()}`, { method: "GET" });
+  }
+
+  /** POST /api/games/merge-manual (2026-11-25): the caller's hours on virtual
+   *  manual cards of the same (normalized) name as the bound game move onto
+   *  the real game — one game, one counter. Best-effort by the caller. */
+  async mergeManualGames(igdbId: number): Promise<void> {
+    await this.request<void>("/api/games/merge-manual", {
+      method: "POST",
+      body: JSON.stringify({ igdbId }),
+    });
+  }
+
   /** The IGDB settings view (Server Settings → Integrations; MANAGE_SERVER —
    *  the server enforces, a 403 just hides the section's data). The SECRET is
    *  write-only; {@code paused} is the pause switch POSITION, stored

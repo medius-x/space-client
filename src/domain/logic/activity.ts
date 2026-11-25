@@ -78,14 +78,18 @@ export function normalizeProcessName(value: unknown): string | null {
  * re-stamps an exe). Exes without a stamp tie at "earliest": ties keep the
  * FIRST registered rule (registration order — deterministic, the way it was
  * before the rework). Null when nothing matches.
+ *
+ * A rule's IGDB binding (2026-11-25) rides the line: the server sessions the
+ * hours into the SAME game the Steam auto-detect resolves and renders the
+ * cover card — indistinguishable from a detected game.
  */
 export function matchRunningActivity(
-  rules: readonly { processName: string; type: ActivityKind; name: string }[],
+  rules: readonly { processName: string; type: ActivityKind; name: string; igdbGameId?: number | null }[],
   runningProcessNames: Iterable<string>,
   detectedAtByName?: ReadonlyMap<string, number>,
 ): PresenceActivity | null {
   const running = new Set(runningProcessNames);
-  let bestRule: { processName: string; type: ActivityKind; name: string } | null = null;
+  let bestRule: { processName: string; type: ActivityKind; name: string; igdbGameId?: number | null } | null = null;
   let bestAt = Number.NEGATIVE_INFINITY;
   for (const rule of rules) {
     if (!running.has(rule.processName)) {
@@ -97,7 +101,8 @@ export function matchRunningActivity(
       bestAt = at;
     }
   }
-  return bestRule === null ? null : { type: bestRule.type, name: bestRule.name };
+  return bestRule === null ? null
+    : { type: bestRule.type, name: bestRule.name, igdbGameId: bestRule.igdbGameId ?? null };
 }
 
 /**

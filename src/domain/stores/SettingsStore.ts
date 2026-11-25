@@ -18,12 +18,23 @@ export interface RegisteredActivity {
   /** The app icon (16×16 data URL) captured from the picker's describe pass —
    *  persisted WITH the rule so it survives the app closing. Null until known. */
   icon: string | null;
+  /** The IGDB binding (2026-11-25): a "playing" rule picked from the search
+   *  dropdown carries the game's IGDB id — the reported line then bears it,
+   *  the cover/genres card renders, and the server sessions the hours into
+   *  the SAME game the Steam auto-detect resolves (one game, one counter).
+   *  Null for every unbound rule (the pre-binding model, unchanged). */
+  igdbGameId?: number | null;
+}
+
+/** A rule's IGDB binding must be a positive integer id; anything else
+ *  (hand-edited KV junk) reads as "no binding". */
+function sanitizeIgdbGameId(raw: unknown): number | null {
+  return typeof raw === "number" && Number.isInteger(raw) && raw > 0 ? raw : null;
 }
 
 /** Loader sanitize: valid rows only (verb/name/process shape), ids guaranteed
  *  unique, the cap enforced (newest kept). Hand-edited KV garbage drops silently. */
-export function sanitizeRegisteredActivities(raw: unknown): RegisteredActivity[] {
-  if (!Array.isArray(raw)) {
+export function sanitizeRegisteredActivities(raw: unknown): RegisteredActivity[] {  if (!Array.isArray(raw)) {
     return [];
   }
   const seen = new Set<string>();
@@ -51,6 +62,7 @@ export function sanitizeRegisteredActivities(raw: unknown): RegisteredActivity[]
       type: activity.type,
       name: activity.name,
       icon: sanitizeActivityIcon((value as { icon?: unknown }).icon),
+      igdbGameId: sanitizeIgdbGameId((value as { igdbGameId?: unknown }).igdbGameId),
     });
   }
   return out.slice(Math.max(0, out.length - MAX_REGISTERED_ACTIVITIES));
