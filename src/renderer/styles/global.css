@@ -5367,3 +5367,230 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
    ALREADY off, not play the off-flip (user report 2026-11-23). */
 .igdb-switch.settle { transition: none; }
 .igdb-switch.settle::after { transition: none; }
+
+/* ===== Polls (2026-11-25) ===== */
+
+/* The card in the chat (the reference layout): a rounded surface slightly
+   lighter than the page, options as darker rounded rows. */
+.poll-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 480px;
+  margin-top: 6px;
+  padding: 10px 12px;
+  background: var(--sp-surface);
+  border: 1px solid var(--sp-control);
+  border-radius: 10px;
+}
+/* The early-end glyph button, top-right (fix round 3 — was a footer text
+   button): the tooltip carries the "this ends the poll" wording. */
+.poll-end-button {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--sp-text-dim);
+  cursor: pointer;
+}
+/* The vendored poll-off glyph (see PollCard): MaterialGlyph's sizing idiom. */
+.poll-off-glyph {
+  display: block;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  fill: currentColor;
+}
+.poll-end-button:hover:not(:disabled) { background: var(--sp-hover); color: var(--sp-red); }
+.poll-end-button:disabled { opacity: 0.5; cursor: default; }
+.poll-question { font-weight: 600; font-size: 14px; color: var(--sp-text); }
+.poll-subtitle { font-size: 12px; color: var(--sp-text-dim); margin-top: -2px; }
+
+.poll-options { display: flex; flex-direction: column; gap: 6px; }
+.poll-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 4px 10px;
+  background: var(--sp-control);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--sp-text);
+  text-align: left;
+  overflow: hidden;
+  cursor: pointer;
+}
+.poll-option.selected { border-color: var(--sp-selected); }
+.poll-option-text { position: relative; flex: 1; font-size: 13px; }
+.poll-option-percent { position: relative; font-size: 12px; color: var(--sp-text); }
+.poll-option-mark {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border: 1.5px solid var(--sp-text-dim);
+  border-radius: 50%;
+}
+.poll-option-mark.check { border-radius: 3px; }
+.poll-option.selected .poll-option-mark { border-color: var(--sp-accent); background: var(--sp-accent); }
+
+.poll-result-row { display: flex; flex-direction: column; gap: 3px; }
+/* The results line (fix round 2/3): the option's flat line — name left, percent
+   right — flush with the card's own left edge (no inner indents: the question,
+   subtitle, voter strips and counts all share ONE left rail), with a THIN
+   blurple progress bar spanning the card's FULL width underneath. */
+.poll-result-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 24px;
+  padding: 2px 0 0;
+}
+.poll-result-bar {
+  height: 4px;
+  margin: 1px 0 2px;
+  border-radius: 2px;
+  background: var(--sp-control);
+  overflow: hidden;
+}
+.poll-result-bar-fill { height: 100%; background: var(--sp-accent); border-radius: 2px; }
+.poll-voters { position: relative; }
+.poll-voters-strip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+/* The overlapping chip: the border sits AROUND the avatar (a ring), not on a
+   fixed-size clipping window — a 20px avatar inside a bordered 20px box was
+   reading as shifted right-down (fix round 6). */
+.poll-voters-chip {
+  position: relative;
+  display: inline-flex;
+  border-radius: 50%;
+  border: 2px solid var(--sp-surface);
+  margin-left: -6px;
+}
+.poll-voters-chip:first-child { margin-left: 0; }
+.poll-voters-more { font-size: 11px; color: var(--sp-text-dim); margin-left: 4px; }
+.poll-voters-dropdown {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  z-index: 55;
+  min-width: 180px;
+  max-height: calc(26px * 5 + 8px); /* the user's cap: five rows, then scroll */
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  background: var(--sp-surface);
+  border: 1px solid var(--sp-control);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+.poll-voters-dropdown-row { display: flex; align-items: center; gap: 6px; }
+.poll-voters-dropdown-name { font-size: 12px; color: var(--sp-text); }
+
+.poll-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+}
+.poll-meta { font-size: 11px; color: var(--sp-text-dim); }
+.poll-time-left, .poll-finished { color: var(--sp-text-dim); }
+.poll-actions { display: flex; align-items: stretch; gap: 8px; }
+/* All footer buttons share ONE size (fix round 2): a comfortable height, labels
+   wrapping to two lines inside a bounded width — no more thin-long Vote button. */
+.poll-footer-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  min-width: 72px;
+  max-width: 128px;
+  padding: 3px 10px;
+  font-size: 12px;
+  line-height: 1.15;
+  text-align: center;
+  white-space: normal;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.poll-footer-button:disabled { opacity: 0.5; cursor: default; }
+.poll-footer-button.ghost {
+  background: transparent;
+  border: 1px solid var(--sp-control);
+  color: var(--sp-text);
+}
+.poll-footer-button.ghost:hover:not(:disabled) { background: var(--sp-hover); }
+.poll-footer-button.primary {
+  background: var(--sp-accent);
+  border: 1px solid var(--sp-accent);
+  color: #fff;
+}
+.poll-footer-button.primary:hover:not(:disabled) { background: var(--sp-accent-hover); }
+/* The disabled primary stays BLURPLE, muted — not a grey plate with a colored
+   rim (fix round 6). */
+.poll-footer-button.primary:disabled {
+  background: rgba(88, 101, 242, 0.45);
+  border-color: rgba(88, 101, 242, 0.45);
+  opacity: 1;
+}
+
+/* The create dialog's option rows and the duration line. The QUESTION rides the
+   same row shape as an option (with the remove-button's width as a spacer), so
+   every input lines up (fix round 2). */
+.poll-dialog-options { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.poll-dialog-option-row { display: flex; align-items: center; gap: 6px; }
+.poll-dialog-option-row input { flex: 1; }
+.poll-dialog-remove-spacer { flex: none; width: 26px; height: 26px; }
+.poll-dialog-remove {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--sp-text-dim);
+  cursor: pointer;
+}
+.poll-dialog-remove:hover { background: var(--sp-hover); color: var(--sp-text); }
+.poll-dialog-add { align-self: flex-start; }
+.poll-dialog-duration { margin: 10px 0 4px; }
+.poll-dialog-duration-title { font-size: 12px; color: var(--sp-text-dim); margin-bottom: 6px; }
+.poll-dialog-duration-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+/* The custom-duration input and its "min" unit stay ONE indivisible group — the
+   unit must never wrap alone onto the next line (fix round 2). */
+.poll-dialog-custom-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.poll-dialog-duration select { min-width: 130px; }
+.poll-dialog-custom { margin: 0; }

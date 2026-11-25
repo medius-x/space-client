@@ -20,3 +20,8 @@ does not: CI, docs, refactoring, internal rework.
 - Channels can now stand between categories: drag any channel above, below or
   between category blocks, Discord-style; inside a category text still sits
   above voice.
+- Polls: create one from the composer's new poll button (left of the emoji
+  button) — vote, view results, and let the author or moderators end them
+  early. Anonymous or open voting, single or multiple choice, an optional
+  changeable vote, and a limited or unlimited duration. Two new permissions:
+  Create Polls (off for @everyone by default) and Vote in Polls (on).

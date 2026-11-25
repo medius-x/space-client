@@ -16,6 +16,8 @@ import type {
   InviteLink,
   InvitesStatus,
   Message,
+  MyPollVoteRow,
+  PollResults,
   MyPermissions,
   OwnershipTransfer,
   PendingOwnershipTransfer,
@@ -440,6 +442,49 @@ export class RestClient {
       body: JSON.stringify(request),
       idempotencyKey: request.idempotencyKey,
     });
+  }
+
+  // --- Polls (2026-11-25) ----------------------------------------------------
+
+  /** Creates the poll message (gates: SEND_MESSAGES + CREATE_POLLS, channel-scoped). */
+  async createPoll(channelId: number, request: {
+    question: string;
+    options: string[];
+    allowMultiple: boolean;
+    anonymous: boolean;
+    allowVoteChange: boolean;
+    /** Minutes; null/undefined = unlimited. */
+    durationMinutes?: number | null;
+  }): Promise<Message> {
+    return this.request<Message>(`/api/channels/${channelId}/polls`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  }
+
+  /** Casts (or, when the poll allows it, REPLACES) the whole selection; the answer
+   *  carries the tallied results for the instant flip to the results view. */
+  async votePoll(pollId: number, optionIds: number[]): Promise<PollResults> {
+    return this.request<PollResults>(`/api/polls/${pollId}/vote`, {
+      method: "POST",
+      body: JSON.stringify({ optionIds }),
+    });
+  }
+
+  /** The tallied results — viewing never affects the ability to vote. */
+  async getPollResults(pollId: number): Promise<PollResults> {
+    return this.request<PollResults>(`/api/polls/${pollId}/results`, { method: "GET" });
+  }
+
+  /** Early finish (the author, OWNER/ADMINISTRATOR, or MANAGE_MESSAGES; idempotent). */
+  async closePoll(pollId: number): Promise<void> {
+    await this.request<unknown>(`/api/polls/${pollId}/close`, { method: "POST" });
+  }
+
+  /** My own votes in a channel's polls — the "already voted" seed at channel
+   *  open (survives client restarts); rows exist only for polls I voted in. */
+  async getMyPollVotes(channelId: number): Promise<MyPollVoteRow[]> {
+    return this.request<MyPollVoteRow[]>(`/api/channels/${channelId}/polls/my-votes`, { method: "GET" });
   }
 
   /** PATCH returns the edited message; the .edited topic echo dedups by id upstream.

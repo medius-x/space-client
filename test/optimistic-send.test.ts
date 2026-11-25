@@ -20,7 +20,7 @@ function message(id: number, channelId = 1, author = "alice", content?: string):
     pinned: false,
     pinnedBy: null,
     pinnedAt: null,
-    sticker: null,
+    sticker: null, poll: null,
   };
 }
 

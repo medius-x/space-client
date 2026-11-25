@@ -39,7 +39,7 @@ function message(id: number, channelId: number, createdAt: string): Message {
     pinned: false,
     pinnedBy: null,
     pinnedAt: null,
-    sticker: null,
+    sticker: null, poll: null,
   };
 }
 

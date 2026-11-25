@@ -11,6 +11,7 @@ import { closeDiscussionForEveryone, closeDiscussionView, openDiscussion, openDr
 import { connectionDirectory, settingsStore } from "../runtime";
 import { RecordTokenStorage } from "../../domain/session/connection-record";
 import type { ConnectionSession } from "../../domain/session/connection-session";
+import { hasServerCapability } from "../../domain/logic/server-capabilities";
 import { HISTORY_PAGE, NEWER_PAGE } from "../../domain/session/connection-session";
 import { RestClient } from "../../core/rest";
 import { log } from "../../logging";
@@ -68,6 +69,8 @@ import type { Channel, ChannelMyPermissions, CustomEmoji, Discussion, DmChannel,
 import { REACTION_CATALOG, REACTION_GLYPH_BY_SLUG } from "../../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { Modal } from "./Modal";
+import { PollDialog } from "./PollDialog";
+import { PollCard } from "./PollCard";
 import { VirtualList, type VirtualListHandle } from "./VirtualList";
 import { AttachmentView, attachmentUsableWidth } from "./AttachmentView";
 import { isImageFile } from "../../domain/logic/attachment-layout";
@@ -165,6 +168,9 @@ interface ChatActions {
   selectionMode: boolean;
   selection: ReadonlySet<number>;
   toggleSelected(messageId: number): void;
+  /** The channel-scoped VOTE_POLLS gate for the poll cards (false in DMs — no
+   *  permission model there). */
+  canVotePolls: boolean;
 }
 
 /** Placeholder replaced by MessageList's scroll/backfill wiring — stable by
@@ -315,6 +321,8 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
   // the upload spinner reuses the staging box while attachments are being sent.
   const [capNote, setCapNote] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  // The create-poll dialog (2026-11-25) — opens from the composer's poll button.
+  const [pollDialogOpen, setPollDialogOpen] = useState(false);
   const [reactedBy, setReactedBy] = useState<{ x: number; y: number; names: readonly string[] } | null>(null);
   const reactedByRef = useRef<HTMLDivElement | null>(null);
   useOutsideDismiss(reactedByRef, () => setReactedBy(null));
@@ -436,7 +444,8 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
   }, [dm, members, session]);
   const dmBlock = dm !== null ? dmSendBlockReason(myDmRestricted, dmPeerRestricted, dm.type === "GROUP_DM") : null;
   const permissions: ChannelMyPermissions | null = dm !== null
-    ? { sendMessages: dmBlock === null, attachFiles: dmBlock === null, stream: true }
+    ? { sendMessages: dmBlock === null, attachFiles: dmBlock === null, stream: true,
+        votePolls: false, createPolls: false } // polls are a server-channel feature (no DM permission model)
     : channelPermissions;
   const chatTitlePrefix = dm !== null && dm.type === "DM" ? "@" : "#";
   // The chat-surface binding while a discussion is open: a Channel-shaped adapter over the
@@ -447,6 +456,22 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
     ? { id: openDiscussionEntry.discussionId, name: "Discussion", type: "TEXT", createdAt: "", locked: false, parentId: null, position: 0 }
     : viewChannel!), // the null viewChannel dead-ends above (chat-empty) before this line
     [openDiscussionEntry?.discussionId ?? null, viewChannel]);
+
+  // The "already voted" seed (fix round 4): entering a server channel loads MY
+  // votes in its polls from the server — the truth that survives client
+  // restarts, so voted cards never re-offer a vote the server would 409.
+  // The null guard matters: `chatChannel` is the viewChannel! adapter whose
+  // non-null assertion is only honest BELOW the chat-empty dead end in the JSX —
+  // this is the FIRST hook to touch it, and at startup (no active channel) it
+  // really is null (the live crash report: "reading 'id' of null").
+  useEffect(() => {
+    if (dm !== null || chatChannel == null || !hasServerCapability(session.serverProfile, "polls")) {
+      return;
+    }
+    session.rest.getMyPollVotes(chatChannel.id)
+      .then((rows) => session.messageStore.applyMyPollVotes(chatChannel.id, rows))
+      .catch(() => undefined); // a hiccup keeps the in-memory behavior for this visit
+  }, [chatChannel?.id, dm, session]);
 
   // The unified reaction picker (phase 3): the composer picker's visual language over
   // BOTH catalogs — the 10 built-in slugs plus the server's custom emojis, one search
@@ -506,7 +531,8 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
         return next;
       });
     },
-  }), [armReply, selectionMode, selection]);
+    canVotePolls: dm === null && (permissions?.votePolls ?? false),
+  }), [armReply, selectionMode, selection, permissions, dm]);
 
   if (viewChannel === null) {
     // Two dead ends, two messages: channels EXIST but every one is locked for
@@ -698,6 +724,9 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
             channel: `${chatTitlePrefix}${viewChannel.name}`,
           }) + (permissions.attachFiles ? t("chat.placeholderAttachSuffix") : "")}
           attachEnabled={permissions.attachFiles}
+          canCreatePoll={permissions.createPolls === true
+            && hasServerCapability(session.serverProfile, "polls")}
+          onOpenPollDialog={() => setPollDialogOpen(true)}
           allowEmptySend={staged.length > 0}
           focusSignal={composerFocusSignal}
           onCancelReply={replyTo !== null ? () => setReplyTo(null) : null}
@@ -767,6 +796,9 @@ export function ChatPane({ session }: { session: ConnectionSession }): React.JSX
           }, t)}
           onClose={() => setMenu(null)}
         />
+      ) : null}
+      {pollDialogOpen ? (
+        <PollDialog session={session} channelId={chatChannel.id} onClose={() => setPollDialogOpen(false)} />
       ) : null}
       {reactedBy !== null ? (
         <div
@@ -1389,6 +1421,16 @@ const MessageList = memo(function MessageList(props: MessageListProps): React.JS
     }
     if (grew && (watching || ownBatch) && !belowEndRef.current) {
       ackActiveChannel();
+    }
+  }, [messages]);
+
+  // A message SWAP that changes row heights (not a growth: a poll card revealing
+  // its results after the mount-time fetch) moves the bottom away from a reader
+  // who was PINNED to it — re-pin, the same stick semantics as new arrivals
+  // (fix round 3: returning to a poll channel used to land mid-list).
+  useEffect(() => {
+    if (nearBottomRef.current && !belowEndRef.current) {
+      listRef.current?.scrollToBottom();
     }
   }, [messages]);
 
@@ -2236,6 +2278,14 @@ const MessageRow = memo(function MessageRow(props: MessageRowProps): React.JSX.E
             {message.sticker !== null ? <InlineSticker session={session} sticker={message.sticker} /> : null}
           </>
         )}
+        {/* The poll card (2026-11-25) — the message's sole payload when present.
+            `!= null` on purpose: an OLDER server's MessageResponse carries no poll
+            FIELD at all (undefined, not null) and the card must not mount against
+            it — the live crash report (render contained, closedAt of undefined). */}
+        {message.poll != null && !editing ? (
+          <PollCard session={session} message={message} poll={message.poll}
+            canVote={dmContext ? false : actions.canVotePolls} />
+        ) : null}
         {message.reactions.length > 0 ? (
           <div className="reactions-row">
             {message.reactions.map((summary) => {
@@ -2685,10 +2735,16 @@ function StickerTile({ session, sticker, disabled, onPick }: {
   );
 }
 
-function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSignal, onCancelReply, onPaste, onSend, onSendSticker }: {
+function Composer({ session, placeholder, attachEnabled, canCreatePoll, onOpenPollDialog, allowEmptySend, focusSignal, onCancelReply, onPaste, onSend, onSendSticker }: {
   session: ConnectionSession;
   placeholder: string;
   attachEnabled: boolean;
+  /** The poll button's gate: the channel-scoped CREATE_POLLS (server-side ANDed
+   *  with SEND_MESSAGES) AND the server's "polls" capability. The button HIDES,
+   *  never disables — the paperclip idiom (user decision: a member who cannot
+   *  write loses the button even with the create bit). */
+  canCreatePoll: boolean;
+  onOpenPollDialog(): void;
   allowEmptySend: boolean;
   /** Bumped by the parent whenever the caret belongs here (a reply armed, files
    *  staged) — the effect focuses the field at the END of the current draft. */
@@ -3469,6 +3525,16 @@ function Composer({ session, placeholder, attachEnabled, allowEmptySend, focusSi
           onContextMenu={onComposerContextMenu}
           onKeyDown={onComposerKeyDown}
         />
+        {/* The poll button (2026-11-25) sits LEFT of the emoji button (user
+            decision: "poll, emoji" left-to-right). Hides without the create
+            bit or on an older server — the paperclip idiom. */}
+        {canCreatePoll ? (
+          <button
+            className="composer-attach"
+            title={t("poll.dialogTitle")}
+            onClick={onOpenPollDialog}
+          ><span className="icon mdi-poll" /></button>
+        ) : null}
         {/* The single smile button at the card's RIGHT edge opens the unified
             expression picker. ALWAYS visible (user request 2026-09-30): the Emoji
             tab's Built-in glyphs are pure client-side — a text message can carry

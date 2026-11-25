@@ -16,8 +16,8 @@ describe("PermissionStore", () => {
 
   it("channel bits are cached per channel and drop with the channel", () => {
     const store = new PermissionStore();
-    store.applyChannel(1, { sendMessages: true, attachFiles: true, stream: true });
-    store.applyChannel(2, { sendMessages: false, attachFiles: false, stream: false });
+    store.applyChannel(1, { sendMessages: true, attachFiles: true, stream: true, votePolls: true, createPolls: true });
+    store.applyChannel(2, { sendMessages: false, attachFiles: false, stream: false, votePolls: false, createPolls: false });
 
     expect(store.channelPermissions(1)?.sendMessages).toBe(true);
     expect(store.channelPermissions(2)?.sendMessages).toBe(false);
@@ -30,14 +30,14 @@ describe("PermissionStore", () => {
 
   it("re-applying identical channel bits does not emit", () => {
     const store = new PermissionStore();
-    store.applyChannel(1, { sendMessages: true, attachFiles: false, stream: true });
+    store.applyChannel(1, { sendMessages: true, attachFiles: false, stream: true, votePolls: true, createPolls: false });
     const listener = vi.fn();
     store.subscribe(listener);
 
-    store.applyChannel(1, { sendMessages: true, attachFiles: false, stream: true });
+    store.applyChannel(1, { sendMessages: true, attachFiles: false, stream: true, votePolls: true, createPolls: false });
     expect(listener).not.toHaveBeenCalled();
 
-    store.applyChannel(1, { sendMessages: false, attachFiles: false, stream: true });
+    store.applyChannel(1, { sendMessages: false, attachFiles: false, stream: true, votePolls: false, createPolls: false });
     expect(listener).toHaveBeenCalledTimes(1);
   });
 
@@ -45,11 +45,11 @@ describe("PermissionStore", () => {
     // Security round 6 regression: the dedup compared only the composer bits, so a
     // per-channel STREAM deny arriving with everything else unchanged never re-rendered.
     const store = new PermissionStore();
-    store.applyChannel(7, { sendMessages: true, attachFiles: true, stream: true });
+    store.applyChannel(7, { sendMessages: true, attachFiles: true, stream: true, votePolls: true, createPolls: true });
     const listener = vi.fn();
     store.subscribe(listener);
 
-    store.applyChannel(7, { sendMessages: true, attachFiles: true, stream: false });
+    store.applyChannel(7, { sendMessages: true, attachFiles: true, stream: false, votePolls: true, createPolls: true });
     expect(listener).toHaveBeenCalledTimes(1);
     expect(store.channelPermissions(7)?.stream).toBe(false);
   });

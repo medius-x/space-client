@@ -140,6 +140,9 @@ export interface Message {
   /** The denormalized sticker copy (phase 2, appended — wire append-only); null = none.
    *  A sticker-only message has content null. */
   sticker: StickerRef | null;
+  /** The poll this message carries (2026-11-25, appended — wire append-only); null = none.
+   *  A poll message has content null, the poll is its sole payload. */
+  poll: PollInfo | null;
 
   // --- CLIENT-ONLY annotations (the optimistic send, 2026-10-15). Never on the
   // --- wire: a local temp row exists in the list before the server confirms it;
@@ -154,6 +157,18 @@ export interface Message {
   /** The temp row's ORIGINAL reply target: `reply` is a server-assembled quote
    *  a temp row cannot have yet, but a retry still needs the raw id. */
   replyToId?: number | null;
+  /** Live poll headline (the .poll push) — the running voter count between result
+   *  views; absent until the first push/answer (the card then shows 0). */
+  pollTotalVoters?: number;
+  /** The last results THIS CLIENT revealed (its own vote or "show results") —
+   *  client-only; survives row remounts (channel switches) and seeds the card's
+   *  results view back. Refreshed by the .poll live push when already revealed. */
+  pollResults?: PollResults;
+  /** MY current selection in this poll (client-only, server-seeded by the
+   *  channel's my-votes snapshot at open + my own votes): the honest
+   *  "already voted" state that survives client restarts. Absent = the
+   *  snapshot has not answered yet. */
+  myPollOptionIds?: number[];
 }
 
 /** GET /api/search/messages — one search page: the cursor-independent total hit count plus
@@ -472,6 +487,65 @@ export interface ChannelMyPermissions {
   sendMessages: boolean;
   attachFiles: boolean;
   stream: boolean;
+  /** The polls vote gate (4th, appended 2026-11-25); absent (undefined) on older servers. */
+  votePolls: boolean;
+  /** The composer poll button's gate (5th) = SEND_MESSAGES AND CREATE_POLLS; absent on older servers. */
+  createPolls: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Polls (2026-11-25)
+// ---------------------------------------------------------------------------
+
+/** The poll riding on a message — the shape and lifecycle, never vote data. */
+export interface PollInfo {
+  id: number;
+  question: string;
+  allowMultiple: boolean;
+  anonymous: boolean;
+  allowVoteChange: boolean;
+  /** ISO-8601 UTC string; null = unlimited. */
+  endsAt: string | null;
+  /** ISO-8601 UTC string; null = open. Set by the deadline or an early close. */
+  closedAt: string | null;
+  options: PollOptionInfo[];
+}
+
+export interface PollOptionInfo {
+  id: number;
+  text: string;
+}
+
+/** POST vote / GET results — the tallied answer a client's OWN action returns. */
+export interface PollResults {
+  poll: PollInfo;
+  /** DISTINCT people (a multi-choice voter counts once). */
+  totalVoters: number;
+  options: PollOptionResult[];
+}
+
+export interface PollOptionResult {
+  optionId: number;
+  votes: number;
+  /** Usernames — empty for anonymous polls (by design, the wire never hints who). */
+  voters: string[];
+}
+
+/** /topic/channel.{id}.poll push — headline counters only, never tallies. */
+export interface PollEvent {
+  channelId: number;
+  messageId: number;
+  pollId: number;
+  totalVoters: number;
+  closed: boolean;
+}
+
+/** GET /api/channels/{id}/polls/my-votes — one of MY voted polls, addressed by
+ *  the poll's message id. Absent polls = not voted. */
+export interface MyPollVoteRow {
+  messageId: number;
+  pollId: number;
+  optionIds: number[];
 }
 
 // ---------------------------------------------------------------------------

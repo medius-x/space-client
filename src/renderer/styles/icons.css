@@ -64,6 +64,7 @@
 .icon.mdi-pin-off::before { content: "\F0404"; }
 .icon.mdi-play::before { content: "\F040A"; }
 .icon.mdi-plus::before { content: "\F0415"; }
+.icon.mdi-poll::before { content: "\F041F"; }
 .icon.mdi-pound::before { content: "\F0423"; }
 .icon.mdi-refresh::before { content: "\F0450"; }
 .icon.mdi-reply::before { content: "\F045A"; }

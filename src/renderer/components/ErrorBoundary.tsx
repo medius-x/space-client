@@ -13,8 +13,14 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { error: E
     return { error };
   }
 
-  override componentDidCatch(error: Error): void {
-    log.error("ui", `render crash contained: ${error.message}`);
+  override componentDidCatch(error: Error, info: unknown): void {
+    // The STACK rides along (the polls rounds twice cost a blind hunt with only
+    // a one-line message — "reading 'closedAt' of undefined" named no suspect).
+    const componentStack = typeof info === "object" && info !== null
+      && "componentStack" in info && typeof (info as { componentStack?: unknown }).componentStack === "string"
+        ? `\n${(info as { componentStack: string }).componentStack}`
+        : "";
+    log.error("ui", `render crash contained: ${error.message}${error.stack ? `\n${error.stack}` : ""}${componentStack}`);
   }
 
   override render(): ReactNode {

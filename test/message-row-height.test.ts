@@ -40,7 +40,7 @@ function messageOf(overrides: Partial<Message> = {}): Message {
     pinned: false,
     pinnedBy: null,
     pinnedAt: null,
-    sticker: null,
+    sticker: null, poll: null,
     ...overrides,
   };
 }

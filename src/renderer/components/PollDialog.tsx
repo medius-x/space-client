@@ -6,9 +6,10 @@ import { formatTtlWords } from "../../domain/logic/invite-link";
 import type { ConnectionSession } from "../../domain/session/connection-session";
 import type { UiLang } from "../../domain/i18n/i18n";
 
-/** The dialog's input limits (user decision 2026-11-25 — the UI-stability rule):
- *  2..10 options, question ≤ 300 chars, option ≤ 100 chars. */
-const MIN_OPTIONS = 2;
+/** The dialog's input limits (user decision 2026-11-25 — the UI-stability rule;
+ *  the 1-option minimum is the fix-round-2 relaxation):
+ *  1..10 options, question ≤ 300 chars, option ≤ 100 chars. */
+const MIN_OPTIONS = 1;
 const MAX_OPTIONS = 10;
 const QUESTION_MAX = 300;
 const OPTION_MAX = 100;
@@ -97,7 +98,9 @@ export function PollDialog({ session, channelId, onClose }: {
 
   return (
     <Modal title={t("poll.dialogTitle")} onClose={onClose} medium>
-      <label className="settings-field">
+      {/* The question rides the SAME row shape as the options below (with the
+          remove-button's width as a spacer), so every input lines up exactly. */}
+      <div className="poll-dialog-option-row">
         <input
           type="text"
           value={question}
@@ -106,7 +109,8 @@ export function PollDialog({ session, channelId, onClose }: {
           placeholder={t("poll.questionPlaceholder")}
           onChange={(event) => setQuestion(event.target.value)}
         />
-      </label>
+        <span className="poll-dialog-remove-spacer" aria-hidden="true" />
+      </div>
 
       <div className="poll-dialog-options">
         {options.map((option, index) => (
@@ -136,10 +140,7 @@ export function PollDialog({ session, channelId, onClose }: {
 
       <label className="settings-check">
         <input type="checkbox" checked={anonymous} onChange={(event) => setAnonymous(event.target.checked)} />
-        <span>
-          {t("poll.anonymous")}
-          <small>{t("poll.anonymousHint")}</small>
-        </span>
+        <span>{t("poll.anonymous")}</span>
       </label>
       <label className="settings-check">
         <input type="checkbox" checked={allowMultiple} onChange={(event) => setAllowMultiple(event.target.checked)} />
@@ -150,36 +151,43 @@ export function PollDialog({ session, channelId, onClose }: {
         <span>{t("poll.changeVote")}</span>
       </label>
 
+      {/* Fix round 3: "Duration" is a SUBTITLE line, the preset dropdown + the
+          custom toggle + the minutes field sit on one row UNDER it — on the
+          Russian layout the row used to overflow and the field wrapped alone. */}
       <div className="poll-dialog-duration">
-        <span className="invite-ttl-label">{t("poll.durationLabel")}</span>
-        <select
-          value={presetMinutes}
-          disabled={custom}
-          onChange={(event) => setPresetMinutes(Number(event.target.value))}
-        >
-          {DURATION_PRESETS.map((preset) => (
-            <option key={preset.key} value={preset.minutes}>{t(preset.key)}</option>
-          ))}
-        </select>
-        <label className="settings-check poll-dialog-custom">
-          <input type="checkbox" checked={custom} onChange={(event) => setCustom(event.target.checked)} />
-          <span>{t("poll.durationCustom")}</span>
-        </label>
-        {custom ? (
-          <span className="invite-ttl-input-wrap">
-            <input
-              type="number"
-              min={1}
-              max={DURATION_MAX_MINUTES}
-              value={customMinutes}
-              onChange={(event) => setCustomMinutes(event.target.value)}
-            />
-            <span className="invite-ttl-human">
-              {customValid ? formatTtlWords(customNumber, currentLang() as UiLang) : ""}
+        <div className="poll-dialog-duration-title">{t("poll.durationLabel")}</div>
+        <div className="poll-dialog-duration-row">
+          <select
+            value={presetMinutes}
+            disabled={custom}
+            onChange={(event) => setPresetMinutes(Number(event.target.value))}
+          >
+            {DURATION_PRESETS.map((preset) => (
+              <option key={preset.key} value={preset.minutes}>{t(preset.key)}</option>
+            ))}
+          </select>
+          <label className="settings-check poll-dialog-custom">
+            <input type="checkbox" checked={custom} onChange={(event) => setCustom(event.target.checked)} />
+            <span>{t("poll.durationCustom")}</span>
+          </label>
+          {custom ? (
+            <span className="poll-dialog-custom-group">
+              <span className="invite-ttl-input-wrap">
+                <input
+                  type="number"
+                  min={1}
+                  max={DURATION_MAX_MINUTES}
+                  value={customMinutes}
+                  onChange={(event) => setCustomMinutes(event.target.value)}
+                />
+                <span className="invite-ttl-human">
+                  {customValid ? formatTtlWords(customNumber, currentLang() as UiLang) : ""}
+                </span>
+              </span>
+              <span className="invite-ttl-unit">{t("poll.minutesUnit")}</span>
             </span>
-          </span>
-        ) : null}
-        {custom ? <span className="invite-ttl-unit">{t("poll.minutesUnit")}</span> : null}
+          ) : null}
+        </div>
       </div>
 
       {error !== null ? <div className="error-line">{error}</div> : null}

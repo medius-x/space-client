@@ -1,6 +1,6 @@
 import { Emitter } from "../lib/store";
 import { patchReplyTreesForDeleted, patchReplyTreesForEdited } from "../logic/reply-tree";
-import type { Message, ReactionSummary } from "../../types";
+import type { Message, MyPollVoteRow, PollEvent, PollResults, ReactionSummary } from "../../types";
 
 /**
  * The newest SERVER row of a list, skipping local temp rows (negative ids —
@@ -40,6 +40,8 @@ export class MessageStore extends Emitter {
 
   private readonly lists = new Map<number, readonly Message[]>();
   private readonly loadedChannels = new Set<number>();
+  /** My-votes snapshots that outran their channel's history load (fix round 4). */
+  private readonly pendingMyVotes = new Map<number, MyPollVoteRow[]>();
   /** Channels loaded as an AROUND WINDOW in the middle of history (the search-result jump):
    *  an id-unknown gap sits between the window's last id and the channel's live tail. Live
    *  appends below the window are FORBIDDEN (they would pretend the list is contiguous) —
@@ -84,6 +86,7 @@ export class MessageStore extends Emitter {
     this.loadedChannels.add(channelId);
     this.aroundWithoutTail.delete(channelId);
     this.aroundDropCounts.delete(channelId);
+    this.applyPendingMyPollVotes(channelId);
     this.emit();
   }
 
@@ -96,6 +99,7 @@ export class MessageStore extends Emitter {
     this.lists.set(channelId, this.withSurvivingTempRows(channelId, messages));
     this.loadedChannels.add(channelId);
     this.aroundWithoutTail.add(channelId);
+    this.applyPendingMyPollVotes(channelId);
     this.aroundDropCounts.delete(channelId); // a fresh window restarts the count
     this.emit();
   }
@@ -318,12 +322,116 @@ export class MessageStore extends Emitter {
     return true;
   }
 
+  /** The .poll push (2026-11-25): refreshes the headline voter count and flips the
+   *  card to its finished state on the closed event — tallies themselves never
+   *  travel here (they ride a client's own vote/results answers only). */
+  applyPollEvent(event: PollEvent): boolean {
+    const current = this.lists.get(event.channelId);
+    if (current === undefined) {
+      return false;
+    }
+    const target = current.find((message) => message.id === event.messageId);
+    if (target === undefined || target.poll == null || target.poll.id !== event.pollId) {
+      return false;
+    }
+    const poll = event.closed && target.poll.closedAt === null
+      ? { ...target.poll, closedAt: new Date().toISOString() }
+      : target.poll;
+    const updated: Message = { ...target, poll, pollTotalVoters: event.totalVoters };
+    this.lists.set(event.channelId, current.map((message) => (message === target ? updated : message)));
+    this.emit();
+    return true;
+  }
+
+  /** A client-side results reveal (2026-11-25): stores the tallied answer ON the
+   *  message (client-only) so the card's results view survives row remounts — a
+   *  channel switch used to reset it and re-offer a vote the server would 409.
+   *  Also refreshes the headline count and the poll's closed flag from the
+   *  fresh tallies. */
+  applyPollResults(channelId: number, messageId: number, results: PollResults): boolean {
+    const current = this.lists.get(channelId);
+    if (current === undefined) {
+      return false;
+    }
+    const target = current.find((message) => message.id === messageId);
+    if (target === undefined || target.poll == null || target.poll.id !== results.poll.id) {
+      return false;
+    }
+    const updated: Message = {
+      ...target,
+      poll: results.poll,
+      pollTotalVoters: results.totalVoters,
+      pollResults: results,
+    };
+    this.lists.set(channelId, current.map((message) => (message === target ? updated : message)));
+    this.emit();
+    return true;
+  }
+
+  /** Applies the channel's my-votes snapshot (fix round 4): stamps MY current
+   *  selection onto the matching poll messages — the honest "already voted" seed
+   *  that survives client restarts. Rows exist only for voted polls. A snapshot
+   *  arriving BEFORE the history load parks itself and re-applies on the
+   *  snapshot (the race at channel open). */
+  applyMyPollVotes(channelId: number, rows: MyPollVoteRow[]): void {
+    const current = this.lists.get(channelId);
+    if (current === undefined) {
+      if (rows.length > 0) {
+        this.pendingMyVotes.set(channelId, rows);
+      }
+      return;
+    }
+    if (rows.length === 0) {
+      return;
+    }
+    const byMessageId = new Map(rows.map((row) => [row.messageId, row.optionIds]));
+    let changed = false;
+    const next = current.map((message) => {
+      const optionIds = byMessageId.get(message.id);
+      if (optionIds === undefined || message.poll == null) {
+        return message;
+      }
+      changed = true;
+      return { ...message, myPollOptionIds: optionIds };
+    });
+    if (changed) {
+      this.lists.set(channelId, next);
+      this.emit();
+    }
+  }
+
+  /** The parked my-votes snapshot of a channel whose history has just landed. */
+  private applyPendingMyPollVotes(channelId: number): void {
+    const parked = this.pendingMyVotes.get(channelId);
+    if (parked === undefined) {
+      return;
+    }
+    this.pendingMyVotes.delete(channelId);
+    this.applyMyPollVotes(channelId, parked);
+  }
+
+  /** Stamps MY fresh selection after my own vote (the local half of the seed). */
+  applyMyPollVote(channelId: number, messageId: number, optionIds: number[]): void {
+    const current = this.lists.get(channelId);
+    if (current === undefined) {
+      return;
+    }
+    const target = current.find((message) => message.id === messageId);
+    if (target === undefined) {
+      return;
+    }
+    this.lists.set(channelId, current.map((message) =>
+      (message === target ? { ...message, myPollOptionIds: [...optionIds] } : message)));
+    this.emit();
+  }
+
   /** Channel deleted — forget its list entirely. */
   dropChannel(channelId: number): void {
     const hadList = this.lists.delete(channelId);
     const wasLoaded = this.loadedChannels.delete(channelId);
     const wasAround = this.aroundWithoutTail.delete(channelId);
     const hadDrops = this.aroundDropCounts.delete(channelId);
+    this.pendingMyVotes.delete(channelId);
     if (hadList || wasLoaded || wasAround || hadDrops) {
       this.emit();
     }
@@ -361,6 +469,7 @@ export class MessageStore extends Emitter {
       pinnedBy: null,
       pinnedAt: null,
       sticker: null,
+      poll: null,
       delivery: "pending",
       idempotencyKey: draft.idempotencyKey,
       replyToId: draft.replyToId,

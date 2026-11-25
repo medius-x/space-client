@@ -17,6 +17,8 @@ import type {
   OwnershipEvent,
   PendingOwnershipTransfer,
   PingEcho,
+  PollEvent,
+  PollResults,
   PresenceEvent,
   ReactionEvent,
   Relationship,
@@ -679,6 +681,38 @@ export class ConnectionSession {
     if (!this.disposed) {
       this.permissionStore.applyChannel(channelId, permissions);
     }
+  }
+
+  // --- Polls (2026-11-25) -----------------------------------------------------
+
+  /** Creates the poll message; the live push lands it in the open list like any message. */
+  async createPoll(channelId: number, request: {
+    question: string;
+    options: string[];
+    allowMultiple: boolean;
+    anonymous: boolean;
+    allowVoteChange: boolean;
+    durationMinutes?: number | null;
+  }): Promise<void> {
+    if (!hasServerCapability(this.serverProfile, "polls")) {
+      throw new Error("This server does not support polls");
+    }
+    await this.rest.createPoll(channelId, request);
+  }
+
+  /** Casts (or replaces) the whole selection; resolves with the tallied results. */
+  votePoll(pollId: number, optionIds: number[]): Promise<PollResults> {
+    return this.rest.votePoll(pollId, optionIds);
+  }
+
+  /** The tallied results — viewing never affects the ability to vote. */
+  getPollResults(pollId: number): Promise<PollResults> {
+    return this.rest.getPollResults(pollId);
+  }
+
+  /** Early finish (the author, OWNER/ADMINISTRATOR, or MANAGE_MESSAGES; idempotent). */
+  async closePoll(pollId: number): Promise<void> {
+    await this.rest.closePoll(pollId);
   }
 
   sendMessage(channelId: number, content: string, replyToId?: number): Promise<void> {
@@ -1764,6 +1798,13 @@ export class ConnectionSession {
       const event = JSON.parse(raw) as ReactionEvent;
       this.messageStore.applyReactions(channelId, event.messageId, event.reactions);
     });
+    // Poll headline pushes (2026-11-25): the voter count refresh + the finish flip.
+    // Old servers have no such topic — a subscribe to a nonexistent destination is a
+    // harmless no-op on the broker, and the card degrades to its REST-driven updates.
+    this.stomp.subscribe(`${destination}.poll`, (raw) => {
+      const event = JSON.parse(raw) as PollEvent;
+      this.messageStore.applyPollEvent(event);
+    });
     this.stomp.subscribe(`${destination}.discussions`, (raw) => {
       const event = JSON.parse(raw) as DiscussionEvent;
       this.discussionsStore.applyEvent(event);
@@ -1805,6 +1846,10 @@ export class ConnectionSession {
     this.stomp.subscribe(`${destination}.reactions`, (raw) => {
       const event = JSON.parse(raw) as ReactionEvent;
       this.messageStore.applyReactions(discussionId, event.messageId, event.reactions);
+    });
+    this.stomp.subscribe(`${destination}.poll`, (raw) => {
+      const event = JSON.parse(raw) as PollEvent;
+      this.messageStore.applyPollEvent(event);
     });
   }
 

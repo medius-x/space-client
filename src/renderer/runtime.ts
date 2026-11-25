@@ -2997,6 +2997,7 @@ export function seedSyntheticMessages(count: number): void {
       pinnedBy: null,
       pinnedAt: null,
       sticker: null,
+      poll: null,
     };
   });
   session.messageStore.applySnapshot(channelId, synthetic);

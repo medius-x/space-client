@@ -45,6 +45,8 @@ export const KNOWN_PERMISSION_BITS: readonly string[] = [
   "VIEW_CHANNEL",
   "MANAGE_STORAGE",
   "RESTRICT_PRIVATE_MESSAGES",
+  "CREATE_POLLS",
+  "VOTE_POLLS",
 ];
 
 /** The human name of a permission bit (unknown bits fall back to the raw enum name). */
