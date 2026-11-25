@@ -387,6 +387,10 @@ export const EN = {
 
   // settings — the client General section. The language picker lands first
   // (phase 1); the section's remaining strings join in phase 3.
+  "settings.launchHeader": "Startup",
+  "settings.launchOnStartup": "Launch SPACE when Windows starts",
+  "settings.launchHint": "SPACE opens automatically when you sign in.",
+  "settings.launchDevHint": "Available in the installed app.",
   "settings.language.label": "Language",
   "settings.language.system": "System default",
   "settings.spellHeader": "Spelling",

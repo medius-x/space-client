@@ -308,6 +308,21 @@ export interface SpellBridge {
   onContextMenu(callback: (event: { misspelledWord: string; suggestions: string[] }) => void): void;
 }
 
+/** Windows startup-launch bridge (2026-11-25): the registry is the source of
+ *  truth (the Run entry + its Startup Approved state — the pair the Task
+ *  Manager's own switch flips), so the client's checkbox READS the fact and
+ *  WRITES the same pair: off keeps the entry visible as "Disabled", letting
+ *  either side re-enable it later. */
+export interface LaunchBridge {
+  /** The current fact + whether this build may touch the registry at all
+   *  (dev builds may not — a dev registration would point electron.exe into
+   *  the working tree). */
+  read(): Promise<{ supported: boolean; enabled: boolean }>;
+  /** Flip the startup state; resolves with the fact AFTER the write (or the
+   *  untouched fact in dev / on a rejected payload). */
+  set(enabled: boolean): Promise<{ supported: boolean; enabled: boolean }>;
+}
+
 /** Edit-menu bridge (2026-11-24): the context menus' programmatic paste and
  *  clipboard probe. Paste runs main-side (webContents.paste() — Chromium
  *  blocks execCommand("paste") in the renderer) and delivers a REAL paste
@@ -579,6 +594,7 @@ declare global {
     spaceI18n?: I18nBridge;
     spaceBackup?: BackupsBridge;
     spaceSpell?: SpellBridge;
+    spaceLaunch?: LaunchBridge;
     spaceEdit?: EditBridge;
     spaceProcesses?: ProcessesBridge;
   }

@@ -1324,6 +1324,25 @@ function GeneralClientSection({ session }: { session: ConnectionSession | null }
       session.attachmentCache.setDiskBudget(megabytes * 1024 * 1024); // 0 purges the disk layer
     }
   };
+  // Startup launch (2026-11-25): the checkbox paints from the KV cache at
+  // once, then the REGISTRY fact — re-read on every tab open, so a Task
+  // Manager edit reflects here on the next visit — takes over. A dev build
+  // keeps the row visible but disabled (a dev registration would point
+  // electron.exe into the working tree).
+  const launchOnStartup = useStore(settingsStore, (settings) => settings.launchOnStartup);
+  const [launchState, setLaunchState] = useState<{ supported: boolean; enabled: boolean } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void window.spaceLaunch?.read().then((fact) => {
+      if (!cancelled && fact) {
+        setLaunchState(fact);
+        if (fact.supported && settingsStore.getSnapshot().launchOnStartup !== fact.enabled) {
+          settingsStore.apply({ launchOnStartup: fact.enabled }); // the registry overrules the cache
+        }
+      }
+    });
+    return () => { cancelled = true; };
+  }, []);
   return (
     <div>
       <h3>{t("settings.language.label")}</h3>
@@ -1334,6 +1353,29 @@ function GeneralClientSection({ session }: { session: ConnectionSession | null }
         <option value="en">English</option>
         <option value="ru">Русский</option>
       </select>
+
+      <h3>{t("settings.launchHeader")}</h3>
+      <label className="settings-check">
+        <input
+          type="checkbox"
+          checked={launchOnStartup}
+          disabled={launchState !== null && !launchState.supported}
+          onChange={(event) => {
+            const next = event.target.checked;
+            settingsStore.apply({ launchOnStartup: next }); // optimistic paint; the reply re-mirrors the fact
+            void window.spaceLaunch?.set(next).then((fact) => {
+              if (fact) {
+                setLaunchState(fact);
+                settingsStore.apply({ launchOnStartup: fact.enabled });
+              }
+            });
+          }}
+        />
+        <span>{t("settings.launchOnStartup")}</span>
+      </label>
+      <div className="settings-hint">
+        {launchState !== null && !launchState.supported ? t("settings.launchDevHint") : t("settings.launchHint")}
+      </div>
       <h3>{t("settings.spellHeader")}</h3>
       <label className="settings-check">
         <input

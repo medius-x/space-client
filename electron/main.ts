@@ -1546,6 +1546,47 @@ ipcMain.handle("space-spell:addWord", (_event, word: unknown) => {
   return true;
 });
 
+/** Windows startup launch (2026-11-25). The REGISTRY is the single source of
+ *  truth: the Run entry pointing at our exe plus its Startup Approved state —
+ *  the very pair the Task Manager's own switch flips (executableWillLaunchAtLogin
+ *  is exactly that conjunction). Turning OFF from the client does NOT delete
+ *  the entry: it writes enabled=false, so the SPACE row stays visible in the
+ *  Task Manager as "Disabled" — bit-identical to the user switching it off
+ *  there, and either side can turn it back on (the two switches always agree).
+ *  DEV builds never touch the registry (app.isPackaged gate): a dev
+ *  registration would point electron.exe into the working tree and rot with
+ *  the first npm change. */
+function readLaunchOnStartupFact(): boolean {
+  return app.getLoginItemSettings().executableWillLaunchAtLogin;
+}
+
+ipcMain.handle("space-launch:read", (): { supported: boolean; enabled: boolean } => ({
+  supported: app.isPackaged,
+  enabled: readLaunchOnStartupFact(),
+}));
+
+ipcMain.handle("space-launch:set", (_event, enabled: unknown): { supported: boolean; enabled: boolean } => {
+  const verdict = { supported: app.isPackaged, enabled: readLaunchOnStartupFact() };
+  if (!verdict.supported || typeof enabled !== "boolean" || enabled === verdict.enabled) {
+    return verdict; // dev, a forged non-boolean, or a no-op flip — nothing to write
+  }
+  // Reaching here with enabled=false means the fact is ON — the entry EXISTS
+  // and is active — so the off-write always has something to flip (a
+  // never-enabled app never gets here: no entry → fact off → no-op guard).
+  // NEVER gate this write on getLoginItemSettings().openAtLogin: that field
+  // NAME-matches the DEFAULT registry value name (the AppUserModelId), while
+  // we write under the custom name "SPACE" — it reads false and silently
+  // swallows the off-write (the live-smoke bug of 2026-11-25). The path-based
+  // executableWillLaunchAtLogin IS name-agnostic.
+  app.setLoginItemSettings({
+    openAtLogin: true,
+    enabled, // on: register + Startup Approved "enabled"; off: keep the row, mark "Disabled"
+    name: "SPACE",
+  });
+  appendLog(`[launch] autostart ${enabled ? "on" : "off"}`);
+  return { supported: true, enabled: readLaunchOnStartupFact() };
+});
+
 ipcMain.handle("space-window:popout", () => {
   if (popoutWindow && !popoutWindow.isDestroyed()) {
     popoutWindow.focus();

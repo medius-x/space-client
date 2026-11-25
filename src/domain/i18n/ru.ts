@@ -391,6 +391,10 @@ export const RU: Dict = {
   "playback.stop": "Остановить",
 
   // settings
+  "settings.launchHeader": "Запуск",
+  "settings.launchOnStartup": "Запускать SPACE при запуске Windows",
+  "settings.launchHint": "SPACE откроется автоматически при входе в систему.",
+  "settings.launchDevHint": "Доступно в установленной версии клиента.",
   "settings.language.label": "Язык",
   "settings.language.system": "Системный",
   "settings.spellHeader": "Орфография",

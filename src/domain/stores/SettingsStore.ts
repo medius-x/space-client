@@ -224,6 +224,13 @@ export interface ClientSettings {
    *  and messages keep working). "offline" is not a choice — it is what the
    *  presence dimension tells when the client is gone, always automatic. */
   statusOverride: "auto" | "online" | "away" | "dnd" | "invisible";
+  /** Launch SPACE on Windows login (2026-11-25). The REGISTRY is the source of
+   *  truth — the Run entry pointing at our exe plus its Startup Approved state
+   *  (the very pair the Task Manager's own switch flips); this KV field is only
+   *  the PAINT CACHE so the checkbox renders instantly. It re-mirrors from the
+   *  registry fact at boot, on every General tab open, and after each toggle's
+   *  reply — a Task Manager edit always wins over whatever was cached. */
+  launchOnStartup: boolean;
 }
 
 export interface BackupSchedule {
@@ -277,6 +284,7 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   spellCheckEnabled: true,
   spellCheckWords: [],
   statusOverride: "auto",
+  launchOnStartup: false, // the registry fact mirrors in at boot; the default paint is OFF
 };
 
 const KV_KEY = "client-settings";
@@ -440,6 +448,13 @@ export class SettingsStore extends Emitter {
         ...this.settings,
         spellCheckEnabled: typeof rest.spellCheckEnabled === "boolean" ? rest.spellCheckEnabled : true,
         spellCheckWords: sanitizeSpellWords(rest.spellCheckWords),
+      };
+      // Startup launch (2026-11-25): a plain-boolean PAINT CACHE (anything
+      // else in hand-edited KV falls back to off) — the registry fact
+      // re-mirrors over it at boot regardless.
+      this.settings = {
+        ...this.settings,
+        launchOnStartup: typeof rest.launchOnStartup === "boolean" ? rest.launchOnStartup : false,
       };
     }
     this.loaded = true;

@@ -25,3 +25,7 @@ does not: CI, docs, refactoring, internal rework.
   early. Anonymous or open voting, single or multiple choice, an optional
   changeable vote, and a limited or unlimited duration. Two new permissions:
   Create Polls (off for @everyone by default) and Vote in Polls (on).
+- New "Launch SPACE when Windows starts" checkbox in Settings → General. It
+  stays in two-way sync with the Task Manager's own Startup switch: turn it
+  off in either place and the other side follows — the app's row stays visible
+  in the Task Manager as "Disabled", never vanishing.

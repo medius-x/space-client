@@ -429,6 +429,19 @@ contextBridge.exposeInMainWorld("spaceSpell", {
   },
 });
 
+/** Windows startup-launch bridge (2026-11-25): the checkbox's fact lives in
+ *  the REGISTRY (the Run entry + its Startup Approved state), so reads
+ *  re-mirror the paint cache and writes flip the very pair the Task Manager's
+ *  own switch shows. */
+contextBridge.exposeInMainWorld("spaceLaunch", {
+  read(): Promise<unknown> {
+    return ipcRenderer.invoke("space-launch:read");
+  },
+  set(enabled: boolean): Promise<unknown> {
+    return ipcRenderer.invoke("space-launch:set", enabled);
+  },
+});
+
 /** Edit-menu bridge (2026-11-24): programmatic paste goes through main's
  *  webContents.paste() (Chromium blocks execCommand("paste") in the renderer),
  *  and the "is there anything paste-able" probe sees OS-clipboard FILES — the

@@ -1709,6 +1709,17 @@ function applySpellCheckEnabled(): void {
   void window.spaceSpell?.setEnabled(settingsStore.getSnapshot().spellCheckEnabled);
 }
 
+/** Windows startup launch (2026-11-25): the registry is the truth, the KV
+ *  field is a paint cache — boot re-reads the fact so a Task Manager toggle
+ *  made while the client was closed still lands in the checkbox. */
+function mirrorLaunchOnStartup(): void {
+  void window.spaceLaunch?.read().then((fact) => {
+    if (fact && fact.supported && settingsStore.getSnapshot().launchOnStartup !== fact.enabled) {
+      settingsStore.apply({ launchOnStartup: fact.enabled });
+    }
+  });
+}
+
 /** App entry: load the directory, auto-resume the most recently used connection. */
 export async function bootstrapApp(): Promise<void> {
   await settingsStore.load();
@@ -1733,6 +1744,7 @@ export async function bootstrapApp(): Promise<void> {
   applyUiLanguage(); // i18n boot: resolve, repaint, mirror into main + the aux windows
   settingsStore.subscribe(applyUiLanguage); // a language flip repoints tray/titles and repaints live
   applySpellCheckEnabled(); // the spell-check toggle mirrors into main (session languages)
+  mirrorLaunchOnStartup(); // the startup checkbox's KV cache re-mirrors the registry fact
   settingsStore.subscribe(pushPopoutVoiceState); // an NS engine flip recolors the pop-out's button
   pushPopoutVoiceState(); // the initial mirror (the pop-out reads it on mount)
   notifications.setToastConfig({
