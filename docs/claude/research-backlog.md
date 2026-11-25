@@ -114,7 +114,7 @@ oak-server docs/claude/security-operations.md (сервер) + feature-log-recen
   boolean без журнала; timed-банов нет ⇒ ЛЮБОЙ unban = ручной by design).
 
 **Фаза 1 — сбор (реализуемое):**
-- Сервер V28, 7 таблиц: `voice_sessions` (username, channel_id, joined_at, left_at NULL=открыта),
+- Сервер V29 (V28 занял polls 2026-11-25), 7 таблиц: `voice_sessions` (username, channel_id, joined_at, left_at NULL=открыта),
   `voice_mute_intervals` (self-mute, закрывается на unmute/leave), `share_intervals`,
   `watch_intervals` (username, channel_id, publisher), `presence_days` (username, day, upsert),
   `moderation_events` (kind, target, actor, at), `process_coincidence_episodes` (username, process).
